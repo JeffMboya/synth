@@ -12,11 +12,6 @@ updates:
     ignore:
       - dependency-name: "dtolnay/rust-toolchain"
 
-  # This repository is a single Cargo workspace with one Cargo.lock at the
-  # root, so "/" is the only directory Dependabot needs. Listing the member
-  # crates as well would be redundant: Dependabot's cargo fetcher walks up
-  # from any member manifest to the workspace root, so every entry resolves
-  # to the same manifest and lockfile and would raise duplicate update PRs.
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
