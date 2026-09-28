@@ -9,30 +9,16 @@ updates:
       gh-dependency:
         patterns:
           - "*"
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
 
+  # This repository is a single Cargo workspace with one Cargo.lock at the
+  # root, so "/" is the only directory Dependabot needs. Listing the member
+  # crates as well would be redundant: Dependabot's cargo fetcher walks up
+  # from any member manifest to the workspace root, so every entry resolves
+  # to the same manifest and lockfile and would raise duplicate update PRs.
   - package-ecosystem: "cargo"
-    directories:
-      - "./"
-      - "crates/synth-ast"
-      - "crates/synth-cli"
-      - "crates/synth-connectivity"
-      - "crates/synth-diagnostics"
-      - "crates/synth-drc"
-      - "crates/synth-geometry"
-      - "crates/synth-ir"
-      - "crates/synth-kicad"
-      - "crates/synth-knowledge"
-      - "crates/synth-layout"
-      - "crates/synth-mcp"
-      - "crates/synth-parser"
-      - "crates/synth-place"
-      - "crates/synth-registry"
-      - "crates/synth-render"
-      - "crates/synth-route"
-      - "crates/synth-smt"
-      - "crates/synth-supply"
-      - "crates/synth-validate"
-      - "crates/synth-web"
+    directory: "/"
     schedule:
       interval: "monthly"
       day: "monday"
