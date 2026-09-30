@@ -44,6 +44,18 @@ pub struct Board {
     /// `manufacturer` (who builds the board).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub company: Option<String>,
+    /// Requested schematic page size (`schematic { paper = "A4" }`).
+    ///
+    /// `None` means the author did not ask, and the layout defaults to A4.
+    /// This is the page's *floor*: the layout still enlarges the sheet when
+    /// content does not fit, but never compacts below the requested size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schematic_paper: Option<SchematicPaper>,
+    /// What to do when the content does not fit the requested page
+    /// (`schematic { overflow = … }`). `None` means
+    /// [`SchematicOverflow::Grow`], the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schematic_overflow: Option<SchematicOverflow>,
     pub components: Vec<Component>,
     pub nets: Vec<Net>,
     pub diff_pairs: Vec<DiffPair>,
@@ -83,6 +95,93 @@ pub struct Board {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<Variant>,
     pub source_span: Span,
+}
+
+/// A standard schematic page, selectable per design with
+/// `schematic { paper = "…" }`.
+///
+/// Deliberately not the layout's `SheetSize`: that enum also carries a
+/// `Custom { width_mm, height_mm }` variant produced by content
+/// measurement, which is a result of layout rather than something an author
+/// declares. Keeping the authored subset here means `synth-ir` stays free of
+/// a dependency on the layout crate, and an unparseable paper size is a
+/// parser error rather than a silently-ignored string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum SchematicPaper {
+    A5,
+    A4,
+    A3,
+    A2,
+    A1,
+    A0,
+}
+
+impl SchematicPaper {
+    /// Every accepted spelling, for diagnostics and the language reference.
+    pub const ALL: [SchematicPaper; 6] = [
+        SchematicPaper::A5,
+        SchematicPaper::A4,
+        SchematicPaper::A3,
+        SchematicPaper::A2,
+        SchematicPaper::A1,
+        SchematicPaper::A0,
+    ];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_uppercase().as_str() {
+            "A5" => Some(Self::A5),
+            "A4" => Some(Self::A4),
+            "A3" => Some(Self::A3),
+            "A2" => Some(Self::A2),
+            "A1" => Some(Self::A1),
+            "A0" => Some(Self::A0),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::A5 => "A5",
+            Self::A4 => "A4",
+            Self::A3 => "A3",
+            Self::A2 => "A2",
+            Self::A1 => "A1",
+            Self::A0 => "A0",
+        }
+    }
+}
+
+/// What a design does when its content does not fit the requested page.
+///
+/// `Grow` climbs the standard ladder first and only falls back to a
+/// multi-sheet hierarchy once the biggest standard page is exhausted.
+/// `Hierarchy` skips the growth entirely: the requested page is the page,
+/// and anything that does not fit becomes more sheets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchematicOverflow {
+    Grow,
+    Hierarchy,
+}
+
+impl SchematicOverflow {
+    pub const ALL: [SchematicOverflow; 2] = [Self::Grow, Self::Hierarchy];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "grow" => Some(Self::Grow),
+            "hierarchy" | "hierarchical" | "sheets" => Some(Self::Hierarchy),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Grow => "grow",
+            Self::Hierarchy => "hierarchy",
+        }
+    }
 }
 
 /// A named design variant: the refdes left unpopulated in it, plus an

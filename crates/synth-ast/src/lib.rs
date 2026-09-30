@@ -66,6 +66,7 @@ pub enum StatementAst {
     Keepout(KeepoutStmt),
     Group(GroupStmt),
     Sheet(SheetStmt),
+    Schematic(SchematicStmt),
 }
 
 impl StatementAst {
@@ -92,6 +93,7 @@ impl StatementAst {
             StatementAst::Keepout(s) => s.span,
             StatementAst::Group(s) => s.span,
             StatementAst::Sheet(s) => s.span,
+            StatementAst::Schematic(s) => s.span,
         }
     }
 }
@@ -152,6 +154,82 @@ pub struct SheetStmt {
     pub name: String,
     pub statements: Vec<StatementAst>,
     pub span: Span,
+}
+
+/// `schematic { paper = "A4" }` — page settings for the rendered sheet.
+///
+/// A block rather than a bare `paper "A4"` statement so that further page
+/// concerns (orientation, a fill-ratio threshold) have somewhere to live
+/// without a second top-level keyword.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchematicStmt {
+    /// Requested page size, already validated against the accepted set by
+    /// the parser so lowering never has to re-parse a free-form string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper: Option<SchematicPaperAst>,
+    /// What to do when the content does not fit, validated by the parser
+    /// like `paper` so a bad value is reported where it was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<SchematicOverflowAst>,
+    pub span: Span,
+}
+
+/// How a design reacts to content that does not fit the requested page.
+///
+/// `Grow` walks the standard ladder (A4 → A3 → A2 → A1 → A0) and only then
+/// splits into a hierarchy; `Hierarchy` splits as soon as the page is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchematicOverflowAst {
+    Grow,
+    Hierarchy,
+}
+
+impl SchematicOverflowAst {
+    pub const ALL: [SchematicOverflowAst; 2] = [Self::Grow, Self::Hierarchy];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Grow => "grow",
+            Self::Hierarchy => "hierarchy",
+        }
+    }
+}
+
+/// A standard page size an author may request. Mirrors
+/// `synth_ir::SchematicPaper`; the AST cannot depend on the IR crate, so
+/// the two are converted during lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum SchematicPaperAst {
+    A5,
+    A4,
+    A3,
+    A2,
+    A1,
+    A0,
+}
+
+impl SchematicPaperAst {
+    pub const ALL: [SchematicPaperAst; 6] = [
+        SchematicPaperAst::A5,
+        SchematicPaperAst::A4,
+        SchematicPaperAst::A3,
+        SchematicPaperAst::A2,
+        SchematicPaperAst::A1,
+        SchematicPaperAst::A0,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::A5 => "A5",
+            Self::A4 => "A4",
+            Self::A3 => "A3",
+            Self::A2 => "A2",
+            Self::A1 => "A1",
+            Self::A0 => "A0",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

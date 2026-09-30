@@ -29,6 +29,7 @@ pub enum TokenKind {
     KwManufacturer,
     KwRevision,
     KwCompany,
+    KwSchematic,
     KwLegends,
     KwComponent,
     KwConnect,
@@ -444,6 +445,7 @@ impl<'a> Lexer<'a> {
             "manufacturer" => TokenKind::KwManufacturer,
             "revision" => TokenKind::KwRevision,
             "company" => TokenKind::KwCompany,
+            "schematic" => TokenKind::KwSchematic,
             "legends" => TokenKind::KwLegends,
             "component" => TokenKind::KwComponent,
             "connect" => TokenKind::KwConnect,
@@ -515,7 +517,7 @@ mod tests {
     #[test]
     fn keywords_recognized() {
         let ks = kinds(
-            "board import layers manufacturer revision company legends component connect net power notes dnp module interface bus use bind prefix param as class diff_pair netclass keepout group sheet impedance trace_width clearance radius value tolerance voltage power_rating dielectric variant description",
+            "board import layers manufacturer revision company schematic legends component connect net power notes dnp module interface bus use bind prefix param as class diff_pair netclass keepout group sheet impedance trace_width clearance radius value tolerance voltage power_rating dielectric variant description",
         );
         assert_eq!(
             ks,
@@ -526,6 +528,7 @@ mod tests {
                 TokenKind::KwManufacturer,
                 TokenKind::KwRevision,
                 TokenKind::KwCompany,
+                TokenKind::KwSchematic,
                 TokenKind::KwLegends,
                 TokenKind::KwComponent,
                 TokenKind::KwConnect,

@@ -18,8 +18,9 @@ use synth_ast::{
     DiffPairStmt, EndpointAst, GroupAttr, GroupStmt, ImportAst, InterfaceDeclStmt, KeepoutAttr,
     KeepoutStmt, LayersStmt, LegendsStmt, ManufacturerStmt, ModuleDeclStmt, NetDeclAst,
     NetclassAttr, NetclassStmt, NotesDeclAst, ParamDeclAst, PlacementHintAst, PlacementHintAttr,
-    PortBindingAst, PortDeclAst, PowerDeclAst, ProgramAst, RevisionStmt, SheetStmt, StatementAst,
-    UseStmt, ValueWithUnit, VariantDeclStmt,
+    PortBindingAst, PortDeclAst, PowerDeclAst, ProgramAst, RevisionStmt, SchematicOverflowAst,
+    SchematicPaperAst, SchematicStmt, SheetStmt, StatementAst, UseStmt, ValueWithUnit,
+    VariantDeclStmt,
 };
 
 use synth_diagnostics::{
@@ -321,12 +322,13 @@ impl Parser {
             TokenKind::KwKeepout => self.parse_keepout().map(StatementAst::Keepout),
             TokenKind::KwGroup => self.parse_group().map(StatementAst::Group),
             TokenKind::KwSheet => self.parse_sheet().map(StatementAst::Sheet),
+            TokenKind::KwSchematic => self.parse_schematic().map(StatementAst::Schematic),
             _ => {
                 self.emit(
                     self.peek().span,
                     "E-SYNTH-PARSE-011",
                     "expected statement keyword",
-                    "one of: layers, manufacturer, revision, company, legends, component, variant, connect, net, power, notes, module, interface, bus, use, bind, diff_pair, netclass, keepout, group, sheet",
+                    "one of: layers, manufacturer, revision, company, legends, schematic, component, variant, connect, net, power, notes, module, interface, bus, use, bind, diff_pair, netclass, keepout, group, sheet",
                     self.describe_current(),
                     None,
                 );
@@ -1381,6 +1383,178 @@ impl Parser {
         attrs
     }
 
+    /// `schematic { paper = "A4", overflow = "grow" }`.
+    ///
+    /// Both settings are parsed as bare identifiers rather than reserved
+    /// keywords so a design that already uses `paper` or `overflow` as a
+    /// component or group name keeps parsing. Values are validated here, at
+    /// the span that actually holds the typo, instead of being carried down
+    /// to lowering where a bad value would have no useful span to point at.
+    fn parse_schematic(&mut self) -> Option<SchematicStmt> {
+        let start = self.peek().span.byte_start;
+        self.bump(); // consume `schematic`
+        if !matches!(self.peek_kind(), TokenKind::LBrace) {
+            self.emit(
+                self.peek().span,
+                "E-SYNTH-PARSE-003",
+                "expected `{` to open schematic body",
+                "`schematic { paper = \"A4\" }`",
+                self.describe_current(),
+                None,
+            );
+            return None;
+        }
+        self.bump();
+        let mut paper = None;
+        let mut overflow = None;
+        loop {
+            self.skip_error_tokens();
+            match self.peek_kind() {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                // The setting name is consumed here, not in the helper: a
+                // helper that returned without consuming would leave the
+                // loop re-reading the same token and emitting diagnostics
+                // forever.
+                TokenKind::Ident(name) if name == "paper" => {
+                    self.bump();
+                    paper = self.parse_schematic_paper();
+                }
+                TokenKind::Ident(name) if name == "overflow" => {
+                    self.bump();
+                    overflow = self.parse_schematic_overflow();
+                }
+                _ => {
+                    self.emit(
+                        self.peek().span,
+                        "E-SYNTH-PARSE-012",
+                        "unknown schematic setting",
+                        "`paper` or `overflow`",
+                        self.describe_current(),
+                        None,
+                    );
+                    self.bump();
+                }
+            }
+        }
+        if matches!(self.peek_kind(), TokenKind::RBrace) {
+            self.bump();
+        }
+        let end = self.last_offset();
+        Some(SchematicStmt {
+            paper,
+            overflow,
+            span: Span::new(start, end),
+        })
+    }
+
+    /// `paper = "A4"` inside a `schematic { … }` body. The `paper`
+    /// identifier is already consumed.
+    fn parse_schematic_paper(&mut self) -> Option<SchematicPaperAst> {
+        if !self.consume_eq_after_setting() {
+            return None;
+        }
+        let value_span = self.peek().span;
+        // Trim: `paper = " A4 "` is a typo, not a request for a page called
+        // " A4 ", and rejecting it would send the author looking for a
+        // grammar rule that does not exist.
+        let raw = self.expect_string(
+            "E-SYNTH-PARSE-002",
+            "expected a quoted page size (e.g. \"A4\")",
+        )?;
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "A5" => Some(SchematicPaperAst::A5),
+            "A4" => Some(SchematicPaperAst::A4),
+            "A3" => Some(SchematicPaperAst::A3),
+            "A2" => Some(SchematicPaperAst::A2),
+            "A1" => Some(SchematicPaperAst::A1),
+            "A0" => Some(SchematicPaperAst::A0),
+            _ => {
+                self.emit(
+                    value_span,
+                    "E-SYNTH-PARSE-035",
+                    "unknown schematic page size",
+                    "one of: A5, A4, A3, A2, A1, A0",
+                    raw,
+                    Some(Patch {
+                        confidence: 0.9,
+                        rationale: Some("A4 is the default page and fits most designs".into()),
+                        patch_consequence_preview: None,
+                        kind: PatchKind::ReplaceRange {
+                            range: value_span,
+                            replacement: "\"A4\"".into(),
+                        },
+                    }),
+                );
+                None
+            }
+        }
+    }
+
+    /// `overflow = "grow"` inside a `schematic { … }` body. The `overflow`
+    /// identifier is already consumed.
+    fn parse_schematic_overflow(&mut self) -> Option<SchematicOverflowAst> {
+        if !self.consume_eq_after_setting() {
+            return None;
+        }
+        let value_span = self.peek().span;
+        let raw = self.expect_string(
+            "E-SYNTH-PARSE-002",
+            "expected a quoted overflow policy (\"grow\" or \"hierarchy\")",
+        )?;
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "grow" => Some(SchematicOverflowAst::Grow),
+            // The aliases are what people actually type.
+            "hierarchy" | "hierarchical" | "sheets" => Some(SchematicOverflowAst::Hierarchy),
+            _ => {
+                self.emit(
+                    value_span,
+                    "E-SYNTH-PARSE-036",
+                    "unknown schematic overflow policy",
+                    "one of: grow, hierarchy",
+                    raw,
+                    Some(Patch {
+                        confidence: 0.8,
+                        rationale: Some(
+                            "`grow` keeps one sheet and enlarges the page; `hierarchy` splits \
+                             the design into a sheet per group instead of enlarging"
+                                .into(),
+                        ),
+                        patch_consequence_preview: None,
+                        kind: PatchKind::ReplaceRange {
+                            range: value_span,
+                            replacement: "\"grow\"".into(),
+                        },
+                    }),
+                );
+                None
+            }
+        }
+    }
+
+    /// Consume the `=` after a `key = value` setting, reporting the missing
+    /// token in this block's own error vocabulary.
+    ///
+    /// Always makes progress: on failure the offending token is skipped, so
+    /// a malformed setting cannot spin the enclosing loop.
+    fn consume_eq_after_setting(&mut self) -> bool {
+        if matches!(self.peek_kind(), TokenKind::Eq) {
+            self.bump();
+            return true;
+        }
+        self.emit(
+            self.peek().span,
+            "E-SYNTH-PARSE-002",
+            "expected `=` after this setting",
+            "`paper = \"A4\"`",
+            self.describe_current(),
+            None,
+        );
+        if !matches!(self.peek_kind(), TokenKind::RBrace | TokenKind::Eof) {
+            self.bump();
+        }
+        false
+    }
+
     fn parse_sheet(&mut self) -> Option<SheetStmt> {
         let start = self.peek().span.byte_start;
         self.bump(); // consume `sheet`
@@ -2084,6 +2258,7 @@ impl Parser {
             TokenKind::KwManufacturer => "`manufacturer`".to_string(),
             TokenKind::KwRevision => "`revision`".to_string(),
             TokenKind::KwCompany => "`company`".to_string(),
+            TokenKind::KwSchematic => "`schematic`".to_string(),
             TokenKind::KwLegends => "`legends`".to_string(),
             TokenKind::KwComponent => "`component`".to_string(),
             TokenKind::KwConnect => "`connect`".to_string(),
@@ -2652,6 +2827,131 @@ mod tests {
             panic!("Expected company statement")
         };
         assert_eq!(c.name, "Absmach");
+    }
+
+    #[test]
+    fn parse_schematic_paper_accepts_the_whole_ladder() {
+        for paper in ["A5", "A4", "A3", "A2", "a4", " A4 "] {
+            let src = format!("board \"b\" {{\n schematic {{ paper = \"{paper}\" }}\n}}");
+            let res = parse(lex(&src), "test.synth".into());
+            assert!(
+                res.diagnostics.is_empty(),
+                "{paper} should parse: {:?}",
+                res.diagnostics
+            );
+            let ast = res.ast.unwrap();
+            let StatementAst::Schematic(sc) = &ast.board.statements[0] else {
+                panic!("expected a schematic statement for {paper}");
+            };
+            assert!(sc.paper.is_some(), "{paper} should yield a paper");
+        }
+    }
+
+    #[test]
+    fn parse_schematic_paper_is_case_insensitive() {
+        let src = "board \"b\" {\n schematic { paper = \"a3\" }\n}";
+        let res = parse(lex(src), "t.synth".into());
+        assert!(res.diagnostics.is_empty(), "{:?}", res.diagnostics);
+        let ast = res.ast.unwrap();
+        let StatementAst::Schematic(sc) = &ast.board.statements[0] else {
+            panic!("expected schematic");
+        };
+        assert_eq!(sc.paper, Some(SchematicPaperAst::A3));
+    }
+
+    #[test]
+    fn parse_schematic_overflow_policies() {
+        for (text, want) in [
+            ("grow", Some(SchematicOverflowAst::Grow)),
+            ("hierarchy", Some(SchematicOverflowAst::Hierarchy)),
+            ("HIERARCHICAL", Some(SchematicOverflowAst::Hierarchy)),
+            ("sheets", Some(SchematicOverflowAst::Hierarchy)),
+        ] {
+            let src = format!("board \"b\" {{\n schematic {{ overflow = \"{text}\" }}\n}}");
+            let res = parse(lex(&src), "t.synth".into());
+            assert!(res.diagnostics.is_empty(), "{text}: {:?}", res.diagnostics);
+            let ast = res.ast.unwrap();
+            let StatementAst::Schematic(sc) = &ast.board.statements[0] else {
+                panic!("expected schematic for {text}");
+            };
+            assert_eq!(sc.overflow, want, "{text}");
+        }
+    }
+
+    #[test]
+    fn parse_schematic_rejects_an_unknown_overflow_policy() {
+        let src = "board \"b\" {\n schematic { overflow = \"shrink\" }\n}";
+        let res = parse(lex(src), "t.synth".into());
+        assert!(
+            res.diagnostics
+                .iter()
+                .any(|d| d.code == "E-SYNTH-PARSE-036"),
+            "expected E-SYNTH-PARSE-036, got {:?}",
+            res.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_setting_without_an_equals_sign_terminates() {
+        // The body loop must always make progress: a helper that returns
+        // without consuming would re-read the same token and emit
+        // diagnostics until the process ran out of memory.
+        for body in ["paper", "overflow", "paper paper", "overflow overflow"] {
+            let src = format!("board \"b\" {{\n schematic {{ {body} }}\n}}");
+            let res = parse(lex(&src), "t.synth".into());
+            assert!(!res.diagnostics.is_empty(), "{body} should be an error");
+            assert!(
+                res.diagnostics.len() < 10,
+                "{body} produced {} diagnostics, so the parser is looping",
+                res.diagnostics.len()
+            );
+        }
+    }
+
+    #[test]
+    fn parse_schematic_paper_accepts_a1_and_a0() {
+        for want in ["A1", "A0"] {
+            let src = format!("board \"b\" {{\n schematic {{ paper = \"{want}\" }}\n}}");
+            let res = parse(lex(&src), "t.synth".into());
+            assert!(res.diagnostics.is_empty(), "{want}: {:?}", res.diagnostics);
+            let ast = res.ast.unwrap();
+            let StatementAst::Schematic(sc) = &ast.board.statements[0] else {
+                panic!("expected schematic");
+            };
+            assert!(sc.paper.is_some());
+        }
+    }
+
+    #[test]
+    fn parse_schematic_rejects_an_unknown_paper_size() {
+        let src = "board \"b\" {\n schematic { paper = \"A9\" }\n}";
+        let res = parse(lex(src), "t.synth".into());
+        assert!(
+            res.diagnostics
+                .iter()
+                .any(|d| d.code == "E-SYNTH-PARSE-035"),
+            "expected E-SYNTH-PARSE-035, got {:?}",
+            res.diagnostics
+        );
+    }
+
+    #[test]
+    fn parse_schematic_rejects_a_non_quoted_paper_size() {
+        let src = "board \"b\" {\n schematic { paper = A4 }\n}";
+        let res = parse(lex(src), "t.synth".into());
+        assert!(!res.diagnostics.is_empty(), "bare A4 must be an error");
+    }
+
+    #[test]
+    fn parse_schematic_with_an_empty_body_is_legal_and_leaves_the_default() {
+        let src = "board \"b\" {\n schematic { }\n}";
+        let res = parse(lex(src), "t.synth".into());
+        assert!(res.diagnostics.is_empty(), "{:?}", res.diagnostics);
+        let ast = res.ast.unwrap();
+        let StatementAst::Schematic(sc) = &ast.board.statements[0] else {
+            panic!("expected schematic");
+        };
+        assert_eq!(sc.paper, None, "an empty block must not pick a size");
     }
 
     #[test]

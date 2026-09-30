@@ -36,7 +36,8 @@ use std::collections::HashMap;
 
 use synth_ast::{
     ComponentDeclAst, DiffPairAttr, DiffPairStmt, EndpointAst, EndpointRefKind, KeepoutAttr,
-    KeepoutStmt, NetclassStmt, ProgramAst, StatementAst, ValueWithUnit,
+    KeepoutStmt, NetclassStmt, ProgramAst, SchematicOverflowAst, SchematicPaperAst, StatementAst,
+    ValueWithUnit,
 };
 use synth_diagnostics::{
     Diagnostic, DiagnosticBuilder, Location, Patch, PatchKind, Severity, Span, SuggestedAction,
@@ -45,7 +46,8 @@ use synth_registry::{Part, PinCapability, Registry};
 
 use crate::board::{
     Board, Component, ComponentId, DiffPair, Keepout, Net, NetClass, NetEndpoint, NetId, Note,
-    PinId, PlacementEdge, PlacementRegion, PlacementSide, Variant,
+    PinId, PlacementEdge, PlacementRegion, PlacementSide, SchematicOverflow, SchematicPaper,
+    Variant,
 };
 use crate::units::{ConversionError, Impedance, Length, Voltage};
 
@@ -169,6 +171,11 @@ pub fn lower(ast: &ProgramAst, registry: &Registry, file: &str) -> LowerResult {
     // Schematic-quality plan Phase A3: connector pin legends are
     // opt-in (`legends on`), default off.
     let mut legends: bool = false;
+    // Page size is design-wide: a `schematic { … }` nested in a group is
+    // still a statement about the one rendered sheet, so it is honoured
+    // wherever it appears rather than being scoped to its block.
+    let mut schematic_paper: Option<SchematicPaper> = None;
+    let mut schematic_overflow: Option<SchematicOverflow> = None;
 
     // Groups and sheets are flattened here, not represented in the
     // IR as a tree: a group names its components and a sheet names
@@ -190,6 +197,24 @@ pub fn lower(ast: &ProgramAst, registry: &Registry, file: &str) -> LowerResult {
             StatementAst::Revision(r) => revision = Some(r.rev.clone()),
             StatementAst::Company(c) => company = Some(c.name.clone()),
             StatementAst::Legends(l) => legends = l.enabled,
+            StatementAst::Schematic(sc) => {
+                if let Some(paper) = sc.paper {
+                    schematic_paper = Some(match paper {
+                        SchematicPaperAst::A5 => SchematicPaper::A5,
+                        SchematicPaperAst::A4 => SchematicPaper::A4,
+                        SchematicPaperAst::A3 => SchematicPaper::A3,
+                        SchematicPaperAst::A2 => SchematicPaper::A2,
+                        SchematicPaperAst::A1 => SchematicPaper::A1,
+                        SchematicPaperAst::A0 => SchematicPaper::A0,
+                    });
+                }
+                if let Some(overflow) = sc.overflow {
+                    schematic_overflow = Some(match overflow {
+                        SchematicOverflowAst::Grow => SchematicOverflow::Grow,
+                        SchematicOverflowAst::Hierarchy => SchematicOverflow::Hierarchy,
+                    });
+                }
+            }
             StatementAst::Component(c) => {
                 let comp = ctx.lower_component(c, registry, components.len(), group, sheet);
                 if refdes_index.contains_key(&comp.refdes) {
@@ -253,6 +278,8 @@ pub fn lower(ast: &ProgramAst, registry: &Registry, file: &str) -> LowerResult {
 
     let board = Board {
         legends,
+        schematic_paper,
+        schematic_overflow,
         name: ast.board.name.clone(),
         layers,
         manufacturer,

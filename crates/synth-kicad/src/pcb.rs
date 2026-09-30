@@ -1803,6 +1803,8 @@ mod tests {
         // Build a minimal Board whose nets have semantic names so the power-domain
         // engine classifies them correctly (GND → Ground, VCC → Rail via name heuristic).
         let board = Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test_netclass".to_string(),
@@ -1878,6 +1880,8 @@ mod tests {
     fn declared_netclass_emitted_with_joined_nets() {
         use synth_ir::Length;
         let board = Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test_declared_netclass".to_string(),
@@ -1943,6 +1947,8 @@ mod tests {
     #[test]
     fn test_kicad_cli_roundtrip_valid_board() {
         let board = Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test_roundtrip".to_string(),

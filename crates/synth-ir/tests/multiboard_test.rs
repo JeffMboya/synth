@@ -21,6 +21,8 @@ fn create_dummy_board(name: &str, connector_refdes: &str) -> Board {
     };
 
     Board {
+        schematic_overflow: None,
+        schematic_paper: None,
         groups: Vec::new(),
         legends: false,
         name: name.to_string(),

@@ -86,6 +86,107 @@ with `(0, 0)` at the top-left of the page rect.
    while `group_bounds` still measures it as part of its own, stretching
    that group's box across the sheet. Ungrouped boards are unaffected.
 
+### 2.0 Page size and overflow policy (`schematic { … }`)
+
+The rendered page is normally inferred: the layout grows the sheet to cover
+whatever it placed (`grow_sheet_to_fit`), then compacts it onto the smallest
+standard size that still fits (`compact_sheet_to_fit`), with A4 as the
+auto-fit floor. A design can override the result:
+
+```
+schematic {
+  paper    = "A2"
+  overflow = "grow"
+}
+```
+
+`paper` accepts `A5`, `A4`, `A3`, `A2`, `A1` and `A0`; the default is `A4`.
+`overflow` decides what happens when the content does not fit:
+
+| `overflow`   | Behaviour                                                              |
+| ------------ | ---------------------------------------------------------------------- |
+| `grow`       | **default.** Climb the ladder A4 → A3 → A2 → A1 → A0, then split into a hierarchy if it still does not fit |
+| `hierarchy`  | The requested page is the page. The moment content no longer fits, the design is split into a sheet per group |
+
+The two settings are one decision rather than two halves that can disagree:
+`hierarchy` caps page growth at the requested page *and* moves the split
+threshold to the same page, so it is impossible to say "split at A4" and
+"draw on A3" at once. An explicit `paper` moves both.
+
+Two details worth knowing:
+
+- **Only the frame changes, never the content.** Positions are absolute from
+  the top-left, so moving them when the page grows would rewrite a
+  hand-arranged drawing — the schematic sidecar stores absolute millimetres
+  and a preview drag has to survive a save/reload bit-exact. A small design
+  on a roomy requested page therefore sits in the top-left rather than
+  centred, the same trade `compact_sheet_to_fit` already makes.
+- **A5 is selectable but never auto-fitted.** The placer ranks candidate
+  pages smallest-first, so an A5 rung in `sheet_size_for` would re-lay-out
+  every existing design onto a more cramped page. `A5` exists as a
+  `SheetSize` variant and is reachable only through an explicit request.
+
+Past `A0` the fitter returns a `Custom { width_mm, height_mm }` page rather
+than reporting `A0`, because naming A0 would claim the content fits when it
+provably does not.
+
+Sub-sheets in a multi-sheet export settle against the same request as the
+root, so a design that asked for A3 does not come back as a hierarchy of A4
+pages. Note that the hierarchy *root* is sized separately, to fit the row of
+sheet instances and their wire channels, so a design split under
+`hierarchy = "hierarchy"` typically has an A2 or larger root even when the
+sub-sheets are A4. The statement is design-wide: it is honoured wherever it
+appears, including nested in a `group`, because it is a statement about the
+sheet the design renders to.
+
+### 2.0.1 MaxRects compaction (Stage B2)
+
+After the semantic arrangement wins, a MaxRects pass repacks the cluster
+rectangles to remove the dead space column packing leaves behind:
+`compact` reduces each cluster to a rectangle, packs those with
+`maxrects` (BSSF/BAF/BLSF, free-rectangle split-and-prune), and
+translates every component rigidly to follow its cluster — a cluster's
+internal arrangement is what makes the drawing readable, so the packer never
+repositions components individually.
+
+It is a *compaction*, not a replacement, and it only speaks when it is
+strictly better on `(page, content area, aspect)`. Three constraints are not
+expressible in that key and are enforced separately:
+
+- **A box carries `INTRA_GROUP_CLUSTER_DX / 2` of clearance per side**, so
+  two clusters can never sit closer than the placer's minimum column pitch.
+  Padding by the bare body instead produced a 20 mm row of four components
+  in the corner of an A4 — the exact failure the placer avoids.
+- **The result is anchored to the page margin**, using box extents rather
+  than component centres. A box is wider than what it contains, so anchoring
+  on centres lands the leftmost box short of the margin.
+- **Aspect may not drift more than `MIN_ASPECT_RETENTION` (0.6)** in either
+  direction. Ranking on area alone has a systematic bias — a bin that is
+  small in one axis fits everything and yields a tall thin stripe, which
+  wins on area and loses on the page. A 133x48 mm drawing became a 20x154 mm
+  column: half the sheet, and a stripe down one side.
+
+Two further constraints keep the pass from overruling the design:
+
+- **A `placement_hint` pins its cluster.** `near: U3 priority: hard` is the
+  author saying "this part belongs beside that one". Such clusters are
+  reserved in the bin at their existing position (`MaxRectsBin::pre_place`)
+  and everything else is packed around them; the result is then not re-anchored,
+  because shifting it to restore the margin would drag the pinned cluster off
+  the position that was asked for.
+- **Declared groups must stay contiguous.** MaxRects has no notion of groups
+  and will drop one group's cluster inside another's box, which the renderer
+  then titles with parts that do not belong to it
+  (`E-SYNTH-SCHEM-013`). A packing that interleaves groups is refused.
+
+Boxes are sized from the **text-inclusive** extents
+(`component_text_inclusive_half_width` / `text_inclusive_half_height`) that
+the placer reserves and the router treats as obstacles — not from
+`body_size_for_part`. Sizing from the body let a 43-pin module be packed
+flush to the margin and render half off the left edge, which is how this was
+caught: by rendering the sheet and looking at it, not by reading the
+numbers.
+
 ### 2.1 Regions (Phase C)
 
 A board that declares `group`s lays out **by region**, not as one band

@@ -25,7 +25,8 @@ use synth_ir::{Board, ComponentId, NetId};
 use crate::{
     annotate_groups, body_size_for_part, clamp_annotations_to_sheet, compact_sheet_to_fit,
     grow_sheet_to_fit, place_connector_legends, place_design_notes, resolve_text_overlaps,
-    HierarchicalLabel, Layout, SheetSize, BODY_FALLBACK_H, BODY_FALLBACK_W, PAGE_MARGIN,
+    settle_sheet_size, HierarchicalLabel, Layout, SheetSize, BODY_FALLBACK_H, BODY_FALLBACK_W,
+    PAGE_MARGIN,
 };
 
 /// One sheet's share of a board: `None` is the root sheet, `Some`
@@ -91,10 +92,15 @@ pub fn plan_sheets(board: &Board) -> Vec<SheetPartition> {
         .collect()
 }
 
-/// True when the laid-out content needs more room than A2, the
-/// biggest standard sheet. Only then is a board *large* for §P26
-/// purposes. Mirrors the bound computation in `grow_sheet_to_fit`
+/// True when the laid-out content needs more room than the largest page
+/// this design will use on a single sheet, so it must be split into a
+/// hierarchy. Mirrors the bound computation in `grow_sheet_to_fit`
 /// (components, wires, annotations, group boxes).
+///
+/// The threshold follows `schematic { overflow }`: A0 by default, so a
+/// board that overflows A4 keeps growing through the standard ladder, or
+/// the requested page under `overflow = "hierarchy"`, where more content
+/// means more sheets.
 pub fn sheet_overflow(board: &Board, layout: &Layout) -> bool {
     let mut min_x = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
@@ -137,8 +143,8 @@ pub fn sheet_overflow(board: &Board, layout: &Layout) -> bool {
         return false;
     }
     let (need_w, need_h) = crate::sheet_needs(min_x, max_x, min_y, max_y);
-    let (a2_w, a2_h) = SheetSize::A2.dims_mm();
-    need_w > a2_w || need_h > a2_h
+    let (ceiling_w, ceiling_h) = crate::max_single_sheet(board).dims_mm();
+    need_w > ceiling_w || need_h > ceiling_h
 }
 
 /// Lay out every sheet of a board: single-sheet layout as today when
@@ -329,6 +335,10 @@ fn split_layout(board: &Board, global: &Layout, partitions: &[SheetPartition]) -
             resolve_text_overlaps(board, &mut layout);
             grow_sheet_to_fit(board, &mut layout);
             compact_sheet_to_fit(board, &mut layout);
+            // Sub-sheets honour the same `schematic { paper }` request as the
+            // root, so a design that asked for A3 does not come back as a
+            // hierarchy of A4 pages.
+            settle_sheet_size(board, &mut layout);
             clamp_annotations_to_sheet(&mut layout);
             SheetLayout {
                 name: partition.name.clone(),
@@ -346,6 +356,8 @@ fn place_sheet_notes(board: &Board, layout: &mut Layout, sheet: Option<&str>) {
     let scoped = Board {
         groups: Vec::new(),
         legends: board.legends,
+        schematic_paper: board.schematic_paper,
+        schematic_overflow: board.schematic_overflow,
         name: board.name.clone(),
         layers: board.layers,
         manufacturer: board.manufacturer.clone(),
@@ -498,6 +510,8 @@ mod tests {
 
     fn board(components: Vec<Component>, nets: Vec<Net>) -> Board {
         Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "b".to_string(),

@@ -49,12 +49,14 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
-use synth_ir::{Board, ComponentId, NetId, PinId};
+use synth_ir::{Board, ComponentId, NetId, PinId, SchematicOverflow, SchematicPaper};
 
+mod compact;
 pub mod footprint_resolve;
 pub mod kicad_footprint_loader;
 pub mod kicad_lib_loader;
 pub mod kicad_zip;
+pub mod maxrects;
 pub mod netclass;
 pub mod ops;
 mod patterns;
@@ -77,25 +79,48 @@ pub enum Rotation {
 }
 
 /// Standard schematic sheet sizes. `Custom` is for designs whose
-/// content bounding box doesn't fit any of A4/A3/A2.
+/// content bounding box doesn't fit any of A5/A4/A3/A2.
+///
+/// The ladder floor is set by `schematic { paper = … }` in the design
+/// source and defaults to A4, so a design is never auto-compacted onto a
+/// page smaller than the one it asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SheetSize {
+    A5,
     A4,
     A3,
     A2,
+    A1,
+    A0,
     Custom { width_mm: f64, height_mm: f64 },
 }
 
 impl SheetSize {
     pub fn dims_mm(self) -> (f64, f64) {
         match self {
+            Self::A5 => (148.0, 210.0),
             Self::A4 => (297.0, 210.0),
             Self::A3 => (420.0, 297.0),
             Self::A2 => (594.0, 420.0),
+            Self::A1 => (841.0, 594.0),
+            Self::A0 => (1189.0, 841.0),
             Self::Custom {
                 width_mm,
                 height_mm,
             } => (width_mm, height_mm),
+        }
+    }
+}
+
+impl From<SchematicPaper> for SheetSize {
+    fn from(p: SchematicPaper) -> Self {
+        match p {
+            SchematicPaper::A5 => Self::A5,
+            SchematicPaper::A4 => Self::A4,
+            SchematicPaper::A3 => Self::A3,
+            SchematicPaper::A2 => Self::A2,
+            SchematicPaper::A1 => Self::A1,
+            SchematicPaper::A0 => Self::A0,
         }
     }
 }
@@ -508,7 +533,7 @@ const TEXT_MARGIN_Y: f64 = 6.35;
 /// needs the same number wherever it decides vertical clearance
 /// between components, or refdes/value text can visually overlap a
 /// neighbour even though the bodies themselves don't.
-fn text_inclusive_half_height(board: &Board, id: ComponentId) -> f64 {
+pub(crate) fn text_inclusive_half_height(board: &Board, id: ComponentId) -> f64 {
     let (_, body_h) = board
         .component(id)
         .and_then(|c| c.part.as_ref())
@@ -851,6 +876,7 @@ pub fn layout_with_overrides(
     resolve_text_overlaps(board, &mut layout);
     grow_sheet_to_fit(board, &mut layout);
     compact_sheet_to_fit(board, &mut layout);
+    settle_sheet_size(board, &mut layout);
     clamp_annotations_to_sheet(&mut layout);
     layout
 }
@@ -1518,6 +1544,57 @@ fn compact_sheet_to_fit(board: &Board, layout: &mut Layout) {
     if want_w < have_w && want_h < have_h {
         layout.sheet_size = smallest;
     }
+}
+
+/// The page this design asked for, from `schematic { paper = "…" }`,
+/// defaulting to A4.
+pub fn requested_sheet(board: &Board) -> SheetSize {
+    board.schematic_paper.map_or(SheetSize::A4, SheetSize::from)
+}
+
+/// Settle the final page: the requested size, grown only if the content
+/// genuinely does not fit.
+///
+/// The request is the page, not a bound on it. Two failures are being
+/// avoided at once — drawing on a page smaller than the author asked for
+/// (asking A3 and getting A4 would be a different drawing than the one they
+/// are reviewing), and silently resizing a design that did fit. Overflow is
+/// the one case that still changes the page, because a design that cannot be
+/// drawn is worse than one on a larger sheet, and `grow_sheet_to_fit` has
+/// already reported what it needs.
+///
+/// Only the frame is re-declared, never the content. Positions are absolute
+/// from the top-left, so moving them here would silently rewrite a
+/// hand-arranged drawing: the schematic sidecar stores absolute
+/// millimetres, and a preview drag has to survive a save/reload
+/// bit-exact. A small design on a roomy requested page therefore sits in
+/// the top-left rather than centred — the same trade
+/// [`compact_sheet_to_fit`] already makes, and the same reason it makes it.
+fn settle_sheet_size(board: &Board, layout: &mut Layout) {
+    let requested = requested_sheet(board);
+    let mut target = requested;
+    if let Some((min_x, max_x, min_y, max_y)) = content_bounds(board, layout) {
+        // Compare the *content* against the requested page, not one rung of
+        // the ladder against another: `sheet_size_for` never returns A5, so
+        // comparing its result with an A5 request would report an overflow
+        // for a design that fits A5 with room to spare.
+        let (content_w, content_h) = sheet_needs(min_x, max_x, min_y, max_y);
+        // `hierarchy` caps growth at the requested page, so content beyond it
+        // is split into more sheets rather than drawn on a larger one.
+        let (ceiling_w, ceiling_h) = max_single_sheet(board).dims_mm();
+        let (req_w, req_h) = requested.dims_mm();
+        if content_w > req_w || content_h > req_h {
+            target = if content_w > ceiling_w || content_h > ceiling_h {
+                // Past the last page this policy will use: leave it at the
+                // ceiling and let `layout_sheets` split. Reporting a bigger
+                // page here would be a lie the split then contradicts.
+                max_single_sheet(board)
+            } else {
+                sheet_size_for(content_w, content_h)
+            };
+        }
+    }
+    layout.sheet_size = target;
 }
 
 /// Classify net labels and route every signal net over `layout`'s
@@ -3249,11 +3326,25 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
         }
     }
     let fitted = fitted.map(|(_, _, _, _, placements, sheet)| (0.0, placements, sheet));
-    let (components, sheet_size) = fitted
+    let (mut components, mut sheet_size) = fitted
         .or(closest)
         .map_or((Vec::new(), SheetSize::A4), |(_, placements, sheet)| {
             (placements, sheet)
         });
+
+    // Compaction, once the semantic arrangement has won. Column packing is
+    // ordered for reading, not for density: it leaves a dead notch beside
+    // every short column and pays the widest column's width in every row.
+    // `compact` repacks whole cluster rectangles and only returns a result
+    // when it is genuinely tighter, so an already-compact board comes
+    // through byte-identical.
+    if let Some(tighter) = crate::compact::compact(board, &components) {
+        let (min_x, max_x, min_y, max_y) =
+            body_bbox_of(board, &tighter).unwrap_or((origin_x, origin_x, origin_y, origin_y));
+        let (need_w, need_h) = sheet_needs(min_x, max_x, min_y, max_y);
+        sheet_size = sheet_size_for(need_w, need_h);
+        components = tighter;
+    }
 
     Layout {
         components,
@@ -4274,7 +4365,7 @@ pub(crate) fn uniquify_net_labels(board: &Board, labels: &mut [NetLabel]) {
 /// - **Layer 2** — active sinks (MCU / ic / sensor / memory / opamp /
 ///   secure_element).
 /// - **Layer 3** — passives and everything else.
-fn layer_for(component: &synth_ir::Component) -> u32 {
+pub(crate) fn layer_for(component: &synth_ir::Component) -> u32 {
     use synth_registry::ElectricalType;
     let Some(part) = component.part.as_ref() else {
         return 3;
@@ -4324,18 +4415,50 @@ fn layer_for(component: &synth_ir::Component) -> u32 {
 /// at A2; beyond A2 the declared size stops growing and the
 /// multi-sheet split (§P26) takes over. `w`/`h` are the
 /// caller-computed content bounds including page margins.
+/// Smallest page in the *auto-fit* ladder that holds `w` x `h`.
+///
+/// A4 is the floor here on purpose. A5 is a page an author selects with
+/// `schematic { paper = "A5" }`, never one the fitter infers: the placer
+/// ranks candidate sheets smallest-first (see the shelf/pitch search), so
+/// putting A5 in this ladder silently re-laid-out every existing design onto
+/// a smaller, more cramped page. Growth is the only direction this is
+/// consulted for; the requested size is applied separately in
+/// [`settle_sheet_size`].
 fn sheet_size_for(w: f64, h: f64) -> SheetSize {
-    const SIZES: [(SheetSize, f64, f64); 3] = [
+    const SIZES: [(SheetSize, f64, f64); 5] = [
         (SheetSize::A4, 297.0, 210.0),
         (SheetSize::A3, 420.0, 297.0),
         (SheetSize::A2, 594.0, 420.0),
+        (SheetSize::A1, 841.0, 594.0),
+        (SheetSize::A0, 1189.0, 841.0),
     ];
     for (size, max_w, max_h) in SIZES {
         if w <= max_w && h <= max_h {
             return size;
         }
     }
-    SheetSize::A2
+    // Past A0 there is no standard page left. A `Custom` page is the honest
+    // answer: naming it A0 would claim the content fits when it provably
+    // does not.
+    SheetSize::Custom {
+        width_mm: w.ceil(),
+        height_mm: h.ceil(),
+    }
+}
+
+/// The largest page a design will use on a *single* sheet before it must
+/// split into a hierarchy.
+///
+/// `Grow` (the default) walks the standard ladder up to A0 first, so a
+/// design that overflows A4 stays on one readable sheet for as long as a
+/// standard page can hold it. `Hierarchy` answers at the requested page:
+/// the author has said they want that page, so more content means more
+/// sheets, not a bigger sheet.
+pub fn max_single_sheet(board: &Board) -> SheetSize {
+    match board.schematic_overflow.unwrap_or(SchematicOverflow::Grow) {
+        SchematicOverflow::Grow => SheetSize::A0,
+        SchematicOverflow::Hierarchy => requested_sheet(board),
+    }
 }
 
 /// Smallest standard sheet fitting the given content bounds, in mm
@@ -4746,6 +4869,8 @@ mod barycenter_tests {
 
     fn board_with(components: Vec<Component>, nets: Vec<Net>) -> Board {
         Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test".to_string(),
@@ -4955,6 +5080,8 @@ mod semantic_weights_tests {
 
     fn board(components: Vec<Component>, nets: Vec<Net>) -> Board {
         Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test".to_string(),
@@ -5284,6 +5411,8 @@ mod soft_pin_swap_tests {
 
     fn board(components: Vec<Component>, nets: Vec<Net>) -> Board {
         Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test".to_string(),
@@ -5527,6 +5656,8 @@ mod patterns_tests {
 
     fn board(components: Vec<Component>, nets: Vec<Net>) -> Board {
         Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test".to_string(),
@@ -5922,6 +6053,8 @@ mod text_overlap_tests {
 
     fn empty_board() -> Board {
         Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "b".to_string(),
@@ -6048,6 +6181,203 @@ mod text_overlap_tests {
         );
     }
 
+    /// A board whose content is far smaller than any standard page.
+    fn paper_board(paper: Option<SchematicPaper>) -> Board {
+        Board {
+            schematic_overflow: None,
+            schematic_paper: paper,
+            ..empty_board()
+        }
+    }
+
+    #[test]
+    fn a_design_with_no_paper_request_defaults_to_a4() {
+        assert_eq!(requested_sheet(&empty_board()), SheetSize::A4);
+    }
+
+    #[test]
+    fn the_requested_page_is_used_verbatim_even_when_smaller_than_the_fit() {
+        // The whole point of the statement: asking for A5 must produce A5.
+        // A minimum would silently hand back A4 here.
+        for (paper, want) in [
+            (SchematicPaper::A5, SheetSize::A5),
+            (SchematicPaper::A4, SheetSize::A4),
+            (SchematicPaper::A3, SheetSize::A3),
+            (SchematicPaper::A2, SheetSize::A2),
+        ] {
+            let board = paper_board(Some(paper));
+            let mut layout = empty_layout(vec![run("tiny", 1.27, 20.0, 30.0)], SheetSize::A4);
+            layout.components.push(ComponentPlacement {
+                id: ComponentId(0),
+                center_mm: (30.0, 30.0),
+                rotation: Rotation::Zero,
+            });
+            settle_sheet_size(&board, &mut layout);
+            assert_eq!(layout.sheet_size, want, "paper = {paper:?}");
+        }
+    }
+
+    #[test]
+    fn a_roomy_requested_page_moves_no_content() {
+        // The sidecar stores absolute sheet millimetres, so re-declaring a
+        // larger frame must leave every position exactly where it was.
+        let board = paper_board(Some(SchematicPaper::A2));
+        let mut layout = empty_layout(vec![], SheetSize::A4);
+        layout.components.push(ComponentPlacement {
+            id: ComponentId(0),
+            center_mm: (20.0, 20.0),
+            rotation: Rotation::Zero,
+        });
+        settle_sheet_size(&board, &mut layout);
+        assert_eq!(layout.sheet_size, SheetSize::A2);
+        assert_eq!(
+            layout.components[0].center_mm,
+            (20.0, 20.0),
+            "content must not move when only the frame changes"
+        );
+    }
+
+    #[test]
+    fn content_too_big_for_the_requested_page_grows_it_instead_of_clipping() {
+        // A design asked for A4 whose content needs A2: the page grows, which
+        // is the deliberate trade — an undrawable design is worse than a
+        // larger sheet than the one requested.
+        let board = paper_board(Some(SchematicPaper::A4));
+        let mut layout = empty_layout(vec![], SheetSize::A4);
+        for i in 0..40u32 {
+            layout.components.push(ComponentPlacement {
+                id: ComponentId(i),
+                center_mm: (20.0 + (i % 8) as f64 * 60.0, 20.0 + (i / 8) as f64 * 55.0),
+                rotation: Rotation::Zero,
+            });
+        }
+        grow_sheet_to_fit(&board, &mut layout);
+        settle_sheet_size(&board, &mut layout);
+        assert_eq!(layout.sheet_size, SheetSize::A2);
+    }
+
+    fn overflow_board(paper: Option<SchematicPaper>, overflow: Option<SchematicOverflow>) -> Board {
+        Board {
+            schematic_paper: paper,
+            schematic_overflow: overflow,
+            ..empty_board()
+        }
+    }
+
+    fn layout_with_components(n: u32, pitch_x: f64, pitch_y: f64) -> Layout {
+        let mut layout = empty_layout(vec![], SheetSize::A4);
+        for i in 0..n {
+            layout.components.push(ComponentPlacement {
+                id: ComponentId(i),
+                center_mm: (
+                    20.0 + (i % 8) as f64 * pitch_x,
+                    20.0 + (i / 8) as f64 * pitch_y,
+                ),
+                rotation: Rotation::Zero,
+            });
+        }
+        layout
+    }
+
+    /// An 8x7 grid at `pitch`, so the content bounding box is a function of
+    /// the pitch alone and each rung can be straddled deliberately.
+    fn grid_layout(pitch: f64) -> Layout {
+        layout_with_components(56, pitch, pitch * 0.9)
+    }
+
+    #[test]
+    fn grow_climbs_the_ladder_one_rung_at_a_time() {
+        // 8x7 at these pitches lands on each rung in turn once
+        // `sheet_needs` has added the page margin and title-block band.
+        for (pitch, want) in [
+            (30.0, SheetSize::A3),
+            (45.0, SheetSize::A2),
+            (80.0, SheetSize::A1),
+            (120.0, SheetSize::A0),
+        ] {
+            let board = overflow_board(None, None);
+            let mut layout = grid_layout(pitch);
+            grow_sheet_to_fit(&board, &mut layout);
+            settle_sheet_size(&board, &mut layout);
+            assert_eq!(layout.sheet_size, want, "8x7 grid at {pitch}mm pitch");
+        }
+    }
+
+    #[test]
+    fn grow_keeps_growing_past_a2_which_used_to_be_the_ceiling() {
+        let board = overflow_board(None, None);
+        let mut layout = layout_with_components(200, 150.0, 140.0);
+        grow_sheet_to_fit(&board, &mut layout);
+        settle_sheet_size(&board, &mut layout);
+        assert_ne!(
+            layout.sheet_size,
+            SheetSize::A2,
+            "A2 is no longer the ceiling"
+        );
+    }
+
+    #[test]
+    fn hierarchy_never_grows_past_the_requested_page() {
+        // The whole point of the option: the page is the page, and more
+        // content means more sheets.
+        let board = overflow_board(None, Some(SchematicOverflow::Hierarchy));
+        let mut layout = layout_with_components(24, 60.0, 54.0);
+        grow_sheet_to_fit(&board, &mut layout);
+        settle_sheet_size(&board, &mut layout);
+        assert_eq!(layout.sheet_size, SheetSize::A4);
+    }
+
+    #[test]
+    fn hierarchy_caps_growth_at_an_explicitly_requested_page_too() {
+        let board = overflow_board(Some(SchematicPaper::A3), Some(SchematicOverflow::Hierarchy));
+        let mut layout = layout_with_components(24, 60.0, 54.0);
+        grow_sheet_to_fit(&board, &mut layout);
+        settle_sheet_size(&board, &mut layout);
+        assert_eq!(layout.sheet_size, SheetSize::A3);
+    }
+
+    #[test]
+    fn the_split_threshold_follows_the_policy() {
+        let grow = overflow_board(None, None);
+        let hierarchy = overflow_board(None, Some(SchematicOverflow::Hierarchy));
+        assert_eq!(max_single_sheet(&grow), SheetSize::A0);
+        assert_eq!(max_single_sheet(&hierarchy), SheetSize::A4);
+        // An explicit request moves the hierarchy threshold with it.
+        let pinned = overflow_board(Some(SchematicPaper::A2), Some(SchematicOverflow::Hierarchy));
+        assert_eq!(max_single_sheet(&pinned), SheetSize::A2);
+    }
+
+    #[test]
+    fn past_a0_the_fitter_reports_a_custom_page_rather_than_lying() {
+        let sized = sheet_size_for(2000.0, 1500.0);
+        assert!(
+            matches!(sized, SheetSize::Custom { .. }),
+            "expected Custom, got {sized:?}"
+        );
+    }
+
+    #[test]
+    fn a1_and_a0_have_the_standard_dimensions() {
+        assert_eq!(SheetSize::A1.dims_mm(), (841.0, 594.0));
+        assert_eq!(SheetSize::A0.dims_mm(), (1189.0, 841.0));
+        assert_eq!(sheet_size_for(600.0, 500.0), SheetSize::A1);
+        assert_eq!(sheet_size_for(1000.0, 700.0), SheetSize::A0);
+    }
+
+    #[test]
+    fn a5_is_selectable_but_never_auto_fitted() {
+        assert_eq!(SheetSize::A5.dims_mm(), (148.0, 210.0));
+        assert_eq!(SheetSize::A5.dims_mm().0, 148.0);
+        // The auto-fit ladder starts at A4: the placer ranks sheets
+        // smallest-first, so an A5 entry here would re-lay-out every design.
+        assert_eq!(sheet_size_for(10.0, 10.0), SheetSize::A4);
+        assert_eq!(sheet_size_for(290.0, 200.0), SheetSize::A4);
+        assert_eq!(sheet_size_for(400.0, 280.0), SheetSize::A3);
+        assert_eq!(sheet_size_for(500.0, 400.0), SheetSize::A2);
+        // Content wider than A4 still climbs rather than being clipped.
+        assert_eq!(sheet_size_for(300.0, 200.0), SheetSize::A3);
+    }
+
     #[test]
     fn compact_sheet_shrinks_to_smallest_fitting_sheet() {
         let board = empty_board();
@@ -6059,6 +6389,8 @@ mod text_overlap_tests {
         });
         compact_sheet_to_fit(&board, &mut layout);
         assert_eq!(layout.sheet_size, SheetSize::A4);
+        settle_sheet_size(&board, &mut layout);
+        assert_eq!(layout.sheet_size, SheetSize::A4, "the default page is A4");
     }
 
     #[test]
@@ -6250,6 +6582,8 @@ mod naming_tests {
 
     fn board(components: Vec<Component>, nets: Vec<Net>) -> Board {
         Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test".to_string(),
@@ -6547,6 +6881,8 @@ mod documentation_tests {
 
     fn board_with_notes(components: Vec<Component>, nets: Vec<Net>, notes: Vec<Note>) -> Board {
         Board {
+            schematic_overflow: None,
+            schematic_paper: None,
             groups: Vec::new(),
             legends: false,
             name: "test".to_string(),
