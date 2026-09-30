@@ -1052,7 +1052,7 @@ fn run_mcp(stdio: bool, sse: bool, port: u16, registry: Option<PathBuf>) -> anyh
     Ok(EXIT_SUCCESS)
 }
 
-/// The release boundary described by copperheadideas.md. This deliberately
+/// The proposal-and-release boundary used by the enterprise workflow. This deliberately
 /// delegates each stage to the same CLI implementation used by agents and
 /// humans, but captures their machine-readable results into one deterministic
 /// report. No model, network, or project mutation is involved.
