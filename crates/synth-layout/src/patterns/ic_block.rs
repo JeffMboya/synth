@@ -240,6 +240,30 @@ fn net_is_ground(board: &Board, net: &synth_ir::Net) -> bool {
     })
 }
 
+/// Ranking key for choosing which cluster adopts an orphan rail cap.
+///
+/// Ordering, best first: the anchor with the most pins on the shared
+/// rail, then the one nearest in declaration order, then the
+/// earliest-declared anchor. The last term is what makes the order
+/// *total*.
+///
+/// It has to be total. `attach_orphan_rail_caps` scans a `HashMap`,
+/// and Rust does not guarantee iteration order — so a key that tied
+/// on the first two terms would be broken by whichever pair the map
+/// happened to yield first, moving a decoupling cap between regions
+/// depending on the process's hash seed. Negating the last two keeps
+/// the whole tuple ascending-best-first under plain `>` comparison.
+type OrphanAnchorRank = (usize, usize, u32);
+
+fn orphan_anchor_rank(
+    pins_on_rail: usize,
+    anchor: ComponentId,
+    cap: ComponentId,
+) -> OrphanAnchorRank {
+    let adjacency = (anchor.0 as i64 - cap.0 as i64).unsigned_abs() as usize;
+    (pins_on_rail, usize::MAX - adjacency, u32::MAX - anchor.0)
+}
+
 /// Second sweep (schematic-quality plan Phase A2): a two-pin capacitor
 /// whose pins join a rail and a ground, but which no earlier pass
 /// claimed, belongs to its heaviest rail consumer's `IcBlock`.
@@ -306,8 +330,10 @@ pub(crate) fn attach_orphan_rail_caps(
             continue;
         };
         // Heaviest consumer wins; declaration adjacency breaks ties
-        // (lower adjacency distance = nearer in source = preferred).
-        let mut best: Option<(usize, usize, usize)> = None;
+        // (lower adjacency distance = nearer in source = preferred),
+        // and the anchor's own id breaks a remaining exact tie so the
+        // choice never depends on `HashMap` iteration order.
+        let mut best: Option<(usize, usize, u32, usize)> = None;
         for (&anchor, &cluster_idx) in &anchor_index {
             if anchor == component.id {
                 continue;
@@ -327,15 +353,14 @@ pub(crate) fn attach_orphan_rail_caps(
             if pins_on_rail == 0 {
                 continue;
             }
-            let adjacency = (anchor.0 as i64 - component.id.0 as i64).unsigned_abs() as usize;
-            // Compare by (pins desc, adjacency asc): store adjacency
-            // negated via MAX-minus so tuple comparison works.
-            let key = (pins_on_rail, usize::MAX - adjacency);
-            if best.is_none_or(|(best_pins, best_adj, _)| key > (best_pins, best_adj)) {
-                best = Some((pins_on_rail, usize::MAX - adjacency, cluster_idx));
+            let key = orphan_anchor_rank(pins_on_rail, anchor, component.id);
+            if best.is_none_or(|(best_pins, best_adj, best_anchor, _)| {
+                key > (best_pins, best_adj, best_anchor)
+            }) {
+                best = Some((key.0, key.1, key.2, cluster_idx));
             }
         }
-        let Some((_, _, cluster_idx)) = best else {
+        let Some((_, _, _, cluster_idx)) = best else {
             continue;
         };
         clusters[cluster_idx].members.push(ClusterMember {
@@ -344,5 +369,65 @@ pub(crate) fn attach_orphan_rail_caps(
         });
         clusters[cluster_idx].members.sort_by_key(|m| m.id.0);
         claimed.insert(component.id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{orphan_anchor_rank, OrphanAnchorRank};
+    use synth_ir::ComponentId;
+
+    const CAP: ComponentId = ComponentId(10);
+
+    fn rank(pins: usize, anchor: u32) -> OrphanAnchorRank {
+        orphan_anchor_rank(pins, ComponentId(anchor), CAP)
+    }
+
+    /// The anchor drawing most from the shared rail wins.
+    #[test]
+    fn heaviest_rail_consumer_wins() {
+        assert!(rank(3, 1) > rank(2, 2));
+        assert!(rank(2, 1) > rank(1, 99));
+    }
+
+    /// With pins equal, the anchor nearest in declaration order wins —
+    /// either side of the cap.
+    #[test]
+    fn nearer_in_declaration_order_wins() {
+        assert!(rank(1, 11) > rank(1, 20)); // cap at 10: 11 is nearer than 20
+        assert!(rank(1, 9) > rank(1, 0)); // …and on the low side too
+    }
+
+    /// The regression: two anchors equidistant from the cap, drawing the
+    /// same number of pins from the rail. This is the exact case that
+    /// used to be decided by `HashMap` iteration order, so the cap
+    /// could land in different regions on different runs. The rank
+    /// must be decided by the anchor id alone, and must not compare
+    /// equal — otherwise the selection reverts to "first yielded".
+    #[test]
+    fn equidistant_equal_pins_anchors_are_ordered_by_id_not_hash_order() {
+        let a = rank(2, 8);
+        let b = rank(2, 12);
+        assert_ne!(a, b, "an exact tie would be broken by map order");
+        assert!(a > b, "the earlier-declared anchor wins the tie");
+
+        // And it is the same whichever order the two are presented in.
+        assert_eq!(a.max(b), a);
+        assert_eq!(b.max(a), a);
+    }
+
+    /// Totality across a spread of anchors: no two distinct anchors may
+    /// ever produce equal ranks, for any pin count.
+    #[test]
+    fn rank_is_total_over_distinct_anchors() {
+        for pins in 0..4 {
+            let mut seen = std::collections::HashSet::new();
+            for anchor in 0..32u32 {
+                assert!(
+                    seen.insert(rank(pins, anchor)),
+                    "pins={pins} anchor={anchor} collides with another anchor's rank"
+                );
+            }
+        }
     }
 }

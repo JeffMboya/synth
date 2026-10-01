@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use synth_ir::{Board, NetId};
 
-use crate::Layout;
+use crate::{ComponentPlacement, Layout};
 
 /// Deterministic quality metrics computed over a [`Layout`].
 ///
@@ -32,6 +32,157 @@ struct Segment {
     net: NetId,
     p1: (f64, f64),
     p2: (f64, f64),
+}
+
+/// A quality measure computable from component positions alone, with
+/// no routing.
+///
+/// [`score`] needs a routed [`Layout`], so it cannot be used to choose
+/// a *placement* — the placer runs long before `route_and_label` has
+/// drawn a single wire. This is the metric a placement search can
+/// actually minimise.
+///
+/// **It has no consumer yet.** It was built to rank candidates in
+/// `place_clusters`' fitting sweep, and inserting it there was measured
+/// to change nothing across the 52-design corpus: the sweep's surviving
+/// candidates are three byte-identical arrangements (on an ungrouped
+/// board `region_w` is inert, since there is only one region to
+/// shelf-pack), so there is nothing for a cost to choose between. It
+/// is kept because it is the measuring stick the *next* step needs —
+/// either widening the sweep so the ordering actually varies, or the
+/// schematic-side repair loop the PCB side already has. See the
+/// "KNOWN LIMIT" comment on the selection key in `lib.rs`.
+///
+/// Two terms, both read off a column-major left-to-right layout:
+///
+/// - [`PlacementCost::net_span_mm`] — half-perimeter length, i.e. how
+///   far the wires will have to run. A net whose endpoints sit far
+///   apart in both axes is a net that either gets a very long wire or
+///   degrades into a label stub, and both are bad.
+/// - [`PlacementCost::net_shear_mm`] — how far a net's endpoints
+///   deviate from their own mean `y`. In a columnar layout a net has
+///   to travel vertically whenever its endpoints disagree on `y`, and
+///   vertical travel is what crosses other nets' vertical runs. This
+///   is the term that predicts crossings from positions alone.
+///
+/// Power and ground rails are excluded. They render as power symbols
+/// rather than wires (`classify_power_flags`), so their span costs the
+/// reader nothing — the same reason `build_cluster_adjacency` weights
+/// them at `WEAK_NET_WEIGHT` instead of `STRONG_NET_WEIGHT`. The
+/// router mirrors this: `classify_net_labels` skips power nets before
+/// it ever measures a span.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlacementCost {
+    /// Weighted sum of per-net half-perimeter length, millimetres.
+    pub net_span_mm: f64,
+    /// Weighted sum of per-endpoint `|y - mean(y)|`, millimetres.
+    pub net_shear_mm: f64,
+}
+
+impl PlacementCost {
+    /// A single scalar to rank candidate placements by, lower is
+    /// better.
+    ///
+    /// `SHEAR_WEIGHT` is 2.0: a millimetre of shear is worse for
+    /// readability than a millimetre of span, because span is at least
+    /// visible as a long straight run on the sheet, whereas shear is
+    /// what produces the crossings `E-SYNTH-SCHEM-002` reports.
+    pub fn total(&self) -> f64 {
+        const SHEAR_WEIGHT: f64 = 2.0;
+        self.net_span_mm + SHEAR_WEIGHT * self.net_shear_mm
+    }
+}
+
+/// Whether a net is a power/ground rail, which renders as a power
+/// symbol rather than a wire and is therefore excluded from
+/// [`placement_cost`].
+///
+/// Deliberately the same weak/strong test the barycenter ordering
+/// uses (`net_is_weak` in the crate root): any endpoint on a
+/// `PowerInput`/`PowerOutput` pin, or on a pin whose name marks a
+/// ground rail. Components without a resolved part have no power pins
+/// and so default to *signal* — the conservative choice, since an
+/// unrecognised component's nets are more likely functional.
+fn is_rail(board: &Board, net: &synth_ir::Net) -> bool {
+    use synth_registry::ElectricalType;
+    net.endpoints.iter().any(|endpoint| {
+        let Some(pin) = board.pin(endpoint.component, endpoint.pin) else {
+            return false;
+        };
+        let name = pin.name.to_ascii_lowercase();
+        let ground_named = matches!(
+            name.as_str(),
+            "gnd" | "vss" | "vssa" | "gnda" | "vee" | "vneg" | "agnd" | "dgnd"
+        );
+        ground_named
+            || matches!(
+                pin.electrical_type,
+                ElectricalType::PowerInput
+                    | ElectricalType::PowerOutput
+                    | ElectricalType::GroundReference
+            )
+    })
+}
+
+/// Computes [`PlacementCost`] for a set of component placements.
+///
+/// `placements` need not be the final layout — only the component
+/// centres matter. Nets whose endpoints all resolve to placed
+/// components are measured; a net with a single placed endpoint, or
+/// none, contributes nothing (it cannot be drawn).
+pub fn placement_cost(board: &Board, placements: &[ComponentPlacement]) -> PlacementCost {
+    use std::collections::HashMap;
+
+    let centres: HashMap<synth_ir::ComponentId, (f64, f64)> =
+        placements.iter().map(|p| (p.id, p.center_mm)).collect();
+
+    let mut net_span_mm = 0.0;
+    let mut net_shear_mm = 0.0;
+
+    for net in &board.nets {
+        if is_rail(board, net) {
+            continue;
+        }
+        // Distinct placed components on this net, ordered by x then y
+        // so the half-perimeter walk and the mean are both independent
+        // of the order `board.nets` happens to be stored in.
+        let mut points: Vec<(f64, f64)> = net
+            .endpoints
+            .iter()
+            .filter_map(|ep| centres.get(&ep.component).copied())
+            .collect();
+        points.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        points.dedup();
+        if points.len() < 2 {
+            continue;
+        }
+
+        // Half-perimeter: walk the ordered points and sum the
+        // Manhattan step. `fold` over windows(2) so a 2-endpoint net
+        // measures its single gap.
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            net_span_mm += (b.0 - a.0).abs() + (b.1 - a.1).abs();
+        }
+
+        // Shear: total deviation from the mean y. `f64` accumulation
+        // over a handful of points is deterministic (same operands,
+        // same order — `points` is sorted), so no epsilon tricks are
+        // needed for reproducibility.
+        let mean_y = points.iter().map(|p| p.1).sum::<f64>() / points.len() as f64;
+        for p in &points {
+            net_shear_mm += (p.1 - mean_y).abs();
+        }
+    }
+
+    PlacementCost {
+        net_span_mm,
+        net_shear_mm,
+    }
 }
 
 /// Computes deterministic quality metrics for `layout`.

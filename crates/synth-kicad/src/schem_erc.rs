@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! In-house schematic aesthetic ERC rule engine (`E-SYNTH-SCHEM-001..012`).
+//! In-house schematic aesthetic ERC rule engine (`E-SYNTH-SCHEM-001..015`).
 //!
 //! Pure, deterministic rules over a [`synth_layout::Layout`] (plus the
 //! [`synth_ir::Board`] where connectivity context is needed). This is
@@ -14,7 +14,7 @@
 //! never block compilation), plus the schematic-quality plan's
 //! legibility rules (011–012, and the `E-SYNTH-VALUE-001` error owned
 //! by `synth-validate`). Implemented here, mapped onto the
-//! `E-SYNTH-SCHEM-001..012` code range:
+//! `E-SYNTH-SCHEM-001..015` code range:
 //!
 //! * **E-SYNTH-SCHEM-001** — Inverted power symbol (GND pointing up or
 //!   VCC pointing down).
@@ -206,7 +206,13 @@ pub fn attach_locations(diagnostics: &mut [Diagnostic], board: &Board, file: &st
 /// Run every aesthetic ERC rule over `layout`/`board` and return the
 /// violations, using the §7.7.7 default thresholds.
 ///
-/// Order is deterministic and rule-stable: 001 → 002 → … → 012.
+/// Order is deterministic and stable: 001 → 002 → … → 012, then 014,
+/// then 013, then 015. The last three are not in numeric order — 014
+/// is grouped with the label rules it reports on, and 013/015 follow it
+/// because both concern declared groups. The order only matters for
+/// diagnostics that carry no location: `attach_locations` resolves a
+/// span through the entity a finding names, and the group rules name
+/// two entities (a box and its group) where the box wins.
 pub fn check(layout: &Layout, board: &Board) -> Vec<Diagnostic> {
     check_with_config(layout, board, SchemErcConfig::default())
 }
@@ -558,12 +564,12 @@ fn is_nearest_ic_on_rail(
 /// IC's `required_decoupling` power nets sits further than
 /// `max_mm` (schematic distance) from the IC.
 ///
-/// Schematic distance is measured from the capacitor's placement
-/// centre to the IC's placement centre — a deterministic proxy for the
-/// "distance from the target IC power pin" the plan names, computed
-/// without pulling in KiCad symbol-pin geometry. Cap-to-IC pairs are
-/// deduplicated so a cap shared across multiple required nets only
-/// yields one diagnostic.
+/// Schematic distance is the gap between the capacitor's symbol body
+/// and the IC's, measured corner-to-corner (`body_gap_mm`) — a
+/// deterministic proxy for the "distance from the target IC power pin"
+/// the plan names, computed without pulling in KiCad symbol-pin
+/// geometry. Cap-to-IC pairs are deduplicated so a cap shared across
+/// multiple required nets only yields one diagnostic.
 ///
 /// Schematic-quality plan Phase A2: the rail net is resolved through
 /// the IC's power *pin*, not by net-name equality. Merged rails keep
