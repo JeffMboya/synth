@@ -25,6 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use synth_ir::Board;
+use synth_layout::route::is_two_pin_symbol_kind;
 use synth_layout::PinSide;
 use synth_registry::{ElectricalType, Part};
 
@@ -385,13 +386,6 @@ fn unique_parts(board: &Board) -> BTreeMap<String, Part> {
     out
 }
 
-fn is_two_pin_symbol_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "resistor" | "capacitor" | "inductor" | "diode" | "led" | "crystal" | "switch"
-    )
-}
-
 /// Classify a pin's schematic-body side for the synthesized symbol
 /// fallback. Order matters: ground/power placement and clock/reset/
 /// boot/RF clustering take priority over plain input/output
@@ -399,49 +393,13 @@ fn is_two_pin_symbol_kind(kind: &str) -> bool {
 /// conventions (rails top/bottom; control/clock pins grouped away
 /// from the data bus).
 ///
-/// This classifier is kept in lockstep with
-/// `synth_layout::route::classify_ic_pin` and
-/// `synth_layout::classify_ic_pin_layout` — those copies drive wire
-/// terminal placement and body sizing, so a disagreement would leave
-/// wires landing on a body edge with no drawn pin. All three
-/// implement the same schematic convention (inputs on the left,
-/// outputs on the right). Deduping
-/// them into one shared function is tracked as follow-up cleanup.
+/// Shares its implementation with the router via
+/// `synth_layout::route::classify_ic_pin` — the single source of
+/// truth, re-exported here under the local name so the drawing code
+/// below reads unchanged. `is_two_pin_symbol_kind` is shared the same
+/// way; it used to be a third local copy.
 fn classify_ic_pin(pin: &synth_registry::Pin) -> PinSide {
-    use synth_registry::{ElectricalType, PinCapability};
-    let lower = pin.name.to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "gnd" | "vss" | "vssa" | "gnda" | "vee" | "vneg" | "agnd" | "dgnd"
-    ) {
-        return PinSide::Bottom;
-    }
-    if matches!(
-        pin.electrical_type,
-        ElectricalType::PowerInput | ElectricalType::PowerOutput | ElectricalType::GroundReference
-    ) {
-        return PinSide::Top;
-    }
-    if pin.capabilities.iter().any(|c| {
-        matches!(
-            c,
-            PinCapability::Reset
-                | PinCapability::BootMode
-                | PinCapability::ClockInput
-                | PinCapability::ClockOutput
-                | PinCapability::RfFeed
-        )
-    }) {
-        return PinSide::Right;
-    }
-    // Plain data direction: outputs to the right, inputs (and
-    // bidirectional/passive/analog/... — anything without a clearer
-    // signal) stay left. This is the convention IC datasheets and
-    // most hand-drawn schematics already follow.
-    if pin.electrical_type == ElectricalType::Output {
-        return PinSide::Right;
-    }
-    PinSide::Left
+    synth_layout::route::classify_ic_pin(pin)
 }
 
 fn build_symbol(part: &Part, alternates: Option<&BTreeMap<String, BTreeSet<String>>>) -> Sexp {

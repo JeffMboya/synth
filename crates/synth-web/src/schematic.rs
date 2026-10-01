@@ -55,7 +55,7 @@ use std::rc::Rc;
 use leptos::ev::{PointerEvent, WheelEvent};
 use leptos::prelude::*;
 use synth_ir::{Board, Component, ComponentId, Net, NetEndpoint, PinId};
-use synth_layout::route::{route_board, RouteResult};
+use synth_layout::route::{is_two_pin_symbol_kind, route_board, RouteResult};
 use synth_layout::{Layout, NetLabel, PowerFlag, PowerFlagKind, Rotation};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -440,35 +440,26 @@ impl PinLayout {
 ///
 /// NoConnect pins fall into the Left bucket and get hidden by the
 /// renderer; that's the same convention real schematic editors use.
+///   - **Top**: `PowerInput`, `PowerOutput` and `GroundReference`
+///     pins (rails).
+/// - **Right**: pins with `reset`, `boot_mode`, `clock_input`,
+///   `clock_output`, or `rf_feed` capability — board-edge / control
+///   signals that conventionally exit the right side of an IC, plus
+///   plain `Output` pins.
+/// - **Left**: everything else (signal pins).
+///
+/// NoConnect pins fall into the Left bucket and get hidden by the
+/// renderer; that's the same convention real schematic editors use.
+///
+/// Shares its implementation with the router and the exporter via
+/// `synth_layout::route::classify_ic_pin` — the single source of
+/// truth. The local copy that used to live here omitted
+/// `GroundReference` and the `Output → Right` rule, so the preview
+/// sized IC bodies differently from the `.kicad_sch` the exporter
+/// actually writes: a GroundReference pin was bucketed Left instead
+/// of Top, and every data output was too.
 fn classify_ic_pin(pin: &synth_registry::Pin) -> synth_layout::PinSide {
-    use synth_layout::PinSide;
-    use synth_registry::{ElectricalType, PinCapability};
-    let lower = pin.name.to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "gnd" | "vss" | "vssa" | "gnda" | "vee" | "vneg" | "agnd" | "dgnd"
-    ) {
-        return PinSide::Bottom;
-    }
-    if matches!(
-        pin.electrical_type,
-        ElectricalType::PowerInput | ElectricalType::PowerOutput
-    ) {
-        return PinSide::Top;
-    }
-    if pin.capabilities.iter().any(|c| {
-        matches!(
-            c,
-            PinCapability::Reset
-                | PinCapability::BootMode
-                | PinCapability::ClockInput
-                | PinCapability::ClockOutput
-                | PinCapability::RfFeed
-        )
-    }) {
-        return PinSide::Right;
-    }
-    PinSide::Left
+    synth_layout::route::classify_ic_pin(pin)
 }
 
 /// Compute every pin's tip position + side for an IC body centred
@@ -564,13 +555,6 @@ fn compute_ic_layout(part: Option<&synth_registry::Part>, cx: f64, cy: f64) -> I
         placements,
         bbox: (bx, by, body_w, body_h),
     }
-}
-
-fn is_two_pin_symbol_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "resistor" | "capacitor" | "inductor" | "diode" | "led" | "crystal" | "switch"
-    )
 }
 
 /// Recognise generic "p1", "p2", "p3", … pin names that passive

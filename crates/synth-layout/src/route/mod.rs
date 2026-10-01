@@ -86,15 +86,14 @@ pub fn natural_rotation_offset(part: &Part) -> f64 {
 /// from the pin's electrical role (power up, ground down, clock/reset
 /// right, data outputs right, everything else left).
 ///
-/// The sides assigned here MUST agree with the sides the synthesized
-/// symbol library actually draws pins on
-/// (`synth_kicad::symbol_lib::classify_ic_pin`) — wire terminals are
-/// computed from this classifier while the drawn pins come from that
-/// one, and a disagreement would leave wires landing on a body edge
-/// with no pin. Both copies implement the same schematic convention
-/// (inputs on the left, outputs on the right, power up, ground
-/// down); unifying them into
-/// one shared function is still a known follow-up.
+/// **This is the single source of truth.** The sides assigned here
+/// drive both the wire terminals the router aims at *and* the pin
+/// rectangles `synth-kicad::symbol_lib` draws; a disagreement would
+/// leave wires landing on a body edge with no pin. The browser
+/// preview used to carry a third copy that omitted `GroundReference`
+/// and the `Output → Right` rule, so `synth preview` sized IC bodies
+/// differently from what the exporter actually drew. It now imports
+/// this function — do not reintroduce a local copy.
 pub fn classify_ic_pin(pin: &Pin) -> PinSide {
     let lower = pin.name.to_ascii_lowercase();
     if matches!(
@@ -131,6 +130,19 @@ pub fn classify_ic_pin(pin: &Pin) -> PinSide {
     PinSide::Left
 }
 
+/// Whether a part is drawn and routed as a bare two-pin symbol.
+///
+/// **This is the single source of truth**, and the list is written
+/// against the `kind` strings that actually exist in
+/// `registry/parts/`. It previously had four copies, two of which had
+/// already drifted apart: one matched `ferrite_bead`, `zener_diode`
+/// and `resonator` — none of which are registry `kind`s, since those
+/// parts are `inductor` and `diode` respectively — while omitting
+/// `inductor` and `switch`. That made [`super::body_size_for_part`]
+/// reserve a multi-pin-sized body for an inductor or a 2-pin switch
+/// that the router and the exporter both drew as a bare two-pin
+/// symbol. `synth-kicad` and `synth-web` import this function; do not
+/// reintroduce a local copy.
 pub fn is_two_pin_symbol_kind(kind: &str) -> bool {
     matches!(
         kind,

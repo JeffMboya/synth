@@ -7,14 +7,64 @@ that drive them.
 
 **Status:** describes the implemented pipeline as of 2026-09-24, cross-checked
 against `crates/synth-layout`, `crates/synth-kicad`, `crates/synth-web`,
-`crates/synth-cli`, and `crates/synth-validate`. Phases A–E of
-[`schematic-quality-plan.md`](schematic-quality-plan.md) are folded in;
-§2.1 (regions) and §3.2 (net colours) are the parts that changed most.
+`crates/synth-cli`, and `crates/synth-validate`. The phases of the
+(never-committed) schematic-quality plan are folded in; §2.1 (regions) and
+§3.2 (net colours) are the parts that changed most. Code comments still
+cite that plan's phase letters (`Phase A2`, `Phase C1`, `Phase D3`, …)
+with no resolvable target — read them as provenance, not as pointers.
 
 Every downstream consumer — the browser preview, the KiCad exporter,
 the PCB placer/router — derives the schematic from a single shared
 `synth_layout::layout` result so all views agree on the same
 component positions and wire routes.
+
+### What "readable" means here
+
+There is no written rubric. In practice the definition is the
+`E-SYNTH-SCHEM-*` rule set in `synth-kicad::schem_erc` plus whatever a
+reviewer sees in a render — and those two disagree in a specific,
+known way worth stating plainly:
+
+- **Every rule reads `Layout`, not the exported `.kicad_sch`.** The
+  exporter's own placement — Reference/Value field sides, net-label
+  glyph positions, no-connect markers, legends, multi-unit stacking —
+  is outside the measurement perimeter.
+- **`Layout::net_labels` carries no position.** Labels are placed by
+  the exporter from the pin terminal, so label-vs-label and
+  pin-vs-label collision is not even *representable* in the structure
+  the rules inspect. This is the most common real-world legibility
+  failure and it is unmeasured.
+- **No rule checks that two component bodies do not overlap.** The
+  layout relies on constructive non-overlap, never on verifying the
+  result, so a single `move_component` can stack two symbols with all
+  fifteen rules silent.
+
+`docs/schematic-visual-loop.md` exists because of exactly this gap:
+the rules catch mechanical failures, a rendered image catches the rest.
+
+### Known limits of the auto-layout
+
+- **The placement search is degenerate.** `place_clusters` sweeps
+  `rows × shelves × pitch × region_w`, but on an ungrouped board
+  `region_w` is inert (one region, nothing to shelf-pack), so the
+  candidates that reach the tail of the selection key are three
+  byte-identical arrangements. The key
+  `(area, shelves, pitch_rank, mismatch)` therefore cannot express
+  wiring quality even in principle.
+  `synth_layout::score::placement_cost` is the metric that could, and
+  is deliberately **not** wired in — measured to change nothing. See
+  its doc comment.
+- **The crossing-reduction passes are usually inert.** The page-height
+  clamp pins most boards to one cluster per column, so
+  `barycenter_order_rows` cannot fire end-to-end and the final
+  monotonic clamp in `bk_y_coordinates` is what actually sets `y`.
+- **Congestion response is deletion, not negotiation.** A net
+  accumulating more than `CROSSING_TRUNCATION_THRESHOLD` crossings is
+  dropped and relabelled in a single non-iterative pass, and nets are
+  routed in `board.nets` declaration order rather than short-first.
+- **Cluster recognition is 7 passes, topology-only, single-hop.**
+  Op-amp stages, transistor stages, filters, switch-mode regulators,
+  level shifters and ADC front-ends all fall through to `Singleton`.
 
 ---
 

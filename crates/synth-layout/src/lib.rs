@@ -67,6 +67,33 @@ pub mod sheets;
 
 pub use placer::{default_placer, NativeSemanticPlacer, Placer};
 
+/// One candidate arrangement produced by `place_clusters`' fitting
+/// sweep, with the lexicographic key used to pick between them.
+///
+/// Held in a struct rather than a bare tuple so the comparison site
+/// stays readable.
+struct FittedAttempt {
+    /// `(sheet area, shelves, pitch rank, aspect mismatch)`, ascending
+    /// — smallest/best first. See the "Selection key" comment on the
+    /// sweep in `place_clusters`, including the known limit that this
+    /// key cannot express wiring quality.
+    rank: (f64, usize, usize, f64),
+    placements: Vec<ComponentPlacement>,
+    sheet_size: SheetSize,
+}
+
+// Pin-side classification and two-pin symbol recognition are the
+// *single* source of truth in `route`. The router computes wire
+// terminals from them, `synth-kicad` draws the pins from them, and
+// `synth-web` sizes preview bodies from them; a divergent copy
+// silently desynchronises all three (it already did: this file's
+// own copies omitted `inductor` and `switch` while listing
+// `ferrite_bead`/`zener_diode`/`resonator`, which are not registry
+// `kind`s at all). Aliased rather than re-declared so the many
+// `classify_ic_pin_layout` call sites keep their descriptive name.
+use route::classify_ic_pin as classify_ic_pin_layout;
+use route::is_two_pin_symbol_kind;
+
 /// 90° rotations are the only orientations a schematic symbol may
 /// take. V1 always returns [`Rotation::Zero`]; later slices may
 /// rotate connectors so their pins face the board edge.
@@ -3259,7 +3286,27 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
     // Ranking ties by how close the content's aspect is to the page's
     // picks the squarer stack instead, which uses the page the way a
     // drawn-by-hand sheet does.
-    let mut fitted: Option<(f64, usize, usize, f64, Vec<ComponentPlacement>, SheetSize)> = None;
+    //
+    // KNOWN LIMIT — this key cannot express wiring quality, and
+    // `score::placement_cost` exists precisely to fix that, but
+    // inserting it here was measured to change *nothing* across the
+    // 52-design corpus in `scripts/measure_schematic_quality.sh`.
+    // The reason is that the surviving candidate set has collapsed to
+    // a single arrangement: the sweep is
+    // `rows x shelves x pitch_floor x region_w`, and on an ungrouped
+    // board `region_w` is inert (there is only one region, so
+    // shelf-packing has nothing to pack). All three `region_w` values
+    // therefore yield byte-identical placements, and the candidates
+    // that reach the tail of the key are three copies of one
+    // arrangement. Re-ranking copies of the same layout cannot improve
+    // it.
+    //
+    // So the lever is not the key — it is the *search space*. Until
+    // the sweep varies something real for ungrouped boards (e.g. the
+    // intra-column cluster ordering the barycenter pass computes but
+    // the page-height clamp usually prevents from firing), a wiring
+    // cost has nothing to choose between.
+    let mut fitted: Option<FittedAttempt> = None;
     let mut closest: Option<(f64, Vec<ComponentPlacement>, SheetSize)> = None;
     for (fallback_key, fallback_order) in bandings {
         if fitted.is_some() {
@@ -3309,13 +3356,13 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                 // A4; neither is worth it otherwise.
                 let pitch_rank = usize::from(pitch_floor < BASE_CLUSTER_DX);
                 let key = (area, shelves, pitch_rank, mismatch);
-                let improves = fitted.as_ref().is_none_or(
-                    |(best_area, best_shelves, best_pitch, best_mismatch, _, _)| {
-                        key < (*best_area, *best_shelves, *best_pitch, *best_mismatch)
-                    },
-                );
+                let improves = fitted.as_ref().is_none_or(|best| key < best.rank);
                 if improves {
-                    fitted = Some((area, shelves, pitch_rank, mismatch, placements, sheet_size));
+                    fitted = Some(FittedAttempt {
+                        rank: key,
+                        placements,
+                        sheet_size,
+                    });
                 }
                 continue;
             }
@@ -3325,7 +3372,7 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
             }
         }
     }
-    let fitted = fitted.map(|(_, _, _, _, placements, sheet)| (0.0, placements, sheet));
+    let fitted = fitted.map(|a| (0.0, a.placements, a.sheet_size));
     let (mut components, mut sheet_size) = fitted
         .or(closest)
         .map_or((Vec::new(), SheetSize::A4), |(_, placements, sheet)| {
@@ -4612,59 +4659,6 @@ pub fn centre_on_sheet(board: &Board, layout: &mut Layout) {
 }
 
 // ----- Human-like schematic alignment helpers --------------------------------
-
-fn classify_ic_pin_layout(pin: &synth_registry::Pin) -> PinSide {
-    use synth_registry::{ElectricalType, PinCapability};
-    let lower = pin.name.to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "gnd" | "vss" | "vssa" | "gnda" | "vee" | "vneg" | "agnd" | "dgnd"
-    ) {
-        return PinSide::Bottom;
-    }
-    if matches!(
-        pin.electrical_type,
-        ElectricalType::PowerInput | ElectricalType::PowerOutput | ElectricalType::GroundReference
-    ) {
-        return PinSide::Top;
-    }
-    if pin.capabilities.iter().any(|c| {
-        matches!(
-            c,
-            PinCapability::Reset
-                | PinCapability::BootMode
-                | PinCapability::ClockInput
-                | PinCapability::ClockOutput
-                | PinCapability::RfFeed
-        )
-    }) {
-        return PinSide::Right;
-    }
-    // Plain data direction: outputs to the right, inputs (and
-    // bidirectional/passive/analog/... — anything without a clearer
-    // signal) stay left. Kept in lockstep with
-    // `route::classify_ic_pin` and
-    // `synth_kicad::symbol_lib::classify_ic_pin` so preview sizing,
-    // wire terminals and drawn pins always agree.
-    if pin.electrical_type == ElectricalType::Output {
-        return PinSide::Right;
-    }
-    PinSide::Left
-}
-
-fn is_two_pin_symbol_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "resistor"
-            | "capacitor"
-            | "diode"
-            | "led"
-            | "ferrite_bead"
-            | "zener_diode"
-            | "crystal"
-            | "resonator"
-    )
-}
 
 /// Offset of a pin's terminal from its component's centre, plus
 /// the side of the body the pin sits on.
