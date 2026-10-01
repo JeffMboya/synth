@@ -43,17 +43,24 @@ impl OutlineHull {
     }
 
     /// Add a placed component to the outline hull.
-    pub fn add(&mut self, center: Point, half_w_nm: i64, half_h_nm: i64) {
-        let inflated_min = Point::new(
-            center.x_nm - half_w_nm - CLEARANCE_GAP_NM,
-            center.y_nm - half_h_nm - CLEARANCE_GAP_NM,
-        );
-        let inflated_max = Point::new(
-            center.x_nm + half_w_nm + CLEARANCE_GAP_NM,
-            center.y_nm + half_h_nm + CLEARANCE_GAP_NM,
-        );
-        self.placed_rects
-            .push(Rect::new(inflated_min, inflated_max));
+    /// Inflate an already-computed courtyard rect by [`CLEARANCE_GAP_NM`] and
+    /// record it as an obstacle.
+    ///
+    /// Takes the rect rather than a centre and half-extents because a placement
+    /// anchor is footprint-relative: for a DIP or a long header the courtyard
+    /// centre sits millimetres away from the anchor, so inflating an
+    /// anchor-centred box builds a hull that does not actually cover the part.
+    pub fn add_center(&mut self, courtyard: Rect) {
+        self.placed_rects.push(Rect::new(
+            Point::new(
+                courtyard.min.x_nm - CLEARANCE_GAP_NM,
+                courtyard.min.y_nm - CLEARANCE_GAP_NM,
+            ),
+            Point::new(
+                courtyard.max.x_nm + CLEARANCE_GAP_NM,
+                courtyard.max.y_nm + CLEARANCE_GAP_NM,
+            ),
+        ));
     }
 
     /// Generate candidate probe points along the exposed perimeter of placed components.
@@ -112,6 +119,7 @@ pub(crate) fn pack_passives_along_outline(
     placements: &mut Vec<ComponentPlacement>,
     passives: &[ComponentId],
     courtyard_lookup: &HashMap<ComponentId, (f64, f64)>,
+    courtyard_offset_lookup: &HashMap<ComponentId, (f64, f64)>,
     pad_offsets: &PadOffsetLookup,
     usable: Rect,
 ) -> Result<(), PlaceError> {
@@ -120,13 +128,9 @@ pub(crate) fn pack_passives_along_outline(
     // 1. Build initial hull from placed macro components
     for p in placements.iter() {
         let (w_mm, h_mm) = courtyard_lookup[&p.id];
-        let unrot_half_w = mm_to_nm(w_mm) / 2;
-        let unrot_half_h = mm_to_nm(h_mm) / 2;
-        let (rw, rh) = match p.rotation {
-            Rotation::Zero | Rotation::OneEighty => (unrot_half_w, unrot_half_h),
-            Rotation::Ninety | Rotation::TwoSeventy => (unrot_half_h, unrot_half_w),
-        };
-        hull.add(p.center, rw, rh);
+        let offset = courtyard_offset_lookup.get(&p.id).copied();
+        let rect = crate::courtyard_rect_for_placement(p, w_mm, h_mm, offset, 0);
+        hull.add_center(rect);
     }
 
     // 2. Sort passives by area descending (largest passives first)
@@ -146,6 +150,10 @@ pub(crate) fn pack_passives_along_outline(
         let (w_mm, h_mm) = courtyard_lookup[&comp_id];
         let unrot_half_w = mm_to_nm(w_mm) / 2;
         let unrot_half_h = mm_to_nm(h_mm) / 2;
+        let passive_offset = courtyard_offset_lookup
+            .get(&comp_id)
+            .copied()
+            .unwrap_or((0.0, 0.0));
 
         // Find connected target nets for this component
         let comp_nets = get_component_nets(board, comp_id);
@@ -169,36 +177,49 @@ pub(crate) fn pack_passives_along_outline(
                 Rotation::OneEighty,
                 Rotation::TwoSeventy,
             ] {
-                let (half_w, half_h) = match rot {
-                    Rotation::Zero | Rotation::OneEighty => (unrot_half_w, unrot_half_h),
-                    Rotation::Ninety | Rotation::TwoSeventy => (unrot_half_h, unrot_half_w),
-                };
-
-                let cand_rect = Rect::from_center_half_extents(*cand, half_w, half_h);
+                let cand_rect = crate::courtyard_rect_at_anchor(
+                    *cand,
+                    rot,
+                    unrot_half_w,
+                    unrot_half_h,
+                    passive_offset,
+                    0,
+                );
 
                 // Check bounds, courtyard collisions, and keepout regions
                 if !usable.contains(cand_rect.min) || !usable.contains(cand_rect.max) {
                     continue;
                 }
-                if intersects_placed(cand_rect, placements, courtyard_lookup) {
+                if intersects_placed(
+                    cand_rect,
+                    placements,
+                    courtyard_lookup,
+                    courtyard_offset_lookup,
+                ) {
                     continue;
                 }
                 let temp_placed: Vec<(ComponentId, Rect)> = placements
                     .iter()
                     .map(|p| {
                         let (w, h) = courtyard_lookup[&p.id];
-                        let (rw, rh) = match p.rotation {
-                            Rotation::Zero | Rotation::OneEighty => {
-                                (mm_to_nm(w) / 2, mm_to_nm(h) / 2)
-                            }
-                            Rotation::Ninety | Rotation::TwoSeventy => {
-                                (mm_to_nm(h) / 2, mm_to_nm(w) / 2)
-                            }
-                        };
-                        (p.id, Rect::from_center_half_extents(p.center, rw, rh))
+                        (
+                            p.id,
+                            crate::courtyard_rect_for_placement(
+                                p,
+                                w,
+                                h,
+                                courtyard_offset_lookup.get(&p.id).copied(),
+                                0,
+                            ),
+                        )
                     })
                     .collect();
-                if intersects_keepout(cand_rect, comp_id, board, usable, &temp_placed) {
+                if intersects_keepout(cand_rect, comp_id, board, usable, |pid| {
+                    temp_placed
+                        .iter()
+                        .find(|(placed_id, _)| *placed_id == pid)
+                        .map(|(_, r)| *r)
+                }) {
                     continue;
                 }
 
@@ -224,10 +245,6 @@ pub(crate) fn pack_passives_along_outline(
 
         // Apply best placement or fallback legal position search
         if let Some((best_pt, best_rot, _)) = best_choice {
-            let (half_w, half_h) = match best_rot {
-                Rotation::Zero | Rotation::OneEighty => (unrot_half_w, unrot_half_h),
-                Rotation::Ninety | Rotation::TwoSeventy => (unrot_half_h, unrot_half_w),
-            };
             let placement = ComponentPlacement {
                 id: comp_id,
                 center: best_pt,
@@ -235,7 +252,13 @@ pub(crate) fn pack_passives_along_outline(
                 layer: synth_geometry::Layer::Top,
             };
             placements.push(placement);
-            hull.add(best_pt, half_w, half_h);
+            hull.add_center(crate::courtyard_rect_for_placement(
+                &placement,
+                w_mm,
+                h_mm,
+                Some(passive_offset),
+                0,
+            ));
             update_net_pad_positions(board, placements, pad_offsets, &mut net_pad_positions);
         } else if let Some(fallback_pt) = find_nearest_legal_slot(
             comp_id,
@@ -243,9 +266,11 @@ pub(crate) fn pack_passives_along_outline(
             target_point,
             unrot_half_w,
             unrot_half_h,
+            passive_offset,
             usable,
             placements,
             courtyard_lookup,
+            courtyard_offset_lookup,
         ) {
             let fallback = ComponentPlacement {
                 id: comp_id,
@@ -254,7 +279,13 @@ pub(crate) fn pack_passives_along_outline(
                 layer: synth_geometry::Layer::Top,
             };
             placements.push(fallback);
-            hull.add(fallback_pt, unrot_half_w, unrot_half_h);
+            hull.add_center(crate::courtyard_rect_for_placement(
+                &fallback,
+                w_mm,
+                h_mm,
+                Some(passive_offset),
+                0,
+            ));
             update_net_pad_positions(board, placements, pad_offsets, &mut net_pad_positions);
         } else {
             let refdes = board
@@ -275,22 +306,29 @@ fn find_nearest_legal_slot(
     id: ComponentId,
     board: &Board,
     target: Point,
-    half_w: i64,
-    half_h: i64,
+    unrot_half_w: i64,
+    unrot_half_h: i64,
+    passive_offset: (f64, f64),
     usable: Rect,
     placements: &[ComponentPlacement],
     courtyard_lookup: &HashMap<ComponentId, (f64, f64)>,
+    courtyard_offset_lookup: &HashMap<ComponentId, (f64, f64)>,
 ) -> Option<Point> {
     let pitch = 500_000; // 0.5 mm grid step
     let temp_placed: Vec<(ComponentId, Rect)> = placements
         .iter()
         .map(|p| {
             let (w, h) = courtyard_lookup[&p.id];
-            let (rw, rh) = match p.rotation {
-                Rotation::Zero | Rotation::OneEighty => (mm_to_nm(w) / 2, mm_to_nm(h) / 2),
-                Rotation::Ninety | Rotation::TwoSeventy => (mm_to_nm(h) / 2, mm_to_nm(w) / 2),
-            };
-            (p.id, Rect::from_center_half_extents(p.center, rw, rh))
+            (
+                p.id,
+                crate::courtyard_rect_for_placement(
+                    p,
+                    w,
+                    h,
+                    courtyard_offset_lookup.get(&p.id).copied(),
+                    0,
+                ),
+            )
         })
         .collect();
 
@@ -307,11 +345,28 @@ fn find_nearest_legal_slot(
             Point::new(target.x_nm - offset, target.y_nm + offset),
         ];
         for cand in coords {
-            let cand_rect = Rect::from_center_half_extents(cand, half_w, half_h);
+            let cand_rect = crate::courtyard_rect_at_anchor(
+                cand,
+                Rotation::Zero,
+                unrot_half_w,
+                unrot_half_h,
+                passive_offset,
+                0,
+            );
             if usable.contains(cand_rect.min)
                 && usable.contains(cand_rect.max)
-                && !intersects_placed(cand_rect, placements, courtyard_lookup)
-                && !intersects_keepout(cand_rect, id, board, usable, &temp_placed)
+                && !intersects_placed(
+                    cand_rect,
+                    placements,
+                    courtyard_lookup,
+                    courtyard_offset_lookup,
+                )
+                && !intersects_keepout(cand_rect, id, board, usable, |pid| {
+                    temp_placed
+                        .iter()
+                        .find(|(placed_id, _)| *placed_id == pid)
+                        .map(|(_, r)| *r)
+                })
             {
                 return Some(cand);
             }
@@ -413,18 +468,18 @@ fn intersects_placed(
     rect: Rect,
     placements: &[ComponentPlacement],
     courtyard_lookup: &HashMap<ComponentId, (f64, f64)>,
+    courtyard_offset_lookup: &HashMap<ComponentId, (f64, f64)>,
 ) -> bool {
     let pad_buffer_nm: i64 = 3_000_000; // 3.0mm pad clearance buffer to prevent SMD pad THT pin overlaps
     for p in placements {
         let (w_mm, h_mm) = courtyard_lookup[&p.id];
-        let unrot_half_w = mm_to_nm(w_mm) / 2;
-        let unrot_half_h = mm_to_nm(h_mm) / 2;
-        let (rw, rh) = match p.rotation {
-            Rotation::Zero | Rotation::OneEighty => (unrot_half_w, unrot_half_h),
-            Rotation::Ninety | Rotation::TwoSeventy => (unrot_half_h, unrot_half_w),
-        };
-        let p_rect =
-            Rect::from_center_half_extents(p.center, rw + pad_buffer_nm, rh + pad_buffer_nm);
+        let p_rect = crate::courtyard_rect_for_placement(
+            p,
+            w_mm,
+            h_mm,
+            courtyard_offset_lookup.get(&p.id).copied(),
+            pad_buffer_nm,
+        );
         if rect.intersects(&p_rect) {
             return true;
         }
