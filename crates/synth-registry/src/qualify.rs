@@ -103,7 +103,14 @@ pub struct Finding {
     pub found: String,
 }
 
+pub const PROVENANCE_CODES: [&str; 3] =
+    ["E-SYNTH-QUAL-008", "E-SYNTH-QUAL-009", "E-SYNTH-QUAL-015"];
+
 impl Finding {
+    pub fn is_structural(&self) -> bool {
+        !PROVENANCE_CODES.contains(&self.code.as_str())
+    }
+
     fn blocking(
         code: &str,
         message: impl Into<String>,
@@ -211,6 +218,15 @@ impl PartQualification {
         self.status.is_pass()
     }
 
+    pub fn structural_defects(&self) -> impl Iterator<Item = &Finding> {
+        self.findings()
+            .filter(|f| f.level == FindingLevel::Blocking && f.is_structural())
+    }
+
+    pub fn has_structural_defect(&self) -> bool {
+        self.structural_defects().next().is_some()
+    }
+
     pub fn unknown_checks(&self) -> impl Iterator<Item = &Check> {
         self.checks
             .iter()
@@ -245,6 +261,10 @@ impl QualificationReport {
 
     pub fn unsafe_for_fabrication(&self) -> impl Iterator<Item = &PartQualification> {
         self.parts.iter().filter(|p| !p.is_fabrication_safe())
+    }
+
+    pub fn structurally_defective(&self) -> impl Iterator<Item = &PartQualification> {
+        self.parts.iter().filter(|p| p.has_structural_defect())
     }
 }
 
@@ -1116,6 +1136,28 @@ mod tests {
         assert_eq!(report.summary.blocked, 1);
         assert!(!report.is_clean());
         assert_eq!(report.unsafe_for_fabrication().count(), 1);
+    }
+
+    #[test]
+    fn provenance_findings_are_not_structural_defects() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().reviewed_by = None;
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert_eq!(q.status, CheckStatus::Fail);
+        assert!(
+            !q.has_structural_defect(),
+            "an unreviewed part is not structurally wrong: {:#?}",
+            q.structural_defects().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_wrong_pin_map_is_a_structural_defect() {
+        let part = part_with(vec![pin("a", "1"), pin("b", "99")]);
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(q.has_structural_defect());
+        let codes: Vec<&str> = q.structural_defects().map(|f| f.code.as_str()).collect();
+        assert!(codes.contains(&"E-SYNTH-QUAL-001"), "{codes:?}");
     }
 
     #[test]

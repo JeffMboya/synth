@@ -54,6 +54,7 @@ use synth_ir::{Board, ComponentId, NetId, PinId, SchematicOverflow, SchematicPap
 mod compact;
 pub mod footprint_resolve;
 pub mod kicad_footprint_loader;
+pub mod qualify_facts;
 pub mod kicad_lib_loader;
 pub mod kicad_zip;
 pub mod maxrects;
