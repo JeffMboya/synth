@@ -1,0 +1,8 @@
+(footprint "Conn-1x4-THT"
+  (layer "F.Cu")
+  (pad "1" thru_hole oval (at 0 0) (size 1.7 1.7) (drill 1.0) (layers "*.Cu" "*.Mask"))
+  (pad "2" thru_hole oval (at 2.54 0) (size 1.7 1.7) (drill 1.0) (layers "*.Cu" "*.Mask"))
+  (pad "3" thru_hole oval (at 5.08 0) (size 1.7 1.7) (drill 1.0) (layers "*.Cu" "*.Mask"))
+  (pad "4" thru_hole oval (at 7.62 0) (size 1.7 1.7) (drill 1.0) (layers "*.Cu" "*.Mask"))
+  (pad "MP1" np_thru_hole circle (at -2.5 0) (size 2.2 2.2) (drill 2.2) (layers "*.Cu" "*.Mask"))
+)

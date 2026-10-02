@@ -1,0 +1,33 @@
+id = "qual_regulator"
+kind = "regulator"
+description = "Qualification fixture: SOT-223 LDO with a tab pad"
+mpn = "QUAL-LDO-3"
+kicad_footprint = "Qual:SOT-223-3"
+
+[footprint_dimensions]
+width_mm = 6.5
+height_mm = 7.0
+courtyard_margin_mm = 0.25
+
+[provenance]
+source = "seed"
+datasheet_url = "https://example.invalid/qual-ldo.pdf"
+reviewed_by = "qualification fixture"
+reviewed_at = "2026-10-02"
+
+[[pins]]
+name = "gnd"
+number = "1"
+electrical_type = "ground_reference"
+[[pins]]
+name = "vout"
+number = "2"
+electrical_type = "power_output"
+[[pins]]
+name = "vin"
+number = "3"
+electrical_type = "power_input"
+[[pins]]
+name = "tab"
+number = "4"
+electrical_type = "ground_reference"

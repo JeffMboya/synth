@@ -1,0 +1,53 @@
+id = "qual_mcu_qfn"
+kind = "mcu"
+description = "Qualification fixture: QFN-8 MCU with an exposed thermal pad"
+mpn = "QUAL-MCU-8"
+kicad_footprint = "Qual:QFN-8-1EP"
+
+[footprint_dimensions]
+width_mm = 3.8
+height_mm = 1.9
+courtyard_margin_mm = 0.25
+
+[provenance]
+source = "seed"
+datasheet_url = "https://example.invalid/qual-mcu-8.pdf"
+reviewed_by = "qualification fixture"
+reviewed_at = "2026-10-02"
+
+[[pins]]
+name = "vdd"
+number = "1"
+electrical_type = "power_input"
+[[pins]]
+name = "gnd"
+number = "2"
+electrical_type = "ground_reference"
+[[pins]]
+name = "nrst"
+number = "3"
+electrical_type = "input"
+[[pins]]
+name = "swdio"
+number = "4"
+electrical_type = "bidirectional"
+[[pins]]
+name = "swclk"
+number = "5"
+electrical_type = "input"
+[[pins]]
+name = "io0"
+number = "6"
+electrical_type = "bidirectional"
+[[pins]]
+name = "io1"
+number = "7"
+electrical_type = "bidirectional"
+[[pins]]
+name = "io2"
+number = "8"
+electrical_type = "bidirectional"
+[[pins]]
+name = "ep"
+number = "9"
+electrical_type = "ground_reference"

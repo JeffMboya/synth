@@ -71,11 +71,12 @@ pub enum CheckStatus {
     Pass,
     Fail,
     Unknown,
+    NotApplicable,
 }
 
 impl CheckStatus {
     pub fn is_pass(self) -> bool {
-        matches!(self, Self::Pass)
+        matches!(self, Self::Pass | Self::NotApplicable)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -83,6 +84,7 @@ impl CheckStatus {
             Self::Pass => "pass",
             Self::Fail => "fail",
             Self::Unknown => "unknown",
+            Self::NotApplicable => "not_applicable",
         }
     }
 }
@@ -158,6 +160,15 @@ impl Check {
             name: name.to_string(),
             status: CheckStatus::Pass,
             unknown_reason: None,
+            findings: Vec::new(),
+        }
+    }
+
+    fn not_applicable(name: &str, reason: impl Into<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            status: CheckStatus::NotApplicable,
+            unknown_reason: Some(reason.into()),
             findings: Vec::new(),
         }
     }
@@ -295,7 +306,7 @@ pub fn qualify_registry(
     };
     for part in &parts {
         match part.status {
-            CheckStatus::Pass => summary.qualified += 1,
+            CheckStatus::Pass | CheckStatus::NotApplicable => summary.qualified += 1,
             CheckStatus::Fail => summary.blocked += 1,
             CheckStatus::Unknown => summary.unproven += 1,
         }
@@ -410,7 +421,7 @@ fn check_pin_numbering(part: &Part) -> Check {
 fn check_pin_pad_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
     const NAME: &str = "pin_pad_coverage";
     let Some(lib_id) = part.kicad_footprint.as_deref() else {
-        return Check::unknown(NAME, "part declares no kicad_footprint");
+        return Check::not_applicable(NAME, "part declares no kicad_footprint");
     };
     let Some(pads) = pads else {
         return Check::unknown(
@@ -451,7 +462,7 @@ fn check_pin_pad_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
 fn check_pad_pin_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
     const NAME: &str = "pad_pin_coverage";
     let Some(lib_id) = part.kicad_footprint.as_deref() else {
-        return Check::unknown(NAME, "part declares no kicad_footprint");
+        return Check::not_applicable(NAME, "part declares no kicad_footprint");
     };
     let Some(pads) = pads else {
         return Check::unknown(NAME, format!("footprint `{lib_id}` could not be read"));
@@ -488,7 +499,7 @@ fn check_pad_pin_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
 fn check_footprint_side(part: &Part, pads: Option<&[PadFacts]>) -> Check {
     const NAME: &str = "footprint_side";
     let Some(lib_id) = part.kicad_footprint.as_deref() else {
-        return Check::unknown(NAME, "part declares no kicad_footprint");
+        return Check::not_applicable(NAME, "part declares no kicad_footprint");
     };
     let Some(pads) = pads else {
         return Check::unknown(NAME, format!("footprint `{lib_id}` could not be read"));
@@ -519,7 +530,10 @@ fn check_footprint_side(part: &Part, pads: Option<&[PadFacts]>) -> Check {
 fn check_symbol_pin_coverage(part: &Part, symbols: &dyn SymbolFacts) -> Check {
     const NAME: &str = "symbol_pin_coverage";
     let Some(lib_id) = part.kicad_symbol.as_deref() else {
-        return Check::unknown(NAME, "part declares no kicad_symbol");
+        return Check::not_applicable(
+            NAME,
+            "part declares no kicad_symbol; the exporter synthesizes the symbol, so there is no external pin map to disagree with",
+        );
     };
     let Some(symbol_pins) = symbols.pin_numbers(lib_id) else {
         return Check::unknown(
@@ -552,7 +566,7 @@ fn check_symbol_pin_coverage(part: &Part, symbols: &dyn SymbolFacts) -> Check {
 fn check_package_dimensions(part: &Part, pads: Option<&[PadFacts]>) -> Check {
     const NAME: &str = "package_dimensions";
     let Some(declared) = part.footprint_dimensions.as_ref() else {
-        return Check::unknown(NAME, "part declares no footprint_dimensions");
+        return Check::not_applicable(NAME, "part declares no footprint_dimensions");
     };
 
     let mut findings = Vec::new();
