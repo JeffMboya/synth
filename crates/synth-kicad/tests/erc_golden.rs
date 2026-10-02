@@ -18,12 +18,6 @@ use rayon::prelude::*;
 use synth_diagnostics::UnknownReason;
 use synth_kicad::NativeErcOutcome;
 
-/// Violations from a live ERC run, or `None` when KiCad is not installed
-/// and the caller should skip.
-///
-/// Any other `unknown` is a hard failure: a run that could not produce
-/// evidence must not be mistaken for a clean schematic, which is the
-/// whole point of this suite.
 fn live_violations(
     outcome: NativeErcOutcome,
     label: &str,
@@ -155,8 +149,6 @@ fn all_reference_designs_pass_kicad_erc() {
                 golden_error_count
             );
         } else if MULTI_UNIT_LIMITATION.contains(&stem.as_str()) {
-            // Documented limitation: only the multi-unit pin error
-            // is acceptable; anything else is a real regression.
             let unexpected: Vec<_> = error_violations
                 .iter()
                 .filter(|v| {

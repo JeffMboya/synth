@@ -1,16 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The native ERC/DRC verification gate must fail closed.
-//!
-//! Every case here is a way `kicad-cli` can fail to produce evidence. The
-//! old behaviour printed a warning and exited 0 for all of them, so an
-//! export with no native verification at all was indistinguishable from a
-//! verified one. These tests pin the contract: an unavailable check is
-//! reported as `unknown`, never as a pass.
-//!
-//! `kicad-cli` is substituted through `KICAD_CLI` so the whole matrix runs
-//! on a machine with no KiCad installed, including CI.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -33,7 +22,6 @@ fn design() -> PathBuf {
         .join("hello.synth")
 }
 
-/// A per-test scratch directory, named after the case.
 fn scratch(label: &str) -> PathBuf {
     let dir =
         std::env::temp_dir().join(format!("synth_native_gate_{}_{label}", std::process::id()));
@@ -42,10 +30,6 @@ fn scratch(label: &str) -> PathBuf {
     dir
 }
 
-/// Write an executable stub `kicad-cli` whose body is `script`.
-///
-/// The stub always answers `version` with a supported version, so each
-/// test exercises one failure mode rather than tripping the version gate.
 fn stub(dir: &Path, script: &str) -> PathBuf {
     let path = dir.join("kicad-cli");
     let body = format!(
@@ -64,8 +48,6 @@ fn stub(dir: &Path, script: &str) -> PathBuf {
     path
 }
 
-/// Shell that finds the `--output` argument a kicad-cli subcommand was
-/// given, so a stub can write its report where Synth expects it.
 const FIND_OUTPUT: &str = r#"out=""
 prev=""
 for a in "$@"; do
@@ -80,7 +62,6 @@ struct Outcome {
 }
 
 impl Outcome {
-    /// The evidence recorded for one stage.
     fn stage(&self, name: &str) -> serde_json::Value {
         let report = self.report.as_ref().expect("verification report written");
         report["stages"]
@@ -107,10 +88,6 @@ impl Outcome {
     }
 }
 
-/// Export `hello.synth` with `kicad-cli` resolved to `stub_script`.
-///
-/// `extra` carries the flags under test. `KICAD_CLI` is set per child
-/// process rather than per test process, so cases stay independent.
 fn export(label: &str, stub_script: &str, extra: &[&str]) -> Outcome {
     let dir = scratch(label);
     let cli = stub(&dir, stub_script);
@@ -127,7 +104,6 @@ fn export(label: &str, stub_script: &str, extra: &[&str]) -> Outcome {
         .arg(&report_path)
         .args(extra)
         .env("KICAD_CLI", &cli)
-        // Keep the hung-tool case from holding the suite for 5 minutes.
         .env("SYNTH_KICAD_CLI_TIMEOUT_SECS", "2");
 
     let output = command.output().expect("run synth export-kicad");
@@ -142,7 +118,6 @@ fn export(label: &str, stub_script: &str, extra: &[&str]) -> Outcome {
     }
 }
 
-/// A stub that reports both stages clean.
 const CLEAN: &str = r#"case "$1 $2" in
   "sch erc"|"pcb drc")
     __FIND_OUTPUT__
@@ -195,8 +170,6 @@ exit 0"#
     );
 }
 
-/// A warning-only report is still a pass: KiCad reports warnings and
-/// errors through the same list, and warnings must not block a release.
 #[test]
 fn warning_only_violations_still_pass() {
     let script = r#"case "$1 $2" in
@@ -254,8 +227,6 @@ fn a_missing_executable_is_unknown_and_blocks_a_requested_check() {
     );
 }
 
-/// `kicad-cli` surfaces a missing symbol/footprint library as a non-zero
-/// exit plus stderr, which must be captured verbatim.
 #[test]
 fn a_missing_library_is_unknown_with_stderr_captured() {
     let script = r#"echo "Failed to load library 'Device'" >&2
@@ -277,8 +248,6 @@ exit 2"#;
     );
 }
 
-/// The report-shape false clean: a tool that exits 0 but writes something
-/// that is not a report used to parse to zero violations.
 #[test]
 fn an_unrecognized_report_is_unknown_not_clean() {
     let script = r#"case "$1 $2" in
@@ -329,7 +298,6 @@ fn a_hung_tool_is_unknown_by_timeout() {
 
 #[test]
 fn an_unsupported_version_is_unknown_before_the_tool_runs() {
-    // Overrides the stub helper's version answer with an ancient one.
     let script = "echo 'should not be reached' >&2; exit 0";
     let dir = scratch("old_version");
     let cli = dir.join("kicad-cli");
@@ -376,8 +344,6 @@ fn an_unsupported_version_is_unknown_before_the_tool_runs() {
     );
 }
 
-/// `--force` is an override for Synth's own findings, not a way to claim
-/// verification that never happened.
 #[test]
 fn force_does_not_convert_an_unavailable_check_into_a_pass() {
     let run = export("force", "exit 2", &["--validate-erc", "--force"]);
@@ -395,9 +361,6 @@ fn force_does_not_convert_an_unavailable_check_into_a_pass() {
     );
 }
 
-/// Without an explicit verification request, a developer who has no KiCad
-/// installed must still be able to export a project. Nothing about that
-/// output claims to have been verified, and the evidence says so.
 #[test]
 fn a_plain_export_still_succeeds_but_records_the_unknown() {
     let dir = scratch("plain");
@@ -437,10 +400,6 @@ fn a_plain_export_still_succeeds_but_records_the_unknown() {
     assert_eq!(drc["reason"], "not_installed");
 }
 
-/// `synth check --fab` is the release gate, and it delegates to
-/// `export-kicad`. These pin that the tri-state survives the hand-off: the
-/// gate used to read only the child's exit code, so it reported
-/// `manufacturing: pass` on a machine with no KiCad at all.
 mod release_gate {
     use super::*;
 
@@ -479,7 +438,6 @@ mod release_gate {
             manufacturing["native"]["release_ready"], false,
             "{report:#}"
         );
-        // The per-stage forensic trail must survive into the gate's report.
         let stages = manufacturing["native"]["stages"]
             .as_array()
             .expect("native stages");
@@ -497,8 +455,6 @@ mod release_gate {
         );
     }
 
-    /// With a tool that answers everything cleanly the gate passes, so the
-    /// fail-closed behaviour is not simply "always block".
     #[test]
     fn a_clean_tool_lets_the_gate_pass() {
         let dir = scratch("gate_clean");
@@ -530,8 +486,6 @@ exit 0"#
         );
     }
 
-    /// A tool that exits non-zero on DRC has not cleared the board, and the
-    /// gate must say so without claiming the board was rejected on merit.
     #[test]
     fn a_broken_tool_makes_manufacturing_unknown() {
         let dir = scratch("gate_broken");

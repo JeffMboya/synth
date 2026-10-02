@@ -128,10 +128,6 @@ enum Command {
         /// Run KiCad schematic ERC (`kicad-cli sch erc`) on the exported schematic.
         #[arg(long)]
         validate_erc: bool,
-        /// Write machine-readable native ERC/DRC evidence (tool, version,
-        /// command, stderr, and the pass/fail/unknown status of each stage)
-        /// to this path. Written outside `--out` on purpose, so the argv it
-        /// records cannot perturb the export's artifact hashes.
         #[arg(long, value_name = "FILE")]
         verification_report: Option<PathBuf>,
         /// Force export even if Synth ERC validation produces error diagnostics.
@@ -1149,9 +1145,6 @@ fn check(
     let mut fab_pass = true;
     if fab && validate_pass && drc_pass {
         let export_dir = work.join("release");
-        // Outside `export_dir`: every file in there is hashed below as
-        // evidence the export is reproducible, and the argv this records
-        // carries per-run temp paths.
         let verification_path = work.join("verification.json");
         let mut export_args = base.clone();
         export_args.extend([
@@ -1203,12 +1196,7 @@ fn check(
                 artifacts.insert(path, serde_json::Value::String(hash));
             }
         }
-        // A stage that could not run is `unknown`, not `fail`: a timeout or
-        // an unavailable native check is an absence of evidence, and a
-        // consumer must be able to tell that from a real rejection.
         let status = manufacturing_status(fab_pass, export_timed_out, native.as_ref());
-        // Only an outright pass counts towards the command's result, so the
-        // top-level status can never read `pass` over an `unknown` stage.
         fab_pass = status == "pass";
         let mut stage = serde_json::json!({
             "status": status,
@@ -1264,13 +1252,6 @@ fn check(
     })
 }
 
-/// Status for the manufacturing stage.
-///
-/// `unknown` means the stage produced no verdict: it timed out, or it ran
-/// but a native ERC/DRC check could not be performed. Both block the
-/// command exactly as a `fail` does — the distinction is for the operator
-/// and for machine consumers, which must not read "we never checked" as
-/// "we checked and rejected it", nor either as a pass.
 fn manufacturing_status(
     fab_pass: bool,
     timed_out: bool,
@@ -3528,9 +3509,6 @@ fn export_kicad(
                 ));
             }
             Err(e) => {
-                // Record rather than bail: a release gate needs to see that
-                // the package is missing *and why*, and bailing here would
-                // skip the evidence report entirely.
                 let mut evidence = synth_diagnostics::NativeCheckEvidence::unknown(
                     FAB_STAGE,
                     synth_drc::kicad_cli::binary(),
@@ -3547,9 +3525,6 @@ fn export_kicad(
         }
     }
 
-    // A fab submission, or an explicit --validate-erc, is a request for
-    // native verification. If the tool cannot produce evidence, the run has
-    // not been verified and must not report success — see `native_evidence`.
     let production = !fab.is_empty();
     let mut native = Vec::new();
     if let Some(evidence) = fab_evidence {
@@ -3600,12 +3575,6 @@ fn export_kicad(
     }
     native.push(drc.evidence);
 
-    // An unavailable check blocks a verification run. On a plain export it
-    // is a warning: a developer without KiCad installed must still be able
-    // to generate a project, and nothing about that output claims to have
-    // been verified.
-    // ERC is here only when --validate-erc asked for it, so an unavailable
-    // ERC always blocks; the others block only for a fab submission.
     let blocked_by_unknown: Vec<_> = native
         .iter()
         .filter(|e| e.status == NativeCheckStatus::Unknown)
@@ -3648,12 +3617,8 @@ fn export_kicad(
     })
 }
 
-/// Stage name for the manufacturing-artifact export.
 const FAB_STAGE: &str = "kicad_fab";
 
-/// Print the full forensic trail for a check that could not run: the tool,
-/// its version, the exact argv, and its stderr. Without these an operator
-/// cannot tell a missing install from a broken one.
 fn report_unavailable_check(evidence: &synth_diagnostics::NativeCheckEvidence) {
     eprintln!("warning: {}", evidence.summary_line());
     eprintln!("  tool: {}", evidence.tool);
@@ -3671,11 +3636,6 @@ fn report_unavailable_check(evidence: &synth_diagnostics::NativeCheckEvidence) {
     }
 }
 
-/// Write the machine-readable evidence for the native stages.
-///
-/// Deliberately not placed inside the export directory: the argv it records
-/// contains per-run temp paths, and `check` hashes every file it finds
-/// there to prove the export is reproducible.
 fn write_verification_report(
     path: &Path,
     input: &Path,

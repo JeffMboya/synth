@@ -59,11 +59,6 @@ pub struct FabArtifacts {
 }
 
 impl FabError {
-    /// Why this failure left us without a manufacturing package.
-    ///
-    /// A missing or broken tool is an absence of evidence, not a verdict on
-    /// the board; the release gate must report it as `unknown` rather than
-    /// as a rejection, and never as a pass.
     pub fn unknown_reason(&self) -> UnknownReason {
         match self {
             Self::NotFound => UnknownReason::NotInstalled,
@@ -72,7 +67,6 @@ impl FabError {
         }
     }
 
-    /// Tool stderr, when the failure carried any.
     pub fn stderr(&self) -> Option<&str> {
         match self {
             Self::Subprocess { stderr, .. } => Some(stderr.as_str()),

@@ -2713,8 +2713,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("b.kicad_sch");
         std::fs::write(&path, &text).unwrap();
-        // ERC here is a load check: we only care that kicad-cli could
-        // open the schematic, not what it reported.
         let erc = crate::run_kicad_erc(&path);
         match erc.evidence.reason {
             Some(synth_diagnostics::UnknownReason::NotInstalled) => {

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! KiCad schematic Electrical Rules Check (ERC) integration via `kicad-cli`.
-//!
-//! The outcome is tri-state: ERC either cleared the schematic, found
-//! violations, or could not be run at all. The third case is reported as
-//! [`synth_diagnostics::NativeCheckStatus::Unknown`] rather than as an
-//! error the caller can warn about and ignore — see
-//! [`synth_drc::kicad_cli`] for the shared invocation and the reasoning.
 
 use std::path::Path;
 
@@ -14,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use synth_diagnostics::{NativeCheckEvidence, UnknownReason};
 use synth_drc::kicad_cli;
 
-/// Stage name carried in this check's evidence.
 pub const ERC_STAGE: &str = "kicad_erc";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,36 +28,23 @@ pub struct KicadErcViolation {
 }
 
 impl KicadErcViolation {
-    /// Whether this violation blocks a release. KiCad reports warnings and
-    /// errors through the same list; only errors fail the gate.
     pub fn is_error(&self) -> bool {
         self.severity.eq_ignore_ascii_case("error")
     }
 }
 
-/// What a native ERC run produced: every violation it reported, plus
-/// whether it produced trustworthy evidence at all.
 #[derive(Debug, Clone)]
 pub struct NativeErcOutcome {
-    /// All violations, warnings included, so callers keep full detail.
     pub violations: Vec<KicadErcViolation>,
-    /// Status reflects error-severity violations only.
     pub evidence: NativeCheckEvidence,
 }
 
 impl NativeErcOutcome {
-    /// The error-severity subset — the violations that fail the gate.
     pub fn errors(&self) -> impl Iterator<Item = &KicadErcViolation> {
         self.violations.iter().filter(|v| v.is_error())
     }
 }
 
-/// Keys that identify a document as a `kicad-cli sch erc` report.
-///
-/// `sheets` is the KiCad 10 nesting and `violations` the flat form. A
-/// document carrying neither is not an ERC report, and must not parse to
-/// an empty violation list — that is the false-green this module's
-/// regression test guards against.
 const ERC_REPORT_KEYS: [&str; 5] = [
     "sheets",
     "violations",
@@ -73,7 +53,6 @@ const ERC_REPORT_KEYS: [&str; 5] = [
     "$schema",
 ];
 
-/// Run `kicad-cli sch erc` on an exported schematic.
 pub fn run_kicad_erc(sch_path: &Path) -> NativeErcOutcome {
     let tool = kicad_cli::binary();
     let version = kicad_cli::version();
@@ -149,7 +128,6 @@ pub fn run_kicad_erc(sch_path: &Path) -> NativeErcOutcome {
     }
 }
 
-/// Read and parse a `kicad-cli sch erc` JSON report.
 fn read_erc_report(path: &Path) -> Result<Vec<KicadErcViolation>, (UnknownReason, String)> {
     if !path.exists() {
         return Err((
@@ -175,11 +153,6 @@ fn read_erc_report(path: &Path) -> Result<Vec<KicadErcViolation>, (UnknownReason
     parse_erc_report(&json)
 }
 
-/// Extract violations from a parsed ERC report.
-///
-/// Reads both the KiCad 10 `sheets[].violations` nesting and the flat
-/// top-level `violations` array, so a schema change between KiCad majors
-/// surfaces as violations rather than as a silently clean run.
 fn parse_erc_report(
     json: &serde_json::Value,
 ) -> Result<Vec<KicadErcViolation>, (UnknownReason, String)> {
@@ -205,9 +178,6 @@ fn parse_erc_report(
     Ok(violations)
 }
 
-/// Append the violations in `value`, ignoring entries that do not
-/// deserialize. Every field of [`KicadErcViolation`] defaults, so this
-/// drops only non-object entries.
 fn collect_violations(value: Option<&serde_json::Value>, out: &mut Vec<KicadErcViolation>) {
     let Some(array) = value.and_then(|v| v.as_array()) else {
         return;
@@ -251,9 +221,6 @@ mod tests {
         assert!(!violations[0].is_error(), "a warning is not an error");
     }
 
-    /// The flat shape older majors emit. Reading only `sheets[]` made such
-    /// a report parse to zero violations — clean, from an install whose
-    /// output we simply could not read.
     #[test]
     fn parses_the_flat_schema_too() {
         let json: serde_json::Value = serde_json::from_str(
@@ -275,8 +242,6 @@ mod tests {
             .is_empty());
     }
 
-    /// Companion to the erc_golden `erc_report_parser_is_not_vacuous`
-    /// guard: a document that is not an ERC report must not read as clean.
     #[test]
     fn a_foreign_document_is_unrecognized_not_clean() {
         for foreign in [

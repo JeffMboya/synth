@@ -20,11 +20,8 @@ use crate::kicad_cli;
 use crate::profile::ManufacturerProfile;
 use crate::Violation;
 
-/// Stage name carried in this check's evidence.
 pub const DRC_STAGE: &str = "kicad_drc";
 
-/// What a native DRC run produced: the violations it found, plus whether
-/// it produced trustworthy evidence at all.
 #[derive(Debug, Clone)]
 pub struct NativeDrcOutcome {
     pub violations: Vec<Violation>,
@@ -596,13 +593,6 @@ fn sort_pair(a: i64, b: i64) -> (i64, i64) {
     }
 }
 
-/// Run KiCad's own DRC engine on an exported `.kicad_pcb`.
-///
-/// Returns a tri-state outcome rather than `Result`: a tool that could not
-/// run is neither a pass nor a list of violations, and the previous
-/// `Result<Vec<Violation>, String>` signature let every caller collapse
-/// that third case into a warning and carry on. [`NativeDrcOutcome`]
-/// makes the `unknown` impossible to drop silently.
 pub fn run_kicad_cli_drc(kicad_pcb_path: &std::path::Path) -> NativeDrcOutcome {
     let tool = kicad_cli::binary();
     let version = kicad_cli::version();
@@ -617,9 +607,6 @@ pub fn run_kicad_cli_drc(kicad_pcb_path: &std::path::Path) -> NativeDrcOutcome {
         return unknown(reason, Vec::new(), detail);
     }
 
-    // DRC refills zones in a staged copy so the delivered artifact keeps
-    // its netclass/setup metadata and an incomplete route stays reviewable
-    // and manually editable.
     let analysis_board = kicad_cli::ScratchFile::reserve("synth_drc_board", "kicad_pcb");
     if let Err(e) = std::fs::copy(kicad_pcb_path, analysis_board.path()) {
         return unknown(
@@ -689,7 +676,6 @@ pub fn run_kicad_cli_drc(kicad_pcb_path: &std::path::Path) -> NativeDrcOutcome {
     }
 }
 
-/// Read and parse a `kicad-cli pcb drc` JSON report.
 fn read_drc_report(path: &std::path::Path) -> Result<Vec<Violation>, (UnknownReason, String)> {
     if !path.exists() {
         return Err((
@@ -715,13 +701,6 @@ fn read_drc_report(path: &std::path::Path) -> Result<Vec<Violation>, (UnknownRea
     parse_drc_report(&json)
 }
 
-/// Keys that identify a document as a KiCad DRC report.
-///
-/// This is a recognition signal, not a schema check. Requiring
-/// `violations` specifically would make a clean run depend on KiCad
-/// emitting an empty array rather than omitting the key, which varies by
-/// version; accepting any known key keeps clean runs working while still
-/// refusing to read an unrelated or empty document as "no violations".
 const DRC_REPORT_KEYS: [&str; 6] = [
     "violations",
     "unconnected_items",
@@ -731,12 +710,6 @@ const DRC_REPORT_KEYS: [&str; 6] = [
     "$schema",
 ];
 
-/// Extract violations from a parsed DRC report.
-///
-/// An unrecognized document is an error rather than an empty violation
-/// list: a silently-empty parse of something that is not a DRC report is
-/// indistinguishable from a clean board, which is the false pass this
-/// whole path exists to prevent.
 fn parse_drc_report(json: &serde_json::Value) -> Result<Vec<Violation>, (UnknownReason, String)> {
     let recognized = json
         .as_object()
@@ -951,8 +924,6 @@ mod tests {
         assert!(check_min_drill_to_copper(&r, &jlc()).is_empty());
     }
 
-    /// Report classification, the path that used to turn an unreadable or
-    /// foreign report into a clean board.
     mod report {
         use super::*;
 
@@ -973,10 +944,6 @@ mod tests {
             assert!(violations.is_empty());
         }
 
-        /// A clean report that omits the empty arrays entirely must still
-        /// be recognized — the key list is a recognition signal, not a
-        /// schema requirement, so a KiCad version that drops empty keys
-        /// does not read as unknown.
         #[test]
         fn a_sparse_clean_report_is_still_recognized() {
             let sparse = serde_json::json!({ "kicad_version": "10.0.1" });
@@ -1007,9 +974,6 @@ mod tests {
             assert_eq!(violations[0].pos_mm, Some((1.5, 2.5)));
         }
 
-        /// The false-clean regression: before this, any JSON that merely
-        /// lacked a `violations` array parsed to zero violations and the
-        /// board was reported as passing native DRC.
         #[test]
         fn a_foreign_document_is_unrecognized_not_clean() {
             for foreign in [
@@ -1043,8 +1007,6 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        /// An install too old to emit JSON reports must not be read as a
-        /// pass just because the parse found nothing.
         #[test]
         fn an_outdated_kicad_is_rejected_before_it_runs() {
             let (reason, _) = kicad_cli::version_rejection(Some("7.0.11"))

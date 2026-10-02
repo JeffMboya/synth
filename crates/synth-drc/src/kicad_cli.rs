@@ -1,41 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! One place where Synth invokes `kicad-cli`, with a timeout and a
-//! classified outcome.
-//!
-//! Two stages shell out to KiCad for verification evidence: schematic ERC
-//! (`synth_kicad::run_kicad_erc`) and native PCB DRC
-//! ([`crate::run_kicad_cli_drc`]). Both need identical handling of the
-//! same six failure modes, and getting any one of them wrong turns a
-//! release gate into a rubber stamp. So the spawn, the wall-clock budget,
-//! the stderr capture, and the version query live here rather than being
-//! reimplemented per stage.
-//!
-//! This module sits in `synth-drc` because `synth-kicad` already depends
-//! on it, so both callers can reach it without a new edge in the crate
-//! graph. The wire types it reports into are in `synth-diagnostics`.
-//!
-//! # Why reader threads
-//!
-//! A poll-`try_wait` loop over a child with piped stdio deadlocks as soon
-//! as the child writes more than one pipe buffer: the child blocks on
-//! write, so it never exits, so the loop never sees it exit. `kicad-cli`
-//! is normally quiet, but a library-load failure is exactly the case we
-//! most need to capture and exactly the case that gets chatty. Each pipe
-//! therefore gets a draining thread.
-//!
-//! # Why the drain is time-bounded
-//!
-//! Killing a timed-out child does not necessarily close its pipes. Most
-//! shells (dash, as `/bin/sh` on Debian) fork rather than exec, so a
-//! `kicad-cli` wrapper script that hangs leaves an orphaned grandchild
-//! holding the inherited write ends. Joining the readers unconditionally
-//! then blocks until that orphan exits on its own — the timeout bounds
-//! nothing at all, which is the bug this module exists to prevent. The
-//! readers therefore report through channels and are abandoned after
-//! [`PIPE_DRAIN_GRACE`], leaving output best-effort rather than letting a
-//! hung tool extend our wall clock without limit.
-
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -45,44 +9,18 @@ use std::time::{Duration, Instant};
 
 use synth_diagnostics::UnknownReason;
 
-/// Lowest `kicad-cli` major version whose JSON report schema Synth can
-/// read. KiCad 7 and earlier predate the JSON ERC/DRC reports entirely,
-/// so their output cannot be interpreted at all.
-///
-/// There is deliberately no upper bound. Pinning a maximum would turn
-/// every new KiCad release into a false `unsupported_version`, and the
-/// failure that actually matters — a report schema we do not recognize —
-/// is caught by the report-shape check instead, which needs no version
-/// table to stay correct.
 pub const MIN_SUPPORTED_MAJOR: u32 = 8;
 
-/// Default wall-clock budget for one `kicad-cli` verification run.
-/// Override with `SYNTH_KICAD_CLI_TIMEOUT_SECS`.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
-/// Budget for the cheap `kicad-cli version` probe. It either answers
-/// immediately or something is badly wrong.
 const VERSION_PROBE_TIMEOUT_SECS: u64 = 30;
 
-/// How long to keep waiting for a pipe after the child has gone.
-///
-/// On a clean exit the data is already buffered and arrives at once; this
-/// only caps the pathological case where an orphaned grandchild still
-/// holds the write end. Long enough not to truncate a real report, short
-/// enough that it cannot meaningfully extend a run.
 pub const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
-/// Resolve the `kicad-cli` binary. `KICAD_CLI` lets CI pin a specific
-/// build (and lets the tests substitute a stub); otherwise we trust
-/// `PATH`. Matches the convention already used by `synth_kicad::fab`.
 pub fn binary() -> String {
     std::env::var("KICAD_CLI").unwrap_or_else(|_| "kicad-cli".to_string())
 }
 
-/// Wall-clock budget for a verification run, honouring
-/// `SYNTH_KICAD_CLI_TIMEOUT_SECS`. A zero or unparseable value falls back
-/// to [`DEFAULT_TIMEOUT_SECS`] — a zero timeout would report every run as
-/// `unknown`, which is a footgun, not a configuration.
 pub fn timeout() -> Duration {
     let secs = std::env::var("SYNTH_KICAD_CLI_TIMEOUT_SECS")
         .ok()
@@ -92,26 +30,20 @@ pub fn timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
-/// A completed (or killed) `kicad-cli` invocation.
 #[derive(Debug, Clone)]
 pub struct Invocation {
-    /// The exact argv, binary included, for reproducing the run.
     pub command: Vec<String>,
     pub stdout: Vec<u8>,
     pub stderr: String,
-    /// `None` when the process was killed by a signal or by our timeout.
     pub exit_code: Option<i32>,
     pub timed_out: bool,
 }
 
 impl Invocation {
-    /// Whether the tool exited zero and was not killed.
     pub fn succeeded(&self) -> bool {
         !self.timed_out && self.exit_code == Some(0)
     }
 
-    /// The [`UnknownReason`] for a run that did not exit cleanly, or
-    /// `None` when it did.
     pub fn failure_reason(&self) -> Option<UnknownReason> {
         if self.timed_out {
             Some(UnknownReason::Timeout)
@@ -122,7 +54,6 @@ impl Invocation {
         }
     }
 
-    /// Operator-facing detail for [`Self::failure_reason`].
     pub fn failure_detail(&self, budget: Duration) -> String {
         if self.timed_out {
             format!(
@@ -139,7 +70,6 @@ impl Invocation {
     }
 }
 
-/// Why a `kicad-cli` process could not be started at all.
 #[derive(Debug)]
 pub struct SpawnFailure {
     pub command: Vec<String>,
@@ -147,11 +77,6 @@ pub struct SpawnFailure {
     pub detail: String,
 }
 
-/// Spawn a thread that reads a pipe to EOF and reports the bytes back.
-///
-/// The thread is detached rather than joined: if the write end outlives
-/// the child (see the module note on orphans) the caller must be able to
-/// walk away from it.
 fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -159,43 +84,20 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {
         if let Some(mut pipe) = pipe {
             let _ = pipe.read_to_end(&mut buf);
         }
-        // A send failure means the caller already gave up; nothing to do.
         let _ = tx.send(buf);
     });
     rx
 }
 
-/// Collect a drained pipe, giving up at `deadline`.
-///
-/// Returns whatever is available; an abandoned reader yields empty output
-/// rather than blocking. Losing stderr is the right trade against hanging:
-/// the runs where stderr actually matters are the ones that exited.
-///
-/// The deadline is shared across both pipes by the caller. Giving each its
-/// own [`PIPE_DRAIN_GRACE`] would let a hung tool cost twice the grace.
 fn collect(rx: &Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    // Both error arms mean the same thing here: no output to report.
-    // Timeout is the abandoned-reader case, Disconnected a panicked one.
     rx.recv_timeout(remaining).unwrap_or_default()
 }
 
-/// Run `kicad-cli` with `args` under a wall-clock budget.
-///
-/// Returns `Err` only when the process could not be started; a tool that
-/// ran and failed is an `Ok` [`Invocation`] whose
-/// [`Invocation::succeeded`] is false. That split keeps "we have no
-/// evidence" and "the tool gave us a verdict" from collapsing into one
-/// error path, which is how the old code ended up warning and continuing.
 pub fn run(args: &[String], budget: Duration) -> Result<Invocation, SpawnFailure> {
     run_binary(&binary(), args, budget)
 }
 
-/// [`run`], but against an explicit executable.
-///
-/// Exists so the spawn, timeout and pipe-draining behaviour can be
-/// tested against stub programs. `KICAD_CLI` is process-global, so
-/// setting it per-test would race with every other test in the binary.
 pub fn run_binary(
     bin: &str,
     args: &[String],
@@ -227,8 +129,6 @@ pub fn run_binary(
         }
     };
 
-    // Drain both pipes concurrently; see the module notes on deadlock and
-    // on orphaned grandchildren.
     let stdout_reader = drain(child.stdout.take());
     let stderr_reader = drain(child.stderr.take());
 
@@ -255,7 +155,6 @@ pub fn run_binary(
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    // Best-effort, time-bounded: an orphan may still hold the write end.
     let drain_deadline = Instant::now() + PIPE_DRAIN_GRACE;
     let stdout = collect(&stdout_reader, drain_deadline);
     let stderr = collect(&stderr_reader, drain_deadline);
@@ -273,9 +172,6 @@ pub fn run_binary(
     })
 }
 
-/// Cached `kicad-cli version` output. `None` means the probe failed; that
-/// alone is not a blocking condition, it just leaves `tool_version`
-/// unset in the evidence.
 pub fn version() -> Option<String> {
     static VERSION: OnceLock<Option<String>> = OnceLock::new();
     VERSION.get_or_init(probe_version).clone()
@@ -295,8 +191,6 @@ fn probe_version() -> Option<String> {
     (!line.is_empty()).then(|| line.to_string())
 }
 
-/// Parse the major version out of a `kicad-cli version` string such as
-/// `10.0.1` or `8.0.4-unknown-abc123`.
 pub fn major_version(version: &str) -> Option<u32> {
     let digits: String = version
         .trim()
@@ -307,11 +201,6 @@ pub fn major_version(version: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Reject tool versions whose report schema Synth cannot read.
-///
-/// Returns the reason and detail for an `unknown`, or `None` when the
-/// version is acceptable or simply unknown — an unqueryable version is
-/// not itself evidence of incompatibility.
 pub fn version_rejection(version: Option<&str>) -> Option<(UnknownReason, String)> {
     let version = version?;
     let major = major_version(version)?;
@@ -327,23 +216,12 @@ pub fn version_rejection(version: Option<&str>) -> Option<(UnknownReason, String
     ))
 }
 
-/// A temp path that cleans itself up, so an early return cannot leave a
-/// report behind for a later run to mistake for its own output.
-///
-/// The old DRC path named its report by process id alone and removed it
-/// only on the success path. A stale report from an aborted run could
-/// then be read as the current run's result — a false clean in a
-/// safety gate. The name here also carries a per-process counter so two
-/// concurrent in-process runs cannot share a path.
 #[derive(Debug)]
 pub struct ScratchFile {
     path: std::path::PathBuf,
 }
 
 impl ScratchFile {
-    /// Reserve a unique path under the temp dir. Nothing is created; the
-    /// tool writes it. Any pre-existing file at the path is removed so a
-    /// collision cannot be read as this run's output.
     pub fn reserve(prefix: &str, extension: &str) -> Self {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -358,10 +236,6 @@ impl ScratchFile {
         &self.path
     }
 
-    /// The path as a string for passing to `kicad-cli`.
-    ///
-    /// Lossy rather than `unwrap`: a non-UTF-8 temp dir used to panic
-    /// here, and an export is not the place to abort the process.
     pub fn arg(&self) -> String {
         self.path.to_string_lossy().into_owned()
     }
@@ -397,7 +271,6 @@ mod tests {
     fn supported_and_future_versions_are_accepted() {
         assert!(version_rejection(Some("8.0.4")).is_none());
         assert!(version_rejection(Some("10.0.1")).is_none());
-        // No upper bound: a future major must not read as unsupported.
         assert!(version_rejection(Some("14.2.0")).is_none());
     }
 
@@ -429,20 +302,14 @@ mod tests {
         let first = ScratchFile::reserve("synth_test_collide", "json");
         let path = first.path().to_path_buf();
         std::fs::write(&path, b"stale").expect("write stale report");
-        // Forget the guard so the stale file survives, the way an
-        // aborted run would leave it.
         std::mem::forget(first);
         assert!(path.exists());
 
-        // A fresh reservation on the same path must not inherit it.
         let stale = std::fs::read(&path).unwrap();
         assert_eq!(stale, b"stale");
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The runner's own spawn/timeout/drain behaviour, exercised against
-    /// stub programs rather than a real KiCad install so the classification
-    /// is tested on every machine, including CI without KiCad.
     #[cfg(unix)]
     mod runner {
         use super::*;
@@ -501,10 +368,6 @@ mod tests {
             assert!(detail.contains("did not finish"), "{detail}");
         }
 
-        /// Regression: a child that outsplashes one pipe buffer (64 KiB on
-        /// Linux) blocks on write. A try_wait poll loop without draining
-        /// readers would never see it exit, so this test hangs rather than
-        /// fails if the readers are removed.
         #[test]
         fn a_chatty_tool_does_not_deadlock_the_poll_loop() {
             let run = sh(
@@ -525,7 +388,6 @@ mod tests {
 
     #[test]
     fn timeout_falls_back_on_a_zero_or_junk_override() {
-        // Uses the real env, so only assert the default when unset.
         if std::env::var_os("SYNTH_KICAD_CLI_TIMEOUT_SECS").is_none() {
             assert_eq!(timeout(), Duration::from_secs(DEFAULT_TIMEOUT_SECS));
         }

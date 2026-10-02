@@ -1050,8 +1050,6 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join(format!("{stem}.kicad_pro")), &pro).unwrap();
 
-        // ERC here is a load check: we only care that kicad-cli could
-        // open the project, not what it reported.
         let erc = crate::run_kicad_erc(&sch_path);
         match erc.evidence.reason {
             Some(synth_diagnostics::UnknownReason::NotInstalled) => {
