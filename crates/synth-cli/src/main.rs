@@ -3567,7 +3567,9 @@ fn export_kicad(
             result.schematic_path.display()
         );
         let erc = synth_kicad::run_kicad_erc(&result.schematic_path);
-        if erc.evidence.is_trusted() || erc.evidence.status == NativeCheckStatus::Fail {
+        if erc.evidence.status == NativeCheckStatus::Unknown {
+            report_unavailable_check(&erc.evidence);
+        } else {
             if erc.violations.is_empty() {
                 eprintln!("kicad-cli sch erc: 0 violations found");
             } else {
@@ -3579,8 +3581,6 @@ fn export_kicad(
                 }
             }
             has_kicad_erc_errs = erc.errors().next().is_some();
-        } else {
-            report_unavailable_check(&erc.evidence);
         }
         native.push(erc.evidence);
     }
@@ -3588,17 +3588,15 @@ fn export_kicad(
     // Slice 13.4: Run KiCad native PCB DRC verification gate
     let mut has_kicad_drc_errors = false;
     let drc = synth_drc::run_kicad_cli_drc(&result.pcb_path);
-    if drc.evidence.is_trusted() || drc.evidence.status == NativeCheckStatus::Fail {
-        if drc.violations.is_empty() {
-            eprintln!("kicad-cli pcb drc: 0 violations found (Phase 13 Zero-DRC gate clean)");
-        } else {
-            for v in &drc.violations {
-                eprintln!("[kicad-drc] error: [{}] {}", v.code, v.message);
-            }
-            has_kicad_drc_errors = true;
-        }
-    } else {
+    if drc.evidence.status == NativeCheckStatus::Unknown {
         report_unavailable_check(&drc.evidence);
+    } else if drc.violations.is_empty() {
+        eprintln!("kicad-cli pcb drc: 0 violations found (Phase 13 Zero-DRC gate clean)");
+    } else {
+        for v in &drc.violations {
+            eprintln!("[kicad-drc] error: [{}] {}", v.code, v.message);
+        }
+        has_kicad_drc_errors = true;
     }
     native.push(drc.evidence);
 
@@ -3606,9 +3604,9 @@ fn export_kicad(
     // is a warning: a developer without KiCad installed must still be able
     // to generate a project, and nothing about that output claims to have
     // been verified.
-    let unverified: Vec<&synth_diagnostics::NativeCheckEvidence> =
-        native.iter().filter(|e| !e.is_trusted()).collect();
-    let blocked_by_unknown: Vec<_> = unverified
+    // ERC is here only when --validate-erc asked for it, so an unavailable
+    // ERC always blocks; the others block only for a fab submission.
+    let blocked_by_unknown: Vec<_> = native
         .iter()
         .filter(|e| e.status == NativeCheckStatus::Unknown)
         .filter(|e| production || e.stage == synth_kicad::ERC_STAGE)

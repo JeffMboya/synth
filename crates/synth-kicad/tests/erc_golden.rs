@@ -145,40 +145,36 @@ fn all_reference_designs_pass_kicad_erc() {
         ) else {
             return;
         };
-        {
-            {
-                let error_violations: Vec<_> = violations.iter().filter(|v| v.is_error()).collect();
+        let error_violations: Vec<_> = violations.iter().filter(|v| v.is_error()).collect();
 
-                if golden_error_count > 0 {
-                    assert!(
-                        error_violations.len() <= golden_error_count,
-                        "{stem}: KiCad ERC error count regressed: produced {} errors, golden baseline has {}",
-                        error_violations.len(),
-                        golden_error_count
-                    );
-                } else if MULTI_UNIT_LIMITATION.contains(&stem.as_str()) {
-                    // Documented limitation: only the multi-unit pin error
-                    // is acceptable; anything else is a real regression.
-                    let unexpected: Vec<_> = error_violations
-                        .iter()
-                        .filter(|v| {
-                            !(v.violation_type == "pin_not_connected"
-                                || v.violation_type == "pin_not_driven")
-                        })
-                        .collect();
-                    assert!(
-                        unexpected.is_empty(),
-                        "{stem}: unexpected non-multi-unit ERC errors: {unexpected:?}",
-                    );
-                } else {
-                    assert!(
-                        error_violations.is_empty(),
-                        "{stem}: KiCad ERC produced {} error-level violations: {:?}",
-                        error_violations.len(),
-                        error_violations
-                    );
-                }
-            }
+        if golden_error_count > 0 {
+            assert!(
+                error_violations.len() <= golden_error_count,
+                "{stem}: KiCad ERC error count regressed: produced {} errors, golden baseline has {}",
+                error_violations.len(),
+                golden_error_count
+            );
+        } else if MULTI_UNIT_LIMITATION.contains(&stem.as_str()) {
+            // Documented limitation: only the multi-unit pin error
+            // is acceptable; anything else is a real regression.
+            let unexpected: Vec<_> = error_violations
+                .iter()
+                .filter(|v| {
+                    !(v.violation_type == "pin_not_connected"
+                        || v.violation_type == "pin_not_driven")
+                })
+                .collect();
+            assert!(
+                unexpected.is_empty(),
+                "{stem}: unexpected non-multi-unit ERC errors: {unexpected:?}",
+            );
+        } else {
+            assert!(
+                error_violations.is_empty(),
+                "{stem}: KiCad ERC produced {} error-level violations: {:?}",
+                error_violations.len(),
+                error_violations
+            );
         }
     });
 }
