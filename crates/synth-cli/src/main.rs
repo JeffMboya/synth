@@ -20,6 +20,7 @@ use std::process::Command as ProcessCommand;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use synth_diagnostics::NativeCheckStatus;
 
 const EXIT_SUCCESS: u8 = 0;
 const EXIT_VALIDATION_ERRORS: u8 = 1;
@@ -127,6 +128,12 @@ enum Command {
         /// Run KiCad schematic ERC (`kicad-cli sch erc`) on the exported schematic.
         #[arg(long)]
         validate_erc: bool,
+        /// Write machine-readable native ERC/DRC evidence (tool, version,
+        /// command, stderr, and the pass/fail/unknown status of each stage)
+        /// to this path. Written outside `--out` on purpose, so the argv it
+        /// records cannot perturb the export's artifact hashes.
+        #[arg(long, value_name = "FILE")]
+        verification_report: Option<PathBuf>,
         /// Force export even if Synth ERC validation produces error diagnostics.
         #[arg(long)]
         force: bool,
@@ -751,6 +758,7 @@ fn main() -> ExitCode {
             pnp: _,
             profile: _,
             validate_erc,
+            verification_report,
             force,
             allow_unverified_parts,
             user_registry,
@@ -778,6 +786,7 @@ fn main() -> ExitCode {
                 step,
             },
             validate_erc,
+            verification_report.as_deref(),
             force,
             allow_unverified_parts,
             autoroute,
@@ -3274,6 +3283,7 @@ fn export_kicad(
     out_dir: &Path,
     fab: synth_kicad::FabRequest,
     validate_erc: bool,
+    verification_report: Option<&Path>,
     force: bool,
     allow_unverified_parts: bool,
     autoroute: bool,
@@ -3462,6 +3472,12 @@ fn export_kicad(
         }
     }
 
+    // A fab submission, or an explicit --validate-erc, is a request for
+    // native verification. If the tool cannot produce evidence, the run has
+    // not been verified and must not report success — see `native_evidence`.
+    let production = !fab.is_empty();
+    let mut native = Vec::new();
+
     // Slice 3: Run KiCad ERC if requested
     let mut has_kicad_erc_errs = false;
     if validate_erc {
@@ -3469,44 +3485,74 @@ fn export_kicad(
             "running kicad-cli sch erc on {}",
             result.schematic_path.display()
         );
-        match synth_kicad::run_kicad_erc(&result.schematic_path) {
-            Ok(violations) => {
-                if violations.is_empty() {
-                    eprintln!("kicad-cli sch erc: 0 violations found");
-                } else {
-                    for v in &violations {
-                        eprintln!(
-                            "[kicad-erc] {}: [{}] {}",
-                            v.severity, v.violation_type, v.description
-                        );
-                        if v.severity.eq_ignore_ascii_case("error") {
-                            has_kicad_erc_errs = true;
-                        }
-                    }
+        let erc = synth_kicad::run_kicad_erc(&result.schematic_path);
+        if erc.evidence.is_trusted() || erc.evidence.status == NativeCheckStatus::Fail {
+            if erc.violations.is_empty() {
+                eprintln!("kicad-cli sch erc: 0 violations found");
+            } else {
+                for v in &erc.violations {
+                    eprintln!(
+                        "[kicad-erc] {}: [{}] {}",
+                        v.severity, v.violation_type, v.description
+                    );
                 }
             }
-            Err(e) => {
-                eprintln!("warning: could not run kicad-cli sch erc: {e}");
-            }
+            has_kicad_erc_errs = erc.errors().next().is_some();
+        } else {
+            report_unavailable_check(&erc.evidence);
         }
+        native.push(erc.evidence);
     }
 
     // Slice 13.4: Run KiCad native PCB DRC verification gate
     let mut has_kicad_drc_errors = false;
-    match synth_drc::run_kicad_cli_drc(&result.pcb_path) {
-        Ok(violations) => {
-            if violations.is_empty() {
-                eprintln!("kicad-cli pcb drc: 0 violations found (Phase 13 Zero-DRC gate clean)");
-            } else {
-                for v in &violations {
-                    eprintln!("[kicad-drc] error: [{}] {}", v.code, v.message);
-                    has_kicad_drc_errors = true;
-                }
+    let drc = synth_drc::run_kicad_cli_drc(&result.pcb_path);
+    if drc.evidence.is_trusted() || drc.evidence.status == NativeCheckStatus::Fail {
+        if drc.violations.is_empty() {
+            eprintln!("kicad-cli pcb drc: 0 violations found (Phase 13 Zero-DRC gate clean)");
+        } else {
+            for v in &drc.violations {
+                eprintln!("[kicad-drc] error: [{}] {}", v.code, v.message);
             }
+            has_kicad_drc_errors = true;
         }
-        Err(e) => {
-            eprintln!("warning: could not run kicad-cli pcb drc: {e}");
+    } else {
+        report_unavailable_check(&drc.evidence);
+    }
+    native.push(drc.evidence);
+
+    // An unavailable check blocks a verification run. On a plain export it
+    // is a warning: a developer without KiCad installed must still be able
+    // to generate a project, and nothing about that output claims to have
+    // been verified.
+    let unverified: Vec<&synth_diagnostics::NativeCheckEvidence> =
+        native.iter().filter(|e| !e.is_trusted()).collect();
+    let blocked_by_unknown: Vec<_> = unverified
+        .iter()
+        .filter(|e| e.status == NativeCheckStatus::Unknown)
+        .filter(|e| production || e.stage == synth_kicad::ERC_STAGE)
+        .collect();
+    if !blocked_by_unknown.is_empty() {
+        eprintln!();
+        if production {
+            eprintln!(
+                "error: UNTRUSTED / NOT FOR FABRICATION — this export has no native \
+                 verification evidence:"
+            );
+        } else {
+            eprintln!("error: requested native verification could not be performed:");
         }
+        for evidence in &blocked_by_unknown {
+            eprintln!("  {}", evidence.summary_line());
+        }
+        eprintln!(
+            "An unavailable check is not a pass. Install KiCad (or set KICAD_CLI), \
+             then re-run; --force does not override this."
+        );
+    }
+
+    if let Some(path) = verification_report {
+        write_verification_report(path, input, &native)?;
     }
 
     let has_errors = parse.has_errors()
@@ -3514,12 +3560,61 @@ fn export_kicad(
         || (has_erc_errors && !force)
         || (has_kicad_drc_errors && !force)
         || has_kicad_erc_errs
+        || !blocked_by_unknown.is_empty()
         || !external_router_clean;
     Ok(if has_errors {
         EXIT_VALIDATION_ERRORS
     } else {
         EXIT_SUCCESS
     })
+}
+
+/// Print the full forensic trail for a check that could not run: the tool,
+/// its version, the exact argv, and its stderr. Without these an operator
+/// cannot tell a missing install from a broken one.
+fn report_unavailable_check(evidence: &synth_diagnostics::NativeCheckEvidence) {
+    eprintln!("warning: {}", evidence.summary_line());
+    eprintln!("  tool: {}", evidence.tool);
+    if let Some(version) = &evidence.tool_version {
+        eprintln!("  version: {version}");
+    }
+    if !evidence.command.is_empty() {
+        eprintln!("  command: {}", evidence.command.join(" "));
+    }
+    if let Some(detail) = &evidence.detail {
+        eprintln!("  detail: {detail}");
+    }
+    if let Some(stderr) = &evidence.stderr {
+        eprintln!("  stderr: {}", stderr.replace('\n', "\n          "));
+    }
+}
+
+/// Write the machine-readable evidence for the native stages.
+///
+/// Deliberately not placed inside the export directory: the argv it records
+/// contains per-run temp paths, and `check` hashes every file it finds
+/// there to prove the export is reproducible.
+fn write_verification_report(
+    path: &Path,
+    input: &Path,
+    native: &[synth_diagnostics::NativeCheckEvidence],
+) -> anyhow::Result<()> {
+    let release_ready = native
+        .iter()
+        .all(synth_diagnostics::NativeCheckEvidence::is_trusted);
+    let report = serde_json::json!({
+        "schema_version": "synth.verification.v1",
+        "input": input.display().to_string(),
+        "release_ready": release_ready,
+        "stages": native,
+    });
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
+    Ok(())
 }
 
 fn run_freerouting_postpass(
