@@ -1149,6 +1149,10 @@ fn check(
     let mut fab_pass = true;
     if fab && validate_pass && drc_pass {
         let export_dir = work.join("release");
+        // Outside `export_dir`: every file in there is hashed below as
+        // evidence the export is reproducible, and the argv this records
+        // carries per-run temp paths.
+        let verification_path = work.join("verification.json");
         let mut export_args = base.clone();
         export_args.extend([
             "export-kicad".into(),
@@ -1160,6 +1164,8 @@ fn check(
             "--step".into(),
             "--pnp".into(),
             "--validate-erc".into(),
+            "--verification-report".into(),
+            verification_path.display().to_string(),
         ]);
         if let Some(dir) = registry {
             export_args.extend(["--registry".into(), dir.display().to_string()]);
@@ -1169,6 +1175,9 @@ fn check(
         }
         let (export_output, export_timed_out) = run_check_child(&exe, &export_args, 120)?;
         fab_pass = !export_timed_out && export_output.status.success();
+        let native = std::fs::read_to_string(&verification_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         let mut artifacts = serde_json::Map::new();
         if export_dir.is_dir() {
             let mut files = Vec::new();
@@ -1194,13 +1203,25 @@ fn check(
                 artifacts.insert(path, serde_json::Value::String(hash));
             }
         }
-        stages.insert(
-            "manufacturing".into(),
-            serde_json::json!({
-                "status": if fab_pass { "pass" } else { "fail" },
-                "artifacts": artifacts,
-            }),
-        );
+        // A stage that could not run is `unknown`, not `fail`: a timeout or
+        // an unavailable native check is an absence of evidence, and a
+        // consumer must be able to tell that from a real rejection.
+        let status = manufacturing_status(fab_pass, export_timed_out, native.as_ref());
+        // Only an outright pass counts towards the command's result, so the
+        // top-level status can never read `pass` over an `unknown` stage.
+        fab_pass = status == "pass";
+        let mut stage = serde_json::json!({
+            "status": status,
+            "artifacts": artifacts,
+        });
+        if export_timed_out {
+            stage["reason"] = serde_json::json!("timeout");
+            stage["detail"] = serde_json::json!("`export-kicad` exceeded its 120s budget");
+        }
+        if let Some(native) = native {
+            stage["native"] = native;
+        }
+        stages.insert("manufacturing".into(), stage);
     } else if fab {
         fab_pass = false;
         stages.insert(
@@ -1241,6 +1262,34 @@ fn check(
     } else {
         EXIT_VALIDATION_ERRORS
     })
+}
+
+/// Status for the manufacturing stage.
+///
+/// `unknown` means the stage produced no verdict: it timed out, or it ran
+/// but a native ERC/DRC check could not be performed. Both block the
+/// command exactly as a `fail` does — the distinction is for the operator
+/// and for machine consumers, which must not read "we never checked" as
+/// "we checked and rejected it", nor either as a pass.
+fn manufacturing_status(
+    fab_pass: bool,
+    timed_out: bool,
+    native: Option<&serde_json::Value>,
+) -> &'static str {
+    if timed_out {
+        return "unknown";
+    }
+    let native_unknown = native
+        .and_then(|n| n["stages"].as_array())
+        .is_some_and(|stages| stages.iter().any(|s| s["status"] == "unknown"));
+    if native_unknown {
+        return "unknown";
+    }
+    if fab_pass {
+        "pass"
+    } else {
+        "fail"
+    }
 }
 
 fn run_check_child(
@@ -3443,6 +3492,7 @@ fn export_kicad(
     eprintln!("wrote {}", result.pcb_path.display());
     eprintln!("wrote {}", result.bom_path.display());
 
+    let mut fab_evidence = None;
     if !fab.is_empty() {
         // R15.3 trust boundary: a fab submission (gerbers/drill/step) must
         // not silently include parts nobody has reviewed. Interactive
@@ -3459,16 +3509,41 @@ fn export_kicad(
             );
             return Ok(1);
         }
-        let artifacts = synth_kicad::run_fab(&result.pcb_path, out_dir, &fab)
-            .map_err(|e| anyhow::anyhow!("kicad-cli fab export failed: {e}"))?;
-        if let Some(dir) = artifacts.gerbers_dir {
-            eprintln!("wrote gerbers into {}", dir.display());
-        }
-        if let Some(dir) = artifacts.drill_dir {
-            eprintln!("wrote drill files into {}", dir.display());
-        }
-        if let Some(path) = artifacts.step_path {
-            eprintln!("wrote {}", path.display());
+        match synth_kicad::run_fab(&result.pcb_path, out_dir, &fab) {
+            Ok(artifacts) => {
+                if let Some(dir) = artifacts.gerbers_dir {
+                    eprintln!("wrote gerbers into {}", dir.display());
+                }
+                if let Some(dir) = artifacts.drill_dir {
+                    eprintln!("wrote drill files into {}", dir.display());
+                }
+                if let Some(path) = artifacts.step_path {
+                    eprintln!("wrote {}", path.display());
+                }
+                fab_evidence = Some(synth_diagnostics::NativeCheckEvidence::concluded(
+                    FAB_STAGE,
+                    synth_drc::kicad_cli::binary(),
+                    Vec::new(),
+                    0,
+                ));
+            }
+            Err(e) => {
+                // Record rather than bail: a release gate needs to see that
+                // the package is missing *and why*, and bailing here would
+                // skip the evidence report entirely.
+                let mut evidence = synth_diagnostics::NativeCheckEvidence::unknown(
+                    FAB_STAGE,
+                    synth_drc::kicad_cli::binary(),
+                    Vec::new(),
+                    e.unknown_reason(),
+                    format!("kicad-cli fab export failed: {e}"),
+                )
+                .with_version(synth_drc::kicad_cli::version());
+                if let Some(stderr) = e.stderr() {
+                    evidence = evidence.with_stderr(stderr);
+                }
+                fab_evidence = Some(evidence);
+            }
         }
     }
 
@@ -3477,6 +3552,12 @@ fn export_kicad(
     // not been verified and must not report success — see `native_evidence`.
     let production = !fab.is_empty();
     let mut native = Vec::new();
+    if let Some(evidence) = fab_evidence {
+        if !evidence.is_trusted() {
+            report_unavailable_check(&evidence);
+        }
+        native.push(evidence);
+    }
 
     // Slice 3: Run KiCad ERC if requested
     let mut has_kicad_erc_errs = false;
@@ -3568,6 +3649,9 @@ fn export_kicad(
         EXIT_SUCCESS
     })
 }
+
+/// Stage name for the manufacturing-artifact export.
+const FAB_STAGE: &str = "kicad_fab";
 
 /// Print the full forensic trail for a check that could not run: the tool,
 /// its version, the exact argv, and its stderr. Without these an operator
