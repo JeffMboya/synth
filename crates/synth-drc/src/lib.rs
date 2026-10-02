@@ -72,7 +72,7 @@ use synth_place::Placement;
 use synth_route::Routing;
 
 pub use profile::{ManufacturerProfile, ProfileError};
-pub use rules::run_kicad_cli_drc;
+pub use rules::{run_kicad_cli_drc, NativeDrcOutcome, DRC_STAGE};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuggestedOverride {
