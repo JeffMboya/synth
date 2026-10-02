@@ -61,6 +61,7 @@
 #![allow(clippy::cast_possible_wrap, clippy::similar_names)]
 
 mod geometry;
+pub mod kicad_cli;
 mod profile;
 mod rules;
 
