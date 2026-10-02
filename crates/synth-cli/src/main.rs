@@ -481,6 +481,25 @@ enum RegistryCommand {
     List,
     /// Health check: report shadowed parts and unverified parts.
     Doctor,
+    /// Qualify every part against its KiCad footprint and symbol:
+    /// pin-to-pad coverage both ways, mirrored footprints, package
+    /// dimensions, pin classification, and provenance. A check that
+    /// cannot run is reported as `unknown`, never as a pass.
+    Qualify {
+        /// Write the review artifact as JSON to FILE instead of a
+        /// human summary on stdout.
+        #[arg(long, value_name = "FILE")]
+        report: Option<PathBuf>,
+        /// Emit the review artifact as JSON on stdout.
+        #[arg(long, conflicts_with = "report")]
+        json: bool,
+        /// Qualify only this part id.
+        #[arg(long, value_name = "ID")]
+        part: Option<String>,
+        /// Exit 0 even when parts are blocked or unproven.
+        #[arg(long)]
+        no_fail: bool,
+    },
     /// Generate or verify a SHA256 manifest of the Tier-1 registry
     /// (R15.10). The manifest is the deterministic artifact the release
     /// pipeline signs: `synth registry manifest --output manifest.sha256`
@@ -1273,6 +1292,137 @@ fn manufacturing_status(
     }
 }
 
+fn registry_qualify(
+    registry: &synth_registry::Registry,
+    report_path: Option<&Path>,
+    json: bool,
+    only: Option<&str>,
+    no_fail: bool,
+) -> anyhow::Result<u8> {
+    let facts = synth_layout::qualify_facts::InstalledKicad;
+    let tool_version = format!("synth-cli {}", env!("CARGO_PKG_VERSION"));
+
+    let mut subject = synth_registry::Registry::new();
+    match only {
+        Some(id) => {
+            let part = registry
+                .lookup(id)
+                .ok_or_else(|| anyhow::anyhow!("no part `{id}` in the resolved registry"))?;
+            subject.insert(part.clone());
+        }
+        None => {
+            for (_, part) in registry.iter() {
+                subject.insert(part.clone());
+            }
+        }
+    }
+
+    let report = synth_registry::qualify_registry(&subject, &facts, &facts, &tool_version);
+
+    if let Some(path) = report_path {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
+        eprintln!("wrote {}", path.display());
+    } else if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_qualification(&report);
+    }
+
+    Ok(if no_fail || report.is_clean() {
+        EXIT_SUCCESS
+    } else {
+        EXIT_VALIDATION_ERRORS
+    })
+}
+
+fn print_qualification(report: &synth_registry::QualificationReport) {
+    use synth_registry::{CheckStatus, FindingLevel};
+
+    for part in &report.parts {
+        if part.status == CheckStatus::Pass {
+            continue;
+        }
+        println!("{} [{}]", part.part_id, part.status.as_str());
+        for finding in part.findings() {
+            let tag = match finding.level {
+                FindingLevel::Blocking => "blocking",
+                FindingLevel::Review => "review",
+            };
+            println!("  {tag} {}: {}", finding.code, finding.message);
+            println!("    expected: {}", finding.expected);
+            println!("    found:    {}", finding.found);
+        }
+        for check in part.unknown_checks() {
+            println!(
+                "  unknown {}: {}",
+                check.name,
+                check.unknown_reason.as_deref().unwrap_or("no reason given")
+            );
+        }
+    }
+
+    let s = &report.summary;
+    println!(
+        "{} part(s): {} qualified, {} blocked, {} unproven",
+        s.total, s.qualified, s.blocked, s.unproven
+    );
+    if s.unproven > 0 {
+        println!(
+            "unproven parts have checks that could not run; install KiCad or set \
+             KICAD_FOOTPRINT_DIR / KICAD_SYMBOL_DIR"
+        );
+    }
+}
+
+fn structural_refusal(board: &synth_ir::Board) -> Option<String> {
+    let facts = synth_layout::qualify_facts::InstalledKicad;
+    let mut subject = synth_registry::Registry::new();
+    for component in &board.components {
+        if let Some(part) = component.part.as_ref() {
+            subject.insert(part.clone());
+        }
+    }
+    if subject.is_empty() {
+        return None;
+    }
+
+    let report = synth_registry::qualify_registry(
+        &subject,
+        &facts,
+        &facts,
+        &format!("synth-cli {}", env!("CARGO_PKG_VERSION")),
+    );
+
+    let defective: Vec<&synth_registry::PartQualification> =
+        report.structurally_defective().collect();
+    if defective.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from(
+        "error: [E-SYNTH-QUAL-000] refusing fab export: part definitions disagree with their \
+         KiCad footprint or symbol. A wrong pin map routes nets to the wrong pads, which no \
+         flag should wave through.\n",
+    );
+    for part in defective {
+        for finding in part.structural_defects() {
+            use std::fmt::Write as _;
+            let _ = writeln!(
+                out,
+                "  {} [{}]: {}\n    expected: {}\n    found:    {}",
+                part.part_id, finding.code, finding.message, finding.expected, finding.found
+            );
+        }
+    }
+    out.push_str("Fix the part definitions, or run `synth registry qualify` for the full report.");
+    Some(out)
+}
+
 fn run_check_child(
     exe: &Path,
     args: &[String],
@@ -1397,6 +1547,47 @@ fn registry_cmd(
                      seed was found; run from a synth checkout or pass --registry"
             ),
         },
+        RegistryCommand::Qualify { .. } => {
+            let res = match (resolve_tier1(registry), user.as_deref()) {
+                (Tier1Source::Dir(dir), Some(u)) if u.exists() => {
+                    synth_registry::load_tiered(&dir, u, strict)
+                        .map_err(|e| anyhow::anyhow!("registry load failed: {e}"))?
+                }
+                (Tier1Source::Dir(dir), _) => synth_registry::LoadResult {
+                    registry: synth_registry::load_dir(&dir)
+                        .map_err(|e| anyhow::anyhow!("registry load failed: {e}"))?,
+                    warnings: Vec::new(),
+                },
+                (Tier1Source::Embedded, Some(u)) if u.exists() => {
+                    synth_registry::load_user_overlay(
+                        synth_registry::embedded_registry().clone(),
+                        u,
+                        strict,
+                    )
+                    .map_err(|e| anyhow::anyhow!("registry load failed: {e}"))?
+                }
+                (Tier1Source::Embedded, _) => synth_registry::LoadResult {
+                    registry: synth_registry::embedded_registry().clone(),
+                    warnings: Vec::new(),
+                },
+            };
+            let RegistryCommand::Qualify {
+                report,
+                json,
+                part,
+                no_fail,
+            } = cmd
+            else {
+                unreachable!("matched Qualify above")
+            };
+            registry_qualify(
+                &res.registry,
+                report.as_deref(),
+                json,
+                part.as_deref(),
+                no_fail,
+            )
+        }
         RegistryCommand::List | RegistryCommand::Doctor => {
             let res = match (resolve_tier1(registry), user.as_deref()) {
                 (Tier1Source::Dir(dir), Some(u)) if u.exists() => {
@@ -3480,6 +3671,10 @@ fn export_kicad(
         // preview/validation stay non-blocking (`W-SYNTH-PART-UNVERIFIED`
         // is a warning there); manufacturing export is where it becomes a
         // hard gate, per §18.8.2.
+        if let Some(refusal) = structural_refusal(board) {
+            eprintln!("{refusal}");
+            return Ok(1);
+        }
         let unverified = parts_unverified(board);
         if !unverified.is_empty() && !allow_unverified_parts {
             let list = unverified.join(", ");
