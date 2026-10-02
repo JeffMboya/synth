@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use synth_diagnostics::UnknownReason;
 use thiserror::Error;
 
 /// Which artifacts the caller wants produced. All optional;
@@ -55,6 +56,29 @@ pub struct FabArtifacts {
     pub drill_dir: Option<PathBuf>,
     /// `<name>.step`.
     pub step_path: Option<PathBuf>,
+}
+
+impl FabError {
+    /// Why this failure left us without a manufacturing package.
+    ///
+    /// A missing or broken tool is an absence of evidence, not a verdict on
+    /// the board; the release gate must report it as `unknown` rather than
+    /// as a rejection, and never as a pass.
+    pub fn unknown_reason(&self) -> UnknownReason {
+        match self {
+            Self::NotFound => UnknownReason::NotInstalled,
+            Self::CreateDir { .. } | Self::Spawn { .. } => UnknownReason::SpawnFailed,
+            Self::Subprocess { .. } => UnknownReason::CommandFailed,
+        }
+    }
+
+    /// Tool stderr, when the failure carried any.
+    pub fn stderr(&self) -> Option<&str> {
+        match self {
+            Self::Subprocess { stderr, .. } => Some(stderr.as_str()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
