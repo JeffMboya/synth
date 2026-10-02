@@ -15,6 +15,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
+use synth_diagnostics::UnknownReason;
+use synth_kicad::NativeErcOutcome;
+
+/// Violations from a live ERC run, or `None` when KiCad is not installed
+/// and the caller should skip.
+///
+/// Any other `unknown` is a hard failure: a run that could not produce
+/// evidence must not be mistaken for a clean schematic, which is the
+/// whole point of this suite.
+fn live_violations(
+    outcome: NativeErcOutcome,
+    label: &str,
+) -> Option<Vec<synth_kicad::KicadErcViolation>> {
+    match outcome.evidence.reason {
+        Some(UnknownReason::NotInstalled) => {
+            eprintln!("kicad-cli not installed; skipping live ERC test for {label}");
+            None
+        }
+        Some(_) => panic!(
+            "{label}: ERC produced no usable evidence — {}",
+            outcome.evidence.summary_line()
+        ),
+        None => Some(outcome.violations),
+    }
+}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -114,12 +139,15 @@ fn all_reference_designs_pass_kicad_erc() {
             0
         };
 
-        match synth_kicad::run_kicad_erc(&result.schematic_path) {
-            Ok(violations) => {
-                let error_violations: Vec<_> = violations
-                    .iter()
-                    .filter(|v| v.severity.eq_ignore_ascii_case("error"))
-                    .collect();
+        let Some(violations) = live_violations(
+            synth_kicad::run_kicad_erc(&result.schematic_path),
+            &stem,
+        ) else {
+            return;
+        };
+        {
+            {
+                let error_violations: Vec<_> = violations.iter().filter(|v| v.is_error()).collect();
 
                 if golden_error_count > 0 {
                     assert!(
@@ -151,12 +179,6 @@ fn all_reference_designs_pass_kicad_erc() {
                     );
                 }
             }
-            Err(synth_kicad::ErcRunError::NotInstalled { .. }) => {
-                eprintln!("kicad-cli not installed; skipping live ERC test for {stem}");
-            }
-            Err(e) => {
-                panic!("{stem}: run_kicad_erc failed: {e}");
-            }
         }
     });
 }
@@ -186,17 +208,15 @@ fn erc_report_parser_is_not_vacuous() {
     let tmp = tempdir("parser-not-vacuous");
     let result = synth_kicad::export(&board, &tmp).expect("export");
 
-    match synth_kicad::run_kicad_erc(&result.schematic_path) {
-        Ok(violations) => {
-            assert!(
-                !violations.is_empty(),
-                "ERC parser returned empty violations for a design with known errors — \
-                 the KiCad 10 schemas[].violations nesting may have regressed"
-            );
-        }
-        Err(synth_kicad::ErcRunError::NotInstalled { .. }) => {
-            eprintln!("kicad-cli not installed; skipping vacuous-parser regression test");
-        }
-        Err(e) => panic!("run_kicad_erc failed: {e}"),
-    }
+    let Some(violations) = live_violations(
+        synth_kicad::run_kicad_erc(&result.schematic_path),
+        "vacuous-parser regression",
+    ) else {
+        return;
+    };
+    assert!(
+        !violations.is_empty(),
+        "ERC parser returned empty violations for a design with known errors — \
+         the KiCad 10 sheets[].violations nesting may have regressed"
+    );
 }
