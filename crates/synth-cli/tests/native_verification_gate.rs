@@ -436,3 +436,134 @@ fn a_plain_export_still_succeeds_but_records_the_unknown() {
     assert_eq!(drc["status"], "unknown");
     assert_eq!(drc["reason"], "not_installed");
 }
+
+/// `synth check --fab` is the release gate, and it delegates to
+/// `export-kicad`. These pin that the tri-state survives the hand-off: the
+/// gate used to read only the child's exit code, so it reported
+/// `manufacturing: pass` on a machine with no KiCad at all.
+mod release_gate {
+    use super::*;
+
+    fn check_fab(label: &str, kicad_cli: &Path) -> (Option<i32>, serde_json::Value) {
+        let output = Command::new(SYNTH)
+            .arg("check")
+            .arg(design())
+            .arg("--fab")
+            .arg("--json")
+            .env("KICAD_CLI", kicad_cli)
+            .env("SYNTH_KICAD_CLI_TIMEOUT_SECS", "5")
+            .output()
+            .unwrap_or_else(|e| panic!("run synth check ({label}): {e}"));
+        let report = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "check must emit JSON ({label}): {e}\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (output.status.code(), report)
+    }
+
+    #[test]
+    fn an_unavailable_tool_makes_manufacturing_unknown_not_fail() {
+        let dir = scratch("gate_missing");
+        let (code, report) = check_fab("missing", &dir.join("does-not-exist"));
+        let manufacturing = &report["stages"]["manufacturing"];
+
+        assert_eq!(code, Some(1), "an unknown stage must block: {report:#}");
+        assert_eq!(
+            manufacturing["status"], "unknown",
+            "a missing tool is an absence of evidence, not a rejection: {report:#}"
+        );
+        assert_eq!(
+            manufacturing["native"]["release_ready"], false,
+            "{report:#}"
+        );
+        // The per-stage forensic trail must survive into the gate's report.
+        let stages = manufacturing["native"]["stages"]
+            .as_array()
+            .expect("native stages");
+        assert!(
+            stages.iter().all(|s| s["status"] == "unknown"),
+            "{report:#}"
+        );
+        assert!(
+            stages.iter().all(|s| s["reason"] == "not_installed"),
+            "{report:#}"
+        );
+        assert_ne!(
+            report["status"], "pass",
+            "the command must never pass over an unknown stage"
+        );
+    }
+
+    /// With a tool that answers everything cleanly the gate passes, so the
+    /// fail-closed behaviour is not simply "always block".
+    #[test]
+    fn a_clean_tool_lets_the_gate_pass() {
+        let dir = scratch("gate_clean");
+        let script = r#"case "$1 $2" in
+  "sch erc"|"pcb drc")
+    __FIND_OUTPUT__
+    printf '{"kicad_version":"10.0.1","violations":[]}' > "$out"
+    exit 0 ;;
+  "pcb export") exit 0 ;;
+esac
+exit 0"#
+            .replace("__FIND_OUTPUT__", FIND_OUTPUT);
+        let cli = stub(&dir, &script);
+        let (code, report) = check_fab("clean", &cli);
+        let manufacturing = &report["stages"]["manufacturing"];
+
+        assert_eq!(
+            manufacturing["status"], "pass",
+            "a clean tool run must pass: {report:#}"
+        );
+        assert_eq!(report["status"], "pass", "{report:#}");
+        assert_eq!(code, Some(0), "{report:#}");
+        assert_eq!(manufacturing["native"]["release_ready"], true, "{report:#}");
+        assert!(
+            manufacturing["artifacts"]
+                .as_object()
+                .is_some_and(|a| !a.is_empty()),
+            "the artifact hashes must still be recorded: {report:#}"
+        );
+    }
+
+    /// A tool that exits non-zero on DRC has not cleared the board, and the
+    /// gate must say so without claiming the board was rejected on merit.
+    #[test]
+    fn a_broken_tool_makes_manufacturing_unknown() {
+        let dir = scratch("gate_broken");
+        let script = r#"case "$1 $2" in
+  "pcb export") exit 0 ;;
+  "sch erc")
+    __FIND_OUTPUT__
+    printf '{"violations":[]}' > "$out"
+    exit 0 ;;
+  "pcb drc") echo "Failed to load library" >&2; exit 2 ;;
+esac
+exit 0"#
+            .replace("__FIND_OUTPUT__", FIND_OUTPUT);
+        let cli = stub(&dir, &script);
+        let (code, report) = check_fab("broken", &cli);
+        let manufacturing = &report["stages"]["manufacturing"];
+
+        assert_eq!(code, Some(1), "{report:#}");
+        assert_eq!(manufacturing["status"], "unknown", "{report:#}");
+        let drc = manufacturing["native"]["stages"]
+            .as_array()
+            .expect("native stages")
+            .iter()
+            .find(|s| s["stage"] == "kicad_drc")
+            .expect("drc evidence")
+            .clone();
+        assert_eq!(drc["reason"], "command_failed", "{drc:#}");
+        assert!(
+            drc["stderr"]
+                .as_str()
+                .is_some_and(|s| s.contains("Failed to load library")),
+            "{drc:#}"
+        );
+    }
+}
