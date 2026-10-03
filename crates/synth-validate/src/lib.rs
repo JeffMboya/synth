@@ -136,6 +136,8 @@ fn all_rules(config: &ErcConfig) -> Vec<Box<dyn ErcRule>> {
         Box::new(UsbCcPullDownRule),
         Box::new(SpiDirectionRule),
         Box::new(DiffPairBothLegsConnectedRule),
+        Box::new(DiffPairNetReuseRule),
+        Box::new(DiffPairOnPowerNetRule),
         Box::new(RfFeedImpedanceRule),
         Box::new(ResidualEnergyAnomalyRule),
         Box::new(CrystalLoadCapBalanceRule),
@@ -2395,30 +2397,9 @@ impl ErcRule for DiffPairBothLegsConnectedRule {
     fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         for dp in &board.diff_pairs {
-            // Named nets resolve at lowering (`net "USB_DP" { … }`
-            // joined with `diff_pair USB_DP USB_DN`): count the
-            // resolved nets directly. Unresolved legs (legacy designs
-            // without named nets) fall back to endpoint-name matching.
-            let pos_len = dp.positive_net.map_or_else(
-                || {
-                    board
-                        .nets
-                        .iter()
-                        .find(|n| net_matches_name(board, n, &dp.positive))
-                        .map_or(0, |n| n.endpoints.len())
-                },
-                |id| board.net(id).map_or(0, |n| n.endpoints.len()),
-            );
-            let neg_len = dp.negative_net.map_or_else(
-                || {
-                    board
-                        .nets
-                        .iter()
-                        .find(|n| net_matches_name(board, n, &dp.negative))
-                        .map_or(0, |n| n.endpoints.len())
-                },
-                |id| board.net(id).map_or(0, |n| n.endpoints.len()),
-            );
+            let [(_, pos), (_, neg)] = diff_pair_legs(board, dp);
+            let pos_len = pos.map_or(0, |n| n.endpoints.len());
+            let neg_len = neg.map_or(0, |n| n.endpoints.len());
 
             if pos_len < 2 || neg_len < 2 {
                 out.push(
@@ -2447,6 +2428,136 @@ impl ErcRule for DiffPairBothLegsConnectedRule {
                     })
                     .build(),
                 );
+            }
+        }
+        out
+    }
+}
+
+/// The two legs of a `diff_pair`, each with the net it refers to: the net
+/// resolved at lowering (named nets) when there is one, else the net matching
+/// the leg name or `refdes_pin`.
+fn diff_pair_legs<'a>(
+    board: &'a Board,
+    dp: &'a synth_ir::DiffPair,
+) -> [(&'a str, Option<&'a synth_ir::Net>); 2] {
+    let net_of = |resolved: Option<NetId>, name: &str| {
+        resolved
+            .and_then(|id| board.net(id))
+            .or_else(|| board.nets.iter().find(|n| net_matches_name(board, n, name)))
+    };
+    [
+        (dp.positive.as_str(), net_of(dp.positive_net, &dp.positive)),
+        (dp.negative.as_str(), net_of(dp.negative_net, &dp.negative)),
+    ]
+}
+
+// -----------------------------------------------------------------------------
+// E-SYNTH-DIFF-004 — a net is a leg of more than one differential pair
+// -----------------------------------------------------------------------------
+
+struct DiffPairNetReuseRule;
+
+impl ErcRule for DiffPairNetReuseRule {
+    fn code(&self) -> &'static str {
+        "E-SYNTH-DIFF-004"
+    }
+
+    fn category(&self) -> ErcCategory {
+        ErcCategory::Connectivity
+    }
+
+    fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
+        let mut out = Vec::new();
+        // (net, index of the pair that first used it, that leg's name)
+        let mut claimed: Vec<(NetId, usize, &str)> = Vec::new();
+        for (idx, dp) in board.diff_pairs.iter().enumerate() {
+            let mut reused = Vec::new();
+            for (leg, net) in diff_pair_legs(board, dp) {
+                let Some(net) = net else { continue };
+                // A pair may name one net twice (an impedance target on a
+                // single-ended RF net, see RF-003); only reuse across pairs
+                // is an error.
+                match claimed.iter().find(|(id, ..)| *id == net.id) {
+                    Some(&(_, owner_idx, owner)) if owner_idx != idx => reused.push(format!(
+                        "`{leg}` resolves to net `{}`, already a leg (`{owner}`) of another pair",
+                        net.name
+                    )),
+                    Some(_) => {}
+                    None => claimed.push((net.id, idx, leg)),
+                }
+            }
+            if !reused.is_empty() {
+                out.push(
+                    DiagnosticBuilder::new(
+                        self.code(),
+                        Severity::Error,
+                        "net is a leg of more than one differential pair",
+                    )
+                    .location(Location::from_span(file.to_string(), dp.source_span))
+                    .expected("each net to belong to at most one differential pair")
+                    .found(reused.join("; "))
+                    .explanation_url(format!("synth.docs/diagnostics/{}", self.code()))
+                    .build(),
+                );
+            }
+        }
+        out
+    }
+}
+
+// -----------------------------------------------------------------------------
+// E-SYNTH-DIFF-005 — differential-pair leg resolves to a power or ground net
+// -----------------------------------------------------------------------------
+
+struct DiffPairOnPowerNetRule;
+
+impl ErcRule for DiffPairOnPowerNetRule {
+    fn code(&self) -> &'static str {
+        "E-SYNTH-DIFF-005"
+    }
+
+    fn category(&self) -> ErcCategory {
+        ErcCategory::Protocol
+    }
+
+    fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
+        let mut out = Vec::new();
+        for dp in &board.diff_pairs {
+            // One diagnostic per leg, unlike DIFF-004: each leg is a different
+            // net with its own power pin to name.
+            for (leg, net) in diff_pair_legs(board, dp) {
+                let Some(net) = net else { continue };
+                let power_pin = net.endpoints.iter().find_map(|e| {
+                    let pin = board.pin(e.component, e.pin)?;
+                    if !matches!(
+                        pin.electrical_type,
+                        ElectricalType::PowerInput
+                            | ElectricalType::PowerOutput
+                            | ElectricalType::GroundReference
+                    ) {
+                        return None;
+                    }
+                    let refdes = board.component(e.component).map_or("?", |c| &c.refdes);
+                    Some(format!("{refdes}.{}", pin.name))
+                });
+                if let Some(power_pin) = power_pin {
+                    out.push(
+                        DiagnosticBuilder::new(
+                            self.code(),
+                            Severity::Error,
+                            "differential-pair leg is on a power or ground net",
+                        )
+                        .location(Location::from_span(file.to_string(), dp.source_span))
+                        .expected("both legs to be signal nets")
+                        .found(format!(
+                            "`{leg}` resolves to net `{}`, which carries power pin `{power_pin}`",
+                            net.name
+                        ))
+                        .explanation_url(format!("synth.docs/diagnostics/{}", self.code()))
+                        .build(),
+                    );
+                }
             }
         }
         out

@@ -1,0 +1,23 @@
+board "diff_004_pass" {
+  layers 2
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+  component R3: resistor "r_generic_0603" value "10k"
+  component R4: resistor "r_generic_0603" value "10k"
+  component R5: resistor "r_generic_0603" value "10k"
+  component R6: resistor "r_generic_0603" value "10k"
+  component R7: resistor "r_generic_0603" value "10k"
+  component R8: resistor "r_generic_0603" value "10k"
+
+  connect R1.p1 -> R2.p1
+  connect R3.p1 -> R4.p1
+  connect R5.p1 -> R6.p1
+  connect R7.p1 -> R8.p1
+
+  diff_pair r1_p1 r3_p1 {
+    impedance 90ohm
+  }
+  diff_pair r5_p1 r7_p1 {
+    impedance 90ohm
+  }
+}
