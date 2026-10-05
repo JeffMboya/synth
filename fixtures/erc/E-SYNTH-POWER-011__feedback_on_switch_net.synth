@@ -1,0 +1,23 @@
+board "power_011_feedback_on_switch_net" {
+  layers 4
+
+  component U1: regulator "mp2307_buck"
+  component J1: connector "header_1x4"
+  component C1: capacitor "c_generic_0805" value "22uF"
+  component C2: capacitor "c_generic_0805" value "22uF"
+  component L1: inductor "l_generic_1210" value "10uH"
+  component R1: resistor "r_generic_0402" value "31.6k"
+  component R2: resistor "r_generic_0402" value "10k"
+
+  connect J1.p1 -> U1.in
+  connect J1.p1 -> C1.p1
+  connect C1.p2 -> U1.gnd
+  connect U1.sw -> L1.p1
+  connect L1.p2 -> C2.p1
+  connect L1.p2 -> R1.p1
+  connect R1.p2 -> U1.fb
+  connect U1.fb -> R2.p1
+  connect R2.p2 -> U1.gnd
+  connect J1.p1 -> U1.en
+  connect U1.sw -> U1.fb
+}

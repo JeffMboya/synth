@@ -28,6 +28,7 @@ required = true
 name = "sw"
 number = "3"
 electrical_type = "passive"
+capabilities = ["switch_node"]
 required = true
 
 [[pins]]
@@ -40,6 +41,7 @@ required = true
 name = "fb"
 number = "5"
 electrical_type = "input"
+capabilities = ["feedback"]
 required = true
 
 [[pins]]

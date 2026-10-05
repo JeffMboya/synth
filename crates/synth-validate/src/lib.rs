@@ -171,6 +171,7 @@ fn all_rules(config: &ErcConfig) -> Vec<Box<dyn ErcRule>> {
         Box::new(deep_erc::UnitTagMismatchRule),
         Box::new(deep_erc::PinFunctionSupportRule),
         Box::new(deep_erc::CeramicDcBiasDeratingRule::new(config)),
+        Box::new(RegulatorFeedbackOnSwitchNodeRule),
     ]
 }
 
@@ -2558,6 +2559,91 @@ impl ErcRule for DiffPairOnPowerNetRule {
                         .build(),
                     );
                 }
+            }
+        }
+        out
+    }
+}
+
+// -----------------------------------------------------------------------------
+// E-SYNTH-POWER-011 — regulator feedback pin is fed from the switching node
+// -----------------------------------------------------------------------------
+
+struct RegulatorFeedbackOnSwitchNodeRule;
+
+fn net_endpoint_with<'a>(
+    board: &Board,
+    net: &'a synth_ir::Net,
+    cap: PinCapability,
+) -> Option<&'a synth_ir::NetEndpoint> {
+    net.endpoints
+        .iter()
+        .find(|e| endpoint_has_any_capability(board, e.component, e.pin, &[cap]))
+}
+
+fn describe_endpoint(board: &Board, e: &synth_ir::NetEndpoint) -> String {
+    match (board.component(e.component), board.pin(e.component, e.pin)) {
+        (Some(c), Some(p)) => c.describe_pin(&p.name),
+        _ => "?".to_string(),
+    }
+}
+
+fn switch_node_via_resistor<'a>(
+    board: &'a Board,
+    net: &synth_ir::Net,
+) -> Option<(&'a synth_ir::NetEndpoint, &'a str)> {
+    net.endpoints
+        .iter()
+        .filter(|e| is_two_pin_resistor(board, e.component))
+        .find_map(|r| {
+            let resistor = board.component(r.component)?;
+            let far_net = board.net(deep_erc::other_pin_net(board, resistor, r.pin)?)?;
+            let sw = net_endpoint_with(board, far_net, PinCapability::SwitchNode)?;
+            Some((sw, resistor.refdes.as_str()))
+        })
+}
+
+impl ErcRule for RegulatorFeedbackOnSwitchNodeRule {
+    fn code(&self) -> &'static str {
+        "E-SYNTH-POWER-011"
+    }
+
+    fn category(&self) -> ErcCategory {
+        ErcCategory::Power
+    }
+
+    fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
+        let mut out = Vec::new();
+        for net in &board.nets {
+            for fb in net.endpoints.iter().filter(|e| {
+                endpoint_has_any_capability(board, e.component, e.pin, &[PinCapability::Feedback])
+            }) {
+                let (sw, how) =
+                    if let Some(sw) = net_endpoint_with(board, net, PinCapability::SwitchNode) {
+                        (sw, format!("shares net `{}` with", net.name))
+                    } else if let Some((sw, refdes)) = switch_node_via_resistor(board, net) {
+                        (sw, format!("is joined through resistor `{refdes}` to"))
+                    } else {
+                        continue;
+                    };
+                out.push(
+                    DiagnosticBuilder::new(
+                        self.code(),
+                        Severity::Error,
+                        "regulator feedback is taken from the switching node",
+                    )
+                    .location(Location::from_span(file.to_string(), fb.source_span))
+                    .expected(
+                        "the feedback pin to sense the regulated output, not the switching node",
+                    )
+                    .found(format!(
+                        "feedback pin {} {how} switch-node pin {}",
+                        describe_endpoint(board, fb),
+                        describe_endpoint(board, sw),
+                    ))
+                    .explanation_url(format!("synth.docs/diagnostics/{}", self.code()))
+                    .build(),
+                );
             }
         }
         out

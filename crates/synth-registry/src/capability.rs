@@ -181,6 +181,10 @@ pub enum PinCapability {
     // Differential
     DiffPairPositive,
     DiffPairNegative,
+
+    // Switching regulators
+    SwitchNode,
+    Feedback,
 }
 
 impl PinCapability {
@@ -242,6 +246,8 @@ impl PinCapability {
             PinCapability::RfFeed => "RF",
             PinCapability::DiffPairPositive => "DIFF_P",
             PinCapability::DiffPairNegative => "DIFF_N",
+            PinCapability::SwitchNode => "SW",
+            PinCapability::Feedback => "FB",
         }
     }
 
