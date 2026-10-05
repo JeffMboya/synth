@@ -40,9 +40,6 @@ fn qualify(dir: &str, id: &str) -> PartQualification {
     qualify_part(&load(dir, id), &facts, &facts)
 }
 
-/// One test, not many: the footprint loader caches its search root in a
-/// `OnceLock`, so the fixture directory has to be in place before the first
-/// lookup in this process and cannot be changed afterwards.
 #[test]
 fn fixtures_qualify_and_every_mutation_is_caught() {
     std::env::set_var("KICAD_FOOTPRINT_DIR", fixture_root().join("footprints"));
@@ -165,9 +162,6 @@ fn structural_classification_matches_the_export_gate() {
     }
 }
 
-/// A pin map that reuses one pad number never reaches the qualification
-/// engine: the registry loader rejects it. Asserting that here keeps the
-/// mutation corpus honest about which layer catches what.
 #[test]
 fn a_duplicated_pad_number_is_rejected_at_load() {
     let err = synth_registry::load_dir(&fixture_root().join("rejected-at-load"))

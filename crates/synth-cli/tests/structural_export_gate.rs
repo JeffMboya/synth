@@ -58,9 +58,6 @@ fn mutation_dir(id: &str) -> PathBuf {
     fixture_root().join("mutations").join(id)
 }
 
-/// `--force` exists to wave past Synth's own ERC. It must not wave past a pin
-/// map that disagrees with the named footprint: E-SYNTH-PIN-001 is suppressed
-/// by --force, so without this gate a forced fab export ships the mismatch.
 #[test]
 fn force_does_not_wave_past_a_pin_map_mismatch() {
     let run = export_with(
@@ -82,9 +79,6 @@ fn force_does_not_wave_past_a_pin_map_mismatch() {
     );
 }
 
-/// An exposed or thermal pad left out of the pin map is not something ERC
-/// checks at all: every declared pin resolves, so pin-to-pad coverage is
-/// clean while a copper pad goes unconnected.
 #[test]
 fn an_undeclared_exposed_pad_blocks_fab_export() {
     let run = export_with(
@@ -106,8 +100,6 @@ fn an_undeclared_exposed_pad_blocks_fab_export() {
     );
 }
 
-/// The gate must not block a part whose pin map agrees with its footprint,
-/// or it would simply stop all fabrication.
 #[test]
 fn a_structurally_sound_part_passes_the_gate() {
     let run = export_with(
