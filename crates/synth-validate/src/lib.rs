@@ -136,6 +136,8 @@ fn all_rules(config: &ErcConfig) -> Vec<Box<dyn ErcRule>> {
         Box::new(stackup::StackupLayerCountRule),
         Box::new(stackup::StackupAlternationRule),
         Box::new(stackup::StackupNonPositiveRule),
+        Box::new(stackup::ImpedanceReferencePlaneRule),
+        Box::new(stackup::ImpedanceNotVerifiedRule),
         Box::new(EmptyBoardRule),
         Box::new(UsbCcPullDownRule),
         Box::new(SpiDirectionRule),

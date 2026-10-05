@@ -1,0 +1,21 @@
+board "stackup_005_with_stackup" {
+  layers 4
+
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+
+  connect R1.p1 -> R2.p1
+  connect R1.p2 -> R2.p2
+
+  diff_pair r1_p1 r1_p2 { impedance 90ohm }
+
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4 material "FR4"
+    copper 0.0152mm
+    insulator 1.065mm er 4.6 material "FR4"
+    copper 0.0152mm
+    insulator 0.2104mm er 4.4 material "FR4"
+    copper 0.035mm
+  }
+}

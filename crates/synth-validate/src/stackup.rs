@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Consistency checks for a declared `stackup { … }`. A board without one
-//! is never checked: there is nothing to disagree with.
+//! Consistency checks for a declared `stackup { … }`, and the controlled-impedance
+//! rules that depend on one.
 
 use synth_diagnostics::{Diagnostic, DiagnosticBuilder, Location, Severity};
-use synth_ir::{Board, StackupLayer};
+use synth_ir::{Board, DiffPair, StackupLayer};
 
 use crate::{ErcCategory, ErcRule};
 
-fn error(code: &str, title: &str, file: &str, span: synth_diagnostics::Span) -> DiagnosticBuilder {
-    DiagnosticBuilder::new(code, Severity::Error, title)
+fn diagnostic(
+    severity: Severity,
+    code: &str,
+    title: &str,
+    file: &str,
+    span: synth_diagnostics::Span,
+) -> DiagnosticBuilder {
+    DiagnosticBuilder::new(code, severity, title)
         .location(Location::from_span(file.to_string(), span))
         .explanation_url(format!("synth.docs/diagnostics/{code}"))
+}
+
+fn error(code: &str, title: &str, file: &str, span: synth_diagnostics::Span) -> DiagnosticBuilder {
+    diagnostic(Severity::Error, code, title, file, span)
 }
 
 // -----------------------------------------------------------------------------
@@ -167,6 +177,92 @@ impl ErcRule for StackupNonPositiveRule {
             }
         }
         out
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Controlled impedance — a `diff_pair` with an `impedance` target (RF-003 idiom included)
+// -----------------------------------------------------------------------------
+
+fn controlled_pairs(board: &Board) -> impl Iterator<Item = (&DiffPair, String)> {
+    board.diff_pairs.iter().filter_map(|dp| {
+        #[allow(clippy::cast_precision_loss)]
+        let ohms = dp.impedance?.0 as f64 / 1000.0;
+        let target = format!("{ohms} ohm target of `{}`/`{}`", dp.positive, dp.negative);
+        Some((dp, target))
+    })
+}
+
+// -----------------------------------------------------------------------------
+// E-SYNTH-STACKUP-004 — controlled impedance on a board with no reference plane
+// -----------------------------------------------------------------------------
+
+pub(crate) struct ImpedanceReferencePlaneRule;
+
+impl ErcRule for ImpedanceReferencePlaneRule {
+    fn code(&self) -> &'static str {
+        "E-SYNTH-STACKUP-004"
+    }
+
+    fn category(&self) -> ErcCategory {
+        ErcCategory::Board
+    }
+
+    fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
+        if board.layers != 1 {
+            return Vec::new();
+        }
+        controlled_pairs(board)
+            .map(|(dp, target)| {
+                error(
+                    self.code(),
+                    "controlled impedance has no reference plane",
+                    file,
+                    dp.source_span,
+                )
+                .expected("a ground reference plane adjacent to the signal layer")
+                .found(format!(
+                    "a one-layer board has no reference plane, so the {target} means nothing"
+                ))
+                .build()
+            })
+            .collect()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// E-SYNTH-STACKUP-005 — controlled impedance in a design with no stackup
+// -----------------------------------------------------------------------------
+
+pub(crate) struct ImpedanceNotVerifiedRule;
+
+impl ErcRule for ImpedanceNotVerifiedRule {
+    fn code(&self) -> &'static str {
+        "E-SYNTH-STACKUP-005"
+    }
+
+    fn category(&self) -> ErcCategory {
+        ErcCategory::Board
+    }
+
+    fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
+        if board.stackup.is_some() || board.layers == 1 {
+            return Vec::new();
+        }
+        controlled_pairs(board)
+            .map(|(dp, target)| {
+                diagnostic(
+                    Severity::Warning,
+                    self.code(),
+                    "controlled impedance not verified: no stackup declared",
+                    file,
+                    dp.source_span,
+                )
+                .expected("a `stackup` block to check the impedance target against")
+                .found(format!("no stackup, so the {target} is not verified"))
+                .build()
+            })
+            .collect()
     }
 }
 
