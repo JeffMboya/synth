@@ -1,0 +1,73 @@
+schema_version = "synth.qualification.v1"
+
+[matrix]
+release_command = "synth check <board> --json"
+fab_command = "synth check <board> --fab --json"
+
+[[board]]
+id = "hello"
+path = "fixtures/designs/hello.synth"
+class = "A"
+status = "qualified"
+expect = "pass"
+rationale = "Smallest valid board declaration. Proves the release command itself is sound."
+
+[[board]]
+id = "env_logger"
+path = "examples/env_logger.synth"
+class = "A"
+status = "experimental"
+expect = "pass"
+rationale = "USB-C power, LDO, MCU, I2C sensor, debug header. The Class-A envelope in #39."
+
+[[board]]
+id = "sensor_logger"
+path = "examples/sensor_logger.synth"
+class = "A"
+status = "experimental"
+expect = "pass"
+rationale = "Dual I2C sensors, SPI flash, status LEDs. Larger Class-A digital board."
+
+[[board]]
+id = "placement_and_diff_pair"
+path = "examples/placement_and_diff_pair.synth"
+class = "C"
+status = "experimental"
+expect = "pass"
+rationale = "Differential-pair constraints, placement hints, keepouts. Class-C constraint surface per #40."
+
+[[board]]
+id = "ref_ldo_sensor"
+path = "fixtures/kicad-reference/ref_ldo_sensor.synth"
+class = "A"
+status = "unsupported"
+expect = "fail"
+expect_source_codes = ["E-SYNTH-VALUE-001"]
+rationale = "Negative test. Generic passives carry no `value`, so the BOM would not be orderable."
+
+[[board]]
+id = "ref_crystal_mcu"
+path = "fixtures/kicad-reference/ref_crystal_mcu.synth"
+class = "A"
+status = "unsupported"
+expect = "fail"
+expect_source_codes = ["E-SYNTH-VALUE-001"]
+rationale = "Negative test. Same unvalued-passive defect on a crystal/MCU board."
+
+[[board]]
+id = "ref_usb_cdc"
+path = "fixtures/kicad-reference/ref_usb_cdc.synth"
+class = "B"
+status = "unsupported"
+expect = "fail"
+expect_source_codes = ["E-SYNTH-VALUE-001"]
+rationale = "Negative test. USB-class interface; unvalued passives block it today."
+
+[[board]]
+id = "secure_tracker"
+path = "fixtures/kicad-reference/secure_tracker.synth"
+class = "D"
+status = "unsupported"
+expect = "fail"
+expect_source_codes = ["E-SYNTH-VALUE-001"]
+rationale = "Negative test. Most complex reference board; stands in for the Class-D envelope in #41."
