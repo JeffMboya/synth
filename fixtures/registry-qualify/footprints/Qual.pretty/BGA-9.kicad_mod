@@ -1,0 +1,12 @@
+(footprint "BGA-9"
+  (layer "F.Cu")
+  (pad "A1" smd circle (at -0.8 -0.8) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "A2" smd circle (at 0 -0.8) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "A3" smd circle (at 0.8 -0.8) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "B1" smd circle (at -0.8 0) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "B2" smd circle (at 0 0) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "B3" smd circle (at 0.8 0) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "C1" smd circle (at -0.8 0.8) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "C2" smd circle (at 0 0.8) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "C3" smd circle (at 0.8 0.8) (size 0.35 0.35) (layers "F.Cu" "F.Paste" "F.Mask"))
+)

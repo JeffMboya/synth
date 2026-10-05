@@ -24,8 +24,10 @@
 
 mod capability;
 mod kicad_pin_check;
+pub use kicad_pin_check::kicad_pin_numbers;
 mod loader;
 mod part;
+pub mod qualify;
 mod registry;
 pub mod vector_search;
 
@@ -51,5 +53,9 @@ pub use footprint_svg::{
     parse_component_svg, to_kicad_mod as svg_to_kicad_mod, Pad, ParsedFootprint,
 };
 pub use overlay::{part_to_toml, quoted};
+pub use qualify::{
+    qualify_part, qualify_registry, Check, CheckStatus, Finding, FindingLevel, FootprintFacts,
+    PadFacts, PadSide, PartQualification, QualificationReport, SymbolFacts,
+};
 pub use registry::Registry;
 pub use vector_search::{VectorSearchIndex, VectorSearchResult};

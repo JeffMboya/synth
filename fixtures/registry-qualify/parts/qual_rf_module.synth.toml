@@ -1,0 +1,41 @@
+id = "qual_rf_module"
+kind = "rf"
+description = "Qualification fixture: 6-pad RF module"
+mpn = "QUAL-RF-6"
+kicad_footprint = "Qual:RF-Module-6"
+
+[footprint_dimensions]
+width_mm = 9.0
+height_mm = 4.6
+courtyard_margin_mm = 0.5
+
+[provenance]
+source = "seed"
+datasheet_url = "https://example.invalid/qual-rf.pdf"
+reviewed_by = "qualification fixture"
+reviewed_at = "2026-10-02"
+
+[[pins]]
+name = "gnd"
+number = "1"
+electrical_type = "ground_reference"
+[[pins]]
+name = "vdd"
+number = "2"
+electrical_type = "power_input"
+[[pins]]
+name = "ant"
+number = "3"
+electrical_type = "rf"
+[[pins]]
+name = "rxd"
+number = "4"
+electrical_type = "input"
+[[pins]]
+name = "txd"
+number = "5"
+electrical_type = "output"
+[[pins]]
+name = "en"
+number = "6"
+electrical_type = "input"

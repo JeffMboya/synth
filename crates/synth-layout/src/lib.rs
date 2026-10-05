@@ -61,6 +61,7 @@ pub mod netclass;
 pub mod ops;
 mod patterns;
 pub mod placer;
+pub mod qualify_facts;
 pub mod route;
 pub mod score;
 pub mod sheets;

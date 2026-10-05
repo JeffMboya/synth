@@ -1,0 +1,33 @@
+id = "qual_connector"
+kind = "connector"
+description = "Qualification fixture: 1x4 THT header with a mechanical mounting hole"
+mpn = "QUAL-CONN-4"
+kicad_footprint = "Qual:Conn-1x4-THT"
+
+[footprint_dimensions]
+width_mm = 10.2
+height_mm = 2.5
+courtyard_margin_mm = 0.25
+
+[provenance]
+source = "seed"
+datasheet_url = "https://example.invalid/qual-conn.pdf"
+reviewed_by = "qualification fixture"
+reviewed_at = "2026-10-02"
+
+[[pins]]
+name = "p1"
+number = "1"
+electrical_type = "passive"
+[[pins]]
+name = "p2"
+number = "2"
+electrical_type = "passive"
+[[pins]]
+name = "p3"
+number = "3"
+electrical_type = "passive"
+[[pins]]
+name = "p4"
+number = "4"
+electrical_type = "passive"

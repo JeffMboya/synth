@@ -1,0 +1,53 @@
+id = "qual_bga"
+kind = "memory"
+description = "Qualification fixture: 9-ball BGA with alphanumeric pads"
+mpn = "QUAL-BGA-9"
+kicad_footprint = "Qual:BGA-9"
+
+[footprint_dimensions]
+width_mm = 2.0
+height_mm = 2.0
+courtyard_margin_mm = 0.25
+
+[provenance]
+source = "seed"
+datasheet_url = "https://example.invalid/qual-bga.pdf"
+reviewed_by = "qualification fixture"
+reviewed_at = "2026-10-02"
+
+[[pins]]
+name = "vcc"
+number = "A1"
+electrical_type = "power_input"
+[[pins]]
+name = "dq0"
+number = "A2"
+electrical_type = "bidirectional"
+[[pins]]
+name = "dq1"
+number = "A3"
+electrical_type = "bidirectional"
+[[pins]]
+name = "clk"
+number = "B1"
+electrical_type = "input"
+[[pins]]
+name = "cs"
+number = "B2"
+electrical_type = "input"
+[[pins]]
+name = "dq2"
+number = "B3"
+electrical_type = "bidirectional"
+[[pins]]
+name = "dq3"
+number = "C1"
+electrical_type = "bidirectional"
+[[pins]]
+name = "wp"
+number = "C2"
+electrical_type = "input"
+[[pins]]
+name = "gnd"
+number = "C3"
+electrical_type = "ground_reference"

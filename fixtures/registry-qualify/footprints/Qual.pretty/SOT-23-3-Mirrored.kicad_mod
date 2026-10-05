@@ -1,0 +1,6 @@
+(footprint "SOT-23-3-Mirrored"
+  (layer "B.Cu")
+  (pad "1" smd rect (at -0.95 0.9) (size 0.9 0.8) (layers "B.Cu" "B.Paste" "B.Mask"))
+  (pad "2" smd rect (at 0.95 0.9) (size 0.9 0.8) (layers "B.Cu" "B.Paste" "B.Mask"))
+  (pad "3" smd rect (at 0 -0.9) (size 0.9 0.8) (layers "B.Cu" "B.Paste" "B.Mask"))
+)

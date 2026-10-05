@@ -1,0 +1,1263 @@
+// SPDX-License-Identifier: Apache-2.0
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+
+use crate::part::{Part, PartId};
+use crate::registry::Registry;
+
+pub const SCHEMA_VERSION: &str = "synth.registry.qualify.v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadSide {
+    Front,
+    Back,
+    Both,
+    NoCopper,
+}
+
+impl PadSide {
+    pub fn has_copper(self) -> bool {
+        !matches!(self, Self::NoCopper)
+    }
+
+    pub fn includes_front(self) -> bool {
+        matches!(self, Self::Front | Self::Both)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PadFacts {
+    pub number: String,
+    pub center_mm: (f64, f64),
+    pub size_mm: (f64, f64),
+    pub side: PadSide,
+    pub is_npth: bool,
+}
+
+impl PadFacts {
+    pub fn is_signal_pad(&self) -> bool {
+        !self.is_npth && self.side.has_copper() && !self.number.trim().is_empty()
+    }
+}
+
+pub trait FootprintFacts {
+    fn pads(&self, lib_id: &str) -> Option<Vec<PadFacts>>;
+}
+
+pub trait SymbolFacts {
+    fn pin_numbers(&self, lib_id: &str) -> Option<BTreeSet<String>>;
+}
+
+#[derive(Debug, Default)]
+pub struct NoFacts;
+
+impl FootprintFacts for NoFacts {
+    fn pads(&self, _lib_id: &str) -> Option<Vec<PadFacts>> {
+        None
+    }
+}
+
+impl SymbolFacts for NoFacts {
+    fn pin_numbers(&self, _lib_id: &str) -> Option<BTreeSet<String>> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus {
+    Pass,
+    Fail,
+    Unknown,
+    NotApplicable,
+}
+
+impl CheckStatus {
+    pub fn is_pass(self) -> bool {
+        matches!(self, Self::Pass | Self::NotApplicable)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Unknown => "unknown",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingLevel {
+    Review,
+    Blocking,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Finding {
+    pub code: String,
+    pub level: FindingLevel,
+    pub message: String,
+    pub expected: String,
+    pub found: String,
+}
+
+pub const PROVENANCE_CODES: [&str; 3] =
+    ["E-SYNTH-QUAL-008", "E-SYNTH-QUAL-009", "E-SYNTH-QUAL-015"];
+
+impl Finding {
+    pub fn is_structural(&self) -> bool {
+        !PROVENANCE_CODES.contains(&self.code.as_str())
+    }
+
+    fn blocking(
+        code: &str,
+        message: impl Into<String>,
+        expected: impl Into<String>,
+        found: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.to_string(),
+            level: FindingLevel::Blocking,
+            message: message.into(),
+            expected: expected.into(),
+            found: found.into(),
+        }
+    }
+
+    fn review(
+        code: &str,
+        message: impl Into<String>,
+        expected: impl Into<String>,
+        found: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.to_string(),
+            level: FindingLevel::Review,
+            message: message.into(),
+            expected: expected.into(),
+            found: found.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Check {
+    pub name: String,
+    pub status: CheckStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unknown_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<Finding>,
+}
+
+impl Check {
+    fn pass(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            status: CheckStatus::Pass,
+            unknown_reason: None,
+            findings: Vec::new(),
+        }
+    }
+
+    fn not_applicable(name: &str, reason: impl Into<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            status: CheckStatus::NotApplicable,
+            unknown_reason: Some(reason.into()),
+            findings: Vec::new(),
+        }
+    }
+
+    fn unknown(name: &str, reason: impl Into<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            status: CheckStatus::Unknown,
+            unknown_reason: Some(reason.into()),
+            findings: Vec::new(),
+        }
+    }
+
+    fn from_findings(name: &str, findings: Vec<Finding>) -> Self {
+        let status = if findings.iter().any(|f| f.level == FindingLevel::Blocking) {
+            CheckStatus::Fail
+        } else {
+            CheckStatus::Pass
+        };
+        Self {
+            name: name.to_string(),
+            status,
+            unknown_reason: None,
+            findings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartQualification {
+    pub part_id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mpn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kicad_symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kicad_footprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datasheet_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewed_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewed_at: Option<String>,
+    pub status: CheckStatus,
+    pub checks: Vec<Check>,
+}
+
+impl PartQualification {
+    pub fn findings(&self) -> impl Iterator<Item = &Finding> {
+        self.checks.iter().flat_map(|c| c.findings.iter())
+    }
+
+    pub fn blocking_findings(&self) -> impl Iterator<Item = &Finding> {
+        self.findings()
+            .filter(|f| f.level == FindingLevel::Blocking)
+    }
+
+    pub fn review_findings(&self) -> impl Iterator<Item = &Finding> {
+        self.findings().filter(|f| f.level == FindingLevel::Review)
+    }
+
+    pub fn is_fabrication_safe(&self) -> bool {
+        self.status.is_pass()
+    }
+
+    pub fn structural_defects(&self) -> impl Iterator<Item = &Finding> {
+        self.findings()
+            .filter(|f| f.level == FindingLevel::Blocking && f.is_structural())
+    }
+
+    pub fn has_structural_defect(&self) -> bool {
+        self.structural_defects().next().is_some()
+    }
+
+    pub fn unknown_checks(&self) -> impl Iterator<Item = &Check> {
+        self.checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Unknown)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Summary {
+    pub total: usize,
+    pub qualified: usize,
+    pub blocked: usize,
+    pub unproven: usize,
+    pub with_review_findings: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QualificationReport {
+    pub schema_version: String,
+    pub tool_version: String,
+    pub summary: Summary,
+    pub parts: Vec<PartQualification>,
+}
+
+impl QualificationReport {
+    pub fn is_clean(&self) -> bool {
+        self.summary.blocked == 0 && self.summary.unproven == 0
+    }
+
+    pub fn part(&self, id: &str) -> Option<&PartQualification> {
+        self.parts.iter().find(|p| p.part_id == id)
+    }
+
+    pub fn unsafe_for_fabrication(&self) -> impl Iterator<Item = &PartQualification> {
+        self.parts.iter().filter(|p| !p.is_fabrication_safe())
+    }
+
+    pub fn structurally_defective(&self) -> impl Iterator<Item = &PartQualification> {
+        self.parts.iter().filter(|p| p.has_structural_defect())
+    }
+}
+
+const MIL_PER_MM: f64 = 25.4;
+const DIMENSION_RATIO_FLOOR: f64 = 0.2;
+const DIMENSION_RATIO_CEILING: f64 = 8.0;
+const MAX_COURTYARD_MARGIN_MM: f64 = 5.0;
+
+pub fn qualify_registry(
+    registry: &Registry,
+    footprints: &dyn FootprintFacts,
+    symbols: &dyn SymbolFacts,
+    tool_version: &str,
+) -> QualificationReport {
+    let mut ordered: Vec<(&PartId, &Part)> = registry.iter().collect();
+    ordered.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
+
+    let parts: Vec<PartQualification> = ordered
+        .into_iter()
+        .map(|(_, part)| qualify_part(part, footprints, symbols))
+        .collect();
+
+    let mut summary = Summary {
+        total: parts.len(),
+        qualified: 0,
+        blocked: 0,
+        unproven: 0,
+        with_review_findings: 0,
+    };
+    for part in &parts {
+        match part.status {
+            CheckStatus::Pass | CheckStatus::NotApplicable => summary.qualified += 1,
+            CheckStatus::Fail => summary.blocked += 1,
+            CheckStatus::Unknown => summary.unproven += 1,
+        }
+        if part.review_findings().next().is_some() {
+            summary.with_review_findings += 1;
+        }
+    }
+
+    QualificationReport {
+        schema_version: SCHEMA_VERSION.to_string(),
+        tool_version: tool_version.to_string(),
+        summary,
+        parts,
+    }
+}
+
+pub fn qualify_part(
+    part: &Part,
+    footprints: &dyn FootprintFacts,
+    symbols: &dyn SymbolFacts,
+) -> PartQualification {
+    let pads = part
+        .kicad_footprint
+        .as_deref()
+        .and_then(|lib_id| footprints.pads(lib_id));
+
+    let checks = vec![
+        check_pin_numbering(part),
+        check_pin_pad_coverage(part, pads.as_deref()),
+        check_pad_pin_coverage(part, pads.as_deref()),
+        check_footprint_side(part, pads.as_deref()),
+        check_symbol_pin_coverage(part, symbols),
+        check_package_dimensions(part, pads.as_deref()),
+        check_pin_classification(part),
+        check_provenance(part),
+    ];
+
+    let status = if checks.iter().any(|c| c.status == CheckStatus::Fail) {
+        CheckStatus::Fail
+    } else if checks.iter().any(|c| c.status == CheckStatus::Unknown) {
+        CheckStatus::Unknown
+    } else {
+        CheckStatus::Pass
+    };
+
+    PartQualification {
+        part_id: part.id.0.clone(),
+        kind: part.kind.clone(),
+        mpn: part.mpn.clone(),
+        kicad_symbol: part.kicad_symbol.clone(),
+        kicad_footprint: part.kicad_footprint.clone(),
+        datasheet_url: part
+            .provenance
+            .as_ref()
+            .and_then(|p| p.datasheet_url.clone()),
+        reviewed_by: part.provenance.as_ref().and_then(|p| p.reviewed_by.clone()),
+        reviewed_at: part.provenance.as_ref().and_then(|p| p.reviewed_at.clone()),
+        status,
+        checks,
+    }
+}
+
+fn check_pin_numbering(part: &Part) -> Check {
+    const NAME: &str = "pin_numbering";
+    let mut findings = Vec::new();
+
+    let mut by_number: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut by_name: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut blank = Vec::new();
+
+    for pin in &part.pins {
+        let number = pin.number.0.trim();
+        if number.is_empty() {
+            blank.push(pin.name.as_str());
+        } else {
+            by_number.entry(number).or_default().push(pin.name.as_str());
+        }
+        *by_name.entry(pin.name.as_str()).or_default() += 1;
+    }
+
+    for (number, names) in &by_number {
+        if names.len() > 1 {
+            findings.push(Finding::blocking(
+                "E-SYNTH-QUAL-003",
+                "two pins share one pad number",
+                format!("each pin of `{}` to claim a distinct pad", part.id.0),
+                format!("pad {number} claimed by {}", names.join(", ")),
+            ));
+        }
+    }
+
+    for (name, count) in &by_name {
+        if *count > 1 {
+            findings.push(Finding::blocking(
+                "E-SYNTH-QUAL-004",
+                "two pins share one logical name",
+                format!("each pin name of `{}` to be unique", part.id.0),
+                format!("`{name}` declared {count} times"),
+            ));
+        }
+    }
+
+    if !blank.is_empty() {
+        findings.push(Finding::blocking(
+            "E-SYNTH-QUAL-013",
+            "pin has no pad number",
+            "every pin to carry the pad number printed in the datasheet",
+            format!("blank number on: {}", blank.join(", ")),
+        ));
+    }
+
+    Check::from_findings(NAME, findings)
+}
+
+fn check_pin_pad_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
+    const NAME: &str = "pin_pad_coverage";
+    let Some(lib_id) = part.kicad_footprint.as_deref() else {
+        return Check::not_applicable(NAME, "part declares no kicad_footprint");
+    };
+    let Some(pads) = pads else {
+        return Check::unknown(
+            NAME,
+            format!(
+                "footprint `{lib_id}` could not be read; install KiCad or set KICAD_FOOTPRINT_DIR"
+            ),
+        );
+    };
+
+    let pad_numbers: BTreeSet<&str> = pads.iter().map(|p| p.number.as_str()).collect();
+    let missing: Vec<&str> = part
+        .pins
+        .iter()
+        .map(|p| p.number.0.as_str())
+        .filter(|n| !n.trim().is_empty() && !pad_numbers.contains(n))
+        .collect();
+
+    if missing.is_empty() {
+        return Check::pass(NAME);
+    }
+    Check::from_findings(
+        NAME,
+        vec![Finding::blocking(
+            "E-SYNTH-QUAL-001",
+            "declared pin number does not exist as a pad",
+            format!("every pin of `{}` to be a pad of `{lib_id}`", part.id.0),
+            format!(
+                "{} of {} pin(s) unmatched: {}",
+                missing.len(),
+                part.pins.len(),
+                sample(&missing)
+            ),
+        )],
+    )
+}
+
+fn check_pad_pin_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
+    const NAME: &str = "pad_pin_coverage";
+    let Some(lib_id) = part.kicad_footprint.as_deref() else {
+        return Check::not_applicable(NAME, "part declares no kicad_footprint");
+    };
+    let Some(pads) = pads else {
+        return Check::unknown(NAME, format!("footprint `{lib_id}` could not be read"));
+    };
+
+    let declared: BTreeSet<&str> = part.pins.iter().map(|p| p.number.0.as_str()).collect();
+    let orphans: Vec<&str> = pads
+        .iter()
+        .filter(|p| p.is_signal_pad())
+        .map(|p| p.number.as_str())
+        .filter(|n| !declared.contains(n))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    if orphans.is_empty() {
+        return Check::pass(NAME);
+    }
+    Check::from_findings(
+        NAME,
+        vec![Finding::blocking(
+            "E-SYNTH-QUAL-002",
+            "footprint has copper pads no pin declares",
+            format!("every copper pad of `{lib_id}` to be declared by `{}`", part.id.0),
+            format!(
+                "{} undeclared pad(s): {} — an exposed or thermal pad left out of the pin map is a short waiting to happen",
+                orphans.len(),
+                sample(&orphans)
+            ),
+        )],
+    )
+}
+
+fn check_footprint_side(part: &Part, pads: Option<&[PadFacts]>) -> Check {
+    const NAME: &str = "footprint_side";
+    let Some(lib_id) = part.kicad_footprint.as_deref() else {
+        return Check::not_applicable(NAME, "part declares no kicad_footprint");
+    };
+    let Some(pads) = pads else {
+        return Check::unknown(NAME, format!("footprint `{lib_id}` could not be read"));
+    };
+
+    let copper: Vec<&PadFacts> = pads.iter().filter(|p| p.side.has_copper()).collect();
+    if copper.is_empty() {
+        return Check::pass(NAME);
+    }
+    if copper.iter().any(|p| p.side.includes_front()) {
+        return Check::pass(NAME);
+    }
+
+    Check::from_findings(
+        NAME,
+        vec![Finding::blocking(
+            "E-SYNTH-QUAL-012",
+            "every copper pad sits on the back layer",
+            format!("`{lib_id}` to present its pads on F.Cu for a top-side placement"),
+            format!(
+                "all {} copper pad(s) are B.Cu only, which is how a mirrored footprint reads",
+                copper.len()
+            ),
+        )],
+    )
+}
+
+fn check_symbol_pin_coverage(part: &Part, symbols: &dyn SymbolFacts) -> Check {
+    const NAME: &str = "symbol_pin_coverage";
+    let Some(lib_id) = part.kicad_symbol.as_deref() else {
+        return Check::not_applicable(
+            NAME,
+            "part declares no kicad_symbol; the exporter synthesizes the symbol, so there is no external pin map to disagree with",
+        );
+    };
+    let Some(symbol_pins) = symbols.pin_numbers(lib_id) else {
+        return Check::unknown(
+            NAME,
+            format!("symbol `{lib_id}` could not be read; install KiCad or set KICAD_SYMBOL_DIR"),
+        );
+    };
+
+    let missing: Vec<&str> = part
+        .pins
+        .iter()
+        .map(|p| p.number.0.as_str())
+        .filter(|n| !n.trim().is_empty() && !symbol_pins.contains(*n))
+        .collect();
+
+    if missing.is_empty() {
+        return Check::pass(NAME);
+    }
+    Check::from_findings(
+        NAME,
+        vec![Finding::blocking(
+            "E-SYNTH-QUAL-005",
+            "declared pin number does not exist on the KiCad symbol",
+            format!("every pin of `{}` to exist on `{lib_id}`", part.id.0),
+            format!("{} unmatched: {}", missing.len(), sample(&missing)),
+        )],
+    )
+}
+
+fn check_package_dimensions(part: &Part, pads: Option<&[PadFacts]>) -> Check {
+    const NAME: &str = "package_dimensions";
+    let Some(declared) = part.footprint_dimensions.as_ref() else {
+        return Check::not_applicable(NAME, "part declares no footprint_dimensions");
+    };
+
+    let mut findings = Vec::new();
+
+    if declared.width_mm <= 0.0 || declared.height_mm <= 0.0 {
+        findings.push(Finding::blocking(
+            "E-SYNTH-QUAL-007",
+            "declared package dimensions are not positive",
+            "width_mm and height_mm to be positive millimetre values",
+            format!(
+                "width_mm = {}, height_mm = {}",
+                declared.width_mm, declared.height_mm
+            ),
+        ));
+    }
+
+    if let Some(margin) = declared.courtyard_margin_mm {
+        if margin < 0.0 || margin > MAX_COURTYARD_MARGIN_MM {
+            findings.push(Finding::review(
+                "E-SYNTH-QUAL-014",
+                "courtyard margin is outside the plausible range",
+                format!("0 .. {MAX_COURTYARD_MARGIN_MM} mm"),
+                format!("{margin} mm"),
+            ));
+        }
+    }
+
+    let Some(pads) = pads else {
+        // Only an empty finding list is an absence of evidence. Testing the
+        // status instead would discard review-level findings, which are a
+        // Pass.
+        if findings.is_empty() {
+            return Check::unknown(
+                NAME,
+                "footprint pads unavailable, so declared dimensions cannot be cross-checked",
+            );
+        }
+        return Check::from_findings(NAME, findings);
+    };
+
+    if let Some((pad_w, pad_h)) = pad_extent(pads) {
+        for (axis, declared_mm, actual_mm) in [
+            ("width", declared.width_mm, pad_w),
+            ("height", declared.height_mm, pad_h),
+        ] {
+            if actual_mm <= 0.0 || declared_mm <= 0.0 {
+                continue;
+            }
+            let ratio = declared_mm / actual_mm;
+            if (DIMENSION_RATIO_FLOOR..=DIMENSION_RATIO_CEILING).contains(&ratio) {
+                continue;
+            }
+            findings.push(Finding::blocking(
+                "E-SYNTH-QUAL-006",
+                "declared package size disagrees with the footprint's pad extent",
+                format!(
+                    "declared {axis} within {DIMENSION_RATIO_FLOOR}x..{DIMENSION_RATIO_CEILING}x of the {actual_mm:.3} mm pad extent"
+                ),
+                format!(
+                    "declared {declared_mm} mm ({ratio:.2}x){}",
+                    unit_hint(ratio)
+                ),
+            ));
+        }
+    }
+
+    Check::from_findings(NAME, findings)
+}
+
+fn check_pin_classification(part: &Part) -> Check {
+    const NAME: &str = "pin_classification";
+    let mut findings = Vec::new();
+
+    let mut unclassified = Vec::new();
+    let mut required_dnc = Vec::new();
+
+    for pin in &part.pins {
+        match pin.electrical_type {
+            crate::capability::ElectricalType::Unclassified => unclassified.push(pin.name.as_str()),
+            crate::capability::ElectricalType::DoNotConnect if pin.required => {
+                required_dnc.push(pin.name.as_str());
+            }
+            _ => {}
+        }
+    }
+
+    if !required_dnc.is_empty() {
+        findings.push(Finding::blocking(
+            "E-SYNTH-QUAL-011",
+            "no-connect pin is marked required",
+            "a do_not_connect pin to stay floating, never required",
+            format!("required no-connect pin(s): {}", required_dnc.join(", ")),
+        ));
+    }
+
+    if !unclassified.is_empty() {
+        findings.push(Finding::review(
+            "E-SYNTH-QUAL-010",
+            "pin electrical type is unclassified",
+            "every pin to declare an electrical_type",
+            format!(
+                "{} unclassified pin(s): {}",
+                unclassified.len(),
+                sample(&unclassified)
+            ),
+        ));
+    }
+
+    Check::from_findings(NAME, findings)
+}
+
+fn check_provenance(part: &Part) -> Check {
+    const NAME: &str = "provenance";
+    let mut findings = Vec::new();
+
+    let Some(provenance) = part.provenance.as_ref() else {
+        return Check::from_findings(
+            NAME,
+            vec![Finding::blocking(
+                "E-SYNTH-QUAL-008",
+                "part carries no provenance",
+                "a [provenance] table naming the reviewer and datasheet",
+                "no provenance recorded".to_string(),
+            )],
+        );
+    };
+
+    let reviewer = provenance
+        .reviewed_by
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
+
+    if reviewer.is_none() {
+        findings.push(Finding::blocking(
+            "E-SYNTH-QUAL-008",
+            "part has no reviewer",
+            "[provenance].reviewed_by to name whoever checked this part against its datasheet",
+            "reviewed_by is empty".to_string(),
+        ));
+    }
+
+    match provenance
+        .datasheet_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+    {
+        None => findings.push(Finding::review(
+            "E-SYNTH-QUAL-009",
+            "part has no datasheet URL",
+            "[provenance].datasheet_url so a reviewer can re-derive the pin map",
+            "datasheet_url is empty".to_string(),
+        )),
+        Some(url) if !(url.starts_with("http://") || url.starts_with("https://")) => {
+            findings.push(Finding::review(
+                "E-SYNTH-QUAL-009",
+                "datasheet URL is not resolvable",
+                "an http(s) URL",
+                format!("`{url}`"),
+            ));
+        }
+        Some(_) => {}
+    }
+
+    let review_date = provenance
+        .reviewed_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+
+    if reviewer.is_some() {
+        match review_date {
+            None => findings.push(Finding::blocking(
+                "E-SYNTH-QUAL-015",
+                "review metadata is incomplete",
+                "[provenance].reviewed_at to date the review that reviewed_by claims",
+                "reviewed_by is set but reviewed_at is empty".to_string(),
+            )),
+            Some(date) if !is_iso_8601_date(date) => findings.push(Finding::blocking(
+                "E-SYNTH-QUAL-015",
+                "review date is not a usable ISO-8601 date",
+                "an ISO-8601 date such as 2026-10-02",
+                format!("`{date}`"),
+            )),
+            Some(_) => {}
+        }
+    }
+
+    Check::from_findings(NAME, findings)
+}
+
+fn pad_extent(pads: &[PadFacts]) -> Option<(f64, f64)> {
+    let mut min_x = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut min_y = f64::MAX;
+    let mut max_y = f64::MIN;
+    let mut seen = false;
+
+    for pad in pads.iter().filter(|p| p.side.has_copper()) {
+        seen = true;
+        let (cx, cy) = pad.center_mm;
+        let (w, h) = pad.size_mm;
+        min_x = min_x.min(cx - w / 2.0);
+        max_x = max_x.max(cx + w / 2.0);
+        min_y = min_y.min(cy - h / 2.0);
+        max_y = max_y.max(cy + h / 2.0);
+    }
+
+    seen.then_some((max_x - min_x, max_y - min_y))
+}
+
+fn unit_hint(ratio: f64) -> &'static str {
+    let near = |target: f64| (ratio / target - 1.0).abs() < 0.25;
+    if near(MIL_PER_MM) {
+        " — about 25.4x, which is millimetres recorded as mils"
+    } else if near(1.0 / MIL_PER_MM) {
+        " — about 1/25.4x, which is mils recorded as millimetres"
+    } else if near(10.0) || near(0.1) {
+        " — about a factor of ten, which is a misplaced decimal point"
+    } else {
+        ""
+    }
+}
+
+fn is_iso_8601_date(value: &str) -> bool {
+    let date = value.split(['T', ' ']).next().unwrap_or(value);
+    let mut parts = date.split('-');
+    let (Some(year), Some(month), Some(day), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let digits = |s: &str, len: usize| s.len() == len && s.chars().all(|c| c.is_ascii_digit());
+    if !(digits(year, 4) && digits(month, 2) && digits(day, 2)) {
+        return false;
+    }
+    let month: u32 = month.parse().unwrap_or(0);
+    let day: u32 = day.parse().unwrap_or(0);
+    (1..=12).contains(&month) && (1..=31).contains(&day)
+}
+
+fn sample(items: &[&str]) -> String {
+    const LIMIT: usize = 6;
+    let shown = items
+        .iter()
+        .take(LIMIT)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rest = items.len().saturating_sub(LIMIT);
+    if rest == 0 {
+        shown
+    } else {
+        format!("{shown}, +{rest} more")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capability::ElectricalType;
+    use crate::part::{Pin, PinNumber, Provenance};
+
+    struct Pads(Vec<PadFacts>);
+
+    impl FootprintFacts for Pads {
+        fn pads(&self, _lib_id: &str) -> Option<Vec<PadFacts>> {
+            Some(self.0.clone())
+        }
+    }
+
+    struct Symbol(BTreeSet<String>);
+
+    impl SymbolFacts for Symbol {
+        fn pin_numbers(&self, _lib_id: &str) -> Option<BTreeSet<String>> {
+            Some(self.0.clone())
+        }
+    }
+
+    fn pad(number: &str, cx: f64, cy: f64) -> PadFacts {
+        PadFacts {
+            number: number.to_string(),
+            center_mm: (cx, cy),
+            size_mm: (0.5, 0.5),
+            side: PadSide::Front,
+            is_npth: false,
+        }
+    }
+
+    fn pin(name: &str, number: &str) -> Pin {
+        Pin {
+            name: name.to_string(),
+            number: PinNumber(number.to_string()),
+            electrical_type: ElectricalType::Bidirectional,
+            capabilities: Vec::new(),
+            required: false,
+            unit: None,
+            voltage_max_v: None,
+            voltage_min_v: None,
+            voltage_nominal_v: None,
+        }
+    }
+
+    fn reviewed() -> Provenance {
+        Provenance {
+            reviewed_by: Some("a reviewer".into()),
+            reviewed_at: Some("2026-10-02".into()),
+            datasheet_url: Some("https://example.invalid/ds.pdf".into()),
+            ..Provenance::default()
+        }
+    }
+
+    fn part_with(pins: Vec<Pin>) -> Part {
+        Part {
+            id: crate::part::PartId("subject".into()),
+            kind: "mcu".into(),
+            description: None,
+            version: 0,
+            lifecycle: crate::part::Lifecycle::Active,
+            signed_by: Vec::new(),
+            substitutes: Vec::new(),
+            mpn: Some("SUBJECT-1".into()),
+            lcsc_pn: None,
+            provenance: Some(reviewed()),
+            pins,
+            required_decoupling: Vec::new(),
+            kicad_symbol: Some("Lib:SUBJECT".into()),
+            kicad_footprint: Some("Lib:SUBJECT".into()),
+            footprint_dimensions: Some(crate::part::FootprintDimensions {
+                width_mm: PAD_EXTENT_MM.0,
+                height_mm: PAD_EXTENT_MM.1,
+                courtyard_margin_mm: Some(0.25),
+                mating_face: None,
+            }),
+            operating_conditions: None,
+        }
+    }
+
+    const PAD_EXTENT_MM: (f64, f64) = (1.5, 0.5);
+
+    fn two_pads() -> Pads {
+        Pads(vec![pad("1", -0.5, 0.0), pad("2", 0.5, 0.0)])
+    }
+
+    fn two_pin_symbol() -> Symbol {
+        Symbol(["1".to_string(), "2".to_string()].into_iter().collect())
+    }
+
+    fn findings(q: &PartQualification) -> Vec<&str> {
+        q.findings().map(|f| f.code.as_str()).collect()
+    }
+
+    #[test]
+    fn a_coherent_part_qualifies() {
+        let part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert_eq!(q.status, CheckStatus::Pass, "{:#?}", q.checks);
+        assert!(q.is_fabrication_safe());
+    }
+
+    #[test]
+    fn a_missing_pad_blocks() {
+        let part = part_with(vec![pin("a", "1"), pin("b", "2"), pin("c", "99")]);
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-001"),
+            "{:#?}",
+            q.checks
+        );
+        assert_eq!(q.status, CheckStatus::Fail);
+        assert!(!q.is_fabrication_safe());
+    }
+
+    #[test]
+    fn an_undeclared_exposed_pad_blocks() {
+        let pads = Pads(vec![
+            pad("1", -0.5, 0.0),
+            pad("2", 0.5, 0.0),
+            pad("3", 0.0, 0.0),
+        ]);
+        let part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        let q = qualify_part(&part, &pads, &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-002"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn a_mechanical_npth_pad_is_not_an_orphan() {
+        let mut npth = pad("MP", 0.0, 1.0);
+        npth.is_npth = true;
+        npth.side = PadSide::NoCopper;
+        let pads = Pads(vec![pad("1", -0.5, 0.0), pad("2", 0.5, 0.0), npth]);
+        let part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        let q = qualify_part(&part, &pads, &two_pin_symbol());
+        assert!(
+            !findings(&q).contains(&"E-SYNTH-QUAL-002"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn swapped_pins_sharing_a_pad_block() {
+        let part = part_with(vec![pin("a", "1"), pin("b", "1")]);
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-003"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn a_duplicate_pin_name_blocks() {
+        let part = part_with(vec![pin("a", "1"), pin("a", "2")]);
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-004"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn a_pin_absent_from_the_symbol_blocks() {
+        let part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        let symbol = Symbol(["1".to_string()].into_iter().collect());
+        let q = qualify_part(&part, &two_pads(), &symbol);
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-005"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn a_mirrored_footprint_blocks() {
+        let mut back = two_pads();
+        for p in &mut back.0 {
+            p.side = PadSide::Back;
+        }
+        let part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        let q = qualify_part(&part, &back, &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-012"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn millimetres_recorded_as_mils_block_with_a_unit_hint() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.footprint_dimensions.as_mut().unwrap().width_mm = PAD_EXTENT_MM.0 * MIL_PER_MM;
+        part.footprint_dimensions.as_mut().unwrap().height_mm = PAD_EXTENT_MM.1 * MIL_PER_MM;
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        let hinted: Vec<&Finding> = q
+            .findings()
+            .filter(|f| f.code == "E-SYNTH-QUAL-006")
+            .collect();
+        assert!(!hinted.is_empty(), "{:#?}", q.checks);
+        assert!(
+            hinted.iter().any(|f| f.found.contains("recorded as mils")),
+            "{hinted:#?}"
+        );
+    }
+
+    #[test]
+    fn a_tenfold_dimension_typo_blocks() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.footprint_dimensions.as_mut().unwrap().width_mm = PAD_EXTENT_MM.0 * 10.0;
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(
+            q.findings()
+                .any(|f| f.code == "E-SYNTH-QUAL-006" && f.found.contains("factor of ten")),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn a_required_no_connect_pin_blocks() {
+        let mut dnc = pin("nc", "2");
+        dnc.electrical_type = ElectricalType::DoNotConnect;
+        dnc.required = true;
+        let part = part_with(vec![pin("a", "1"), dnc]);
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-011"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn an_unreviewed_part_blocks() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().reviewed_by = None;
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-008"),
+            "{:#?}",
+            q.checks
+        );
+        assert!(!q.is_fabrication_safe());
+    }
+
+    #[test]
+    fn stale_review_metadata_blocks() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().reviewed_at = None;
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-015"),
+            "{:#?}",
+            q.checks
+        );
+
+        let mut garbled = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        garbled.provenance.as_mut().unwrap().reviewed_at = Some("last tuesday".into());
+        let q = qualify_part(&garbled, &two_pads(), &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-015"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn a_missing_datasheet_is_review_not_blocking() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().datasheet_url = None;
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        let f: Vec<&Finding> = q
+            .findings()
+            .filter(|f| f.code == "E-SYNTH-QUAL-009")
+            .collect();
+        assert_eq!(f.len(), 1, "{:#?}", q.checks);
+        assert_eq!(f[0].level, FindingLevel::Review);
+        assert_eq!(
+            q.status,
+            CheckStatus::Pass,
+            "a documentation gap is reported, not failed: {:#?}",
+            q.checks
+        );
+        assert!(
+            q.is_fabrication_safe(),
+            "a review gap must not make a part unfabricable"
+        );
+        assert_eq!(q.review_findings().count(), 1);
+        assert_eq!(q.blocking_findings().count(), 0);
+    }
+
+    #[test]
+    fn review_only_findings_leave_a_part_qualified() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().datasheet_url = None;
+        part.pins[1].electrical_type = ElectricalType::Unclassified;
+
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        let codes: Vec<&str> = q.review_findings().map(|f| f.code.as_str()).collect();
+        assert!(codes.contains(&"E-SYNTH-QUAL-009"), "{codes:?}");
+        assert!(codes.contains(&"E-SYNTH-QUAL-010"), "{codes:?}");
+        assert_eq!(q.status, CheckStatus::Pass, "{:#?}", q.checks);
+
+        let mut registry = Registry::new();
+        registry.insert(part);
+        let report = qualify_registry(&registry, &two_pads(), &two_pin_symbol(), "test");
+        assert_eq!(report.summary.blocked, 0, "{report:#?}");
+        assert_eq!(report.summary.qualified, 1, "{report:#?}");
+        assert_eq!(report.summary.with_review_findings, 1, "{report:#?}");
+        assert!(
+            report.is_clean(),
+            "review gaps must not make the command exit non-zero"
+        );
+    }
+
+    #[test]
+    fn a_blocking_finding_beside_a_review_one_still_fails() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().datasheet_url = None;
+        part.provenance.as_mut().unwrap().reviewed_by = None;
+
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert_eq!(q.status, CheckStatus::Fail, "{:#?}", q.checks);
+        assert!(q.review_findings().any(|f| f.code == "E-SYNTH-QUAL-009"));
+        assert!(q.blocking_findings().any(|f| f.code == "E-SYNTH-QUAL-008"));
+    }
+
+    #[test]
+    fn a_review_finding_survives_an_unreadable_footprint() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.footprint_dimensions
+            .as_mut()
+            .unwrap()
+            .courtyard_margin_mm = Some(99.0);
+        let q = qualify_part(&part, &NoFacts, &NoFacts);
+        let codes: Vec<&str> = q.findings().map(|f| f.code.as_str()).collect();
+        assert!(
+            codes.contains(&"E-SYNTH-QUAL-014"),
+            "an implausible courtyard must still be reported when pads are unavailable: {:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn an_unreadable_footprint_is_unknown_not_pass() {
+        let part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        let q = qualify_part(&part, &NoFacts, &NoFacts);
+        assert_eq!(q.status, CheckStatus::Unknown, "{:#?}", q.checks);
+        assert!(
+            !q.is_fabrication_safe(),
+            "an unproven part must not be fabrication safe"
+        );
+        assert!(q.findings().next().is_none(), "unknown is not a finding");
+        let names: Vec<&str> = q.unknown_checks().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"pin_pad_coverage"), "{names:?}");
+        assert!(names.contains(&"symbol_pin_coverage"), "{names:?}");
+    }
+
+    #[test]
+    fn the_report_orders_parts_and_counts_outcomes() {
+        let mut registry = Registry::new();
+        let mut good = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        good.id = crate::part::PartId("zeta".into());
+        let mut bad = part_with(vec![pin("a", "1"), pin("b", "1")]);
+        bad.id = crate::part::PartId("alpha".into());
+        registry.insert(good);
+        registry.insert(bad);
+
+        let report = qualify_registry(&registry, &two_pads(), &two_pin_symbol(), "test 0.0.1");
+        assert_eq!(
+            report
+                .parts
+                .iter()
+                .map(|p| p.part_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+        assert_eq!(report.summary.total, 2);
+        assert_eq!(report.summary.qualified, 1);
+        assert_eq!(report.summary.blocked, 1);
+        assert!(!report.is_clean());
+        assert_eq!(report.unsafe_for_fabrication().count(), 1);
+    }
+
+    #[test]
+    fn provenance_findings_are_not_structural_defects() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().reviewed_by = None;
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert_eq!(q.status, CheckStatus::Fail);
+        assert!(
+            !q.has_structural_defect(),
+            "an unreviewed part is not structurally wrong: {:#?}",
+            q.structural_defects().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_wrong_pin_map_is_a_structural_defect() {
+        let part = part_with(vec![pin("a", "1"), pin("b", "99")]);
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert!(q.has_structural_defect());
+        let codes: Vec<&str> = q.structural_defects().map(|f| f.code.as_str()).collect();
+        assert!(codes.contains(&"E-SYNTH-QUAL-001"), "{codes:?}");
+    }
+
+    #[test]
+    fn the_report_round_trips_through_json() {
+        let mut registry = Registry::new();
+        registry.insert(part_with(vec![pin("a", "1"), pin("b", "2")]));
+        let report = qualify_registry(&registry, &two_pads(), &two_pin_symbol(), "test 0.0.1");
+        let json = serde_json::to_string(&report).expect("serialize");
+        let back: QualificationReport = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(report, back);
+        assert_eq!(back.schema_version, SCHEMA_VERSION);
+    }
+}
