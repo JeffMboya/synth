@@ -1344,7 +1344,9 @@ fn print_qualification(report: &synth_registry::QualificationReport) {
     use synth_registry::{CheckStatus, FindingLevel};
 
     for part in &report.parts {
-        if part.status == CheckStatus::Pass {
+        // A qualified part with review findings still has something to say;
+        // only a part with nothing at all to report is skipped.
+        if part.status == CheckStatus::Pass && part.review_findings().next().is_none() {
             continue;
         }
         println!("{} [{}]", part.part_id, part.status.as_str());
@@ -1371,6 +1373,12 @@ fn print_qualification(report: &synth_registry::QualificationReport) {
         "{} part(s): {} qualified, {} blocked, {} unproven",
         s.total, s.qualified, s.blocked, s.unproven
     );
+    if s.with_review_findings > 0 {
+        println!(
+            "{} qualified part(s) carry review findings; these are reported, not fatal",
+            s.with_review_findings
+        );
+    }
     if s.unproven > 0 {
         println!(
             "unproven parts have checks that could not run; install KiCad or set \

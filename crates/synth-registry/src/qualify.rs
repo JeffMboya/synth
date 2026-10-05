@@ -183,12 +183,14 @@ impl Check {
     }
 
     fn from_findings(name: &str, findings: Vec<Finding>) -> Self {
-        if findings.is_empty() {
-            return Self::pass(name);
-        }
+        let status = if findings.iter().any(|f| f.level == FindingLevel::Blocking) {
+            CheckStatus::Fail
+        } else {
+            CheckStatus::Pass
+        };
         Self {
             name: name.to_string(),
-            status: CheckStatus::Fail,
+            status,
             unknown_reason: None,
             findings,
         }
@@ -225,6 +227,10 @@ impl PartQualification {
             .filter(|f| f.level == FindingLevel::Blocking)
     }
 
+    pub fn review_findings(&self) -> impl Iterator<Item = &Finding> {
+        self.findings().filter(|f| f.level == FindingLevel::Review)
+    }
+
     pub fn is_fabrication_safe(&self) -> bool {
         self.status.is_pass()
     }
@@ -251,6 +257,7 @@ pub struct Summary {
     pub qualified: usize,
     pub blocked: usize,
     pub unproven: usize,
+    pub with_review_findings: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,12 +310,16 @@ pub fn qualify_registry(
         qualified: 0,
         blocked: 0,
         unproven: 0,
+        with_review_findings: 0,
     };
     for part in &parts {
         match part.status {
             CheckStatus::Pass | CheckStatus::NotApplicable => summary.qualified += 1,
             CheckStatus::Fail => summary.blocked += 1,
             CheckStatus::Unknown => summary.unproven += 1,
+        }
+        if part.review_findings().next().is_some() {
+            summary.with_review_findings += 1;
         }
     }
 
@@ -1108,7 +1119,54 @@ mod tests {
             .collect();
         assert_eq!(f.len(), 1, "{:#?}", q.checks);
         assert_eq!(f[0].level, FindingLevel::Review);
-        assert_eq!(q.status, CheckStatus::Fail);
+        assert_eq!(
+            q.status,
+            CheckStatus::Pass,
+            "a documentation gap is reported, not failed: {:#?}",
+            q.checks
+        );
+        assert!(
+            q.is_fabrication_safe(),
+            "a review gap must not make a part unfabricable"
+        );
+        assert_eq!(q.review_findings().count(), 1);
+        assert_eq!(q.blocking_findings().count(), 0);
+    }
+
+    #[test]
+    fn review_only_findings_leave_a_part_qualified() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().datasheet_url = None;
+        part.pins[1].electrical_type = ElectricalType::Unclassified;
+
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        let codes: Vec<&str> = q.review_findings().map(|f| f.code.as_str()).collect();
+        assert!(codes.contains(&"E-SYNTH-QUAL-009"), "{codes:?}");
+        assert!(codes.contains(&"E-SYNTH-QUAL-010"), "{codes:?}");
+        assert_eq!(q.status, CheckStatus::Pass, "{:#?}", q.checks);
+
+        let mut registry = Registry::new();
+        registry.insert(part);
+        let report = qualify_registry(&registry, &two_pads(), &two_pin_symbol(), "test");
+        assert_eq!(report.summary.blocked, 0, "{report:#?}");
+        assert_eq!(report.summary.qualified, 1, "{report:#?}");
+        assert_eq!(report.summary.with_review_findings, 1, "{report:#?}");
+        assert!(
+            report.is_clean(),
+            "review gaps must not make the command exit non-zero"
+        );
+    }
+
+    #[test]
+    fn a_blocking_finding_beside_a_review_one_still_fails() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.provenance.as_mut().unwrap().datasheet_url = None;
+        part.provenance.as_mut().unwrap().reviewed_by = None;
+
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        assert_eq!(q.status, CheckStatus::Fail, "{:#?}", q.checks);
+        assert!(q.review_findings().any(|f| f.code == "E-SYNTH-QUAL-009"));
+        assert!(q.blocking_findings().any(|f| f.code == "E-SYNTH-QUAL-008"));
     }
 
     #[test]
