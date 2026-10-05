@@ -189,6 +189,60 @@ exit 0"#
     assert_eq!(run.status("kicad_erc"), "pass");
 }
 
+fn drc_stub(report: &str) -> String {
+    format!(
+        r#"case "$1 $2" in
+  "pcb drc")
+    __FIND_OUTPUT__
+    printf '{report}' > "$out"
+    exit 0 ;;
+esac
+exit 0"#
+    )
+    .replace("__FIND_OUTPUT__", FIND_OUTPUT)
+}
+
+#[test]
+fn unconnected_pads_are_reported_and_the_board_is_not_called_clean() {
+    let report = r#"{"violations":[],"unconnected_items":[{"type":"unconnected_items","severity":"error","description":"Missing connection between items"}]}"#;
+    let run = export("unconnected", &drc_stub(report), &[]);
+    assert_eq!(run.code, Some(0), "reporting only:\n{}", run.stderr);
+    assert!(
+        run.stderr
+            .contains("errors 0, unconnected pads 1, warnings 0"),
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains("gate clean"), "{}", run.stderr);
+}
+
+#[test]
+fn warnings_are_counted_and_the_board_is_not_called_clean() {
+    let report = r#"{"violations":[{"type":"via_dangling","severity":"warning","description":"Via is not connected"}],"unconnected_items":[]}"#;
+    let run = export("drc_warning", &drc_stub(report), &[]);
+    assert_eq!(run.code, Some(0), "reporting only:\n{}", run.stderr);
+    assert!(
+        run.stderr
+            .contains("errors 0, unconnected pads 0, warnings 1"),
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains("gate clean"), "{}", run.stderr);
+}
+
+#[test]
+fn an_all_zero_drc_report_is_still_called_clean() {
+    let run = export("drc_zero", &clean_stub(), &[]);
+    assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
+    assert!(
+        run.stderr
+            .contains("errors 0, unconnected pads 0, warnings 0"),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("Zero-DRC gate clean"), "{}", run.stderr);
+}
+
 #[test]
 fn a_missing_executable_is_unknown_and_blocks_a_requested_check() {
     let dir = scratch("missing");
