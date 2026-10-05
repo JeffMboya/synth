@@ -82,6 +82,7 @@ fn create_test_board() -> Board {
         diff_pairs: vec![],
         notes: vec![],
         keepouts: vec![],
+        stackup: None,
         netclasses: vec![],
         buses: vec![],
         modules: vec![],

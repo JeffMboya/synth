@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use synth_geometry::{mm_to_nm, nm_to_mm, Layer, Rotation};
-use synth_ir::{Board, ComponentId};
+use synth_ir::{Board, ComponentId, Stackup, StackupLayer};
 use synth_place::{ComponentPlacement, Placement};
 use synth_route::{Routing, Segment};
 use uuid::Uuid;
@@ -79,13 +79,13 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
         Sexp::list(
             "general",
             vec![
-                Sexp::list("thickness", vec![num(DEFAULT_THICKNESS_MM)]),
+                Sexp::list("thickness", vec![board_thickness(board.stackup.as_ref())]),
                 Sexp::list("legacy_teardrops", vec![Sexp::atom("no")]),
             ],
         ),
         Sexp::list("paper", vec![Sexp::str(paper_for(placement))]),
         build_layers(board.layers),
-        build_setup(),
+        build_setup_with(board.stackup.as_ref()),
         // Net 0 = unconnected (KiCad convention). Real nets get
         // ids 1..N in IR declaration order — same ordering KiCad
         // uses when it generates from an imported netlist.
@@ -576,6 +576,78 @@ fn build_setup() -> Sexp {
             Sexp::list("via_min_drill", vec![num(0.30)]),
         ],
     )
+}
+
+/// [`build_setup`], with the declared stackup (if any) as its first entry.
+fn build_setup_with(stackup: Option<&Stackup>) -> Sexp {
+    let mut setup = build_setup();
+    if let (Some(stackup), Sexp::List { children, .. }) = (stackup, &mut setup) {
+        children.insert(0, build_stackup(stackup));
+    }
+    setup
+}
+
+/// Board thickness: the declared stack's total, else the fixed default.
+fn board_thickness(stackup: Option<&Stackup>) -> Sexp {
+    stackup.map_or_else(
+        || num(DEFAULT_THICKNESS_MM),
+        |s| Sexp::atom(fixed_6(s.total_thickness().0)),
+    )
+}
+
+/// KiCad `(stackup ...)` for a declared stack. Dielectrics are typed
+/// `dielectric` because the language does not say core or prepreg.
+fn build_stackup(stackup: &Stackup) -> Sexp {
+    let copper_count = stackup.copper_count();
+    let (mut copper_seen, mut dielectric_seen) = (0, 0);
+    let layers = stackup
+        .layers
+        .iter()
+        .map(|layer| match layer {
+            StackupLayer::Copper { thickness, .. } => {
+                let name = match copper_seen {
+                    0 => "F.Cu".to_string(),
+                    n if n + 1 == copper_count => "B.Cu".to_string(),
+                    n => format!("In{n}.Cu"),
+                };
+                copper_seen += 1;
+                Sexp::list(
+                    "layer",
+                    vec![
+                        Sexp::str(name),
+                        str_pair("type", "copper"),
+                        Sexp::list("thickness", vec![Sexp::atom(fixed_6(thickness.0))]),
+                    ],
+                )
+            }
+            StackupLayer::Insulator {
+                thickness,
+                er,
+                material,
+                ..
+            } => {
+                dielectric_seen += 1;
+                let mut children = vec![
+                    Sexp::str(format!("dielectric {dielectric_seen}")),
+                    str_pair("type", "dielectric"),
+                    Sexp::list("thickness", vec![Sexp::atom(fixed_6(thickness.0))]),
+                ];
+                children.extend(material.as_ref().map(|m| str_pair("material", m.as_str())));
+                children.push(Sexp::list("epsilon_r", vec![Sexp::atom(fixed_6(er.0))]));
+                Sexp::list("layer", children)
+            }
+        })
+        .collect();
+    Sexp::list("stackup", layers)
+}
+
+/// An integer in millionths (nanometres of a millimetre value, or a
+/// micro-unit ratio) as a decimal with trailing zeros trimmed. `num`
+/// stops at 4 decimals, which would round a 1.4 mil copper foil.
+#[allow(clippy::cast_precision_loss)]
+fn fixed_6(micro: i64) -> String {
+    let s = format!("{:.6}", micro as f64 / 1e6);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// Top-level `(net_class ...)` definitions conforming to KiCad 10 grammar.
@@ -1794,6 +1866,31 @@ mod tests {
     }
 
     #[test]
+    fn fixed_6_keeps_the_sign_and_trims_zeros() {
+        assert_eq!(fixed_6(35_000), "0.035");
+        assert_eq!(fixed_6(35_560), "0.03556");
+        assert_eq!(fixed_6(1_600_000), "1.6");
+        assert_eq!(fixed_6(4_000_000), "4");
+        assert_eq!(fixed_6(0), "0");
+        assert_eq!(fixed_6(-500_000), "-0.5");
+    }
+
+    #[test]
+    fn without_a_stackup_setup_and_thickness_are_the_legacy_ones() {
+        assert_eq!(
+            build_setup_with(None).to_string_pretty(),
+            build_setup().to_string_pretty()
+        );
+        assert!(!build_setup_with(None)
+            .to_string_pretty()
+            .contains("stackup"));
+        assert_eq!(
+            board_thickness(None).to_string_pretty().trim(),
+            DEFAULT_THICKNESS_MM.to_string()
+        );
+    }
+
+    #[test]
     fn netclass_is_top_level_outside_setup() {
         let setup_sexp = build_setup();
         let setup_str = setup_sexp.to_string_pretty();
@@ -1852,6 +1949,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],
@@ -1915,6 +2013,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![synth_ir::NetClass {
                 name: "PWR".to_string(),
                 trace_width: Some(Length::from_mm(0.5)),
@@ -1967,6 +2066,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],

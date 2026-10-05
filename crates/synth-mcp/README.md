@@ -28,7 +28,7 @@ default bundled registry. Import/author tools additionally honour
 
 | Tool                       | Purpose                                                                                                                                                                                                                                                                                                                                    |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `synth_language_reference` | Returns the SynthSpec (`.synth`) grammar — every statement form (`import`, `board`, `layers`, `manufacturer`, `component`, `connect`, `diff_pair`, `keepout`, `placement_hint`), the component-kind vocabulary, `placement_hint` attribute values, and engineering units — plus three complete worked example designs. Takes no arguments. |
+| `synth_language_reference` | Returns the SynthSpec (`.synth`) grammar — every statement form (`import`, `board`, `layers`, `manufacturer`, `component`, `connect`, `diff_pair`, `keepout`, `stackup`, `placement_hint`), the component-kind vocabulary, `placement_hint` attribute values, and engineering units — plus three complete worked example designs. Takes no arguments. |
 
 Call `synth_language_reference` before drafting a `.synth` file from
 scratch — an agent with no prior exposure to SynthSpec otherwise has to

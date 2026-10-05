@@ -36,8 +36,8 @@ use std::collections::HashMap;
 
 use synth_ast::{
     ComponentDeclAst, DiffPairAttr, DiffPairStmt, EndpointAst, EndpointRefKind, KeepoutAttr,
-    KeepoutStmt, NetclassStmt, ProgramAst, SchematicOverflowAst, SchematicPaperAst, StatementAst,
-    ValueWithUnit,
+    KeepoutStmt, NetclassStmt, ProgramAst, SchematicOverflowAst, SchematicPaperAst,
+    StackupLayerAst, StackupStmt, StatementAst, ValueWithUnit,
 };
 use synth_diagnostics::{
     Diagnostic, DiagnosticBuilder, Location, Patch, PatchKind, Severity, Span, SuggestedAction,
@@ -47,9 +47,9 @@ use synth_registry::{Part, PinCapability, Registry};
 use crate::board::{
     Board, Component, ComponentId, DiffPair, Keepout, Net, NetClass, NetEndpoint, NetId, Note,
     PinId, PlacementEdge, PlacementRegion, PlacementSide, SchematicOverflow, SchematicPaper,
-    Variant,
+    Stackup, StackupLayer, Variant,
 };
-use crate::units::{ConversionError, Impedance, Length, Voltage};
+use crate::units::{ConversionError, DielectricConstant, Impedance, Length, Voltage};
 
 /// One `connect` statement after flattening: a source, one or more
 /// targets (one-to-many fanout), and the optional `as "NET"` /
@@ -160,6 +160,7 @@ pub fn lower(ast: &ProgramAst, registry: &Registry, file: &str) -> LowerResult {
     let mut diff_pair_stmts: Vec<DiffPairStmt> = Vec::new();
     let mut notes: Vec<Note> = Vec::new();
     let mut keepouts: Vec<Keepout> = Vec::new();
+    let mut stackup: Option<Stackup> = None;
     let mut netclasses: Vec<NetClass> = Vec::new();
     // Declared `group` regions with their header attributes (Phase D1),
     // in first-declaration order.
@@ -241,6 +242,7 @@ pub fn lower(ast: &ProgramAst, registry: &Registry, file: &str) -> LowerResult {
                 );
             }
             StatementAst::Keepout(k) => keepouts.push(ctx.lower_keepout(k)),
+            StatementAst::Stackup(st) => stackup = Some(ctx.lower_stackup(st)),
             StatementAst::Netclass(n) => netclasses.push(ctx.lower_netclass(n)),
             StatementAst::Group(g) => {
                 if !groups.iter().any(|existing| existing.name == g.name) {
@@ -290,6 +292,7 @@ pub fn lower(ast: &ProgramAst, registry: &Registry, file: &str) -> LowerResult {
         diff_pairs,
         notes,
         keepouts,
+        stackup,
         netclasses,
         buses,
         modules,
@@ -701,6 +704,58 @@ impl<'a> LowerCtx<'a> {
             negative_net: None,
             impedance,
             source_span: d.span,
+        }
+    }
+
+    fn lower_stackup(&mut self, st: &StackupStmt) -> Stackup {
+        let mut layers = Vec::new();
+        for layer in &st.layers {
+            match layer {
+                StackupLayerAst::Copper {
+                    thickness, span, ..
+                } => match Length::try_from(thickness) {
+                    Ok(thickness) => layers.push(StackupLayer::Copper {
+                        thickness,
+                        source_span: *span,
+                    }),
+                    Err(e) => self.emit_unit_error(&e, "stackup copper thickness"),
+                },
+                StackupLayerAst::Insulator {
+                    thickness,
+                    er,
+                    material,
+                    span,
+                } => {
+                    let thickness = match Length::try_from(thickness) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            self.emit_unit_error(&e, "stackup insulator thickness");
+                            continue;
+                        }
+                    };
+                    let Some(er) = DielectricConstant::parse(er) else {
+                        let e = ConversionError::InvalidLiteral {
+                            literal: er.clone(),
+                            span: *span,
+                        };
+                        self.emit_unit_error(&e, "stackup insulator er");
+                        continue;
+                    };
+                    layers.push(StackupLayer::Insulator {
+                        thickness,
+                        er,
+                        material: material.clone(),
+                        source_span: *span,
+                    });
+                }
+                // Non-exhaustive enum: future layer kinds are skipped until
+                // lowering learns about them.
+                _ => {}
+            }
+        }
+        Stackup {
+            layers,
+            source_span: st.span,
         }
     }
 

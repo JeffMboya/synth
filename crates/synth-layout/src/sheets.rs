@@ -373,6 +373,7 @@ fn place_sheet_notes(board: &Board, layout: &mut Layout, sheet: Option<&str>) {
             .cloned()
             .collect(),
         keepouts: board.keepouts.clone(),
+        stackup: board.stackup.clone(),
         netclasses: board.netclasses.clone(),
         buses: vec![],
         modules: vec![],
@@ -524,6 +525,7 @@ mod tests {
             diff_pairs: Vec::new(),
             notes: Vec::new(),
             keepouts: Vec::new(),
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],

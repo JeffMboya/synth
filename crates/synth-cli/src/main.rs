@@ -1100,8 +1100,8 @@ fn capability_descriptor() -> serde_json::Value {
         ],
         "language": {
             "syntax_version": "1.0",
-            "statements": ["board", "import", "layers", "manufacturer", "revision", "schematic", "component", "connect", "net", "power", "module", "interface", "bus", "use", "bind", "netclass", "keepout", "group", "sheet", "variant"],
-            "attributes": ["company", "legends", "notes", "dnp", "prefix", "param", "as", "class", "diff_pair", "impedance", "trace_width", "clearance", "radius", "value", "tolerance", "voltage", "power_rating", "dielectric", "description"],
+            "statements": ["board", "import", "layers", "manufacturer", "revision", "schematic", "component", "connect", "net", "power", "module", "interface", "bus", "use", "bind", "netclass", "keepout", "stackup", "group", "sheet", "variant"],
+            "attributes": ["company", "legends", "notes", "dnp", "prefix", "param", "as", "class", "diff_pair", "impedance", "trace_width", "clearance", "radius", "copper", "insulator", "er", "material", "value", "tolerance", "voltage", "power_rating", "dielectric", "description"],
             "endpoint_forms": ["component.pin", "named_net", "bus.member"]
         },
         "geometry_and_constraints": {
@@ -1129,6 +1129,18 @@ fn capability_descriptor() -> serde_json::Value {
                 "type": "string",
                 "aliases": {"hierarchy": ["hierarchical", "sheets"]},
                 "notes": "grow climbs A4->A3->A2->A1->A0 then splits into a sheet hierarchy; hierarchy caps growth at the requested page and splits as soon as the content no longer fits."
+            },
+            "stackup": {
+                "statement": "stackup",
+                "body": "stackup { copper 0.035mm insulator 1.5mm er 4.4 material \"FR4\" copper 0.035mm }",
+                "entries": ["copper", "insulator"],
+                "copper": {"required": ["thickness"]},
+                "insulator": {"required": ["er"], "optional": ["material"]},
+                "units": ["mm", "mil"],
+                "order": "top to bottom; copper first, alternating, copper last",
+                "export": "written to the .kicad_pcb setup/stackup section; board thickness becomes the stack total",
+                "default": "none: without a block the board exports the exporter's default thickness and no stackup section",
+                "notes": "No fabricator presets are shipped; every value is declared by the design."
             },
             "routing_constraints": {
                 "netclass": ["trace_width", "clearance", "color"],

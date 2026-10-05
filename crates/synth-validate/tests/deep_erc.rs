@@ -701,6 +701,7 @@ fn multi_unit_rails_split_is_an_error() {
         diff_pairs: Vec::new(),
         notes: Vec::new(),
         keepouts: Vec::new(),
+        stackup: None,
         netclasses: vec![],
         buses: vec![],
         modules: vec![],

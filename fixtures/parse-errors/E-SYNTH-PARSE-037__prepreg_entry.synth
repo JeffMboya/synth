@@ -1,0 +1,8 @@
+board "x" {
+  layers 2
+  stackup {
+    copper 0.035mm
+    prepreg 0.2mm er 4.2
+    copper 0.035mm
+  }
+}

@@ -1,0 +1,148 @@
+---
+source: crates/synth-parser/tests/fixtures.rs
+expression: ast
+---
+{
+  "imports": [],
+  "board": {
+    "name": "stackup_4layer",
+    "statements": [
+      {
+        "stmt": "layers",
+        "count": 4,
+        "span": {
+          "byte_start": 27,
+          "byte_end": 35
+        }
+      },
+      {
+        "stmt": "stackup",
+        "layers": [
+          {
+            "kind": "copper",
+            "thickness": {
+              "literal": "0.035",
+              "unit": "mm",
+              "span": {
+                "byte_start": 59,
+                "byte_end": 66
+              }
+            },
+            "span": {
+              "byte_start": 52,
+              "byte_end": 66
+            }
+          },
+          {
+            "kind": "insulator",
+            "thickness": {
+              "literal": "0.2104",
+              "unit": "mm",
+              "span": {
+                "byte_start": 81,
+                "byte_end": 89
+              }
+            },
+            "er": "4.4",
+            "material": "FR4",
+            "span": {
+              "byte_start": 71,
+              "byte_end": 111
+            }
+          },
+          {
+            "kind": "copper",
+            "thickness": {
+              "literal": "0.0152",
+              "unit": "mm",
+              "span": {
+                "byte_start": 123,
+                "byte_end": 131
+              }
+            },
+            "span": {
+              "byte_start": 116,
+              "byte_end": 131
+            }
+          },
+          {
+            "kind": "insulator",
+            "thickness": {
+              "literal": "1.065",
+              "unit": "mm",
+              "span": {
+                "byte_start": 146,
+                "byte_end": 153
+              }
+            },
+            "er": "4.6",
+            "material": "FR4",
+            "span": {
+              "byte_start": 136,
+              "byte_end": 175
+            }
+          },
+          {
+            "kind": "copper",
+            "thickness": {
+              "literal": "0.0152",
+              "unit": "mm",
+              "span": {
+                "byte_start": 187,
+                "byte_end": 195
+              }
+            },
+            "span": {
+              "byte_start": 180,
+              "byte_end": 195
+            }
+          },
+          {
+            "kind": "insulator",
+            "thickness": {
+              "literal": "0.2104",
+              "unit": "mm",
+              "span": {
+                "byte_start": 210,
+                "byte_end": 218
+              }
+            },
+            "er": "4.4",
+            "material": "FR4",
+            "span": {
+              "byte_start": 200,
+              "byte_end": 240
+            }
+          },
+          {
+            "kind": "copper",
+            "thickness": {
+              "literal": "0.035",
+              "unit": "mm",
+              "span": {
+                "byte_start": 252,
+                "byte_end": 259
+              }
+            },
+            "span": {
+              "byte_start": 245,
+              "byte_end": 259
+            }
+          }
+        ],
+        "span": {
+          "byte_start": 38,
+          "byte_end": 263
+        }
+      }
+    ],
+    "span": {
+      "byte_start": 0,
+      "byte_end": 265
+    }
+  },
+  "span": {
+    "byte_start": 0,
+    "byte_end": 265
+  }
+}

@@ -52,6 +52,12 @@ pub struct Frequency(pub i64);
 #[serde(transparent)]
 pub struct Capacitance(pub i64);
 
+/// Relative permittivity (a dimensionless ratio) in millionths, so `4.2`
+/// is stored as `4_200_000` and the IR keeps integer base units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DielectricConstant(pub i64);
+
 /// Errors that can arise converting a parsed [`ValueWithUnit`] into a
 /// typed quantity. Each carries the offending source span for
 /// diagnostics.
@@ -128,6 +134,25 @@ fn parse_decimal_scaled(literal: &str, scale: i64) -> Option<i64> {
     };
 
     sign.checked_mul(int_scaled.checked_add(frac_scaled)?)
+}
+
+// -----------------------------------------------------------------------------
+// Dielectric constant
+// -----------------------------------------------------------------------------
+
+const MICRO_PER_UNIT: i64 = 1_000_000;
+
+impl DielectricConstant {
+    /// Parse a plain decimal such as `4.2`. `None` on a malformed or
+    /// out-of-range literal.
+    pub fn parse(literal: &str) -> Option<Self> {
+        parse_decimal_scaled(literal, MICRO_PER_UNIT).map(Self)
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    pub fn to_f64(self) -> f64 {
+        self.0 as f64 / MICRO_PER_UNIT as f64
+    }
 }
 
 // -----------------------------------------------------------------------------

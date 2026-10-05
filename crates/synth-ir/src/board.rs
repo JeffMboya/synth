@@ -11,7 +11,7 @@ use synth_diagnostics::Span;
 use synth_registry::Part;
 
 use crate::modules::{BusBundle, ModuleDesc};
-use crate::units::{Impedance, Length, Voltage};
+use crate::units::{DielectricConstant, Impedance, Length, Voltage};
 
 /// Stable identifier for a component within a single board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -71,6 +71,11 @@ pub struct Board {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub legends: bool,
     pub keepouts: Vec<Keepout>,
+    /// Declared physical layer stack (`stackup { … }`). `None` when the
+    /// design does not declare one; the exported board then keeps its fixed
+    /// default thickness and carries no stackup section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stackup: Option<Stackup>,
     /// Declared routing-constraint classes (`netclass "PWR" { … }`).
     /// Nets join a class via `class "PWR"` on their `net`, `power`,
     /// or `connect` statement; the PCB exporter emits one KiCad
@@ -373,6 +378,51 @@ pub struct Keepout {
     pub name: String,
     pub radius: Option<Length>,
     pub source_span: Span,
+}
+
+/// The board's physical layers in the order written, outermost copper first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Stackup {
+    pub layers: Vec<StackupLayer>,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StackupLayer {
+    Copper {
+        thickness: Length,
+        source_span: Span,
+    },
+    Insulator {
+        thickness: Length,
+        er: DielectricConstant,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        material: Option<String>,
+        source_span: Span,
+    },
+}
+
+impl StackupLayer {
+    pub fn thickness(&self) -> Length {
+        match self {
+            Self::Copper { thickness, .. } | Self::Insulator { thickness, .. } => *thickness,
+        }
+    }
+
+    pub fn is_copper(&self) -> bool {
+        matches!(self, Self::Copper { .. })
+    }
+}
+
+impl Stackup {
+    pub fn copper_count(&self) -> usize {
+        self.layers.iter().filter(|l| l.is_copper()).count()
+    }
+
+    pub fn total_thickness(&self) -> Length {
+        Length(self.layers.iter().map(|l| l.thickness().0).sum())
+    }
 }
 
 /// A declared `group` region and its optional header attributes
