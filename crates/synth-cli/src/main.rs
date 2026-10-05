@@ -13,6 +13,7 @@
 //! - `3` — internal compiler error (a bug — should never happen)
 
 mod preview;
+mod release;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -133,6 +134,11 @@ enum Command {
         /// Force export even if Synth ERC validation produces error diagnostics.
         #[arg(long)]
         force: bool,
+        /// Release mode: refuse to accept any override flag. Suitable for CI
+        /// and release gates, where a package that needed an override is not
+        /// a package anyone should be able to produce by accident.
+        #[arg(long, conflicts_with_all = ["force", "allow_unverified_parts"])]
+        safe: bool,
         /// Allow manufacturing-artifact export (--gerbers/--drill/--step)
         /// to proceed even when the board uses a part flagged
         /// `W-SYNTH-PART-UNVERIFIED` (Phase 15, R15.3/§18.8.2). Without
@@ -309,6 +315,14 @@ enum Command {
         /// Allow manufacturing output containing unverified registry parts.
         #[arg(long)]
         allow_unverified_parts: bool,
+        /// Accept a package that carries export overrides, recording why.
+        /// Requires --authorized-by. The package stays non-production; this
+        /// authorizes the run, it does not clean the package.
+        #[arg(long, value_name = "REASON", requires = "authorized_by")]
+        override_exception: Option<String>,
+        /// Who authorized --override-exception.
+        #[arg(long, value_name = "NAME", requires = "override_exception")]
+        authorized_by: Option<String>,
         /// Emit machine-readable output. Without this flag a concise summary
         /// is printed while the JSON shape remains available to CI via
         /// `--json`.
@@ -756,6 +770,7 @@ fn main() -> ExitCode {
             validate_erc,
             verification_report,
             force,
+            safe,
             allow_unverified_parts,
             user_registry,
             strict_registry,
@@ -784,6 +799,7 @@ fn main() -> ExitCode {
             validate_erc,
             verification_report.as_deref(),
             force,
+            safe,
             allow_unverified_parts,
             autoroute,
             router,
@@ -849,14 +865,30 @@ fn main() -> ExitCode {
             registry,
             fab,
             allow_unverified_parts,
+            override_exception,
+            authorized_by,
             json,
-        } => check(
-            &input,
-            registry.as_deref(),
-            fab,
-            allow_unverified_parts,
-            json,
-        ),
+        } => match (authorized_by.as_deref(), override_exception.as_deref()) {
+            (Some(who), Some(why)) => match release::Exception::new(who, why) {
+                Ok(exception) => check(
+                    &input,
+                    registry.as_deref(),
+                    fab,
+                    allow_unverified_parts,
+                    Some(&exception),
+                    json,
+                ),
+                Err(e) => Err(anyhow::anyhow!("{e}")),
+            },
+            _ => check(
+                &input,
+                registry.as_deref(),
+                fab,
+                allow_unverified_parts,
+                None,
+                json,
+            ),
+        },
         Command::Preview {
             input,
             registry,
@@ -1066,6 +1098,7 @@ fn check(
     registry: Option<&Path>,
     fab: bool,
     allow_unverified_parts: bool,
+    exception: Option<&release::Exception>,
     json: bool,
 ) -> anyhow::Result<u8> {
     use sha2::{Digest, Sha256};
@@ -1171,6 +1204,17 @@ fn check(
         let native = std::fs::read_to_string(&verification_path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+
+        // The release gate's own question, distinct from both "did the export
+        // succeed" and "was it natively verified": does this package carry
+        // overrides nobody authorized?
+        let release = release::ReleaseManifest::read_from(&export_dir)
+            .ok()
+            .map(|m| m.with_exception(exception.cloned()));
+        let verdict = release.as_ref().map(release::ReleaseManifest::gate_verdict);
+        if matches!(verdict, Some(release::GateVerdict::Rejected)) {
+            fab_pass = false;
+        }
         let mut artifacts = serde_json::Map::new();
         if export_dir.is_dir() {
             let mut files = Vec::new();
@@ -1209,6 +1253,19 @@ fn check(
         if let Some(native) = native {
             stage["native"] = native;
         }
+        if let Some(release) = &release {
+            stage["release"] = serde_json::to_value(release)?;
+            stage["release_ready"] = serde_json::json!(release.release_ready);
+            // A timeout is the more fundamental reason, so it keeps the field.
+            if matches!(verdict, Some(release::GateVerdict::Rejected)) && !export_timed_out {
+                stage["reason"] = serde_json::json!("unauthorized_overrides");
+            }
+            if let Some(release::GateVerdict::AcceptedUnderException { authorized_by }) =
+                verdict.as_ref()
+            {
+                stage["exception_authorized_by"] = serde_json::json!(authorized_by);
+            }
+        }
         stages.insert("manufacturing".into(), stage);
     } else if fab {
         fab_pass = false;
@@ -1244,6 +1301,27 @@ fn check(
             "  source_sha256: {}",
             report["source_sha256"].as_str().unwrap_or("")
         );
+        if let Some(release) = report["stages"]["manufacturing"]["release"].as_object() {
+            println!(
+                "  release_ready: {}",
+                release
+                    .get("release_ready")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            );
+            if let Some(overrides) = release.get("overrides").and_then(|o| o.as_array()) {
+                if !overrides.is_empty() {
+                    println!("  {}", release::UNTRUSTED_BANNER);
+                    for record in overrides {
+                        println!(
+                            "    {} via {}",
+                            record["code"].as_str().unwrap_or("?"),
+                            record["flag"].as_str().unwrap_or("?")
+                        );
+                    }
+                }
+            }
+        }
     }
     Ok(if pass {
         EXIT_SUCCESS
@@ -3315,6 +3393,7 @@ fn export_kicad(
     validate_erc: bool,
     verification_report: Option<&Path>,
     force: bool,
+    safe: bool,
     allow_unverified_parts: bool,
     autoroute: bool,
     router: ExternalRouter,
@@ -3386,12 +3465,25 @@ fn export_kicad(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("lowering produced no IR; not exporting"))?;
 
+    let mut overrides: Vec<release::OverrideRecord> = Vec::new();
+
     // Slice 7: Run Synth ERC validation before exporting
     let erc_diags = synth_validate::run_erc(board, &file);
     write_diagnostics_to_stderr(&erc_diags)?;
     let has_erc_errors = erc_diags.iter().any(|d| d.severity.is_blocking());
-    if has_erc_errors && !force {
-        anyhow::bail!("Synth ERC validation failed; use --force to export anyway");
+    if has_erc_errors {
+        if !force {
+            anyhow::bail!("Synth ERC validation failed; use --force to export anyway");
+        }
+        let blocking = erc_diags
+            .iter()
+            .filter(|d| d.severity.is_blocking())
+            .count();
+        overrides.push(release::OverrideRecord::new(
+            release::OverrideKind::ErcErrors,
+            Vec::new(),
+            format!("{blocking} blocking ERC diagnostic(s) suppressed by --force"),
+        ));
     }
 
     // R15.9 footprint guarantee: every part on the board must resolve to a
@@ -3404,9 +3496,19 @@ fn export_kicad(
         let list = unfootprinted.join(", ");
         if force {
             eprintln!(
-                "warning: [E-SYNTH-EXPORT-001] exporting with synthesized bounding-box \
-                 footprints for: {list} (--force)"
+                "error: {banner} [E-SYNTH-EXPORT-001] exporting with synthesized \
+                 bounding-box footprints for: {list} (--force). Pad geometry is a guess, \
+                 not the manufacturer's land pattern.",
+                banner = release::UNTRUSTED_BANNER
             );
+            overrides.push(release::OverrideRecord::new(
+                release::OverrideKind::BoundingBoxFootprints,
+                unfootprinted.clone(),
+                format!(
+                    "{} part(s) exported with a synthesized land pattern",
+                    unfootprinted.len()
+                ),
+            ));
         } else {
             eprintln!(
                 "error: [E-SYNTH-EXPORT-001] the following parts have no real `.kicad_mod` \
@@ -3481,14 +3583,27 @@ fn export_kicad(
         // is a warning there); manufacturing export is where it becomes a
         // hard gate, per §18.8.2.
         let unverified = parts_unverified(board);
-        if !unverified.is_empty() && !allow_unverified_parts {
+        if !unverified.is_empty() {
             let list = unverified.join(", ");
+            if !allow_unverified_parts {
+                eprintln!(
+                    "error: [W-SYNTH-PART-UNVERIFIED] refusing fab export: the following parts \
+                     have no reviewer (`[provenance].reviewed_by` empty): {list}. Review them \
+                     and set `reviewed_by`, or re-run with --allow-unverified-parts to submit \
+                     anyway."
+                );
+                return Ok(1);
+            }
             eprintln!(
-                "error: [W-SYNTH-PART-UNVERIFIED] refusing fab export: the following parts \
-                 have no reviewer (`[provenance].reviewed_by` empty): {list}. Review them and \
-                 set `reviewed_by`, or re-run with --allow-unverified-parts to submit anyway."
+                "error: {banner} [W-SYNTH-PART-UNVERIFIED] fab export includes parts no one \
+                 has reviewed: {list} (--allow-unverified-parts).",
+                banner = release::UNTRUSTED_BANNER
             );
-            return Ok(1);
+            overrides.push(release::OverrideRecord::new(
+                release::OverrideKind::UnverifiedParts,
+                unverified.clone(),
+                format!("{} part(s) have no reviewer", unverified.len()),
+            ));
         }
         match synth_kicad::run_fab(&result.pcb_path, out_dir, &fab) {
             Ok(artifacts) => {
@@ -3601,6 +3716,43 @@ fn export_kicad(
 
     if let Some(path) = verification_report {
         write_verification_report(path, input, &native)?;
+    }
+
+    if has_kicad_drc_errors && force {
+        overrides.push(release::OverrideRecord::new(
+            release::OverrideKind::NativeDrcErrors,
+            Vec::new(),
+            "KiCad PCB DRC violations suppressed by --force".to_string(),
+        ));
+    }
+
+    let manifest = release::ReleaseManifest::new(
+        &format!("synth-cli {}", env!("CARGO_PKG_VERSION")),
+        input,
+        !fab.is_empty(),
+        overrides,
+        release::reviewer_state(board),
+    );
+    let manifest_path = manifest
+        .write_to(out_dir)
+        .map_err(|e| anyhow::anyhow!("could not write the release manifest: {e}"))?;
+    eprintln!("wrote {}", manifest_path.display());
+    if let Some(banner) = manifest.banner() {
+        eprintln!();
+        eprintln!("{banner}");
+    }
+
+    // --safe conflicts with the override flags at parse time; this is the
+    // second half of the promise. Safe mode asserts the package it produced
+    // is actually clean, so a path that records an override without a flag
+    // behind it cannot slip through a release gate either.
+    if safe && manifest.has_overrides() {
+        eprintln!(
+            "error: --safe was requested but the export recorded {} override(s); see {}",
+            manifest.overrides.len(),
+            manifest_path.display()
+        );
+        return Ok(EXIT_VALIDATION_ERRORS);
     }
 
     let has_errors = parse.has_errors()
