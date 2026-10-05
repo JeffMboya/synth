@@ -3089,6 +3089,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "synth-ast",
  "synth-diagnostics",
  "synth-drc",
  "synth-ir",

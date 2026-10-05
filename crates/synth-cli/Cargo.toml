@@ -42,3 +42,6 @@ tower-http = { workspace = true }
 notify-debouncer-mini = { workspace = true }
 futures = { workspace = true }
 include_dir = { workspace = true }
+
+[dev-dependencies]
+synth-ast = { workspace = true }
