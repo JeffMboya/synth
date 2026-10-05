@@ -52,6 +52,41 @@ verification — `--validate-erc`, or any of `--gerbers`/`--drill`/`--step` —
 makes an `unknown` blocking. Set `KICAD_CLI` to point at a specific build, and
 `SYNTH_KICAD_CLI_TIMEOUT_SECS` to change the per-run budget (default 300s).
 
+### Export overrides
+
+`--force` and `--allow-unverified-parts` let development proceed past
+findings that would otherwise stop an export. Every use is recorded in
+`<out>/release.json` with the exact flag, the diagnostic it suppressed, the
+affected parts, and the reviewer state of every part on the board:
+
+| Field | Meaning |
+| --- | --- |
+| `release_ready` | `false` whenever any override was used. Derived, not settable. |
+| `production_status` | `production` or `untrusted`. |
+| `overrides[]` | flag, code, affected parts, and the consequence in plain words. |
+| `reviewer_state[]` | per part: `reviewed_by`, `reviewed_at`, and whether it is reviewed. |
+
+Human output on these paths leads with `UNTRUSTED / NOT FOR FABRICATION`.
+
+`synth check --fab` reads that manifest and refuses a package carrying
+overrides. To proceed, record who authorized it and why:
+
+```bash
+synth check DESIGN.synth --fab \
+  --override-exception "prototype run, not customer hardware" \
+  --authorized-by "a release manager"
+```
+
+An exception authorizes the run; it does not clean the package.
+`release_ready` stays `false` and `production_status` stays `untrusted`,
+because an authorization is a decision about risk rather than evidence the
+risk is gone.
+
+For CI and release gates, `synth export-kicad --safe` is the mode with no
+override path: it refuses to sit beside `--force` or
+`--allow-unverified-parts`, and then checks that the package it produced is
+actually clean.
+
 ## Why Synth?
 
 - **Review hardware changes in Git.** Components, connections, and constraints are text, making design intent visible in diffs and pull requests.
