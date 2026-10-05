@@ -3768,13 +3768,12 @@ fn export_kicad(
     let drc = synth_drc::run_kicad_cli_drc(&result.pcb_path);
     if drc.evidence.status == NativeCheckStatus::Unknown {
         report_unavailable_check(&drc.evidence);
-    } else if drc.violations.is_empty() {
-        eprintln!("kicad-cli pcb drc: 0 violations found (Phase 13 Zero-DRC gate clean)");
     } else {
         for v in &drc.violations {
             eprintln!("[kicad-drc] error: [{}] {}", v.code, v.message);
         }
-        has_kicad_drc_errors = true;
+        has_kicad_drc_errors = !drc.violations.is_empty();
+        report_drc_counts(&drc.counts);
     }
     native.push(drc.evidence);
 
@@ -3821,6 +3820,22 @@ fn export_kicad(
 }
 
 const FAB_STAGE: &str = "kicad_fab";
+
+fn report_drc_counts(counts: &synth_drc::DrcCounts) {
+    let line = format!(
+        "kicad-cli pcb drc: errors {}, unconnected pads {}, warnings {}",
+        counts.errors, counts.unconnected, counts.warnings
+    );
+    if counts.is_clean() {
+        eprintln!("{line} (Phase 13 Zero-DRC gate clean)");
+    } else {
+        eprintln!("{line}");
+        eprintln!(
+            "  note: unconnected pads belong to a net but have no copper path yet; \
+             warnings are advisory, not rule violations"
+        );
+    }
+}
 
 fn report_unavailable_check(evidence: &synth_diagnostics::NativeCheckEvidence) {
     eprintln!("warning: {}", evidence.summary_line());

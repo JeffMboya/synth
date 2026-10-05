@@ -25,7 +25,28 @@ pub const DRC_STAGE: &str = "kicad_drc";
 #[derive(Debug, Clone)]
 pub struct NativeDrcOutcome {
     pub violations: Vec<Violation>,
+    pub counts: DrcCounts,
     pub evidence: NativeCheckEvidence,
+}
+
+/// Counts from a KiCad DRC report; only `errors` become `violations`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DrcCounts {
+    pub errors: usize,
+    pub unconnected: usize,
+    pub warnings: usize,
+}
+
+impl DrcCounts {
+    pub fn is_clean(&self) -> bool {
+        self.errors == 0 && self.unconnected == 0 && self.warnings == 0
+    }
+}
+
+#[derive(Debug)]
+struct DrcReport {
+    violations: Vec<Violation>,
+    counts: DrcCounts,
 }
 
 fn courtyard_rect(
@@ -599,6 +620,7 @@ pub fn run_kicad_cli_drc(kicad_pcb_path: &std::path::Path) -> NativeDrcOutcome {
 
     let unknown = |reason: UnknownReason, command: Vec<String>, detail: String| NativeDrcOutcome {
         violations: Vec::new(),
+        counts: DrcCounts::default(),
         evidence: NativeCheckEvidence::unknown(DRC_STAGE, &tool, command, reason, detail)
             .with_version(version.clone()),
     };
@@ -637,6 +659,7 @@ pub fn run_kicad_cli_drc(kicad_pcb_path: &std::path::Path) -> NativeDrcOutcome {
     if let Some(reason) = run.failure_reason() {
         return NativeDrcOutcome {
             violations: Vec::new(),
+            counts: DrcCounts::default(),
             evidence: NativeCheckEvidence::unknown(
                 DRC_STAGE,
                 &tool,
@@ -649,11 +672,12 @@ pub fn run_kicad_cli_drc(kicad_pcb_path: &std::path::Path) -> NativeDrcOutcome {
         };
     }
 
-    let violations = match read_drc_report(report.path()) {
-        Ok(violations) => violations,
+    let DrcReport { violations, counts } = match read_drc_report(report.path()) {
+        Ok(report) => report,
         Err((reason, detail)) => {
             return NativeDrcOutcome {
                 violations: Vec::new(),
+                counts: DrcCounts::default(),
                 evidence: NativeCheckEvidence::unknown(
                     DRC_STAGE,
                     &tool,
@@ -672,11 +696,12 @@ pub fn run_kicad_cli_drc(kicad_pcb_path: &std::path::Path) -> NativeDrcOutcome {
         .with_stderr(&run.stderr);
     NativeDrcOutcome {
         violations,
+        counts,
         evidence,
     }
 }
 
-fn read_drc_report(path: &std::path::Path) -> Result<Vec<Violation>, (UnknownReason, String)> {
+fn read_drc_report(path: &std::path::Path) -> Result<DrcReport, (UnknownReason, String)> {
     if !path.exists() {
         return Err((
             UnknownReason::ReportMissing,
@@ -710,7 +735,7 @@ const DRC_REPORT_KEYS: [&str; 6] = [
     "$schema",
 ];
 
-fn parse_drc_report(json: &serde_json::Value) -> Result<Vec<Violation>, (UnknownReason, String)> {
+fn parse_drc_report(json: &serde_json::Value) -> Result<DrcReport, (UnknownReason, String)> {
     let recognized = json
         .as_object()
         .is_some_and(|map| DRC_REPORT_KEYS.iter().any(|key| map.contains_key(*key)));
@@ -724,6 +749,7 @@ fn parse_drc_report(json: &serde_json::Value) -> Result<Vec<Violation>, (Unknown
     }
 
     let mut violations = Vec::new();
+    let mut warnings = 0;
     if let Some(v_array) = json.get("violations").and_then(|v| v.as_array()) {
         for v in v_array {
             let severity = v
@@ -731,6 +757,7 @@ fn parse_drc_report(json: &serde_json::Value) -> Result<Vec<Violation>, (Unknown
                 .and_then(|s| s.as_str())
                 .unwrap_or("error");
             if severity == "warning" {
+                warnings += 1;
                 continue;
             }
             let v_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
@@ -774,7 +801,15 @@ fn parse_drc_report(json: &serde_json::Value) -> Result<Vec<Violation>, (Unknown
             });
         }
     }
-    Ok(violations)
+    let counts = DrcCounts {
+        errors: violations.len(),
+        unconnected: json
+            .get("unconnected_items")
+            .and_then(|u| u.as_array())
+            .map_or(0, Vec::len),
+        warnings,
+    };
+    Ok(DrcReport { violations, counts })
 }
 
 #[cfg(test)]
@@ -940,8 +975,80 @@ mod tests {
 
         #[test]
         fn a_clean_report_parses_to_no_violations() {
-            let violations = parse_drc_report(&clean_report()).expect("recognized report");
-            assert!(violations.is_empty());
+            let report = parse_drc_report(&clean_report()).expect("recognized report");
+            assert!(report.violations.is_empty());
+        }
+
+        fn counts(errors: usize, unconnected: usize, warnings: usize) -> DrcCounts {
+            DrcCounts {
+                errors,
+                unconnected,
+                warnings,
+            }
+        }
+
+        fn unconnected_item() -> serde_json::Value {
+            serde_json::json!({
+                "type": "unconnected_items",
+                "severity": "error",
+                "description": "Missing connection between items",
+                "items": [
+                    {"description": "Pad 1 [VBUS] of J1", "pos": {"x": 1.0, "y": 2.0}},
+                    {"description": "Pad 1 [VBUS] of C1", "pos": {"x": 3.0, "y": 4.0}}
+                ]
+            })
+        }
+
+        fn warning(kind: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": kind,
+                "severity": "warning",
+                "description": "Advisory finding"
+            })
+        }
+
+        #[test]
+        fn unconnected_pads_are_counted_and_the_board_is_not_clean() {
+            let mut report = clean_report();
+            report["unconnected_items"] =
+                serde_json::json!([unconnected_item(), unconnected_item()]);
+            let parsed = parse_drc_report(&report).expect("recognized report");
+            assert!(parsed.violations.is_empty(), "open nets are not violations");
+            assert_eq!(parsed.counts, counts(0, 2, 0));
+            assert!(!parsed.counts.is_clean());
+        }
+
+        #[test]
+        fn warnings_alone_are_counted_and_the_board_is_not_clean() {
+            let mut report = clean_report();
+            report["violations"] =
+                serde_json::json!([warning("silk_overlap"), warning("lib_footprint_issues")]);
+            let parsed = parse_drc_report(&report).expect("recognized report");
+            assert!(parsed.violations.is_empty(), "warnings are not violations");
+            assert_eq!(parsed.counts, counts(0, 0, 2));
+            assert!(!parsed.counts.is_clean());
+        }
+
+        #[test]
+        fn an_all_zero_report_is_the_only_one_called_clean() {
+            let parsed = parse_drc_report(&clean_report()).expect("recognized report");
+            assert_eq!(parsed.counts, DrcCounts::default());
+            assert!(parsed.counts.is_clean());
+        }
+
+        #[test]
+        fn errors_unconnected_pads_and_warnings_are_counted_separately() {
+            let report = serde_json::json!({
+                "violations": [
+                    {"type": "clearance", "severity": "error", "description": "Clearance"},
+                    warning("silk_overlap")
+                ],
+                "unconnected_items": [unconnected_item()]
+            });
+            let parsed = parse_drc_report(&report).expect("recognized report");
+            assert_eq!(parsed.violations.len(), 1);
+            assert_eq!(parsed.counts, counts(1, 1, 1));
+            assert!(!parsed.counts.is_clean());
         }
 
         #[test]
@@ -967,7 +1074,9 @@ mod tests {
                     }
                 ]
             });
-            let violations = parse_drc_report(&report).expect("recognized report");
+            let violations = parse_drc_report(&report)
+                .expect("recognized report")
+                .violations;
             assert_eq!(violations.len(), 1, "warnings must not become violations");
             assert_eq!(violations[0].code, "E-KICAD-DRC-clearance");
             assert_eq!(violations[0].components, vec!["R1".to_string()]);

@@ -52,6 +52,16 @@ erc` validates the exported artifact after. Both must be clean
    project, because that output claims nothing about being verified.
    Use `--verification-report FILE` to capture the evidence, or read
    `stages.manufacturing.native` from `synth check --fab --json`.
+7. **A DRC run that finished is reported by its real counts.** After the
+   export, `synth export-kicad` reads KiCad's DRC report and prints
+   `errors N, unconnected pads N, warnings N`. _errors_ are KiCad rule
+   violations and are listed one by one; _unconnected pads_ are the
+   report's separate `unconnected_items` list, pads that belong to a net
+   but have no copper path yet (an incomplete route, which still
+   exports so it can be finished by hand); _warnings_ are advisory
+   findings that are not rule violations. The line ends with
+   `Zero-DRC gate clean` only when all three are zero. The counts are
+   reporting only: pass/fail and the exit status still follow the errors.
 
 ---
 
