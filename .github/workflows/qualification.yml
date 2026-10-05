@@ -1,0 +1,137 @@
+name: Reference Board Qualification
+
+on:
+  push:
+    branches:
+      - main
+    paths: &qualification_paths
+      - "crates/synth-ast/**"
+      - "crates/synth-cli/**"
+      - "crates/synth-connectivity/**"
+      - "crates/synth-drc/**"
+      - "crates/synth-geometry/**"
+      - "crates/synth-ir/**"
+      - "crates/synth-kicad/**"
+      - "crates/synth-layout/**"
+      - "crates/synth-parser/**"
+      - "crates/synth-place/**"
+      - "crates/synth-registry/**"
+      - "crates/synth-route/**"
+      - "crates/synth-validate/**"
+      - "registry/**"
+      - "qualification/**"
+      - "examples/**"
+      - "fixtures/designs/**"
+      - "fixtures/kicad-reference/**"
+      - ".github/workflows/qualification.yml"
+
+  pull_request:
+    branches:
+      - main
+    paths: *qualification_paths
+
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 3
+  CARGO_HTTP_TIMEOUT: 60
+
+concurrency:
+  group: qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Release-blocking. Runs the same deterministic release command a human
+  # would (`synth check <board> --json`) over the checked-in corpus and fails
+  # when any board stops matching its declared status in
+  # qualification/matrix.toml — in either direction, so a launch claim cannot
+  # grow without someone declaring it.
+  matrix:
+    name: Qualification matrix
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: qualification
+
+      - name: Install kicad-cli and the stock symbol/footprint libraries
+        run: |
+          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            kicad kicad-symbols kicad-footprints
+          kicad-cli version
+          mkdir -p "$HOME/.config/kicad/10.0"
+          cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
+          cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
+
+      # A release build is not an optimization here. A debug DRC on a real
+      # board takes roughly ten times as long and overruns the stage budget,
+      # which reports `unknown` and blocks for no real reason.
+      - name: Run the qualification matrix
+        run: cargo test --release -p synth-cli --test qualification_matrix -- --ignored --nocapture
+
+      - name: Upload qualification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualification-results
+          path: target/qualification/results.json
+          if-no-files-found: warn
+
+  # Not yet blocking: the manufacturing stage needs a KiCad install to produce
+  # any evidence at all, so its expectations cannot be established on a
+  # developer machine without one. This job records the first real baseline.
+  # Promote it to blocking (drop continue-on-error) once matrix.toml carries
+  # the manufacturing expectations it produces.
+  fab:
+    name: Qualification matrix (manufacturing baseline)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: qualification
+
+      - name: Install kicad-cli and the stock symbol/footprint libraries
+        run: |
+          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            kicad kicad-symbols kicad-footprints
+          kicad-cli version
+          mkdir -p "$HOME/.config/kicad/10.0"
+          cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
+          cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
+
+      - name: Run the matrix through the manufacturing stage
+        env:
+          SYNTH_QUALIFY_FAB: "1"
+          SYNTH_CHECK_FAB_TIMEOUT_SECS: "900"
+          SYNTH_CHECK_DRC_TIMEOUT_SECS: "300"
+        run: cargo test --release -p synth-cli --test qualification_matrix -- --ignored --nocapture
+
+      - name: Upload manufacturing baseline
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualification-results-fab
+          path: target/qualification/results.json
+          if-no-files-found: warn
