@@ -193,8 +193,14 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
     let gnd_layers = ground_plane_layers(board.layers);
     for (plane_index, (pcb_net, net_name)) in plane_nets.iter().enumerate() {
         for layer in &gnd_layers {
+            // The first plane keeps the layer-only key so single-ground uuids stay unchanged.
+            let zone_key = if plane_index == 0 {
+                (*layer).to_string()
+            } else {
+                format!("{net_name}/{layer}")
+            };
             children.push(build_gnd_zone(
-                placement, layer, *pcb_net, net_name, project,
+                placement, layer, *pcb_net, net_name, project, &zone_key,
             ));
         }
         // A zone on each copper layer is only a plane, not an electrical
@@ -281,6 +287,7 @@ fn build_gnd_zone(
     net_id: u32,
     net_name: &str,
     project: &Uuid,
+    zone_key: &str,
 ) -> Sexp {
     let r = placement.board_outline;
     // Keep the zone just inside Edge.Cuts.  A polygon whose vertices lie
@@ -293,7 +300,7 @@ fn build_gnd_zone(
     let min_y = nm_to_mm(r.min.y_nm) + inset;
     let max_x = nm_to_mm(r.max.x_nm) - inset;
     let max_y = nm_to_mm(r.max.y_nm) - inset;
-    let zone_uuid = derive_entity_uuid(project, "zone", layer_name);
+    let zone_uuid = derive_entity_uuid(project, "zone", zone_key);
 
     let pts = vec![
         Sexp::list("xy", vec![num(min_x), num(min_y)]),
@@ -377,14 +384,13 @@ type PadNetLookup = HashMap<(ComponentId, String), (u32, String)>;
 fn build_net_assignments(board: &Board) -> (Vec<(u32, String)>, PadNetLookup) {
     let mut table: Vec<(u32, String)> = Vec::with_capacity(board.nets.len());
     let mut lookup: HashMap<(ComponentId, String), (u32, String)> = HashMap::new();
-    let mut gnd_found = false;
+    let is_gnd = |name: &str| {
+        name.to_lowercase().contains("gnd") || name.to_lowercase().contains("vss") || name == "0v"
+    };
+    let sole_ground = board.nets.iter().filter(|net| is_gnd(&net.name)).count() == 1;
     for (idx, net) in board.nets.iter().enumerate() {
         let pcb_net_id = (idx as u32) + 1;
-        let is_gnd = net.name.to_lowercase().contains("gnd")
-            || net.name.to_lowercase().contains("vss")
-            || net.name == "0v";
-        let net_name = if is_gnd && !gnd_found {
-            gnd_found = true;
+        let net_name = if sole_ground && is_gnd(&net.name) {
             "GND".to_string()
         } else {
             net.name.clone()
