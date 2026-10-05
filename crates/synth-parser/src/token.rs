@@ -30,6 +30,7 @@ pub enum TokenKind {
     KwRevision,
     KwCompany,
     KwSchematic,
+    KwStackup,
     KwLegends,
     KwComponent,
     KwConnect,
@@ -85,6 +86,7 @@ pub enum TokenKind {
     Ident(String),
     StringLit(String),
     IntLit(i64),
+    DecimalLit(String),
     Value { literal: String, unit: Unit },
 
     // Special
@@ -388,10 +390,9 @@ impl<'a> Lexer<'a> {
         let unit_str = std::str::from_utf8(&self.src[unit_start..self.pos]).unwrap_or("");
 
         if unit_str.is_empty() {
-            // Bare integer (only used by `layers N` in Phase 1).
             if seen_dot {
                 return Token {
-                    kind: TokenKind::Error(LexError::InvalidNumber(literal)),
+                    kind: TokenKind::DecimalLit(literal),
                     span: Span::new(start, self.offset()),
                 };
             }
@@ -446,6 +447,7 @@ impl<'a> Lexer<'a> {
             "revision" => TokenKind::KwRevision,
             "company" => TokenKind::KwCompany,
             "schematic" => TokenKind::KwSchematic,
+            "stackup" => TokenKind::KwStackup,
             "legends" => TokenKind::KwLegends,
             "component" => TokenKind::KwComponent,
             "connect" => TokenKind::KwConnect,
@@ -517,7 +519,7 @@ mod tests {
     #[test]
     fn keywords_recognized() {
         let ks = kinds(
-            "board import layers manufacturer revision company schematic legends component connect net power notes dnp module interface bus use bind prefix param as class diff_pair netclass keepout group sheet impedance trace_width clearance radius value tolerance voltage power_rating dielectric variant description",
+            "board import layers manufacturer revision company schematic stackup legends component connect net power notes dnp module interface bus use bind prefix param as class diff_pair netclass keepout group sheet impedance trace_width clearance radius value tolerance voltage power_rating dielectric variant description",
         );
         assert_eq!(
             ks,
@@ -529,6 +531,7 @@ mod tests {
                 TokenKind::KwRevision,
                 TokenKind::KwCompany,
                 TokenKind::KwSchematic,
+                TokenKind::KwStackup,
                 TokenKind::KwLegends,
                 TokenKind::KwComponent,
                 TokenKind::KwConnect,
@@ -622,6 +625,18 @@ mod tests {
             ks[0],
             TokenKind::Error(LexError::InvalidEscape('q'))
         ));
+    }
+
+    #[test]
+    fn bare_decimal_is_a_decimal_literal() {
+        assert_eq!(
+            kinds("4.2 4"),
+            vec![
+                TokenKind::DecimalLit("4.2".into()),
+                TokenKind::IntLit(4),
+                TokenKind::Eof
+            ]
+        );
     }
 
     #[test]

@@ -800,6 +800,11 @@ fn execute_language_reference(_args: &Value) -> Value {
                     "example": "keepout antenna { radius 15mm }"
                 },
                 {
+                    "form": "stackup { copper <thickness><unit> | insulator <thickness><unit> er <number> [material \"<name>\"] ... }",
+                    "description": "Declares the board's physical layers from the top of the board to the bottom: copper and insulator entries that alternate, starting and ending with copper. The number of copper entries must equal `layers`, and `layers` must be 2, 4 or 6 (E-SYNTH-STACKUP-001). Thicknesses are lengths (mm or mil); `er` is the insulator's dielectric constant, a plain number. The exporter writes it to the .kicad_pcb stackup section and sets the board thickness to the stack total. Synth has no fabricator presets and no default stack: omit the block and the board exports the exporter's default thickness with no stackup section.",
+                    "example": "stackup { copper 0.035mm insulator 1.5mm er 4.4 material \"FR4\" copper 0.035mm }"
+                },
+                {
                     "form": "group \"<title>\" [color \"#rrggbb\"] [title \"<display>\"] [region <region>] { <statement>* }",
                     "description": "Declares a sub-circuit region. THE most important statement for schematic readability: a group becomes a titled, coloured, dashed box on the sheet, its members are placed together inside it, and nets that stay inside it are drawn as wires while nets crossing out of it become labels. Components keep board-unique refdes and may be connected across groups. Prefer 3-6 groups naming the functional blocks (power input, MCU, sensor, ...). `color` overrides the deterministic palette hue; `title` sets a display title different from the identifier; `region` steers which page quadrant it packs toward.",
                     "example": "group \"3V3 LDO\" color \"#c2410c\" { component U2: regulator \"ap2112k_3v3\" value \"AP2112K-3.3\" }"
@@ -4225,6 +4230,28 @@ mod language_reference_tests {
     fn language_reference_is_listed() {
         let names: Vec<String> = list_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"synth_language_reference".to_string()));
+    }
+
+    #[test]
+    fn language_reference_documents_a_stackup_that_parses() {
+        let result = execute_language_reference(&serde_json::json!({}));
+        let entry = result["grammar"]["statements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| {
+                s["form"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("stackup")
+            })
+            .expect("stackup statement documented");
+        let source = format!(
+            "board \"b\" {{\n layers 2\n {}\n}}",
+            entry["example"].as_str().unwrap()
+        );
+        let parse = synth_parser::parse(&source, "stackup_example.synth".to_string());
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
     }
 
     #[test]

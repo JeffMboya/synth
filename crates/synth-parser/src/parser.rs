@@ -19,8 +19,8 @@ use synth_ast::{
     KeepoutStmt, LayersStmt, LegendsStmt, ManufacturerStmt, ModuleDeclStmt, NetDeclAst,
     NetclassAttr, NetclassStmt, NotesDeclAst, ParamDeclAst, PlacementHintAst, PlacementHintAttr,
     PortBindingAst, PortDeclAst, PowerDeclAst, ProgramAst, RevisionStmt, SchematicOverflowAst,
-    SchematicPaperAst, SchematicStmt, SheetStmt, StatementAst, UseStmt, ValueWithUnit,
-    VariantDeclStmt,
+    SchematicPaperAst, SchematicStmt, SheetStmt, StackupLayerAst, StackupStmt, StatementAst,
+    UseStmt, ValueWithUnit, VariantDeclStmt,
 };
 
 use synth_diagnostics::{
@@ -323,12 +323,13 @@ impl Parser {
             TokenKind::KwGroup => self.parse_group().map(StatementAst::Group),
             TokenKind::KwSheet => self.parse_sheet().map(StatementAst::Sheet),
             TokenKind::KwSchematic => self.parse_schematic().map(StatementAst::Schematic),
+            TokenKind::KwStackup => self.parse_stackup().map(StatementAst::Stackup),
             _ => {
                 self.emit(
                     self.peek().span,
                     "E-SYNTH-PARSE-011",
                     "expected statement keyword",
-                    "one of: layers, manufacturer, revision, company, legends, schematic, component, variant, connect, net, power, notes, module, interface, bus, use, bind, diff_pair, netclass, keepout, group, sheet",
+                    "one of: layers, manufacturer, revision, company, legends, schematic, stackup, component, variant, connect, net, power, notes, module, interface, bus, use, bind, diff_pair, netclass, keepout, group, sheet",
                     self.describe_current(),
                     None,
                 );
@@ -1447,6 +1448,133 @@ impl Parser {
         })
     }
 
+    /// `stackup { copper 0.035mm insulator 0.2mm er 4.2 material "FR4" … }`.
+    ///
+    /// The entry names (`copper`, `insulator`, `er`, `material`) are bare
+    /// identifiers, like the `schematic` settings, so they stay usable as
+    /// component and net names; only `stackup` itself is reserved.
+    fn parse_stackup(&mut self) -> Option<StackupStmt> {
+        let start = self.peek().span.byte_start;
+        self.bump(); // consume `stackup`
+        if !matches!(self.peek_kind(), TokenKind::LBrace) {
+            self.emit(
+                self.peek().span,
+                "E-SYNTH-PARSE-003",
+                "expected `{` to open stackup body",
+                "`stackup { copper 0.035mm insulator 0.2mm er 4.2 copper 0.035mm }`",
+                self.describe_current(),
+                None,
+            );
+            return None;
+        }
+        self.bump();
+        let mut layers = Vec::new();
+        loop {
+            self.skip_error_tokens();
+            let entry_start = self.peek().span.byte_start;
+            match self.peek_kind() {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                TokenKind::Ident(name) if name == "copper" => {
+                    self.bump();
+                    if let Some(thickness) = self.expect_value() {
+                        let span = Span::new(entry_start, self.last_offset());
+                        layers.push(StackupLayerAst::Copper { thickness, span });
+                    }
+                }
+                TokenKind::Ident(name) if name == "insulator" => {
+                    self.bump();
+                    if let Some(layer) = self.parse_stackup_insulator(entry_start) {
+                        layers.push(layer);
+                    }
+                }
+                _ => {
+                    self.emit(
+                        self.peek().span,
+                        "E-SYNTH-PARSE-037",
+                        "unknown stackup entry",
+                        "`copper` or `insulator`",
+                        self.describe_current(),
+                        None,
+                    );
+                    self.bump();
+                }
+            }
+        }
+        if matches!(self.peek_kind(), TokenKind::RBrace) {
+            self.bump();
+        }
+        let end = self.last_offset();
+        Some(StackupStmt {
+            layers,
+            span: Span::new(start, end),
+        })
+    }
+
+    /// The part of an `insulator <thickness> er <number> [material "<name>"]`
+    /// entry after the keyword.
+    fn parse_stackup_insulator(&mut self, entry_start: u32) -> Option<StackupLayerAst> {
+        let thickness = self.expect_value()?;
+        if !matches!(self.peek_kind(), TokenKind::Ident(name) if name == "er") {
+            self.emit(
+                self.peek().span,
+                "E-SYNTH-PARSE-038",
+                "expected `er <number>` after the insulator thickness",
+                "`er <number>`, e.g. `er 4.2`",
+                self.describe_current(),
+                None,
+            );
+            return None;
+        }
+        self.bump(); // consume `er`
+        let er = match self.peek_kind() {
+            TokenKind::IntLit(n) => n.to_string(),
+            TokenKind::DecimalLit(d) => d.clone(),
+            _ => {
+                self.emit(
+                    self.peek().span,
+                    "E-SYNTH-PARSE-038",
+                    "expected a plain number for the dielectric constant",
+                    "a number without a unit, e.g. `4.2`",
+                    self.describe_current(),
+                    None,
+                );
+                if matches!(
+                    self.peek_kind(),
+                    TokenKind::StringLit(_) | TokenKind::Value { .. }
+                ) {
+                    self.bump();
+                }
+                return None;
+            }
+        };
+        self.bump();
+        let mut material = None;
+        if matches!(self.peek_kind(), TokenKind::Ident(name) if name == "material") {
+            self.bump();
+            material = self.expect_string(
+                "E-SYNTH-PARSE-002",
+                "expected material name (quoted string)",
+            );
+            if material.is_none() {
+                let next_entry = matches!(self.peek_kind(), TokenKind::RBrace | TokenKind::Eof)
+                    || matches!(
+                        self.peek_kind(),
+                        TokenKind::Ident(n) if n == "copper" || n == "insulator"
+                    );
+                if !next_entry {
+                    self.bump();
+                }
+            }
+        }
+        let span = Span::new(entry_start, self.last_offset());
+        Some(StackupLayerAst::Insulator {
+            thickness,
+            er,
+            material,
+            span,
+        })
+    }
+
     /// `paper = "A4"` inside a `schematic { … }` body. The `paper`
     /// identifier is already consumed.
     fn parse_schematic_paper(&mut self) -> Option<SchematicPaperAst> {
@@ -2227,6 +2355,7 @@ impl Parser {
                 | TokenKind::KwDiffPair
                 | TokenKind::KwNetclass
                 | TokenKind::KwKeepout
+                | TokenKind::KwStackup
                 | TokenKind::KwGroup
                 | TokenKind::KwSheet
                 | TokenKind::KwPlacementHint => return,
@@ -2259,6 +2388,7 @@ impl Parser {
             TokenKind::KwRevision => "`revision`".to_string(),
             TokenKind::KwCompany => "`company`".to_string(),
             TokenKind::KwSchematic => "`schematic`".to_string(),
+            TokenKind::KwStackup => "`stackup`".to_string(),
             TokenKind::KwLegends => "`legends`".to_string(),
             TokenKind::KwComponent => "`component`".to_string(),
             TokenKind::KwConnect => "`connect`".to_string(),
@@ -2305,6 +2435,7 @@ impl Parser {
             TokenKind::Dollar => "`$`".to_string(),
             TokenKind::StringLit(_) => "a string literal".to_string(),
             TokenKind::IntLit(n) => format!("integer `{n}`"),
+            TokenKind::DecimalLit(d) => format!("number `{d}`"),
             TokenKind::Value { literal, unit } => format!("`{literal}{}`", unit.as_str()),
             TokenKind::Error(_) => "an unrecognized token".to_string(),
         }
@@ -3119,5 +3250,116 @@ mod tests {
             panic!("Expected group statement");
         };
         assert!(g.attrs.is_empty(), "{:?}", g.attrs);
+    }
+
+    fn parse_stackup(body: &str) -> ParseResult {
+        let src = format!("board \"b\" {{\n stackup {{ {body} }}\n}}");
+        parse(lex(&src), "t.synth".into())
+    }
+
+    #[test]
+    fn parse_stackup_lists_layers_in_written_order() {
+        let res =
+            parse_stackup("copper 0.035mm insulator 0.2mm er 4.2 material \"FR4\" copper 1.4mil");
+        assert!(res.diagnostics.is_empty(), "{:?}", res.diagnostics);
+        let ast = res.ast.unwrap();
+        let StatementAst::Stackup(st) = &ast.board.statements[0] else {
+            panic!("expected stackup");
+        };
+        assert_eq!(st.layers.len(), 3);
+        assert!(matches!(
+            &st.layers[0],
+            StackupLayerAst::Copper { thickness, .. } if thickness.literal == "0.035"
+        ));
+        assert!(matches!(
+            &st.layers[1],
+            StackupLayerAst::Insulator { thickness, er, material, .. }
+                if thickness.literal == "0.2"
+                    && er == "4.2"
+                    && material.as_deref() == Some("FR4")
+        ));
+        assert!(matches!(
+            &st.layers[2],
+            StackupLayerAst::Copper { thickness, .. }
+                if thickness.literal == "1.4" && thickness.unit == synth_ast::Unit::Mil
+        ));
+    }
+
+    #[test]
+    fn parse_stackup_accepts_an_integer_dielectric_constant() {
+        let res = parse_stackup("insulator 0.2mm er 4");
+        assert!(res.diagnostics.is_empty(), "{:?}", res.diagnostics);
+        let ast = res.ast.unwrap();
+        let StatementAst::Stackup(st) = &ast.board.statements[0] else {
+            panic!("expected stackup");
+        };
+        assert!(matches!(&st.layers[0], StackupLayerAst::Insulator { er, .. } if er == "4"));
+    }
+
+    #[test]
+    fn an_unquoted_material_is_one_error_and_keeps_the_layer() {
+        let res = parse_stackup("insulator 1.5mm er 4.2 material FR4 copper 0.035mm");
+        assert_eq!(
+            res.diagnostics
+                .iter()
+                .map(|d| d.code.as_str())
+                .collect::<Vec<_>>(),
+            ["E-SYNTH-PARSE-002"]
+        );
+        let ast = res.ast.unwrap();
+        let StatementAst::Stackup(st) = &ast.board.statements[0] else {
+            panic!("expected stackup");
+        };
+        assert!(matches!(
+            &st.layers[0],
+            StackupLayerAst::Insulator { material: None, .. }
+        ));
+        assert_eq!(st.layers.len(), 2);
+    }
+
+    #[test]
+    fn a_stackup_after_an_earlier_error_is_still_parsed() {
+        let src = "board \"b\" {\n layers x\n stackup { copper 0.035mm }\n}";
+        let res = parse(lex(src), "t.synth".into());
+        assert_eq!(
+            res.diagnostics
+                .iter()
+                .map(|d| d.code.as_str())
+                .collect::<Vec<_>>(),
+            ["E-SYNTH-PARSE-017"]
+        );
+        let ast = res.ast.unwrap();
+        assert!(matches!(ast.board.statements[0], StatementAst::Stackup(_)));
+    }
+
+    #[test]
+    fn parse_stackup_requires_a_dielectric_constant_on_an_insulator() {
+        for body in [
+            "insulator 0.2mm",
+            "insulator 0.2mm er",
+            "insulator 0.2mm er \"4.2\"",
+        ] {
+            let res = parse_stackup(body);
+            assert!(
+                res.diagnostics
+                    .iter()
+                    .any(|d| d.code == "E-SYNTH-PARSE-038"),
+                "{body}: expected E-SYNTH-PARSE-038, got {:?}",
+                res.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn a_stackup_entry_without_a_thickness_terminates() {
+        for body in ["copper", "insulator", "copper copper", "insulator er 4"] {
+            let res = parse_stackup(body);
+            assert!(!res.diagnostics.is_empty(), "{body} should be an error");
+            assert!(
+                res.diagnostics.len() < 10,
+                "{body} produced {} diagnostics, so the parser is looping",
+                res.diagnostics.len()
+            );
+        }
     }
 }

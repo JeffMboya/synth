@@ -29,7 +29,7 @@ pub mod units;
 pub use board::{
     Board, Component, ComponentId, DiffPair, Group, Keepout, Net, NetClass, NetEndpoint, NetId,
     Note, PinId, PlacementConstraint, PlacementEdge, PlacementPriority, PlacementRegion,
-    PlacementSide, SchematicOverflow, SchematicPaper, Variant,
+    PlacementSide, SchematicOverflow, SchematicPaper, Stackup, StackupLayer, Variant,
 };
 pub use imports::{
     resolve as resolve_imports, FsImportLoader, ImportLoadError, ImportLoader, MemoryImportLoader,
@@ -42,4 +42,6 @@ pub use power_domains::{infer_power_domains, PowerDomainKind, PowerDomainMap};
 /// Re-export of the registry's `Pin` type so consumers of the IR
 /// don't need to depend on `synth-registry` directly.
 pub use synth_registry::Pin;
-pub use units::{Capacitance, Current, Frequency, Impedance, Length, Resistance, Voltage};
+pub use units::{
+    Capacitance, Current, DielectricConstant, Frequency, Impedance, Length, Resistance, Voltage,
+};

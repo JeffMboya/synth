@@ -142,6 +142,7 @@ fn two_row_board_and_layout() -> (Board, Layout) {
         diff_pairs: Vec::new(),
         notes: vec![],
         keepouts: Vec::new(),
+        stackup: None,
         netclasses: vec![],
         buses: vec![],
         modules: vec![],

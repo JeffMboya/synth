@@ -67,6 +67,7 @@ pub enum StatementAst {
     Group(GroupStmt),
     Sheet(SheetStmt),
     Schematic(SchematicStmt),
+    Stackup(StackupStmt),
 }
 
 impl StatementAst {
@@ -94,6 +95,7 @@ impl StatementAst {
             StatementAst::Group(s) => s.span,
             StatementAst::Sheet(s) => s.span,
             StatementAst::Schematic(s) => s.span,
+            StatementAst::Stackup(s) => s.span,
         }
     }
 }
@@ -172,6 +174,33 @@ pub struct SchematicStmt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow: Option<SchematicOverflowAst>,
     pub span: Span,
+}
+
+/// `stackup { copper 0.035mm insulator 0.2mm er 4.2 copper 0.035mm }` — the
+/// board's physical layers in order, outermost copper first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackupStmt {
+    pub layers: Vec<StackupLayerAst>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum StackupLayerAst {
+    Copper {
+        thickness: ValueWithUnit,
+        span: Span,
+    },
+    Insulator {
+        thickness: ValueWithUnit,
+        /// Relative permittivity as written (`4.2`), kept as a literal like
+        /// [`ValueWithUnit::literal`] so no float rounding happens in the AST.
+        er: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        material: Option<String>,
+        span: Span,
+    },
 }
 
 /// How a design reacts to content that does not fit the requested page.

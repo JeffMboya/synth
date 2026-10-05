@@ -1,0 +1,12 @@
+board "stackup_4layer" {
+  layers 4
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4 material "FR4"
+    copper 0.0152mm
+    insulator 1.065mm er 4.6 material "FR4"
+    copper 0.0152mm
+    insulator 0.2104mm er 4.4 material "FR4"
+    copper 0.035mm
+  }
+}

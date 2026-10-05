@@ -58,6 +58,7 @@ pub mod value;
 pub use value::{parse_capacitance, parse_resistance, parse_voltage};
 
 pub mod patch_mlp;
+mod stackup;
 pub use patch_mlp::PatchMlp;
 
 pub mod placement;
@@ -132,6 +133,9 @@ fn all_rules(config: &ErcConfig) -> Vec<Box<dyn ErcRule>> {
         Box::new(RefdesFormatRule),
         Box::new(RefdesPrefixRule),
         Box::new(BoardZeroLayersRule),
+        Box::new(stackup::StackupLayerCountRule),
+        Box::new(stackup::StackupAlternationRule),
+        Box::new(stackup::StackupNonPositiveRule),
         Box::new(EmptyBoardRule),
         Box::new(UsbCcPullDownRule),
         Box::new(SpiDirectionRule),
@@ -3788,6 +3792,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],
@@ -3951,6 +3956,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],
@@ -4048,6 +4054,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],
@@ -4111,6 +4118,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],
@@ -4248,6 +4256,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],
@@ -4382,6 +4391,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],
@@ -4445,6 +4455,7 @@ mod tests {
             diff_pairs: vec![],
             notes: vec![],
             keepouts: vec![],
+            stackup: None,
             netclasses: vec![],
             buses: vec![],
             modules: vec![],
