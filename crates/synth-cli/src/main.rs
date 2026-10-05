@@ -916,27 +916,101 @@ fn main() -> ExitCode {
     }
 }
 
-fn capability_cmd(cmd: &CapabilityCommand) -> anyhow::Result<u8> {
-    let commands = [
-        "validate",
-        "dump-ast",
-        "dump-ir",
-        "export-kicad",
-        "fix",
-        "schema",
-        "layout",
-        "place",
-        "route",
-        "drc",
-        "check",
-        "preview",
-        "mcp",
-        "supply-chain",
-        "render",
-        "capability",
-        "registry",
-        "part",
-    ];
+const CAPABILITY_COMMANDS: [&str; 18] = [
+    "validate",
+    "dump-ast",
+    "dump-ir",
+    "export-kicad",
+    "fix",
+    "schema",
+    "layout",
+    "place",
+    "route",
+    "drc",
+    "check",
+    "preview",
+    "mcp",
+    "supply-chain",
+    "render",
+    "capability",
+    "registry",
+    "part",
+];
+
+type CapabilityLimit = (&'static str, Option<&'static str>, &'static str);
+
+const UNSUPPORTED: &[CapabilityLimit] = &[
+    (
+        "coupled_diff_pair_routing",
+        None,
+        "Synth does not keep the two halves of a differential pair coupled or check that they are; \
+         that is left to the router.",
+    ),
+    (
+        "length_skew_enforcement",
+        None,
+        "No length or skew budget can be declared and nothing fails on residual skew; any \
+         tuning is left to the router.",
+    ),
+    (
+        "return_path_and_layer_transition_analysis",
+        None,
+        "Return paths, reference-plane continuity and signal layer transitions are not analysed.",
+    ),
+    (
+        "inner_layer_impedance",
+        None,
+        "No stackup is modelled, so stripline impedance is not computed for any design net; \
+         synth_evaluate_thermal_si calculates it only from caller-supplied dimensions.",
+    ),
+    (
+        "split_ground_planes",
+        None,
+        "Each ground net gets its own unsplit full-board zone; split or segmented ground planes \
+         are not designed.",
+    ),
+    (
+        "thermal_relief_analysis",
+        None,
+        "Zone thermal-relief gap and spoke width are fixed export defaults, not analysed.",
+    ),
+    (
+        "power_sequencing_and_power_good",
+        None,
+        "Enable ordering, power-good signals and sequencing timing are neither declared nor checked.",
+    ),
+];
+
+const UNVERIFIED: &[CapabilityLimit] = &[
+    (
+        "diff_pair_impedance",
+        Some("diff_pair.impedance"),
+        "The declared value is parsed and its presence is required, but no routing, export or \
+         stackup stage uses or checks it.",
+    ),
+    (
+        "rf_net_trace_width",
+        None,
+        "RF nets get a fixed trace width chosen by net name unless a net class named RF_50 is \
+         declared; it is not derived from a stackup or a declared impedance, so the 50 ohm \
+         target is not verified.",
+    ),
+];
+
+fn capability_limits(limits: &[CapabilityLimit]) -> Vec<serde_json::Value> {
+    limits
+        .iter()
+        .map(|(id, constraint, summary)| {
+            let mut entry = serde_json::json!({"id": id, "summary": summary});
+            if let Some(constraint) = constraint {
+                entry["constraint"] = serde_json::json!(constraint);
+            }
+            entry
+        })
+        .collect()
+}
+
+fn capability_descriptor() -> serde_json::Value {
     let board_families = synth_place::board_family::PROFILES
         .iter()
         .map(|profile| {
@@ -951,13 +1025,13 @@ fn capability_cmd(cmd: &CapabilityCommand) -> anyhow::Result<u8> {
         })
         .collect::<Vec<_>>();
 
-    let descriptor = serde_json::json!({
-        "schema_version": "1.0",
+    serde_json::json!({
+        "schema_version": "1.1",
         "compiler": {
             "name": "synth",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "commands": commands.iter().map(|name| serde_json::json!({
+        "commands": CAPABILITY_COMMANDS.iter().map(|name| serde_json::json!({
             "name": name,
             "available": true
         })).collect::<Vec<_>>(),
@@ -1017,18 +1091,22 @@ fn capability_cmd(cmd: &CapabilityCommand) -> anyhow::Result<u8> {
             "available": true,
             "source": "synth-place::board_family",
             "families": board_families
-        }
-    });
+        },
+        "unsupported": capability_limits(UNSUPPORTED),
+        "unverified": capability_limits(UNVERIFIED)
+    })
+}
 
+fn capability_cmd(cmd: &CapabilityCommand) -> anyhow::Result<u8> {
     match cmd {
         CapabilityCommand::List { json: true } => {
-            serde_json::to_writer_pretty(std::io::stdout(), &descriptor)?;
+            serde_json::to_writer_pretty(std::io::stdout(), &capability_descriptor())?;
             println!();
         }
         CapabilityCommand::List { json: false } => {
             println!("COMMAND              AVAILABLE");
             println!("-------------------- ---------");
-            for command in commands {
+            for command in CAPABILITY_COMMANDS {
                 println!("{command:<20} yes");
             }
             println!();
@@ -1037,6 +1115,13 @@ fn capability_cmd(cmd: &CapabilityCommand) -> anyhow::Result<u8> {
                 "BOARD FAMILY PROFILES: {} shipped",
                 synth_place::board_family::PROFILES.len()
             );
+            for (heading, limits) in [("UNSUPPORTED", UNSUPPORTED), ("UNVERIFIED", UNVERIFIED)] {
+                println!();
+                println!("{heading}:");
+                for (id, _, summary) in limits {
+                    println!("  {id}: {summary}");
+                }
+            }
         }
     }
 
@@ -4266,5 +4351,96 @@ mod tests {
         assert_eq!(infer_kind("Connector:J1"), "connector");
         assert_eq!(infer_kind("Regulator_Linear:AMS1117-3.3"), "ic");
         assert_eq!(infer_kind("MCU_Microchip_ATmega:ATmega328P"), "ic");
+    }
+
+    fn language_constraints() -> std::collections::BTreeSet<String> {
+        fn variants<T: serde::de::DeserializeOwned>(statement: &str) -> Vec<String> {
+            // serde lists the valid variants in its unknown-variant error; reading them keeps
+            // this list from drifting away from the AST.
+            let err = serde_json::from_value::<T>(serde_json::json!({"kind": "?"}))
+                .err()
+                .expect("an unknown attribute kind must be rejected")
+                .to_string();
+            let listed = err
+                .split_once("expected")
+                .expect("serde lists the variants")
+                .1;
+            listed
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .map(|attr| format!("{statement}.{attr}"))
+                .collect()
+        }
+        [
+            variants::<synth_ast::NetclassAttr>("netclass"),
+            variants::<synth_ast::DiffPairAttr>("diff_pair"),
+            variants::<synth_ast::KeepoutAttr>("keepout"),
+        ]
+        .concat()
+        .into_iter()
+        .collect()
+    }
+
+    fn limit_entries(descriptor: &serde_json::Value, section: &str) -> Vec<serde_json::Value> {
+        descriptor[section]
+            .as_array()
+            .unwrap_or_else(|| panic!("descriptor must carry a `{section}` array"))
+            .clone()
+    }
+
+    #[test]
+    fn every_language_constraint_is_supported_unsupported_or_unverified() {
+        let descriptor = capability_descriptor();
+        let mut classified = std::collections::BTreeSet::new();
+        for (statement, attrs) in descriptor["geometry_and_constraints"]["routing_constraints"]
+            .as_object()
+            .unwrap()
+        {
+            for attr in attrs.as_array().unwrap() {
+                classified.insert(format!("{statement}.{}", attr.as_str().unwrap()));
+            }
+        }
+        for section in ["unsupported", "unverified"] {
+            for entry in limit_entries(&descriptor, section) {
+                if let Some(constraint) = entry["constraint"].as_str() {
+                    classified.insert(constraint.to_string());
+                }
+            }
+        }
+
+        let unclassified: Vec<_> = language_constraints()
+            .into_iter()
+            .filter(|c| !classified.contains(c))
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "unclassified constraints: {unclassified:?}"
+        );
+    }
+
+    #[test]
+    fn limit_entries_are_named_and_refer_to_real_constraints() {
+        let descriptor = capability_descriptor();
+        let language = language_constraints();
+        let mut ids = std::collections::BTreeSet::new();
+        for section in ["unsupported", "unverified"] {
+            let entries = limit_entries(&descriptor, section);
+            assert!(!entries.is_empty(), "`{section}` must not be empty");
+            for entry in entries {
+                let id = entry["id"].as_str().unwrap();
+                assert!(
+                    !entry["summary"].as_str().unwrap().is_empty(),
+                    "{id} has no summary"
+                );
+                assert!(ids.insert(id.to_string()), "duplicate limit id {id}");
+                if let Some(constraint) = entry["constraint"].as_str() {
+                    assert!(
+                        language.contains(constraint),
+                        "{id} names unknown {constraint}"
+                    );
+                }
+            }
+        }
     }
 }
