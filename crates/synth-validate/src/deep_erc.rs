@@ -101,7 +101,11 @@ fn component_supply_v(
 }
 
 /// The other pin's net on a 2-pin part (given one of its pins).
-fn other_pin_net(board: &Board, component: &synth_ir::Component, from: PinId) -> Option<NetId> {
+pub(crate) fn other_pin_net(
+    board: &Board,
+    component: &synth_ir::Component,
+    from: PinId,
+) -> Option<NetId> {
     let part = component.part.as_ref()?;
     if part.pins.len() != 2 {
         return None;
