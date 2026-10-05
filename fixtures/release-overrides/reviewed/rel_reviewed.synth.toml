@@ -1,0 +1,25 @@
+id = "rel_reviewed"
+kind = "resistor"
+description = "Release fixture: a reviewed part with a real footprint"
+mpn = "REL-R-0603"
+kicad_footprint = "Rel:R-0603"
+
+[footprint_dimensions]
+width_mm = 1.6
+height_mm = 0.8
+courtyard_margin_mm = 0.25
+
+[provenance]
+source = "seed"
+datasheet_url = "https://example.invalid/rel-r.pdf"
+reviewed_by = "a reviewer"
+reviewed_at = "2026-10-05"
+
+[[pins]]
+name = "p1"
+number = "1"
+electrical_type = "passive"
+[[pins]]
+name = "p2"
+number = "2"
+electrical_type = "passive"
