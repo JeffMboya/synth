@@ -606,14 +606,16 @@ fn check_package_dimensions(part: &Part, pads: Option<&[PadFacts]>) -> Check {
     }
 
     let Some(pads) = pads else {
-        let mut check = Check::from_findings(NAME, findings);
-        if check.status == CheckStatus::Pass {
-            check = Check::unknown(
+        // Only an empty finding list is an absence of evidence. Testing the
+        // status instead would discard review-level findings, which are a
+        // Pass.
+        if findings.is_empty() {
+            return Check::unknown(
                 NAME,
                 "footprint pads unavailable, so declared dimensions cannot be cross-checked",
             );
         }
-        return check;
+        return Check::from_findings(NAME, findings);
     };
 
     if let Some((pad_w, pad_h)) = pad_extent(pads) {
@@ -1167,6 +1169,22 @@ mod tests {
         assert_eq!(q.status, CheckStatus::Fail, "{:#?}", q.checks);
         assert!(q.review_findings().any(|f| f.code == "E-SYNTH-QUAL-009"));
         assert!(q.blocking_findings().any(|f| f.code == "E-SYNTH-QUAL-008"));
+    }
+
+    #[test]
+    fn a_review_finding_survives_an_unreadable_footprint() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.footprint_dimensions
+            .as_mut()
+            .unwrap()
+            .courtyard_margin_mm = Some(99.0);
+        let q = qualify_part(&part, &NoFacts, &NoFacts);
+        let codes: Vec<&str> = q.findings().map(|f| f.code.as_str()).collect();
+        assert!(
+            codes.contains(&"E-SYNTH-QUAL-014"),
+            "an implausible courtyard must still be reported when pads are unavailable: {:#?}",
+            q.checks
+        );
     }
 
     #[test]
