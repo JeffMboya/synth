@@ -385,24 +385,37 @@ fn get_component_nets(board: &Board, id: ComponentId) -> Vec<NetId> {
     nets
 }
 
+/// Endpoint count above which a net is treated as a distribution rail rather
+/// than a local connection when choosing where to pack a passive.
+const RAIL_FANOUT: usize = 8;
+
 fn compute_target_centroid(
     board: &Board,
     nets: &[NetId],
     net_pad_positions: &HashMap<NetId, Vec<Point>>,
 ) -> Option<Point> {
+    // A rail's pads are spread across the whole board, so letting it pull on
+    // the centroid drags a part toward the middle of the board. Most designs
+    // leave nets unnamed (`net_0`, ...), so names alone miss the rails:
+    // also recognise declared power nets, ground by pin name, and
+    // high-fanout nets (the same structural test the router uses for planes).
     let is_global_rail = |net_id: NetId| -> bool {
-        let name = board
-            .nets
-            .iter()
-            .find(|n| n.id == net_id)
-            .map_or("", |n| n.name.as_str())
-            .to_lowercase();
-        name == "gnd"
-            || name == "vcc"
-            || name == "vdd"
-            || name == "3v3"
-            || name == "5v"
-            || name == "vbus"
+        let Some(net) = board.nets.iter().find(|n| n.id == net_id) else {
+            return false;
+        };
+        let name = net.name.to_lowercase();
+        let named_rail = matches!(name.as_str(), "gnd" | "vcc" | "vdd" | "3v3" | "5v" | "vbus");
+        let ground_pins = net.endpoints.iter().any(|ep| {
+            board
+                .component(ep.component)
+                .and_then(|c| c.part.as_ref())
+                .and_then(|p| p.pins.get(ep.pin.0 as usize))
+                .is_some_and(|pin| {
+                    let pin_name = pin.name.to_lowercase();
+                    pin_name.contains("gnd") || pin_name.contains("vss")
+                })
+        });
+        named_rail || net.voltage.is_some() || ground_pins || net.endpoints.len() > RAIL_FANOUT
     };
 
     let local_nets: Vec<NetId> = nets

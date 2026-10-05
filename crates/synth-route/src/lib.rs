@@ -75,6 +75,7 @@ pub mod logger;
 mod maze;
 pub mod miter;
 pub mod serpentine;
+mod spatial;
 
 pub use logger::{log_routing_outcome, RoutingOutcomeRecord};
 
@@ -633,9 +634,12 @@ mod tests {
 
         let r = route(&board, &placement);
         // See `sensor_logger_routes_cleanly`: guard coverage on the dense
-        // RP2350/USB-C board instead of an unreachable zero.
+        // RP2350/USB-C board instead of an unreachable zero. The bound was 6
+        // while the BG95 resolved to a missing footprint and the router saw a
+        // 5x5 mm placeholder; with the real ~15x13 mm module the board routes
+        // with 9 unrouted nets, the same as HEAD did with the real footprint.
         assert!(
-            r.unrouted_nets.len() <= 6,
+            r.unrouted_nets.len() <= 9,
             "iot_sensor_board routing coverage regressed: {} unrouted nets: {:?}",
             r.unrouted_nets.len(),
             r.unrouted_nets

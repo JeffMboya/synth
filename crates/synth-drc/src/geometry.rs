@@ -261,12 +261,15 @@ fn collect_obstacles(board: &Board, placement: &Placement) -> Vec<Obstacle> {
         let (rot_cx, rot_cy) = comp_placement
             .rotation
             .rotate_offset(mm_to_nm(court_cx_mm), mm_to_nm(court_cy_mm));
-        let court_center = Point::new(
-            comp_placement.center.x_nm + rot_cx,
-            comp_placement.center.y_nm + rot_cy,
-        );
+        // The exporter puts the footprint origin at center - rot(offset), so
+        // the courtyard is centred on `center` and pads (below) sit at
+        // center - rot(offset) + rot(pad).
         obstacles.push(Obstacle {
-            rect: Rect::from_center_half_extents(court_center, rotated_half_w, rotated_half_h),
+            rect: Rect::from_center_half_extents(
+                comp_placement.center,
+                rotated_half_w,
+                rotated_half_h,
+            ),
             net: None,
             component_nets: comp_nets,
             layer: ObstacleLayer::Single(comp_placement.layer),

@@ -69,20 +69,15 @@ fn courtyard_rect(
     placement: &synth_place::ComponentPlacement,
 ) -> Option<Rect> {
     let part = component.part.as_ref()?;
-    let ((offset_x, offset_y), (width, height)) =
-        synth_layout::pcb_courtyard_geometry_for_part(part);
+    // The exporter puts the footprint origin at center - rot(offset), so the
+    // physical courtyard is centred on `center`.
+    let (_, (width, height)) = synth_layout::pcb_courtyard_geometry_for_part(part);
     let (rotated_width, rotated_height) = match placement.rotation {
         Rotation::Zero | Rotation::OneEighty => (width, height),
         Rotation::Ninety | Rotation::TwoSeventy => (height, width),
     };
-    let (rotated_offset_x, rotated_offset_y) = placement
-        .rotation
-        .rotate_offset(mm_to_nm(offset_x), mm_to_nm(offset_y));
     Some(Rect::from_center_half_extents(
-        Point::new(
-            placement.center.x_nm + rotated_offset_x,
-            placement.center.y_nm + rotated_offset_y,
-        ),
+        placement.center,
         mm_to_nm(rotated_width) / 2,
         mm_to_nm(rotated_height) / 2,
     ))

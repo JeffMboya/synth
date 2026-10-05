@@ -116,6 +116,12 @@ const MAX_TOTAL_ASTAR_EXPANSIONS: u64 = 1_000_000;
 const NORMAL_ROUTE_EXPANSION_LIMIT: u64 = 3_000_000;
 const RECOVERY_ROUTE_EXPANSION_LIMIT: u64 = 12_000_000;
 const NORMAL_FINE_GRID_NET_ASTAR_EXPANSIONS: u64 = 250_000;
+/// Per-net share of a negotiated pass on coarse (> 0.127 mm) grids. Coarse
+/// grids used to have no per-net cap, so one net with no legal path (its
+/// search space exhausted after ~0.5M expansions on a 4-layer board) spent
+/// the whole pass budget and every later net in the order was skipped
+/// without a single attempt.
+const NORMAL_COARSE_GRID_NET_ASTAR_EXPANSIONS: u64 = 250_000;
 /// Fair-share cap for one net within a negotiated pass. Without this second
 /// limit, one trapped QFN escape can consume the entire pass budget and starve
 /// every other net from being reconsidered.
@@ -229,71 +235,113 @@ fn clear_all_tracks(grid: &mut Grid) {
 /// as unconnected — the earlier pad-adjacency heuristic missed this and
 /// hid fragmented multi-endpoint nets.
 fn find_partial_nets(grid: &Grid, board: &Board) -> Vec<(NetId, Vec<(usize, usize)>)> {
-    use std::collections::{HashSet, VecDeque};
+    // One pass over the grid collects every net's track cells (all layers)
+    // and layer-0 pad cells in scan order; per-net rescans of the full grid
+    // made this O(nets x cells).
+    let mut tracks: std::collections::HashMap<NetId, Vec<(usize, usize, usize)>> =
+        std::collections::HashMap::new();
+    let mut pads: std::collections::HashMap<NetId, Vec<(usize, usize)>> =
+        std::collections::HashMap::new();
+    for l in 0..grid.layers {
+        for y in 0..grid.height {
+            for x in 0..grid.width {
+                match grid.get(l, x, y) {
+                    Some(Cell::Track(n)) => tracks.entry(n).or_default().push((l, x, y)),
+                    Some(Cell::Pad(n)) if l == 0 => pads.entry(n).or_default().push((x, y)),
+                    _ => {}
+                }
+            }
+        }
+    }
     let mut out = Vec::new();
     for net in &board.nets {
         if net.endpoints.len() < 2 {
             continue;
         }
-        // Seeds: every Track(net) cell on every layer.
-        let mut seeds: Vec<(usize, usize, usize)> = Vec::new();
-        for l in 0..grid.layers {
-            for y in 0..grid.height {
-                for x in 0..grid.width {
-                    if matches!(grid.get(l, x, y), Some(Cell::Track(n)) if n == net.id) {
-                        seeds.push((l, x, y));
-                    }
-                }
-            }
-        }
-        let mut visited: HashSet<(usize, usize, usize)> = HashSet::new();
-        let mut q: VecDeque<(usize, usize, usize)> = VecDeque::new();
-        for s in seeds {
-            if visited.insert(s) {
-                q.push_back(s);
-            }
-        }
-        while let Some((l, x, y)) = q.pop_front() {
-            let neighbours: Vec<(usize, usize, usize)> = {
-                let mut v = Vec::new();
-                for (dx, dy) in [(1_i32, 0_i32), (-1, 0), (0, 1), (0, -1)] {
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-                    if nx >= 0 && ny >= 0 && nx < grid.width as i32 && ny < grid.height as i32 {
-                        v.push((l, nx as usize, ny as usize));
-                    }
-                }
-                // Via: same cell on another layer joins the copper.
-                for ol in 0..grid.layers {
-                    if ol != l {
-                        v.push((ol, x, y));
-                    }
-                }
-                v
-            };
-            for (nl, nx, ny) in neighbours {
-                if matches!(
-                    grid.get(nl, nx, ny),
-                    Some(Cell::Track(n) | Cell::Pad(n)) if n == net.id
-                ) {
-                    let key = (nl, nx, ny);
-                    if visited.insert(key) {
-                        q.push_back(key);
-                    }
-                }
-            }
-        }
-        // A layer-0 pad not reached by the flood is an island.
-        let pads = pad_cells_for(grid, net.id);
-        let unconnected: Vec<(usize, usize)> = pads
-            .into_iter()
-            .filter(|&(x, y)| !visited.contains(&(0, x, y)))
-            .collect();
+        let unconnected = unconnected_pads(
+            grid,
+            net.id,
+            tracks.get(&net.id).map_or(&[][..], Vec::as_slice),
+            pads.get(&net.id).map_or(&[][..], Vec::as_slice),
+        );
         if !unconnected.is_empty() {
             out.push((net.id, unconnected));
         }
     }
     out
+}
+
+/// Whether `net` still has a layer-0 pad that its committed copper does not
+/// reach. Same answer as finding `net` in [`find_partial_nets`], without
+/// flooding every other net on the board.
+fn net_is_partial(grid: &Grid, net: &synth_ir::Net) -> bool {
+    if net.endpoints.len() < 2 {
+        return false;
+    }
+    let mut tracks = Vec::new();
+    for l in 0..grid.layers {
+        for y in 0..grid.height {
+            for x in 0..grid.width {
+                if matches!(grid.get(l, x, y), Some(Cell::Track(n)) if n == net.id) {
+                    tracks.push((l, x, y));
+                }
+            }
+        }
+    }
+    !unconnected_pads(grid, net.id, &tracks, &pad_cells_for(grid, net.id)).is_empty()
+}
+
+/// Layer-0 pads of `net` not reached by flooding its copper from `tracks`
+/// through same-net track and pad cells (vias join every layer of a cell).
+fn unconnected_pads(
+    grid: &Grid,
+    net: NetId,
+    tracks: &[(usize, usize, usize)],
+    pads: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
+    use std::collections::{HashSet, VecDeque};
+    let mut visited: HashSet<(usize, usize, usize)> = HashSet::new();
+    let mut q: VecDeque<(usize, usize, usize)> = VecDeque::new();
+    for &s in tracks {
+        if visited.insert(s) {
+            q.push_back(s);
+        }
+    }
+    while let Some((l, x, y)) = q.pop_front() {
+        let neighbours: Vec<(usize, usize, usize)> = {
+            let mut v = Vec::new();
+            for (dx, dy) in [(1_i32, 0_i32), (-1, 0), (0, 1), (0, -1)] {
+                let nx = x as i32 + dx;
+                let ny = y as i32 + dy;
+                if nx >= 0 && ny >= 0 && nx < grid.width as i32 && ny < grid.height as i32 {
+                    v.push((l, nx as usize, ny as usize));
+                }
+            }
+            // Via: same cell on another layer joins the copper.
+            for ol in 0..grid.layers {
+                if ol != l {
+                    v.push((ol, x, y));
+                }
+            }
+            v
+        };
+        for (nl, nx, ny) in neighbours {
+            if matches!(
+                grid.get(nl, nx, ny),
+                Some(Cell::Track(n) | Cell::Pad(n)) if n == net
+            ) {
+                let key = (nl, nx, ny);
+                if visited.insert(key) {
+                    q.push_back(key);
+                }
+            }
+        }
+    }
+    // A layer-0 pad not reached by the flood is an island.
+    pads.iter()
+        .copied()
+        .filter(|&(x, y)| !visited.contains(&(0, x, y)))
+        .collect()
 }
 
 /// Rip-up-reroute for partially-connected nets. A net that leaves a pad
@@ -1034,7 +1082,7 @@ pub(crate) fn route_net(
         }
     }
     let mut any_progress = false;
-    let fair_share_budget = grid.pitch_nm <= synth_geometry::mm_to_nm(0.127);
+    let fine_grid = grid.pitch_nm <= synth_geometry::mm_to_nm(0.127);
     let mut net_cells_expanded = 0_u64;
     // A rejected terminal escape is evidence that this net's current source
     // cluster has no physically valid breakout under the present congestion
@@ -1042,36 +1090,20 @@ pub(crate) fn route_net(
     // round repeatedly spend millions of expansions on the same net.
     let mut rejected_geometry_paths = 0_u8;
     while let Some(target) = pop_closest_sink(&sources_2d(&sources), &mut sinks) {
-        let total_expansion_budget = if fair_share_budget && recovery_search {
+        let total_expansion_budget = if fine_grid && recovery_search {
             RECOVERY_FINE_GRID_TOTAL_ASTAR_EXPANSIONS
         } else {
             MAX_TOTAL_ASTAR_EXPANSIONS
         };
-        let net_expansion_budget = if fair_share_budget {
-            if recovery_search {
-                RECOVERY_FINE_GRID_NET_ASTAR_EXPANSIONS
-            } else {
-                NORMAL_FINE_GRID_NET_ASTAR_EXPANSIONS
-            }
-        } else {
-            MAX_TOTAL_ASTAR_EXPANSIONS
+        let net_expansion_budget = match (fine_grid, recovery_search) {
+            (true, true) => RECOVERY_FINE_GRID_NET_ASTAR_EXPANSIONS,
+            (true, false) => NORMAL_FINE_GRID_NET_ASTAR_EXPANSIONS,
+            (false, _) => NORMAL_COARSE_GRID_NET_ASTAR_EXPANSIONS,
         };
-        if *cells_expanded >= total_expansion_budget
-            || (fair_share_budget && net_cells_expanded >= net_expansion_budget)
-        {
+        if *cells_expanded >= total_expansion_budget || net_cells_expanded >= net_expansion_budget {
             break;
         }
         let net_expanded_before = net_cells_expanded;
-        let expansion_counter: &mut u64 = if fair_share_budget {
-            &mut net_cells_expanded
-        } else {
-            cells_expanded
-        };
-        let expansion_budget = if fair_share_budget {
-            net_expansion_budget
-        } else {
-            total_expansion_budget
-        };
         // Every cell of the sink cluster is a valid termination
         // point (they all belong to same-net copper).
         let target_cluster = cluster_of(grid, net.id, &source_cells, target);
@@ -1086,17 +1118,15 @@ pub(crate) fn route_net(
             advisor,
             board,
             pad_keepout,
-            expansion_counter,
+            &mut net_cells_expanded,
             iteration,
             width,
             segments,
             vias,
-            expansion_budget,
+            net_expansion_budget,
         );
-        if fair_share_budget {
-            *cells_expanded = (*cells_expanded)
-                .saturating_add(net_cells_expanded.saturating_sub(net_expanded_before));
-        }
+        *cells_expanded = (*cells_expanded)
+            .saturating_add(net_cells_expanded.saturating_sub(net_expanded_before));
         let Some(path) = res else {
             continue;
         };
@@ -1147,10 +1177,7 @@ pub(crate) fn route_net(
     // A partial leg is not a successful route. The caller may still keep
     // its copper as a candidate for rip-up, but success must mean that the
     // committed grid connects every pad cluster for this net.
-    any_progress
-        && !find_partial_nets(grid, board)
-            .iter()
-            .any(|(partial_net, _)| *partial_net == net.id)
+    any_progress && !net_is_partial(grid, net)
 }
 
 /// 2D projection helper for sink-distance comparisons.
@@ -1270,6 +1297,46 @@ fn manhattan(a: (usize, usize), b: (usize, usize)) -> usize {
     a.0.abs_diff(b.0) + a.1.abs_diff(b.1)
 }
 
+/// Per-cell Manhattan distance to the nearest seed, saturating at `u8::MAX`
+/// beyond `reach`. Indexed `y * width + x`. A multi-source BFS on an
+/// unobstructed 4-connected rectangle yields exact Manhattan distance, and
+/// stopping at `reach` keeps the cost proportional to the cells within reach.
+fn manhattan_distance_map(
+    width: usize,
+    height: usize,
+    seeds: impl Iterator<Item = (usize, usize)>,
+    reach: u8,
+) -> Vec<u8> {
+    let mut distance = vec![u8::MAX; width * height];
+    let mut queue = std::collections::VecDeque::new();
+    for (x, y) in seeds {
+        let idx = y * width + x;
+        if distance[idx] != 0 {
+            distance[idx] = 0;
+            queue.push_back((x, y));
+        }
+    }
+    while let Some((x, y)) = queue.pop_front() {
+        let d = distance[y * width + x];
+        if d >= reach {
+            continue;
+        }
+        let neighbours = [
+            (x.wrapping_sub(1), y),
+            (x + 1, y),
+            (x, y.wrapping_sub(1)),
+            (x, y + 1),
+        ];
+        for (nx, ny) in neighbours {
+            if nx < width && ny < height && distance[ny * width + nx] == u8::MAX {
+                distance[ny * width + nx] = d + 1;
+                queue.push_back((nx, ny));
+            }
+        }
+    }
+    distance
+}
+
 fn closest_point_on_segment(s: Point, e: Point, q: Point) -> Point {
     let (sx, ex) = if s.x_nm < e.x_nm {
         (s.x_nm, e.x_nm)
@@ -1357,6 +1424,35 @@ fn astar(
         .find(|candidate| candidate.id == net)
         .map(|candidate| candidate.endpoints.iter().map(|ep| ep.component).collect())
         .unwrap_or_default();
+    // Exact clearance checks below run per neighbour of every expanded cell;
+    // index the fixed pad and courtyard rectangles so each check examines
+    // only nearby copper instead of every rectangle on the board.
+    let pad_index = crate::spatial::RectIndex::new(grid.pads.iter().map(|&(_, r)| r));
+    let courtyard_index = crate::spatial::RectIndex::new(grid.courtyards.iter().map(|&(_, r)| r));
+    // Endpoint-proximity tests below ("within 2 cells of a source pad",
+    // "within 14 cells of any endpoint") used to scan every source cell and
+    // every sink-cluster cell per neighbour. On fine grids a partially routed
+    // net has thousands of source cells, so precompute capped Manhattan
+    // distance maps once per search instead.
+    let fine_grid = grid.pitch_nm <= synth_geometry::mm_to_nm(0.127);
+    let source_reach: u8 = if fine_grid { 2 } else { 14 };
+    let source_distance = manhattan_distance_map(
+        grid.width,
+        grid.height,
+        sources.iter().map(|&(_, x, y)| (x, y)),
+        source_reach,
+    );
+    // Width of each foreign net met by the via-halo scan. The width depends
+    // only on the net, but deriving it lowercases every pin name on the net
+    // and scans the board's parts, which dominated via evaluation when it
+    // ran for every foreign track cell around every candidate via.
+    let mut foreign_track_width: std::collections::HashMap<NetId, i64> =
+        std::collections::HashMap::new();
+    let target_distance = if fine_grid {
+        manhattan_distance_map(grid.width, grid.height, target_cluster.iter().copied(), 2)
+    } else {
+        Vec::new()
+    };
     let mut tie = 0_u32;
     for &(sl, sx, sy) in sources {
         if g_score[cell_idx(sl, sx, sy)] == 0 {
@@ -1422,13 +1518,9 @@ fn astar(
                     // relaxation; without the matching sink-side corridor,
                     // adjacent QFN pads can block the final two grid cells
                     // even when the emitted neck-down trace is DRC-valid.
-                    let source_escape = sources
-                        .iter()
-                        .any(|&(_, sx, sy)| manhattan((sx, sy), (nx, ny)) <= 2)
-                        || (grid.pitch_nm <= synth_geometry::mm_to_nm(0.127)
-                            && target_cluster
-                                .iter()
-                                .any(|&(tx, ty)| manhattan((tx, ty), (nx, ny)) <= 2));
+                    let cell_2d = ny * stride_y + nx;
+                    let source_escape = source_distance[cell_2d] <= 2
+                        || (fine_grid && target_distance[cell_2d] <= 2);
                     let pad_escape = cl == 0 && source_escape;
                     if !pad_escape && is_adjacent_to_foreign_pad(grid, cl, nx, ny, net) {
                         continue;
@@ -1444,14 +1536,25 @@ fn astar(
                     let step_start = grid.cell_centre(cl, cx, cy);
                     let min_pad_clearance =
                         width / 2 + clearance_for_trace(width) + PAD_SAFETY_MARGIN_NM;
-                    let pad_too_close = grid.pads.iter().any(|&(pad_net, pad_rect)| {
-                        if pad_net == net {
-                            return false;
-                        }
-                        let distance_sq =
-                            dist_sq_axis_aligned_segment_to_rect(step_start, cell_pt, &pad_rect);
-                        distance_sq < min_pad_clearance * min_pad_clearance
-                    });
+                    let step_min = (
+                        step_start.x_nm.min(cell_pt.x_nm),
+                        step_start.y_nm.min(cell_pt.y_nm),
+                    );
+                    let step_max = (
+                        step_start.x_nm.max(cell_pt.x_nm),
+                        step_start.y_nm.max(cell_pt.y_nm),
+                    );
+                    let pad_too_close =
+                        pad_index.any_near(step_min, step_max, min_pad_clearance, |i| {
+                            let (pad_net, pad_rect) = grid.pads[i];
+                            if pad_net == net {
+                                return false;
+                            }
+                            let distance_sq = dist_sq_axis_aligned_segment_to_rect(
+                                step_start, cell_pt, &pad_rect,
+                            );
+                            distance_sq < min_pad_clearance * min_pad_clearance
+                        });
                     // Endpoint escape may relax the coarse adjacent-cell
                     // heuristic above, but never the exact foreign-pad
                     // geometry check. The latter is the authoritative
@@ -1469,15 +1572,20 @@ fn astar(
                     // courtyard edges are hard obstacles.
                     if !pad_escape && grid.pitch_nm <= synth_geometry::mm_to_nm(0.127) {
                         let courtyard_clearance = width / 2 + clearance_for_trace(width);
-                        let courtyard_too_close =
-                            grid.courtyards.iter().any(|&(component_id, courtyard)| {
+                        let courtyard_too_close = courtyard_index.any_near(
+                            step_min,
+                            step_max,
+                            courtyard_clearance,
+                            |i| {
+                                let (component_id, courtyard) = grid.courtyards[i];
                                 if endpoint_components.contains(&component_id) {
                                     return false;
                                 }
                                 dist_sq_axis_aligned_segment_to_rect(
                                     step_start, cell_pt, &courtyard,
                                 ) < courtyard_clearance * courtyard_clearance
-                            });
+                            },
+                        );
                         if courtyard_too_close {
                             continue;
                         }
@@ -1526,11 +1634,8 @@ fn astar(
                     // foreign-track clearance right up to the pad escape.
                     // The old endpoint exemption hid the final QFN jogs
                     // from this check and produced native KiCad misses.
-                    let is_near_endpoint = grid.pitch_nm > synth_geometry::mm_to_nm(0.127)
-                        && (manhattan((nx, ny), *target) <= 14
-                            || sources
-                                .iter()
-                                .any(|s| manhattan((nx, ny), (s.1, s.2)) <= 14));
+                    let is_near_endpoint = !fine_grid
+                        && (manhattan((nx, ny), *target) <= 14 || source_distance[cell_2d] <= 14);
                     if !is_near_endpoint {
                         let cell_pt_seg = grid.cell_centre(cl, nx, ny);
                         let cur_layer = layer_enum(cl, grid.layers);
@@ -1719,20 +1824,19 @@ fn astar(
             // and 0.250 mm hole clearance. For foreign pads: min distance from via center
             // to pad rectangle must be >= max(300+127, 150+250) = 427 µm; with margin: 450 µm.
             // For same-net pads: via cannot sit inside or touch the SMD pad: 350 µm.
-            let mut near_pad = false;
-            for &(pad_net, pad_rect) in &grid.pads {
-                if pad_net != net {
-                    let px = via_pt.x_nm.clamp(pad_rect.min.x_nm, pad_rect.max.x_nm);
-                    let py = via_pt.y_nm.clamp(pad_rect.min.y_nm, pad_rect.max.y_nm);
-                    let dx = via_pt.x_nm - px;
-                    let dy = via_pt.y_nm - py;
-                    let min_d = 427_000_i64;
-                    if dx * dx + dy * dy < min_d * min_d {
-                        near_pad = true;
-                        break;
-                    }
+            let min_d = 427_000_i64;
+            let via_xy = (via_pt.x_nm, via_pt.y_nm);
+            let near_pad = pad_index.any_near(via_xy, via_xy, min_d, |i| {
+                let (pad_net, pad_rect) = grid.pads[i];
+                if pad_net == net {
+                    return false;
                 }
-            }
+                let px = via_pt.x_nm.clamp(pad_rect.min.x_nm, pad_rect.max.x_nm);
+                let py = via_pt.y_nm.clamp(pad_rect.min.y_nm, pad_rect.max.y_nm);
+                let dx = via_pt.x_nm - px;
+                let dy = via_pt.y_nm - py;
+                dx * dx + dy * dy < min_d * min_d
+            });
             if near_pad {
                 continue 'layer_loop;
             }
@@ -1821,13 +1925,15 @@ fn astar(
                                 if is_via && d_sq <= 4 {
                                     continue 'layer_loop;
                                 }
-                                let track_w = board
-                                    .nets
-                                    .iter()
-                                    .find(|bn| bn.id == n)
-                                    .map_or(DEFAULT_TRACE_WIDTH_NM, |bn| {
-                                        trace_width_for(bn, board, DEFAULT_TRACE_WIDTH_NM)
-                                    });
+                                let track_w = *foreign_track_width.entry(n).or_insert_with(|| {
+                                    board
+                                        .nets
+                                        .iter()
+                                        .find(|bn| bn.id == n)
+                                        .map_or(DEFAULT_TRACE_WIDTH_NM, |bn| {
+                                            trace_width_for(bn, board, DEFAULT_TRACE_WIDTH_NM)
+                                        })
+                                });
                                 if track_w > DEFAULT_TRACE_WIDTH_NM && d_sq <= 5 {
                                     continue 'layer_loop;
                                 }
@@ -2453,6 +2559,34 @@ fn priority_class(name: &str) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manhattan_distance_map_matches_brute_force() {
+        let (width, height) = (23, 17);
+        let seeds = [(0, 0), (11, 8), (22, 16), (5, 14), (11, 9)];
+        for reach in [2_u8, 14] {
+            let map = super::manhattan_distance_map(width, height, seeds.iter().copied(), reach);
+            for y in 0..height {
+                for x in 0..width {
+                    let nearest = seeds
+                        .iter()
+                        .map(|&s| super::manhattan(s, (x, y)))
+                        .min()
+                        .unwrap();
+                    let expected = if nearest <= usize::from(reach) {
+                        nearest as u8
+                    } else {
+                        u8::MAX
+                    };
+                    assert_eq!(
+                        map[y * width + x],
+                        expected,
+                        "cell ({x}, {y}) reach {reach}"
+                    );
+                }
+            }
+        }
+    }
+
     use super::emit_segments_and_vias;
     use crate::grid::{Cell, Grid};
     use crate::Segment;

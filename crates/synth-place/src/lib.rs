@@ -240,6 +240,15 @@ fn board_span(board: &Board) -> Span {
 /// scan stays fast on 200-component designs.
 const GRID_PITCH_MM: f64 = 1.0;
 
+/// Offset from `ComponentPlacement::center` to the courtyard centre that the
+/// solver and legalization passes use. The KiCad exporter puts the footprint
+/// origin at `center - rot(courtyard_offset)`, so on the exported board the
+/// courtyard is centred exactly on `center`, and the router and DRC model it
+/// the same way. Adding the footprint's courtyard offset here would make
+/// the placer clear space one offset away from where the part actually
+/// lands (a DIP-28's real courtyard then overlaps its neighbours).
+const PLACEMENT_COURTYARD_OFFSET_MM: (f64, f64) = (0.0, 0.0);
+
 /// Margin between the outermost placed component and the board
 /// edge. Set to 6.0 mm to guarantee open routing channels around
 /// component courtyards along the board perimeter.
@@ -396,23 +405,16 @@ fn sidecar_courtyard_rect(
     // Use the same offset, dimensions, and rotation convention as the visual
     // review and KiCad exporter. A simpler unrotated bbox here can accept a
     // sidecar that later collides once the real footprint courtyard is used.
-    let ((offset_x, offset_y), (width, height)) = component.part.as_ref().map_or_else(
-        || ((0.0, 0.0), fallback_courtyard(&component.kind)),
-        synth_layout::pcb_courtyard_geometry_for_part,
+    let (width, height) = component.part.as_ref().map_or_else(
+        || fallback_courtyard(&component.kind),
+        |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
     );
     let (rotated_width, rotated_height) = match placement.rotation {
         Rotation::Zero | Rotation::OneEighty => (width, height),
         Rotation::Ninety | Rotation::TwoSeventy => (height, width),
     };
-    let (rotated_offset_x, rotated_offset_y) = placement
-        .rotation
-        .rotate_offset(mm_to_nm(offset_x), mm_to_nm(offset_y));
-    let courtyard_center = Point::new(
-        placement.center.x_nm + rotated_offset_x,
-        placement.center.y_nm + rotated_offset_y,
-    );
     Rect::from_center_half_extents(
-        courtyard_center,
+        placement.center,
         mm_to_nm(rotated_width) / 2,
         mm_to_nm(rotated_height) / 2,
     )
@@ -625,11 +627,11 @@ pub fn place_with_dimensions(
         .components
         .iter()
         .map(|c| {
-            let ((cx, cy), (w, h)) = c.part.as_ref().map_or_else(
-                || ((0.0, 0.0), fallback_courtyard(&c.kind)),
-                pcb_courtyard_geometry_for_part,
+            let (w, h) = c.part.as_ref().map_or_else(
+                || fallback_courtyard(&c.kind),
+                |part| pcb_courtyard_geometry_for_part(part).1,
             );
-            (c.id, (cx, cy), (w + 1.5, h + 1.5))
+            (c.id, PLACEMENT_COURTYARD_OFFSET_MM, (w + 1.5, h + 1.5))
         })
         .collect();
 
@@ -683,11 +685,15 @@ pub fn place_with_tuning<S: ::std::hash::BuildHasher>(
         .components
         .iter()
         .map(|c| {
-            let ((cx, cy), (w, h)) = c.part.as_ref().map_or_else(
-                || ((0.0, 0.0), fallback_courtyard(&c.kind)),
-                pcb_courtyard_geometry_for_part,
+            let (w, h) = c.part.as_ref().map_or_else(
+                || fallback_courtyard(&c.kind),
+                |part| pcb_courtyard_geometry_for_part(part).1,
             );
-            (c.id, (cx, cy), (w + extra_margin_mm, h + extra_margin_mm))
+            (
+                c.id,
+                PLACEMENT_COURTYARD_OFFSET_MM,
+                (w + extra_margin_mm, h + extra_margin_mm),
+            )
         })
         .collect();
 
@@ -2666,11 +2672,12 @@ pub(crate) fn build_pad_offset_lookup(board: &Board) -> PadOffsetLookup {
             .as_ref()
             .and_then(|p| p.kicad_footprint.as_deref())
             .and_then(kicad_footprint_loader::pads);
-        // ComponentPlacement.center is the logical anchor used by the
-        // placer. The KiCad exporter places the footprint at that anchor
-        // plus the footprint's courtyard-origin offset, so every consumer
-        // of pad positions must include the same offset or routing will
-        // target coordinates different from the exported PCB.
+        // ComponentPlacement.center is the courtyard centre. The KiCad
+        // exporter puts the footprint origin at center - rot(courtyard
+        // offset), so a pad sits at center + rot(pad - offset). Every
+        // consumer of pad positions must subtract the same offset or
+        // placement will target coordinates different from the exported PCB
+        // (the router and DRC already do).
         let (origin_x_mm, origin_y_mm) = component
             .part
             .as_ref()
@@ -2683,8 +2690,8 @@ pub(crate) fn build_pad_offset_lookup(board: &Board) -> PadOffsetLookup {
                 .and_then(|pads| pads.iter().find(|p| p.number == pin.number.0))
                 .map(|pad| {
                     (
-                        mm_to_nm(pad.center_mm.0) + origin_offset.0,
-                        mm_to_nm(pad.center_mm.1) + origin_offset.1,
+                        mm_to_nm(pad.center_mm.0) - origin_offset.0,
+                        mm_to_nm(pad.center_mm.1) - origin_offset.1,
                     )
                 });
             row.push(entry);
@@ -3249,28 +3256,6 @@ pub fn classify_region_name(pt: Point, usable: Rect) -> String {
     }
 }
 
-/// Return the physical centre of a component's courtyard.
-///
-/// Placement anchors are footprint-specific (for example, a long header's
-/// anchor is commonly pad 1), so they are not reliable for visual region
-/// classification. Keep the anchor for editable coordinates, but use this
-/// centre whenever describing where the physical part actually sits.
-fn physical_courtyard_center(
-    component: &synth_ir::Component,
-    placement: &ComponentPlacement,
-) -> Point {
-    let (offset_x, offset_y) = component.part.as_ref().map_or((0.0, 0.0), |part| {
-        synth_layout::pcb_courtyard_geometry_for_part(part).0
-    });
-    let (rotated_offset_x, rotated_offset_y) = placement
-        .rotation
-        .rotate_offset(mm_to_nm(offset_x), mm_to_nm(offset_y));
-    Point::new(
-        placement.center.x_nm + rotated_offset_x,
-        placement.center.y_nm + rotated_offset_y,
-    )
-}
-
 // Area-ratio math in the body casts nanometer integers to f64.
 // Board envelopes stay far below 2^53 nm, so the cast is exact for
 // every representable board; the allow documents that bound.
@@ -3296,7 +3281,7 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
 
     for comp in &board.components {
         if let Some(p) = placement.components.iter().find(|p| p.id == comp.id) {
-            let region = classify_region_name(physical_courtyard_center(comp, p), usable);
+            let region = classify_region_name(p.center, usable);
             *region_counts.entry(region.clone()).or_default() += 1;
             component_regions.push(ComponentRegionEntry {
                 component: comp.refdes.clone(),
@@ -3474,25 +3459,18 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         let Some(component) = board.component(placed.id) else {
             continue;
         };
-        let ((offset_x, offset_y), (width, height)) = component.part.as_ref().map_or_else(
-            || ((0.0, 0.0), fallback_courtyard(&component.kind)),
-            synth_layout::pcb_courtyard_geometry_for_part,
+        let (width, height) = component.part.as_ref().map_or_else(
+            || fallback_courtyard(&component.kind),
+            |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
         );
         let (rotated_width, rotated_height) = match placed.rotation {
             Rotation::Zero | Rotation::OneEighty => (width, height),
             Rotation::Ninety | Rotation::TwoSeventy => (height, width),
         };
-        let (rotated_offset_x, rotated_offset_y) = placed
-            .rotation
-            .rotate_offset(mm_to_nm(offset_x), mm_to_nm(offset_y));
-        let center = Point::new(
-            placed.center.x_nm + rotated_offset_x,
-            placed.center.y_nm + rotated_offset_y,
-        );
         courtyard_rects.push((
             component.refdes.as_str(),
             Rect::from_center_half_extents(
-                center,
+                placed.center,
                 mm_to_nm(rotated_width) / 2,
                 mm_to_nm(rotated_height) / 2,
             ),
@@ -3530,8 +3508,8 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         let Some(anchor_placement) = placement.components.iter().find(|p| p.id == anchor.id) else {
             continue;
         };
-        let component_center = physical_courtyard_center(component, component_placement);
-        let anchor_center = physical_courtyard_center(anchor, anchor_placement);
+        let component_center = component_placement.center;
+        let anchor_center = anchor_placement.center;
         let delta_x = synth_geometry::nm_to_mm(component_center.x_nm - anchor_center.x_nm);
         let delta_y = synth_geometry::nm_to_mm(component_center.y_nm - anchor_center.y_nm);
         let tolerance_mm = 0.5;
@@ -4133,11 +4111,17 @@ mod tests {
             .iter()
             .map(|p| {
                 let comp = board.component(p.id).expect("component");
-                let (offset, size) = comp.part.as_ref().map_or_else(
-                    || ((0.0, 0.0), fallback_courtyard(&comp.kind)),
-                    synth_layout::pcb_courtyard_geometry_for_part,
+                let size = comp.part.as_ref().map_or_else(
+                    || fallback_courtyard(&comp.kind),
+                    |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
                 );
-                courtyard_rect_for_placement(p, size.0, size.1, Some(offset), 0)
+                courtyard_rect_for_placement(
+                    p,
+                    size.0,
+                    size.1,
+                    Some(PLACEMENT_COURTYARD_OFFSET_MM),
+                    0,
+                )
             })
             .collect()
     }
