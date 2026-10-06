@@ -43,7 +43,7 @@ impl OutlineHull {
     }
 
     /// Add a placed component to the outline hull.
-    /// Inflate an already-computed courtyard rect by [`CLEARANCE_GAP_NM`] and
+    /// Inflate an already-computed courtyard rect by `CLEARANCE_GAP_NM` and
     /// record it as an obstacle.
     ///
     /// Takes the rect rather than a centre and half-extents because a placement
