@@ -105,12 +105,25 @@ pub struct Finding {
     pub found: String,
 }
 
-pub const PROVENANCE_CODES: [&str; 3] =
-    ["E-SYNTH-QUAL-008", "E-SYNTH-QUAL-009", "E-SYNTH-QUAL-015"];
+/// Codes that describe the physical pin map: a pin that is not a pad, a pad no
+/// pin claims, a duplicate or blank pad number, a pin absent from the symbol,
+/// or a footprint presented on the wrong side.
+///
+/// An allow-list, not a deny-list. These are the only findings that refuse a
+/// fab export with no override, so a new code has to be added here
+/// deliberately rather than inheriting that power by default.
+pub const STRUCTURAL_CODES: [&str; 6] = [
+    "E-SYNTH-QUAL-001",
+    "E-SYNTH-QUAL-002",
+    "E-SYNTH-QUAL-003",
+    "E-SYNTH-QUAL-004",
+    "E-SYNTH-QUAL-005",
+    "E-SYNTH-QUAL-012",
+];
 
 impl Finding {
     pub fn is_structural(&self) -> bool {
-        !PROVENANCE_CODES.contains(&self.code.as_str())
+        STRUCTURAL_CODES.contains(&self.code.as_str())
     }
 
     fn blocking(
@@ -286,7 +299,13 @@ impl QualificationReport {
     }
 }
 
-const MIL_PER_MM: f64 = 25.4;
+/// Mils in one millimetre. Not 25.4 — that is millimetres per inch, and
+/// using it here meant a real mil/mm mix-up produced a 39.37x ratio that the
+/// hint band never matched, while a genuine inch/mm error was mislabelled.
+const MILS_PER_MM: f64 = 39.370_078_740_157_48;
+
+/// Millimetres in one inch, for the other direction of the same mistake.
+const MM_PER_INCH: f64 = 25.4;
 const DIMENSION_RATIO_FLOOR: f64 = 0.2;
 const DIMENSION_RATIO_CEILING: f64 = 8.0;
 const MAX_COURTYARD_MARGIN_MM: f64 = 5.0;
@@ -347,6 +366,7 @@ pub fn qualify_part(
         check_pad_pin_coverage(part, pads.as_deref()),
         check_footprint_side(part, pads.as_deref()),
         check_symbol_pin_coverage(part, symbols),
+        check_declared_dimensions(part),
         check_package_dimensions(part, pads.as_deref()),
         check_pin_classification(part),
         check_provenance(part),
@@ -443,20 +463,40 @@ fn check_pin_pad_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
         );
     };
 
-    let pad_numbers: BTreeSet<&str> = pads.iter().map(|p| p.number.as_str()).collect();
-    let missing: Vec<&str> = part
-        .pins
+    let signal_pads: BTreeSet<&str> = pads
         .iter()
-        .map(|p| p.number.0.as_str())
-        .filter(|n| !n.trim().is_empty() && !pad_numbers.contains(n))
+        .filter(|p| p.is_signal_pad())
+        .map(|p| p.number.trim())
+        .collect();
+    let inert_pads: BTreeSet<&str> = pads
+        .iter()
+        .filter(|p| !p.is_signal_pad())
+        .map(|p| p.number.trim())
         .collect();
 
-    if missing.is_empty() {
-        return Check::pass(NAME);
-    }
-    Check::from_findings(
-        NAME,
-        vec![Finding::blocking(
+    let declared: Vec<&str> = part
+        .pins
+        .iter()
+        .map(|p| p.number.0.trim())
+        .filter(|n| !n.is_empty())
+        .collect();
+
+    // A pin wired to a mechanical hole is a pin-map error, not a missing pad,
+    // and saying so is the difference between a fixable report and a puzzle.
+    let on_inert: Vec<&str> = declared
+        .iter()
+        .copied()
+        .filter(|n| !signal_pads.contains(n) && inert_pads.contains(n))
+        .collect();
+    let missing: Vec<&str> = declared
+        .iter()
+        .copied()
+        .filter(|n| !signal_pads.contains(n) && !inert_pads.contains(n))
+        .collect();
+
+    let mut findings = Vec::new();
+    if !missing.is_empty() {
+        findings.push(Finding::blocking(
             "E-SYNTH-QUAL-001",
             "declared pin number does not exist as a pad",
             format!("every pin of `{}` to be a pad of `{lib_id}`", part.id.0),
@@ -466,8 +506,25 @@ fn check_pin_pad_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
                 part.pins.len(),
                 sample(&missing)
             ),
-        )],
-    )
+        ));
+    }
+    if !on_inert.is_empty() {
+        findings.push(Finding::blocking(
+            "E-SYNTH-QUAL-001",
+            "declared pin is mapped to a pad with no copper",
+            format!(
+                "every pin of `{}` to land on a copper pad of `{lib_id}`",
+                part.id.0
+            ),
+            format!(
+                "{} pin(s) map to a non-plated or copperless pad: {} — a net routed there \
+                 connects to nothing",
+                on_inert.len(),
+                sample(&on_inert)
+            ),
+        ));
+    }
+    Check::from_findings(NAME, findings)
 }
 
 fn check_pad_pin_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
@@ -479,11 +536,11 @@ fn check_pad_pin_coverage(part: &Part, pads: Option<&[PadFacts]>) -> Check {
         return Check::unknown(NAME, format!("footprint `{lib_id}` could not be read"));
     };
 
-    let declared: BTreeSet<&str> = part.pins.iter().map(|p| p.number.0.as_str()).collect();
+    let declared: BTreeSet<&str> = part.pins.iter().map(|p| p.number.0.trim()).collect();
     let orphans: Vec<&str> = pads
         .iter()
         .filter(|p| p.is_signal_pad())
-        .map(|p| p.number.as_str())
+        .map(|p| p.number.trim())
         .filter(|n| !declared.contains(n))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -520,19 +577,40 @@ fn check_footprint_side(part: &Part, pads: Option<&[PadFacts]>) -> Check {
     if copper.is_empty() {
         return Check::pass(NAME);
     }
-    if copper.iter().any(|p| p.side.includes_front()) {
+
+    // Any pad without front copper is unsolderable on a top-side part. Asking
+    // only whether *some* pad reaches F.Cu passed the realistic case — a
+    // partial mirror from a bad edit or merge, where a subset of pads moved.
+    let back_only: Vec<&str> = copper
+        .iter()
+        .filter(|p| !p.side.includes_front())
+        .map(|p| p.number.trim())
+        .collect();
+    if back_only.is_empty() {
         return Check::pass(NAME);
     }
 
+    let all = back_only.len() == copper.len();
     Check::from_findings(
         NAME,
         vec![Finding::blocking(
             "E-SYNTH-QUAL-012",
-            "every copper pad sits on the back layer",
-            format!("`{lib_id}` to present its pads on F.Cu for a top-side placement"),
+            if all {
+                "every copper pad sits on the back layer"
+            } else {
+                "some copper pads sit only on the back layer"
+            },
+            format!("`{lib_id}` to present every pad on F.Cu for a top-side placement"),
             format!(
-                "all {} copper pad(s) are B.Cu only, which is how a mirrored footprint reads",
-                copper.len()
+                "{} of {} copper pad(s) are B.Cu only, which is how a {} footprint reads: {}",
+                back_only.len(),
+                copper.len(),
+                if all {
+                    "mirrored"
+                } else {
+                    "partially mirrored"
+                },
+                sample(&back_only)
             ),
         )],
     )
@@ -556,8 +634,8 @@ fn check_symbol_pin_coverage(part: &Part, symbols: &dyn SymbolFacts) -> Check {
     let missing: Vec<&str> = part
         .pins
         .iter()
-        .map(|p| p.number.0.as_str())
-        .filter(|n| !n.trim().is_empty() && !symbol_pins.contains(*n))
+        .map(|p| p.number.0.trim())
+        .filter(|n| !n.is_empty() && !symbol_pins.contains(*n))
         .collect();
 
     if missing.is_empty() {
@@ -574,8 +652,15 @@ fn check_symbol_pin_coverage(part: &Part, symbols: &dyn SymbolFacts) -> Check {
     )
 }
 
-fn check_package_dimensions(part: &Part, pads: Option<&[PadFacts]>) -> Check {
-    const NAME: &str = "package_dimensions";
+/// Dimension values judged on their own, with no footprint involved.
+///
+/// Kept separate from the pad cross-check because it needs no pads. Folding
+/// the two together made a part with an implausible courtyard *qualify* while
+/// the same part with a sane one stayed unproven: the pads-unavailable branch
+/// had to choose one status for two unrelated questions, and a finding was
+/// enough to make it a Pass.
+fn check_declared_dimensions(part: &Part) -> Check {
+    const NAME: &str = "declared_dimensions";
     let Some(declared) = part.footprint_dimensions.as_ref() else {
         return Check::not_applicable(NAME, "part declares no footprint_dimensions");
     };
@@ -605,18 +690,25 @@ fn check_package_dimensions(part: &Part, pads: Option<&[PadFacts]>) -> Check {
         }
     }
 
-    let Some(pads) = pads else {
-        // Only an empty finding list is an absence of evidence. Testing the
-        // status instead would discard review-level findings, which are a
-        // Pass.
-        if findings.is_empty() {
-            return Check::unknown(
-                NAME,
-                "footprint pads unavailable, so declared dimensions cannot be cross-checked",
-            );
-        }
-        return Check::from_findings(NAME, findings);
+    Check::from_findings(NAME, findings)
+}
+
+fn check_package_dimensions(part: &Part, pads: Option<&[PadFacts]>) -> Check {
+    const NAME: &str = "package_dimensions";
+    let Some(declared) = part.footprint_dimensions.as_ref() else {
+        return Check::not_applicable(NAME, "part declares no footprint_dimensions");
     };
+    if part.kicad_footprint.is_none() {
+        return Check::not_applicable(NAME, "part declares no kicad_footprint to cross-check");
+    }
+    let Some(pads) = pads else {
+        return Check::unknown(
+            NAME,
+            "footprint pads unavailable, so declared dimensions cannot be cross-checked",
+        );
+    };
+
+    let mut findings = Vec::new();
 
     if let Some((pad_w, pad_h)) = pad_extent(pads) {
         for (axis, declared_mm, actual_mm) in [
@@ -792,10 +884,14 @@ fn pad_extent(pads: &[PadFacts]) -> Option<(f64, f64)> {
 
 fn unit_hint(ratio: f64) -> &'static str {
     let near = |target: f64| (ratio / target - 1.0).abs() < 0.25;
-    if near(MIL_PER_MM) {
-        " — about 25.4x, which is millimetres recorded as mils"
-    } else if near(1.0 / MIL_PER_MM) {
-        " — about 1/25.4x, which is mils recorded as millimetres"
+    if near(MILS_PER_MM) {
+        " — about 39.4x, which is a millimetre measurement recorded as mils"
+    } else if near(1.0 / MILS_PER_MM) {
+        " — about 1/39.4x, which is a mil measurement recorded as millimetres"
+    } else if near(MM_PER_INCH) {
+        " — about 25.4x, which is an inch measurement recorded as millimetres"
+    } else if near(1.0 / MM_PER_INCH) {
+        " — about 1/25.4x, which is a millimetre measurement recorded as inches"
     } else if near(10.0) || near(0.1) {
         " — about a factor of ten, which is a misplaced decimal point"
     } else {
@@ -1006,6 +1102,88 @@ mod tests {
     }
 
     #[test]
+    fn stray_whitespace_in_a_pad_number_is_not_a_pin_map_error() {
+        let mut part = part_with(vec![pin("a", "1 "), pin("b", "2")]);
+        part.pins[0].number = PinNumber(" 1 ".to_string());
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        let codes: Vec<&str> = q.findings().map(|f| f.code.as_str()).collect();
+        assert!(
+            !codes.contains(&"E-SYNTH-QUAL-001") && !codes.contains(&"E-SYNTH-QUAL-002"),
+            "a space must not fabricate a structural defect: {codes:?}\n{:#?}",
+            q.checks
+        );
+        assert!(!q.has_structural_defect());
+    }
+
+    #[test]
+    fn a_pin_mapped_to_a_copperless_pad_blocks() {
+        let mut hole = pad("MP1", 0.0, 1.0);
+        hole.is_npth = true;
+        hole.side = PadSide::NoCopper;
+        let pads = Pads(vec![pad("1", -0.5, 0.0), pad("2", 0.5, 0.0), hole]);
+
+        let part = part_with(vec![pin("a", "1"), pin("b", "2"), pin("shield", "MP1")]);
+        let q = qualify_part(&part, &pads, &two_pin_symbol());
+        let f: Vec<&Finding> = q
+            .findings()
+            .filter(|f| f.code == "E-SYNTH-QUAL-001")
+            .collect();
+        assert!(
+            f.iter().any(|f| f.found.contains("non-plated")),
+            "a pin on a mechanical hole must be named as such: {:#?}",
+            q.checks
+        );
+        assert!(q.has_structural_defect());
+    }
+
+    #[test]
+    fn a_partially_mirrored_footprint_blocks() {
+        let mut pads = Pads(vec![
+            pad("1", -0.5, -0.5),
+            pad("2", 0.5, -0.5),
+            pad("3", 0.5, 0.5),
+            pad("4", -0.5, 0.5),
+        ]);
+        pads.0[2].side = PadSide::Back;
+        pads.0[3].side = PadSide::Back;
+
+        let part = part_with(vec![
+            pin("a", "1"),
+            pin("b", "2"),
+            pin("c", "3"),
+            pin("d", "4"),
+        ]);
+        let q = qualify_part(&part, &pads, &two_pin_symbol());
+        let f: Vec<&Finding> = q
+            .findings()
+            .filter(|f| f.code == "E-SYNTH-QUAL-012")
+            .collect();
+        assert_eq!(f.len(), 1, "{:#?}", q.checks);
+        assert!(f[0].found.contains("partially mirrored"), "{:#?}", f[0]);
+        assert!(f[0].found.contains("2 of 4"), "{:#?}", f[0]);
+    }
+
+    /// Structural is an allow-list so a future code cannot inherit the power
+    /// to refuse a fab export with no override.
+    #[test]
+    fn only_pin_map_codes_are_structural() {
+        for code in STRUCTURAL_CODES {
+            let f = Finding::blocking(code, "m", "e", "f");
+            assert!(f.is_structural(), "{code} should be structural");
+        }
+        for code in [
+            "E-SYNTH-QUAL-006",
+            "E-SYNTH-QUAL-007",
+            "E-SYNTH-QUAL-008",
+            "E-SYNTH-QUAL-014",
+            "E-SYNTH-QUAL-999",
+        ] {
+            let f = Finding::blocking(code, "m", "e", "f");
+            assert!(!f.is_structural(), "{code} must not block fab export");
+        }
+    }
+
+    #[test]
     fn a_pin_absent_from_the_symbol_blocks() {
         let part = part_with(vec![pin("a", "1"), pin("b", "2")]);
         let symbol = Symbol(["1".to_string()].into_iter().collect());
@@ -1035,8 +1213,8 @@ mod tests {
     #[test]
     fn millimetres_recorded_as_mils_block_with_a_unit_hint() {
         let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
-        part.footprint_dimensions.as_mut().unwrap().width_mm = PAD_EXTENT_MM.0 * MIL_PER_MM;
-        part.footprint_dimensions.as_mut().unwrap().height_mm = PAD_EXTENT_MM.1 * MIL_PER_MM;
+        part.footprint_dimensions.as_mut().unwrap().width_mm = PAD_EXTENT_MM.0 * MILS_PER_MM;
+        part.footprint_dimensions.as_mut().unwrap().height_mm = PAD_EXTENT_MM.1 * MILS_PER_MM;
         let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
         let hinted: Vec<&Finding> = q
             .findings()
@@ -1171,6 +1349,56 @@ mod tests {
         assert!(q.blocking_findings().any(|f| f.code == "E-SYNTH-QUAL-008"));
     }
 
+    /// Regression: the pads-unavailable branch of the dimensions check used to
+    /// pick one status for two unrelated questions, so a part with an
+    /// implausible courtyard qualified while the same part with a sane one
+    /// stayed unproven. Adding a defect must never improve a verdict.
+    #[test]
+    fn adding_a_defect_never_improves_a_verdict() {
+        let mut sane = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        sane.kicad_footprint = None;
+        sane.kicad_symbol = None;
+        sane.footprint_dimensions
+            .as_mut()
+            .unwrap()
+            .courtyard_margin_mm = Some(0.25);
+        let a = qualify_part(&sane, &NoFacts, &NoFacts);
+
+        let mut broken = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        broken.kicad_footprint = None;
+        broken.kicad_symbol = None;
+        broken
+            .footprint_dimensions
+            .as_mut()
+            .unwrap()
+            .courtyard_margin_mm = Some(50.0);
+        let b = qualify_part(&broken, &NoFacts, &NoFacts);
+
+        eprintln!(
+            "sane courtyard        -> {:?} fab_safe={}",
+            a.status,
+            a.is_fabrication_safe()
+        );
+        eprintln!(
+            "implausible courtyard -> {:?} fab_safe={}",
+            b.status,
+            b.is_fabrication_safe()
+        );
+        assert!(
+            !b.is_fabrication_safe() || a.is_fabrication_safe(),
+            "adding a defect flipped the part from unproven to fabrication-safe"
+        );
+        assert_eq!(
+            a.status, b.status,
+            "a review-level finding must not change the part's status"
+        );
+        assert!(
+            b.review_findings().any(|f| f.code == "E-SYNTH-QUAL-014"),
+            "the implausible courtyard must still be reported: {:#?}",
+            b.checks
+        );
+    }
+
     #[test]
     fn a_review_finding_survives_an_unreadable_footprint() {
         let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
@@ -1185,6 +1413,13 @@ mod tests {
             "an implausible courtyard must still be reported when pads are unavailable: {:#?}",
             q.checks
         );
+        assert_eq!(
+            q.status,
+            CheckStatus::Unknown,
+            "a declared footprint that cannot be read leaves the part unproven: {:#?}",
+            q.checks
+        );
+        assert!(!q.is_fabrication_safe());
     }
 
     #[test]
