@@ -1,0 +1,23 @@
+// Same as pass__impedance_width_ok with no declared width: the exporter derives about 0.35 mm from the 50 ohm target.
+board "impedance_derived" {
+  layers 2
+
+  component U1: antenna "ant_chip_2g4"
+  component R1: resistor "r_generic_0603" value "10k"
+
+  connect U1.feed -> R1.p1 as "RF_IN"
+
+  diff_pair u1_feed r1_p1 {
+    impedance 50ohm
+  }
+
+  keepout antenna {
+    radius 10mm
+  }
+
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4
+    copper 0.035mm
+  }
+}

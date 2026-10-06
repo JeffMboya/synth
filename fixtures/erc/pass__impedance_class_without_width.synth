@@ -1,0 +1,27 @@
+// Same as pass__impedance_width_ok, but the class "RF" declares no trace_width: the net declares no geometry, so the width is derived.
+board "impedance_class_without_width" {
+  layers 2
+
+  netclass "RF" {
+    clearance 0.2mm
+  }
+
+  component U1: antenna "ant_chip_2g4"
+  component R1: resistor "r_generic_0603" value "10k"
+
+  connect U1.feed -> R1.p1 as "RF_IN" class "RF"
+
+  diff_pair u1_feed r1_p1 {
+    impedance 50ohm
+  }
+
+  keepout antenna {
+    radius 10mm
+  }
+
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4
+    copper 0.035mm
+  }
+}

@@ -40,3 +40,20 @@ fn json_and_human_output_name_every_unsupported_and_unverified_entry() {
         }
     }
 }
+
+#[test]
+fn the_native_router_fixed_rf_width_is_disclosed() {
+    let descriptor: serde_json::Value =
+        serde_json::from_str(&capability_list(&["--json"])).expect("descriptor is JSON");
+    let entry = descriptor["unverified"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "rf_net_trace_width")
+        .expect("rf_net_trace_width is listed");
+    let summary = entry["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("0.33") && summary.contains("native router"),
+        "{summary}"
+    );
+}

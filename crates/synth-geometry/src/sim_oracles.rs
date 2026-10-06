@@ -76,6 +76,56 @@ pub fn calculate_microstrip_z0(params: &MicrostripParams) -> SiImpedanceResult {
     }
 }
 
+const MIN_WIDTH_OVER_HEIGHT: f64 = 0.1;
+const MAX_WIDTH_OVER_HEIGHT: f64 = 2.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UnreachableZ0 {
+    pub lowest_ohms: f64,
+    pub highest_ohms: f64,
+}
+
+#[must_use]
+pub fn outer_microstrip_params(stackup: &synth_ir::Stackup) -> Option<MicrostripParams> {
+    let [synth_ir::StackupLayer::Copper { thickness, .. }, synth_ir::StackupLayer::Insulator {
+        thickness: height,
+        er,
+        ..
+    }, ..] = stackup.layers.as_slice()
+    else {
+        return None;
+    };
+    (thickness.0 > 0 && height.0 > 0 && er.to_f64() >= 1.0).then(|| MicrostripParams {
+        height_mm: height.to_mm(),
+        thickness_mm: thickness.to_mm(),
+        er: er.to_f64(),
+        ..MicrostripParams::default()
+    })
+}
+
+/// Inverts [`calculate_microstrip_z0`] for the width.
+///
+/// # Errors
+/// The impedance range the allowed widths reach, when it does not contain the target.
+pub fn derive_microstrip_width_mm(
+    target_ohms: f64,
+    base: &MicrostripParams,
+    min_width_mm: f64,
+) -> Result<f64, UnreachableZ0> {
+    let z0_at = |width_mm| calculate_microstrip_z0(&MicrostripParams { width_mm, ..*base }).z0_ohms;
+    let narrowest = min_width_mm.max(MIN_WIDTH_OVER_HEIGHT * base.height_mm);
+    let widest = (MAX_WIDTH_OVER_HEIGHT * base.height_mm).max(narrowest);
+    let (highest_ohms, lowest_ohms) = (z0_at(narrowest), z0_at(widest));
+    if !(lowest_ohms..=highest_ohms).contains(&target_ohms) {
+        return Err(UnreachableZ0 {
+            lowest_ohms,
+            highest_ohms,
+        });
+    }
+    let ratio = (-target_ohms * (base.er + 1.41).sqrt() / 87.0).exp();
+    Ok(((5.98 * base.height_mm * ratio - base.thickness_mm) / 0.8).clamp(narrowest, widest))
+}
+
 /// Calculate stripline characteristic impedance Z0.
 ///
 /// Formula: Z0 = (60 / sqrt(er)) * ln(1.9 * h / (0.8 * w + t))
@@ -185,5 +235,56 @@ mod tests {
             res.z0_ohms
         );
         assert!(res.propagation_delay_ns_m > 0.0);
+    }
+
+    fn fr4_outer() -> MicrostripParams {
+        MicrostripParams {
+            width_mm: 0.0,
+            height_mm: 0.2104,
+            thickness_mm: 0.035,
+            er: 4.4,
+        }
+    }
+
+    #[test]
+    fn derived_width_reproduces_the_target() {
+        for target in [50.0, 60.0, 75.0] {
+            let width = derive_microstrip_width_mm(target, &fr4_outer(), 0.127).unwrap();
+            let z0 = calculate_microstrip_z0(&MicrostripParams {
+                width_mm: width,
+                ..fr4_outer()
+            })
+            .z0_ohms;
+            assert!((z0 - target).abs() < 0.01, "{target} ohm gave {z0} ohm");
+        }
+    }
+
+    #[test]
+    fn higher_targets_need_narrower_traces() {
+        let w50 = derive_microstrip_width_mm(50.0, &fr4_outer(), 0.127).unwrap();
+        let w75 = derive_microstrip_width_mm(75.0, &fr4_outer(), 0.127).unwrap();
+        assert!(w75 < w50, "{w75} !< {w50}");
+    }
+
+    #[test]
+    fn targets_outside_the_feasible_range_are_unreachable() {
+        for target in [5.0, 150.0] {
+            let err = derive_microstrip_width_mm(target, &fr4_outer(), 0.127).unwrap_err();
+            assert!(err.lowest_ohms < 50.0 && 50.0 < err.highest_ohms, "{err:?}");
+        }
+    }
+
+    #[test]
+    fn a_minimum_width_above_the_range_reports_an_ordered_pair() {
+        let err = derive_microstrip_width_mm(50.0, &fr4_outer(), 5.0).unwrap_err();
+        assert!(err.lowest_ohms <= err.highest_ohms, "{err:?}");
+    }
+
+    #[test]
+    fn the_manufacturer_minimum_width_limits_the_highest_impedance() {
+        let loose = derive_microstrip_width_mm(80.0, &fr4_outer(), 0.1);
+        let tight = derive_microstrip_width_mm(80.0, &fr4_outer(), 0.2);
+        assert!(loose.is_ok());
+        assert!(tight.is_err());
     }
 }

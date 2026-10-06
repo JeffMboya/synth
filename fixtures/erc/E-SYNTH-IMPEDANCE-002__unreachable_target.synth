@@ -1,0 +1,27 @@
+// Same as pass__impedance_width_ok with a 5 ohm target, outside the range this estimate covers on this stackup.
+board "unreachable_target" {
+  layers 2
+
+  netclass "RF" {
+    trace_width 0.35mm
+  }
+
+  component U1: antenna "ant_chip_2g4"
+  component R1: resistor "r_generic_0603" value "10k"
+
+  connect U1.feed -> R1.p1 as "RF_IN" class "RF"
+
+  diff_pair u1_feed r1_p1 {
+    impedance 5ohm
+  }
+
+  keepout antenna {
+    radius 10mm
+  }
+
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4
+    copper 0.035mm
+  }
+}
