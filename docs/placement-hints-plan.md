@@ -180,35 +180,48 @@ against the pre-Phase-1 baseline (commit `901adb1`):
 | env_logger | 3 / 3 | 227 / **209** mm | 16 / **13** |
 | secure_tracker | 3 / **5** | 334 / **280** mm | 29 / **21** |
 
-Phases 1-4 cut track length by 30% and via count by a third. They also left
-**more nets unrouted** on two of three designs, which is the wrong direction
-for the goal that started this work.
+Phases 2 and 4 cut track length by 21% and via count by 28%. They also left
+**four more nets unrouted** across the three designs, which is the wrong
+direction for the goal that started this work.
 
-The cause is localized. Aiming bound members at their anchor's pad packs parts
-tightly around their anchors; that is what shortens the routed nets, and it is
-also what starves a few of them of a legal path. Two configurations were
-measured to isolate it:
+JLCPCB's capability sheet decided the trade. Of the three quantities, only one
+is a manufacturability constraint:
 
-- *Bound members packed first* (shipped): sensor_logger 333 mm track, 4 unrouted.
-- *Area-ordered packing, same aim*: 329 mm track, 4 unrouted.
-- *Area-ordered packing, ESD diodes not aimed at the connector*: 460 mm track,
-  **3 unrouted**.
+- *Minimum trace width and spacing* is 0.10 mm. The router's grid is
+  0.254 mm — 2.5x minimum — so track length was never the binding constraint
+  and none of these designs declares a length spec.
+- *Via hole-to-track clearance* is 0.2 mm, with 0.2 mm hole-to-hole. Vias
+  consume routing room, so the 21-via saving is a genuine advantage.
+- *An unrouted net* is not a board. It is a redesign.
 
-The last row is the interesting one. The USB ESD diodes are worth 131 mm of
-track length and 5 vias, and cost one unrouted net. Under the shipped ordering
-those diodes get no aim either way, so the exclusion is inert there — but
-enabling it broke sidecar legalization for a forced-overlap case, which is a
-separate defect in `legalize_sidecar_overrides` and not one this work should
-fix silently.
+So: keep the vias, reject the completeness regression. Phases 2 and 4 are
+reverted (`2c07615`). Phases 1 and 3 stand, because neither changes placement
+output — recognition now happens in one place and pairs resolve by their pins,
+but the placement the placer produces is bit-identical to the baseline, which
+the three bit-exact snapshots confirm.
 
-**Open decision.** Whether a shorter route for the nets that *do* route is
-worth one more net that does not is a product call, not a measurement. The
-default should probably be the configuration that does not regress
-completeness, with the tighter packing available deliberately.
+The cause of the regression is understood and worth keeping: aiming bound
+members at their anchor's pads packs parts tightly around their anchors. That
+is what shortens the routed nets, and it is also what starves a few of a legal
+path. Tightening the aim's acceptance radius (8 mm -> 3 mm -> 2 mm) does not
+move the count at all, so it is structural, not a tuning constant. The failing
+nets are the USB ESD connections and merged multi-endpoint rails, which
+`unrouted_net_endpoints` names.
 
-`unrouted_net_endpoints` in `crates/synth-route/tests/routability_report.rs`
-names the endpoints and clusters of every failing net, which is how the above
-was localized.
+Two pieces of unfinished business came out of this:
+
+- A guard that never aims a member at a *connector's* pad. A connector's
+  courtyard is its shell, so "just outside the courtyard on the pad's side" is
+  the plug cavity, and a part placed there can be stranded. Worth 131 mm of
+  track and 5 vias on sensor_logger at a cost of one unrouted net. Blocked:
+  enabling it exposes a pre-existing defect in `legalize_sidecar_overrides`,
+  which accepts a forced position that a later-packed part then collides with.
+- The packer has no notion that a macro's pin escapes need more room than the
+  uniform 3 mm hull inflation gives them. That, not the aim, is where a
+  placement change would have to come from to keep both numbers.
+
+`unrouted_nets_do_not_regress` in `crates/synth-route/tests/routability_report.rs`
+records the baseline and fails on any regression.
 
 ## Decisions
 

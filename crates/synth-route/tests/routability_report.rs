@@ -76,8 +76,61 @@ fn routability_report() {
     }
 }
 
-/// Why a net failed to route.
+/// Unrouted nets must not regress.
 ///
+/// This is the gate that the placement work of phases 2 and 4 failed, and
+/// it is here so the next placement change cannot fail it the same way.
+/// Distance metrics — HPWL, member-to-anchor distance — all improved while
+/// routability got worse, which is exactly the case a distance metric
+/// cannot catch.
+///
+/// Ignored by default because a debug-build route takes minutes; run it the
+/// way the reports above are run:
+///
+/// `cargo test --release -p synth-route --test routability_report unrouted_nets_do_not_regress -- --ignored`
+///
+/// The recorded figures are the pre-placement-change baseline. Raise them
+/// deliberately, never as a side effect of a change that was not measured
+/// against this.
+#[test]
+#[ignore = "release-mode gate; takes minutes"]
+fn unrouted_nets_do_not_regress() {
+    // (design, max unrouted nets tolerated)
+    let expected = [
+        ("../../examples/sensor_logger.synth", 2_usize),
+        ("../../examples/env_logger.synth", 3_usize),
+        ("../../fixtures/designs/secure_tracker.synth", 3_usize),
+    ];
+    let mut regressions = Vec::new();
+    for (path, tolerated) in expected {
+        if !Path::new(path).exists() {
+            continue;
+        }
+        let board = load_board(path);
+        let Ok(placement) = synth_place::place(&board) else {
+            regressions.push(format!("{path}: placement failed"));
+            continue;
+        };
+        let routing = synth_route::route(&board, &placement);
+        let unrouted = routing.unrouted_nets.len();
+        println!("--- {path}: {unrouted} unrouted (tolerated {tolerated})");
+        for net in &routing.unrouted_nets {
+            println!("    {}", net.net_name);
+        }
+        if unrouted > tolerated {
+            regressions.push(format!(
+                "{path}: {unrouted} unrouted, tolerates {tolerated}"
+            ));
+        }
+    }
+    assert!(
+        regressions.is_empty(),
+        "routability regressed:\n  {}",
+        regressions.join("\n  ")
+    );
+}
+
+/// Why a net failed to route.
 /// Unrouted nets are the only placement-quality signal that cannot be
 /// inferred from a distance metric, so this prints what each failing net
 /// connects and which functional cluster each end belongs to — the shape
