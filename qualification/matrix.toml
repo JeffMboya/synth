@@ -137,3 +137,11 @@ status = "unsupported"
 expect = "fail"
 expect_source_codes = ["E-SYNTH-STACKUP-001", "E-SYNTH-USB-001", "E-SYNTH-POWER-011"]
 rationale = "Novel Class-B negative: stackup contradicting the layer count, USB pair on plain GPIO, and buck feedback taken from the switch node. #38 negative case."
+
+[[board]]
+id = "c1_dual_usb_compute"
+path = "qualification/boards/class-c/c1_dual_usb_compute.synth"
+class = "C"
+status = "experimental"
+expect = "pass"
+rationale = "Novel Class-C board: six-layer stackup, two independent 90 ohm USB pairs, QSPI at speed, 61-pin MCU and a 20-pin header. #40 constraint surface, minus the length/skew budgets the language cannot express."

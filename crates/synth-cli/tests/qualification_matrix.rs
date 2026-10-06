@@ -162,6 +162,13 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
     if fab {
         command.arg("--fab");
     }
+    // A dense board's DRC runs a full place-and-route: the six-layer dual-USB
+    // board takes about 50s on a release build, well past the 30s default, and
+    // a stage that overruns reports `unknown` rather than what it found.
+    // Honour an inherited value so CI can raise it further.
+    if std::env::var_os("SYNTH_CHECK_DRC_TIMEOUT_SECS").is_none() {
+        command.env("SYNTH_CHECK_DRC_TIMEOUT_SECS", "600");
+    }
     let output = command
         .current_dir(&root)
         .output()
