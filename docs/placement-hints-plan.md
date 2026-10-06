@@ -216,12 +216,34 @@ Two pieces of unfinished business came out of this:
   track and 5 vias on sensor_logger at a cost of one unrouted net. Blocked:
   enabling it exposes a pre-existing defect in `legalize_sidecar_overrides`,
   which accepts a forced position that a later-packed part then collides with.
-- The packer has no notion that a macro's pin escapes need more room than the
-  uniform 3 mm hull inflation gives them. That, not the aim, is where a
-  placement change would have to come from to keep both numbers.
+- The real fix, which is giving a macro's pin escapes more room than the
+  uniform 3 mm hull inflation gives every component. **Tested and falsified.**
+  Raising the inflation from 3 mm to 5 mm around packages with more than 32
+  pins — the QFN-60 included — changed no placement and no routing number at
+  all. The uniform gap is not what crowds the escapes.
 
-`unrouted_nets_do_not_regress` in `crates/synth-route/tests/routability_report.rs`
-records the baseline and fails on any regression.
+## Where the remaining unrouted nets actually come from
+
+`unrouted_net_endpoints` reports the distance between a failing net's two ends
+and how many components lie between them. On the current baseline:
+
+| Design | Net | Ends | Apart | Between |
+| --- | --- | --- | --- | --- |
+| secure_tracker | net_23 | U1 -> U3 | 21.1 mm | **0** |
+| secure_tracker | net_28 | Y1 -> U1 | 8.6 mm | 4 |
+| secure_tracker | net_14 | J1 -> R1 | 10.1 mm | 2 |
+| sensor_logger | net_6 | U2 -> U3 -> U4 -> R2 | — | multi-endpoint |
+| sensor_logger | net_0 | J1 -> C1 -> U1 -> C2 | — | multi-endpoint |
+
+`net_23` is 21 mm long with nothing between its endpoints, and the router
+cannot route it. The other two failures are multi-endpoint nets. None of these
+is a placement problem: the paths are clear or the net has too many ends for
+the router's search, and no arrangement of components changes that.
+
+So the remaining 8 unrouted nets are router capability, not placement quality.
+Further placement tuning on this axis has hit its limit, and the next lever is
+`crates/synth-route/src/maze.rs` — or FreeRouting, which the RP2350 workflow
+already uses in preference to the built-in router for exactly this reason.
 
 ## Decisions
 

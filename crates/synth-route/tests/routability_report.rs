@@ -137,6 +137,7 @@ fn unrouted_nets_do_not_regress() {
 /// of the failure is usually obvious once the endpoints are named.
 #[test]
 #[ignore = "diagnostic report, not a gate"]
+#[allow(clippy::cast_precision_loss, clippy::needless_range_loop)]
 fn unrouted_net_endpoints() {
     for path in [
         "../../examples/sensor_logger.synth",
@@ -151,6 +152,8 @@ fn unrouted_net_endpoints() {
         };
         let routing = synth_route::route(&board, &placement);
         println!("--- {path}: {} unrouted", routing.unrouted_nets.len());
+        let by_id: std::collections::HashMap<_, _> =
+            placement.components.iter().map(|p| (p.id, p)).collect();
 
         // Which cluster each component belongs to, so a failing net can be
         // read against the motif it belongs to.
@@ -187,6 +190,39 @@ fn unrouted_net_endpoints() {
                 })
                 .collect();
             println!("    {}: {}", unrouted.net_name, ends.join(" -> "));
+
+            // Geometry of the failure: how far apart the ends are, and
+            // whether anything sits between them.
+            if net.endpoints.len() == 2 {
+                let (a, b) = (&net.endpoints[0], &net.endpoints[1]);
+                let (Some(pa), Some(pb)) = (by_id.get(&a.component), by_id.get(&b.component))
+                else {
+                    continue;
+                };
+                let dx = (pa.center.x_nm - pb.center.x_nm) as f64 / 1_000_000.0;
+                let dy = (pa.center.y_nm - pb.center.y_nm) as f64 / 1_000_000.0;
+                let mut between = 0_usize;
+                for placed in &placement.components {
+                    if net.endpoints.iter().any(|e| e.component == placed.id) {
+                        continue;
+                    }
+                    let on_segment = {
+                        let (x1, y1) = (pa.center.x_nm as f64, pa.center.y_nm as f64);
+                        let (x2, y2) = (pb.center.x_nm as f64, pb.center.y_nm as f64);
+                        let (px, py) = (placed.center.x_nm as f64, placed.center.y_nm as f64);
+                        let cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+                        let length = ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt();
+                        cross.abs() / length.max(1.0) < 2_000_000.0
+                    };
+                    if on_segment {
+                        between += 1;
+                    }
+                }
+                println!(
+                    "        {:.1} mm apart, {between} components between them",
+                    (dx * dx + dy * dy).sqrt()
+                );
+            }
         }
     }
 }
