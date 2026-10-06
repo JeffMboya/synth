@@ -167,6 +167,49 @@ when it guesses wrong.
 - `examples/placement_and_diff_pair.synth` extended; add a fixture with a
   multi-cap decoupling net.
 
+## Measured outcome (Phases 1-4)
+
+Routing is the only placement metric that cannot be inferred from a distance
+measure, so it is the one that decides whether this work did what it was for.
+Measured with `cargo test --release -p synth-route --test routability_report`
+against the pre-Phase-1 baseline (commit `901adb1`):
+
+| Design | unrouted before / after | track before / after | vias before / after |
+| --- | --- | --- | --- |
+| sensor_logger | 2 / **4** | 476 / **333** mm | 30 / **20** |
+| env_logger | 3 / 3 | 227 / **209** mm | 16 / **13** |
+| secure_tracker | 3 / **5** | 334 / **280** mm | 29 / **21** |
+
+Phases 1-4 cut track length by 30% and via count by a third. They also left
+**more nets unrouted** on two of three designs, which is the wrong direction
+for the goal that started this work.
+
+The cause is localized. Aiming bound members at their anchor's pad packs parts
+tightly around their anchors; that is what shortens the routed nets, and it is
+also what starves a few of them of a legal path. Two configurations were
+measured to isolate it:
+
+- *Bound members packed first* (shipped): sensor_logger 333 mm track, 4 unrouted.
+- *Area-ordered packing, same aim*: 329 mm track, 4 unrouted.
+- *Area-ordered packing, ESD diodes not aimed at the connector*: 460 mm track,
+  **3 unrouted**.
+
+The last row is the interesting one. The USB ESD diodes are worth 131 mm of
+track length and 5 vias, and cost one unrouted net. Under the shipped ordering
+those diodes get no aim either way, so the exclusion is inert there — but
+enabling it broke sidecar legalization for a forced-overlap case, which is a
+separate defect in `legalize_sidecar_overrides` and not one this work should
+fix silently.
+
+**Open decision.** Whether a shorter route for the nets that *do* route is
+worth one more net that does not is a product call, not a measurement. The
+default should probably be the configuration that does not regress
+completeness, with the tighter packing available deliberately.
+
+`unrouted_net_endpoints` in `crates/synth-route/tests/routability_report.rs`
+names the endpoints and clusters of every failing net, which is how the above
+was localized.
+
 ## Decisions
 
 | # | Decision |

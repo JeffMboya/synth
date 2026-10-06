@@ -75,3 +75,65 @@ fn routability_report() {
         }
     }
 }
+
+/// Why a net failed to route.
+///
+/// Unrouted nets are the only placement-quality signal that cannot be
+/// inferred from a distance metric, so this prints what each failing net
+/// connects and which functional cluster each end belongs to — the shape
+/// of the failure is usually obvious once the endpoints are named.
+#[test]
+#[ignore = "diagnostic report, not a gate"]
+fn unrouted_net_endpoints() {
+    for path in [
+        "../../examples/sensor_logger.synth",
+        "../../fixtures/designs/secure_tracker.synth",
+    ] {
+        if !Path::new(path).exists() {
+            continue;
+        }
+        let board = load_board(path);
+        let Ok(placement) = synth_place::place(&board) else {
+            continue;
+        };
+        let routing = synth_route::route(&board, &placement);
+        println!("--- {path}: {} unrouted", routing.unrouted_nets.len());
+
+        // Which cluster each component belongs to, so a failing net can be
+        // read against the motif it belongs to.
+        let clusters = synth_ir::recognize_clusters(&board);
+        let cluster_of: std::collections::HashMap<u32, String> = clusters
+            .iter()
+            .flat_map(|cluster| {
+                let label = cluster.display_name(&board);
+                let anchor = cluster.anchor.0;
+                let members: Vec<u32> = cluster.members.iter().map(|m| m.component.0).collect();
+                std::iter::once((anchor, label.clone()))
+                    .chain(members.into_iter().map(move |m| (m, label.clone())))
+            })
+            .collect();
+
+        for unrouted in &routing.unrouted_nets {
+            let Some(net) = board.net(unrouted.net) else {
+                continue;
+            };
+            let ends: Vec<String> = net
+                .endpoints
+                .iter()
+                .map(|endpoint| {
+                    let component = board.component(endpoint.component);
+                    let refdes = component.map_or_else(
+                        || format!("#{}", endpoint.component.0),
+                        |c| c.refdes.clone(),
+                    );
+                    let cluster = cluster_of
+                        .get(&endpoint.component.0)
+                        .cloned()
+                        .unwrap_or_else(|| "-".to_string());
+                    format!("{refdes}[{cluster}]")
+                })
+                .collect();
+            println!("    {}: {}", unrouted.net_name, ends.join(" -> "));
+        }
+    }
+}
