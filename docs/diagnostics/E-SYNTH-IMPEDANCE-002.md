@@ -7,7 +7,9 @@
 
 A single-ended controlled-impedance net on a board with a `stackup` declares an `impedance` outside the range this estimate covers: no outer-layer microstrip width in that range gives it. The widths considered run from the manufacturer minimum trace width (or 0.1 times the dielectric height, if larger) up to 2 times the dielectric height, the range the closed-form formula is stated for (IPC-2141). The message gives the impedance range that results (lowest to highest, on this stackup).
 
-The result is an estimate (about 10 percent) and does not replace expert analysis. No controlled-impedance class is derived: the net keeps its declared class, or falls back to the default buckets.
+For a differential pair the widths run over the same range and the gap from the manufacturer minimum clearance up to 2 times the dielectric height, and the range given is differential impedance.
+
+The result is an estimate (about 10 percent for a single-ended net; not characterised for a pair) and does not replace expert analysis. No controlled-impedance class is derived: the net keeps its declared class, or falls back to the default buckets.
 
 ## Minimal reproduction
 

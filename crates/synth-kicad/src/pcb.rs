@@ -670,10 +670,27 @@ struct DeclaredGroup {
     name: String,
     trace_width_mm: f64,
     clearance_mm: f64,
+    pair: Option<(f64, f64)>,
     nets: Vec<String>,
 }
 
-fn derived_controlled_widths(board: &Board) -> Vec<(synth_ir::NetId, synth_ir::Impedance, f64)> {
+pub(crate) fn declared_pair_geometry(
+    board: &Board,
+    class: &synth_ir::NetClass,
+) -> Option<(f64, f64)> {
+    let min_gap = synth_drc::ManufacturerProfile::jlc_standard().min_copper_clearance_nm;
+    let (width, gap) = board.netclass_pair_geometry(&class.name, synth_ir::Length(min_gap))?;
+    Some((width.to_mm(), gap.to_mm()))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct DerivedGeometry {
+    impedance: synth_ir::Impedance,
+    width_mm: f64,
+    gap_mm: Option<f64>,
+}
+
+fn derived_controlled_geometry(board: &Board) -> Vec<(synth_ir::NetId, DerivedGeometry)> {
     let Some(outer) = board
         .stackup
         .as_ref()
@@ -681,21 +698,44 @@ fn derived_controlled_widths(board: &Board) -> Vec<(synth_ir::NetId, synth_ir::I
     else {
         return Vec::new();
     };
-    let min_width_mm =
-        synth_ir::Length(synth_drc::ManufacturerProfile::jlc_standard().min_trace_width_nm).to_mm();
+    let profile = synth_drc::ManufacturerProfile::jlc_standard();
+    let min_width_mm = synth_ir::Length(profile.min_trace_width_nm).to_mm();
+    let min_gap_mm = synth_ir::Length(profile.min_copper_clearance_nm).to_mm();
     board
-        .single_ended_impedance_nets()
-        .into_iter()
-        .filter(|(net, ..)| board.declared_trace_width(net).is_none())
-        .filter_map(|(net, _, impedance)| {
-            let width_mm = synth_geometry::derive_microstrip_width_mm(
+        .impedance_legs()
+        .filter(|(pos, neg, ..)| {
+            board.declared_trace_width(pos).is_none() && board.declared_trace_width(neg).is_none()
+        })
+        .filter_map(|(pos, neg, _, impedance)| {
+            if pos.id == neg.id {
+                let width_mm = synth_geometry::derive_microstrip_width_mm(
+                    impedance.to_ohms(),
+                    &outer,
+                    min_width_mm,
+                )
+                .ok()?;
+                let geometry = DerivedGeometry {
+                    impedance,
+                    width_mm,
+                    gap_mm: None,
+                };
+                return Some(vec![(pos.id, geometry)]);
+            }
+            let pair = synth_geometry::derive_coupled_microstrip(
                 impedance.to_ohms(),
                 &outer,
                 min_width_mm,
+                min_gap_mm,
             )
             .ok()?;
-            Some((net.id, impedance, width_mm))
+            let geometry = DerivedGeometry {
+                impedance,
+                width_mm: pair.width_mm,
+                gap_mm: Some(pair.gap_mm),
+            };
+            Some(vec![(pos.id, geometry), (neg.id, geometry)])
         })
+        .flatten()
         .collect()
 }
 
@@ -732,8 +772,8 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
 
     let mut default_nets = Vec::new();
     let mut power_nets = Vec::new();
-    let controlled = derived_controlled_widths(board);
-    let mut controlled_groups: Vec<(synth_ir::Impedance, f64, Vec<String>)> = Vec::new();
+    let controlled = derived_controlled_geometry(board);
+    let mut controlled_groups: Vec<(DerivedGeometry, Vec<String>)> = Vec::new();
 
     // Declared classes in source order. A join naming an undeclared
     // class cannot arrive here through lowering (it is
@@ -747,6 +787,7 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
             name: nc.name.clone(),
             trace_width_mm: nc.trace_width.map_or(0.127, synth_ir::Length::to_mm),
             clearance_mm: nc.clearance.map_or(0.127, synth_ir::Length::to_mm),
+            pair: declared_pair_geometry(board, nc),
             nets: Vec::new(),
         })
         .collect();
@@ -757,12 +798,10 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
         }
         // pcb_net_id is 1-indexed; IR NetId is 0-indexed.
         let ir_net_idx = pcb_net_id.saturating_sub(1);
-        if let Some(&(_, impedance, width_mm)) =
-            controlled.iter().find(|(id, ..)| id.0 == ir_net_idx)
-        {
-            match controlled_groups.iter_mut().find(|g| g.0 == impedance) {
-                Some(group) => group.2.push(name.clone()),
-                None => controlled_groups.push((impedance, width_mm, vec![name.clone()])),
+        if let Some(&(_, geometry)) = controlled.iter().find(|(id, _)| id.0 == ir_net_idx) {
+            match controlled_groups.iter_mut().find(|g| g.0 == geometry) {
+                Some(group) => group.1.push(name.clone()),
+                None => controlled_groups.push((geometry, vec![name.clone()])),
             }
             continue;
         }
@@ -832,6 +871,10 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
             Sexp::list("via_dia", vec![num(0.60)]),
             Sexp::list("via_drill", vec![num(0.30)]),
         ];
+        if let Some((width_mm, gap_mm)) = group.pair {
+            args.push(Sexp::list("diff_pair_width", vec![num(width_mm)]));
+            args.push(Sexp::list("diff_pair_gap", vec![num(gap_mm)]));
+        }
         for name in &group.nets {
             args.push(Sexp::list("add_net", vec![Sexp::str(name)]));
         }
@@ -857,18 +900,33 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
         classes.push(Sexp::list("net_class", power_args));
     }
 
-    for (impedance, width_mm, nets) in controlled_groups {
-        let ohms = impedance.to_ohms();
-        let mut args = vec![
-            Sexp::str(format!("Z0_{ohms}OHM")),
-            Sexp::str(format!(
-                "Single-ended {ohms} ohm outer-layer microstrip, width estimated from the stackup"
-            )),
-            Sexp::list("clearance", vec![num(0.2)]),
-            Sexp::list("trace_width", vec![num(width_mm)]),
+    for (geometry, nets) in controlled_groups {
+        let ohms = geometry.impedance.to_ohms();
+        let width = num(geometry.width_mm);
+        let mut args = match geometry.gap_mm {
+            Some(gap_mm) => vec![
+                Sexp::str(format!("ZDIFF_{ohms}OHM")),
+                Sexp::str(format!(
+                    "Differential {ohms} ohm outer-layer microstrip pair, width and gap estimated from the stackup"
+                )),
+                Sexp::list("clearance", vec![num(gap_mm)]),
+                Sexp::list("trace_width", vec![width.clone()]),
+                Sexp::list("diff_pair_width", vec![width]),
+                Sexp::list("diff_pair_gap", vec![num(gap_mm)]),
+            ],
+            None => vec![
+                Sexp::str(format!("Z0_{ohms}OHM")),
+                Sexp::str(format!(
+                    "Single-ended {ohms} ohm outer-layer microstrip, width estimated from the stackup"
+                )),
+                Sexp::list("clearance", vec![num(0.2)]),
+                Sexp::list("trace_width", vec![width]),
+            ],
+        };
+        args.extend([
             Sexp::list("via_dia", vec![num(0.60)]),
             Sexp::list("via_drill", vec![num(0.30)]),
-        ];
+        ]);
         for name in nets {
             args.push(Sexp::list("add_net", vec![Sexp::str(&name)]));
         }

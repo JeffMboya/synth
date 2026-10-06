@@ -63,9 +63,10 @@
 pub mod sim_oracles;
 
 pub use sim_oracles::{
-    calculate_microstrip_z0, calculate_stripline_z0, derive_microstrip_width_mm,
-    estimate_component_thermal, outer_microstrip_params, ComponentThermalEstimate,
-    MicrostripParams, SiImpedanceResult, UnreachableZ0,
+    calculate_microstrip_z0, calculate_stripline_z0, coupled_microstrip_zdiff_ohms,
+    derive_coupled_microstrip, derive_microstrip_width_mm, estimate_component_thermal,
+    outer_microstrip_params, ComponentThermalEstimate, CoupledGeometry, MicrostripParams,
+    SiImpedanceResult, UnreachableZ0,
 };
 
 use serde::{Deserialize, Serialize};

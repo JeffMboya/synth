@@ -78,6 +78,9 @@ pub fn calculate_microstrip_z0(params: &MicrostripParams) -> SiImpedanceResult {
 
 const MIN_WIDTH_OVER_HEIGHT: f64 = 0.1;
 const MAX_WIDTH_OVER_HEIGHT: f64 = 2.0;
+const MAX_GAP_OVER_HEIGHT: f64 = 2.0;
+const COUPLING_AMPLITUDE: f64 = 0.48;
+const COUPLING_DECAY: f64 = 0.96;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UnreachableZ0 {
@@ -103,6 +106,17 @@ pub fn outer_microstrip_params(stackup: &synth_ir::Stackup) -> Option<Microstrip
     })
 }
 
+fn width_bounds_mm(base: &MicrostripParams, min_width_mm: f64) -> (f64, f64) {
+    let narrowest = min_width_mm.max(MIN_WIDTH_OVER_HEIGHT * base.height_mm);
+    let widest = (MAX_WIDTH_OVER_HEIGHT * base.height_mm).max(narrowest);
+    (narrowest, widest)
+}
+
+fn width_for_z0_mm(target_ohms: f64, base: &MicrostripParams, bounds: (f64, f64)) -> f64 {
+    let ratio = (-target_ohms * (base.er + 1.41).sqrt() / 87.0).exp();
+    ((5.98 * base.height_mm * ratio - base.thickness_mm) / 0.8).clamp(bounds.0, bounds.1)
+}
+
 /// Inverts [`calculate_microstrip_z0`] for the width.
 ///
 /// # Errors
@@ -113,17 +127,59 @@ pub fn derive_microstrip_width_mm(
     min_width_mm: f64,
 ) -> Result<f64, UnreachableZ0> {
     let z0_at = |width_mm| calculate_microstrip_z0(&MicrostripParams { width_mm, ..*base }).z0_ohms;
-    let narrowest = min_width_mm.max(MIN_WIDTH_OVER_HEIGHT * base.height_mm);
-    let widest = (MAX_WIDTH_OVER_HEIGHT * base.height_mm).max(narrowest);
-    let (highest_ohms, lowest_ohms) = (z0_at(narrowest), z0_at(widest));
+    let bounds = width_bounds_mm(base, min_width_mm);
+    let (highest_ohms, lowest_ohms) = (z0_at(bounds.0), z0_at(bounds.1));
     if !(lowest_ohms..=highest_ohms).contains(&target_ohms) {
         return Err(UnreachableZ0 {
             lowest_ohms,
             highest_ohms,
         });
     }
-    let ratio = (-target_ohms * (base.er + 1.41).sqrt() / 87.0).exp();
-    Ok(((5.98 * base.height_mm * ratio - base.thickness_mm) / 0.8).clamp(narrowest, widest))
+    Ok(width_for_z0_mm(target_ohms, base, bounds))
+}
+
+fn coupling(gap_mm: f64, height_mm: f64) -> f64 {
+    1.0 - COUPLING_AMPLITUDE * (-COUPLING_DECAY * gap_mm / height_mm).exp()
+}
+
+#[must_use]
+pub fn coupled_microstrip_zdiff_ohms(params: &MicrostripParams, gap_mm: f64) -> f64 {
+    2.0 * calculate_microstrip_z0(params).z0_ohms * coupling(gap_mm, params.height_mm)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoupledGeometry {
+    pub width_mm: f64,
+    pub gap_mm: f64,
+}
+
+pub fn derive_coupled_microstrip(
+    target_ohms: f64,
+    base: &MicrostripParams,
+    min_width_mm: f64,
+    min_gap_mm: f64,
+) -> Result<CoupledGeometry, UnreachableZ0> {
+    let bounds = width_bounds_mm(base, min_width_mm);
+    let z0_at = |width_mm| calculate_microstrip_z0(&MicrostripParams { width_mm, ..*base }).z0_ohms;
+    let widest_gap_mm = (MAX_GAP_OVER_HEIGHT * base.height_mm).max(min_gap_mm);
+    let narrow_z0 = z0_at(bounds.0);
+    let lowest_ohms = 2.0 * z0_at(bounds.1) * coupling(min_gap_mm, base.height_mm);
+    let highest_ohms = 2.0 * narrow_z0 * coupling(widest_gap_mm, base.height_mm);
+    if !(lowest_ohms..=highest_ohms).contains(&target_ohms) {
+        return Err(UnreachableZ0 {
+            lowest_ohms,
+            highest_ohms,
+        });
+    }
+    let needed_coupling = target_ohms / (2.0 * narrow_z0);
+    let gap_mm = (-base.height_mm * ((1.0 - needed_coupling) / COUPLING_AMPLITUDE).ln()
+        / COUPLING_DECAY)
+        .clamp(min_gap_mm, widest_gap_mm);
+    let z0_needed = target_ohms / (2.0 * coupling(gap_mm, base.height_mm));
+    Ok(CoupledGeometry {
+        width_mm: width_for_z0_mm(z0_needed, base, bounds),
+        gap_mm,
+    })
 }
 
 /// Calculate stripline characteristic impedance Z0.
@@ -286,5 +342,45 @@ mod tests {
         let tight = derive_microstrip_width_mm(80.0, &fr4_outer(), 0.2);
         assert!(loose.is_ok());
         assert!(tight.is_err());
+    }
+
+    #[test]
+    fn derived_pair_geometry_reproduces_the_target() {
+        for target in [80.0, 90.0, 100.0, 130.0] {
+            let pair = derive_coupled_microstrip(target, &fr4_outer(), 0.127, 0.127).unwrap();
+            let zdiff = coupled_microstrip_zdiff_ohms(
+                &MicrostripParams {
+                    width_mm: pair.width_mm,
+                    ..fr4_outer()
+                },
+                pair.gap_mm,
+            );
+            assert!(
+                (zdiff - target).abs() < 0.01,
+                "{target} ohm gave {zdiff} ohm"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reachable_pair_uses_the_tightest_manufacturable_gap() {
+        let pair = derive_coupled_microstrip(90.0, &fr4_outer(), 0.127, 0.127).unwrap();
+        assert!((pair.gap_mm - 0.127).abs() < 1e-9, "{pair:?}");
+    }
+
+    #[test]
+    fn a_target_above_the_tight_gap_range_widens_the_gap() {
+        let tight = derive_coupled_microstrip(90.0, &fr4_outer(), 0.127, 0.127).unwrap();
+        let loose = derive_coupled_microstrip(130.0, &fr4_outer(), 0.127, 0.127).unwrap();
+        assert!(loose.gap_mm > tight.gap_mm, "{loose:?} !> {tight:?}");
+        assert!(loose.width_mm >= 0.127, "{loose:?}");
+    }
+
+    #[test]
+    fn pair_targets_outside_the_feasible_range_are_unreachable() {
+        for target in [5.0, 200.0] {
+            let err = derive_coupled_microstrip(target, &fr4_outer(), 0.127, 0.127).unwrap_err();
+            assert!(err.lowest_ohms < 90.0 && 90.0 < err.highest_ohms, "{err:?}");
+        }
     }
 }

@@ -1,0 +1,26 @@
+// A 90 ohm pair on a four-layer stackup may be routed on an inner layer, where impedance is not verified.
+board "pair_inner_layers" {
+  layers 4
+
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+  component R3: resistor "r_generic_0603" value "10k"
+  component R4: resistor "r_generic_0603" value "10k"
+
+  connect R1.p1 -> R2.p1 as "USB_DP"
+  connect R3.p1 -> R4.p1 as "USB_DN"
+
+  diff_pair USB_DP USB_DN {
+    impedance 90ohm
+  }
+
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4 material "FR4"
+    copper 0.0152mm
+    insulator 1.065mm er 4.6 material "FR4"
+    copper 0.0152mm
+    insulator 0.2104mm er 4.4 material "FR4"
+    copper 0.035mm
+  }
+}

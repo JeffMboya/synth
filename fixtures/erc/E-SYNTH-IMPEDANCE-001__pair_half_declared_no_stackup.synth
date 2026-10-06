@@ -1,0 +1,21 @@
+// Same as pair_half_declared with no stackup: the legs disagree whatever the stackup, so the error does not need one.
+board "pair_half_declared_no_stackup" {
+  layers 2
+
+  netclass "USB" {
+    trace_width 0.242mm
+    clearance 0.127mm
+  }
+
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+  component R3: resistor "r_generic_0603" value "10k"
+  component R4: resistor "r_generic_0603" value "10k"
+
+  connect R1.p1 -> R2.p1 as "USB_DP" class "USB"
+  connect R3.p1 -> R4.p1 as "USB_DN"
+
+  diff_pair USB_DP USB_DN {
+    impedance 90ohm
+  }
+}

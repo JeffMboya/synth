@@ -1037,10 +1037,9 @@ const UNVERIFIED: &[CapabilityLimit] = &[
     (
         "diff_pair_impedance",
         Some("diff_pair.impedance"),
-        "Used only when both legs are one net on a declared stackup: an outer-layer microstrip \
-         width is derived and declared widths are checked, as an estimate. For a true \
-         differential pair the value is parsed and its presence is required, but no stage uses \
-         or checks it.",
+        "Used only on a declared stackup: an outer-layer microstrip width (and, for a true \
+         differential pair, the gap between its legs) is derived and declared geometry is \
+         checked, as an estimate. Inner-layer pairs are not verified.",
     ),
     (
         "rf_net_trace_width",
@@ -1143,7 +1142,7 @@ fn capability_descriptor() -> serde_json::Value {
                 "order": "top to bottom; copper first, alternating, copper last",
                 "export": "written to the .kicad_pcb setup/stackup section; board thickness becomes the stack total",
                 "default": "none: without a block the board exports the exporter's default thickness and no stackup section",
-                "notes": "No fabricator presets are shipped; every value is declared by the design. A single-ended diff_pair impedance derives its net class trace width from the first copper and insulator layers."
+                "notes": "No fabricator presets are shipped; every value is declared by the design. A diff_pair impedance derives its net class trace width (and, for a true pair, its gap) from the first copper and insulator layers."
             },
             "routing_constraints": {
                 "netclass": ["trace_width", "clearance", "color"],
