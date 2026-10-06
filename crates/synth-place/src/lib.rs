@@ -934,7 +934,21 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
 
     let (modules, _claimed_children) =
         modules::extract_functional_modules(board, &courtyard_lookup);
-    let fp_targets = floorplan::compute_floorplan_targets(board, usable, &courtyard_lookup);
+    let mut fp_targets = floorplan::compute_floorplan_targets(board, usable, &courtyard_lookup);
+    // A differential pair may turn the far end of its run so the pair's
+    // pads escape toward the near end — but only where the floorplan left
+    // the component at identity. The floorplan's non-identity rotations are
+    // deliberate (a connector's mating face, a header's row order), and a
+    // pair does not get to overrule them.
+    for escape in
+        modules::pair_escape_rotations(board, &fp_targets, &build_pad_offset_lookup(board))
+    {
+        if let Some(target) = fp_targets.get_mut(&escape.component) {
+            if target.rotation == Rotation::Zero {
+                target.rotation = escape.rotation;
+            }
+        }
+    }
     let region_hints = cem::cem_region_assign(board, usable);
 
     // Child lookup for relative module offset placement and auto-rotation

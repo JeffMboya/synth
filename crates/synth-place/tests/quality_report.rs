@@ -120,6 +120,58 @@ fn bound_member_pad_distances() {
     }
 }
 
+/// Differential-pair geometry: how far apart the two ends are, and whether
+/// the far end's pair pads escape toward the near end rather than away from
+/// it.
+#[test]
+#[ignore = "diagnostic report, not a gate"]
+#[allow(clippy::cast_precision_loss)]
+fn diff_pair_geometry() {
+    for path in [
+        "../../examples/placement_and_diff_pair.synth",
+        "../../examples/sensor_logger.synth",
+        "../../examples/env_logger.synth",
+    ] {
+        if !Path::new(path).exists() {
+            continue;
+        }
+        let board = load_board(path);
+        let Ok(placement) = synth_place::place(&board) else {
+            continue;
+        };
+        let pairs = synth_ir::resolve_pairs(&board);
+        if pairs.is_empty() {
+            continue;
+        }
+        let by_id: std::collections::HashMap<_, _> =
+            placement.components.iter().map(|p| (p.id, *p)).collect();
+        println!("--- {path}: {} pairs", pairs.len());
+        for connection in synth_ir::pair_connections(&board, &pairs) {
+            let near = connection.pair.positive_pin.0;
+            let Some(near_place) = by_id.get(&near) else {
+                continue;
+            };
+            let Some(far_place) = by_id.get(&connection.far_end) else {
+                continue;
+            };
+            let dx = (near_place.center.x_nm - far_place.center.x_nm) as f64 / 1_000_000.0;
+            let dy = (near_place.center.y_nm - far_place.center.y_nm) as f64 / 1_000_000.0;
+            let near_refdes = board
+                .component(near)
+                .map_or_else(|| "?".to_string(), |c| c.refdes.clone());
+            let far_refdes = board
+                .component(connection.far_end)
+                .map_or_else(|| "?".to_string(), |c| c.refdes.clone());
+            println!(
+                "    {near_refdes} -> {far_refdes}: {:.2} mm apart | near rot={:?} far rot={:?}",
+                (dx * dx + dy * dy).sqrt(),
+                near_place.rotation,
+                far_place.rotation
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "diagnostic report, not a gate"]
 fn placement_quality_report() {

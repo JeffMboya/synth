@@ -1216,127 +1216,12 @@ pub fn cluster_index_by_component(clusters: &[FunctionalCluster]) -> HashMap<Com
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::too_many_lines,
-    clippy::implicit_hasher,
-    clippy::cast_possible_truncation
-)]
+#[allow(clippy::too_many_lines, clippy::implicit_hasher)]
 mod tests {
     use super::*;
-    use crate::board::{Component, NetEndpoint};
-    use std::collections::BTreeMap;
-    use synth_diagnostics::Span;
-    use synth_registry::{Part, PartId, Pin as RegPin, PinNumber, RequiredDecoupling};
-
-    fn pin(name: &str, electrical_type: ElectricalType) -> RegPin {
-        RegPin {
-            name: name.to_string(),
-            number: PinNumber(String::new()),
-            electrical_type,
-            capabilities: Vec::new(),
-            required: false,
-            unit: None,
-            voltage_max_v: None,
-            voltage_min_v: None,
-            voltage_nominal_v: None,
-        }
-    }
-
-    fn cap_pin(name: &str) -> RegPin {
-        pin(name, ElectricalType::Passive)
-    }
-
-    fn part(kind: &str, pins: Vec<RegPin>) -> Part {
-        Part {
-            id: PartId(format!("test/{kind}")),
-            kind: kind.to_string(),
-            description: None,
-            version: 0,
-            lifecycle: synth_registry::Lifecycle::Active,
-            signed_by: Vec::new(),
-            substitutes: Vec::new(),
-            mpn: None,
-            lcsc_pn: None,
-            provenance: None,
-            pins,
-            required_decoupling: Vec::new(),
-            kicad_symbol: None,
-            kicad_footprint: None,
-            footprint_dimensions: None,
-            operating_conditions: None,
-        }
-    }
-
-    fn part_with_decoupling(kind: &str, pins: Vec<RegPin>, rules: &[(&str, u32)]) -> Part {
-        let mut p = part(kind, pins);
-        p.required_decoupling = rules
-            .iter()
-            .map(|(net, count)| RequiredDecoupling {
-                net: (*net).to_string(),
-                value: "100nF".to_string(),
-                count: *count,
-                max_distance_mm: None,
-            })
-            .collect();
-        p
-    }
-
-    fn component(id: u32, refdes: &str, part: Part) -> Component {
-        Component {
-            id: ComponentId(id),
-            refdes: refdes.to_string(),
-            kind: part.kind.clone(),
-            part: Some(part),
-            value: None,
-            dnp: false,
-            properties: BTreeMap::default(),
-            placement_hint: None,
-            group: None,
-            sheet: None,
-            source_span: Span::new(0, 0),
-        }
-    }
-
-    fn net(id: u32, name: &str, endpoints: &[(u32, u32)]) -> Net {
-        Net {
-            id: NetId(id),
-            name: name.to_string(),
-            endpoints: endpoints
-                .iter()
-                .map(|(c, p)| NetEndpoint {
-                    component: ComponentId(*c),
-                    pin: PinId(*p),
-                    source_span: Span::new(0, 0),
-                })
-                .collect(),
-            netclass: None,
-            voltage: None,
-        }
-    }
-
-    fn board(components: Vec<Component>, nets: Vec<Net>) -> Board {
-        Board {
-            name: "test".to_string(),
-            layers: 2,
-            manufacturer: None,
-            revision: None,
-            company: None,
-            schematic_paper: None,
-            schematic_overflow: None,
-            components,
-            nets,
-            diff_pairs: Vec::new(),
-            notes: Vec::new(),
-            legends: false,
-            keepouts: Vec::new(),
-            netclasses: Vec::new(),
-            buses: Vec::new(),
-            modules: Vec::new(),
-            groups: Vec::new(),
-            variants: Vec::new(),
-            source_span: Span::new(0, 0),
-        }
-    }
+    use crate::test_support::{
+        component, net, part, part_with_decoupling, passive_pin, pin, plain_board,
+    };
 
     fn find(clusters: &[FunctionalCluster], anchor: u32) -> &FunctionalCluster {
         clusters
@@ -1374,9 +1259,9 @@ mod tests {
         let c1 = component(
             1,
             "C1",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
-        let b = board(
+        let b = plain_board(
             vec![u1, c1],
             vec![
                 net(0, "3V3", &[(0, 0), (1, 0)]),
@@ -1413,9 +1298,9 @@ mod tests {
         let c1 = component(
             1,
             "C1",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
-        let b = board(
+        let b = plain_board(
             vec![u1, c1],
             vec![
                 net(0, "3V3", &[(0, 0), (0, 1), (1, 0)]),
@@ -1463,19 +1348,19 @@ mod tests {
         let decap = component(
             2,
             "C2",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
         let sda_pull = component(
             3,
             "R3",
-            part("resistor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("resistor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
         let scl_pull = component(
             4,
             "R4",
-            part("resistor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("resistor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
-        let b = board(
+        let b = plain_board(
             vec![host, decap, sda_pull, scl_pull],
             vec![
                 net(0, "3V3", &[(0, 0), (2, 0), (3, 1), (4, 1)]),
@@ -1533,19 +1418,19 @@ mod tests {
         let declared = component(
             2,
             "C2",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
         let mcu_decap = component(
             3,
             "C3",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
         let orphan = component(
             4,
             "C4",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
-        let b = board(
+        let b = plain_board(
             vec![regulator, mcu, declared, mcu_decap, orphan],
             vec![
                 net(0, "VIN", &[(0, 0)]),
@@ -1603,9 +1488,9 @@ mod tests {
         let orphan = component(
             2,
             "C2",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
-        let b = board(
+        let b = plain_board(
             vec![reg, mcu, orphan],
             vec![
                 net(0, "3V3", &[(0, 1), (1, 0), (1, 1), (2, 0)]),
@@ -1639,14 +1524,14 @@ mod tests {
         let c1 = component(
             1,
             "C1",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
         let c2 = component(
             2,
             "C2",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
-        let b = board(
+        let b = plain_board(
             vec![crystal, c1, c2],
             vec![
                 net(0, "OSC1", &[(0, 0), (1, 0)]),
@@ -1682,19 +1567,19 @@ mod tests {
         let c_in = component(
             1,
             "C1",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
         let c_out_a = component(
             2,
             "C2",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
         let c_out_b = component(
             3,
             "C3",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
-        let b = board(
+        let b = plain_board(
             vec![reg, c_in, c_out_a, c_out_b],
             vec![
                 net(0, "VIN", &[(0, 0), (1, 0)]),
@@ -1736,14 +1621,14 @@ mod tests {
         let series = component(
             1,
             "L1",
-            part("inductor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("inductor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
         let shunt = component(
             2,
             "C1",
-            part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+            part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
         );
-        let b = board(
+        let b = plain_board(
             vec![antenna, series, shunt],
             vec![
                 net(0, "FEED", &[(0, 0), (1, 0), (2, 0)]),
@@ -1793,16 +1678,20 @@ mod tests {
             component(
                 2,
                 "C1",
-                part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+                part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
             ),
             component(
                 3,
                 "C2",
-                part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+                part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
             ),
-            component(4, "D1", part("diode", vec![cap_pin("a"), cap_pin("k")])),
+            component(
+                4,
+                "D1",
+                part("diode", vec![passive_pin("a"), passive_pin("k")]),
+            ),
         ];
-        let b = board(
+        let b = plain_board(
             parts,
             vec![
                 net(0, "3V3", &[(0, 0), (1, 0), (2, 0), (3, 0)]),
@@ -1828,7 +1717,7 @@ mod tests {
     /// reading it independently cannot disagree.
     #[test]
     fn recognition_is_deterministic() {
-        let b = board(
+        let b = plain_board(
             vec![
                 component(
                     0,
@@ -1845,7 +1734,7 @@ mod tests {
                 component(
                     1,
                     "C1",
-                    part("capacitor", vec![cap_pin("p1"), cap_pin("p2")]),
+                    part("capacitor", vec![passive_pin("p1"), passive_pin("p2")]),
                 ),
             ],
             vec![
