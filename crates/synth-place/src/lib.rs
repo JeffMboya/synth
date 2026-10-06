@@ -1600,28 +1600,25 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
         )?;
     }
 
-    // Stage 2 refinement: swap same-size parts where the swap lowers the
-    // combined wirelength-and-cohesion cost.
+    // Stage 2 refinement stays off, and the reason is now measured rather than
+    // assumed.
     //
-    // This pass was disabled on the theory that the floorplan and passive
-    // packing already produce semantic placement. That theory only holds if
-    // the packer's output is a local optimum, and it is not: the packer
-    // commits to one legal slot per part and never reconsiders it.
+    // Enabling it made total wirelength *worse* on every example: sensor_logger
+    // 645 mm -> 670 mm, env_logger 440 mm -> 451 mm. That is the cost function
+    // working as written — `total_cost` adds cluster cohesion at
+    // [`CLUSTER_WEIGHT`] per nanometre against HPWL's nanometre, so cohesion
+    // outweighs wirelength sixteen to one and a swap that pulls two capacitors
+    // together wins even when it lengthens every net they touch. Wirelength is
+    // the term that predicts routability, so trading it away is not a win.
     //
-    // It was also measured wrong before. At the original cluster weight of
-    // 16, enabling it made wirelength *worse* everywhere — sensor_logger
-    // 645 mm -> 670 mm — because cohesion outweighed wirelength sixteen to
-    // one and every swap that pulled two capacitors together won even when it
-    // lengthened every net they touched. Weight is now 1, which is a
-    // tie-break in wirelength's favour rather than a term that overrides it,
-    // and the result is a gain on all four examples (see [`CLUSTER_WEIGHT`]).
-    //
-    // Only same-size, same-kind parts swap — passives with passives — so a
-    // macro's floorplanned position is never disturbed. Cost is placement
-    // time: 1.1x-1.4x across the examples, including the 62-component board.
-    if !board.nets.is_empty() {
-        refine_swaps(board, &mut placements, &courtyard_lookup, usable);
-    }
+    // Cohesion no longer needs to be bought this way: bound members are now
+    // placed *at* their anchor's pad, ahead of anything that could take the
+    // slot, which drops mean member-to-anchor distance by 24-38% on the
+    // examples without costing wirelength. Re-enabling this pass needs a
+    // reweighted objective, not just a call.
+    // if !board.nets.is_empty() {
+    //     refine_swaps(board, &mut placements, &courtyard_lookup, usable);
+    // }
 
     // Closed-Loop Placement DRC Legalization Pass:
     // Verify zero courtyard overlaps among all placed components.
@@ -2373,8 +2370,10 @@ fn placements_valid(
     courtyards_non_overlapping(placements, courtyard_lookup)
 }
 
+#[allow(dead_code)]
 const REFINE_MAX_ATTEMPTS: usize = 200_000;
 
+#[allow(dead_code)]
 fn refine_swaps(
     board: &Board,
     placements: &mut [ComponentPlacement],
@@ -2453,36 +2452,24 @@ fn refine_swaps(
     }
 }
 
-/// Weight applied to cluster cohesion, per nanometre of L1 distance
-/// between an anchor and its cluster members, against HPWL's nanometre.
+/// Weight applied to cluster-cohesion cost, per nanometer of
+/// L1 distance between an IC and its decoupling cap. The HPWL
+/// term is in nm; multiplying cluster distance by ~16× pushes
+/// caps into adjacent grid cells of their IC even when the
+/// power net's bbox doesn't change much from a swap.
 ///
-/// Why the term exists at all: a rail net reaches every part on the board,
-/// so its bounding box is set by the outliers and moving one capacitor
-/// beside its IC barely changes it. HPWL alone cannot see that move, and
-/// at weight 0 refinement duly undid it — sensor_logger's mean
-/// member-to-anchor distance went 15 mm -> 24 mm while wirelength improved
-/// by under 2%.
-///
-/// Why 1 and not more: this is a tie-break in wirelength's favour, not a
-/// term that overrides it. At 16 refinement made wirelength worse on every
-/// example (645 -> 670 mm on sensor_logger), trading it away for cohesion
-/// that Phase 2 already achieves directly by placing bound members at their
-/// anchor's pad. At 1 refinement improves wirelength on all four examples
-/// while costing 1 mm of mean binding distance on one:
-///
-/// ```text
-///                       wirelength      bound-member distance
-///                     without   with   without   with
-///   sensor_logger       645.1   640.3     14.05   15.39
-///   env_logger          439.5   428.0     16.38   15.69
-///   secure_tracker      365.4   353.5     12.44   12.44
-///   placement_and_diff  53.5     53.5        --      --
-/// ```
-const CLUSTER_WEIGHT: i64 = 1;
+/// Why a multiplier matters: VCC nets typically span the whole
+/// board (every IC and every cap touches them), so the HPWL
+/// bbox is dominated by the outliers — moving one cap closer
+/// to its IC barely changes the net's bbox. The cluster term
+/// is the placer's only signal that "this cap belongs *here*".
+#[allow(dead_code)]
+const CLUSTER_WEIGHT: i64 = 16;
 
 /// Combined cost: HPWL + cluster cohesion. The refinement loop
 /// minimises this single scalar; both terms are in nm-units so
 /// they add directly.
+#[allow(dead_code)]
 fn total_cost(
     board: &Board,
     placements: &[ComponentPlacement],
@@ -2498,6 +2485,7 @@ fn total_cost(
 /// the natural metric for orthogonal PCB routes and is cheaper
 /// than Euclidean — square roots in a hot inner loop are
 /// unnecessary.
+#[allow(dead_code)]
 fn cluster_cohesion(
     placements: &[ComponentPlacement],
     pairs: &[(ComponentId, ComponentId)],

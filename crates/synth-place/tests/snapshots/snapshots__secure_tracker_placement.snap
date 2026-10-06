@@ -16,15 +16,15 @@ ANT1  (  85.45,   26.10) mm  rot=Zero layer=Top
   R1  (  26.32,   19.45) mm  rot=Zero layer=Top
   R2  (  13.32,   12.95) mm  rot=Zero layer=Top
   R3  (  37.66,   50.90) mm  rot=Zero layer=Top
-  R4  (  47.00,   60.50) mm  rot=Zero layer=Top
-  R5  (  36.66,   41.47) mm  rot=Zero layer=Top
-  R6  (  58.05,   51.30) mm  rot=Zero layer=Top
+  R4  (  36.66,   41.47) mm  rot=Zero layer=Top
+  R5  (  58.05,   51.30) mm  rot=Zero layer=Top
+  R6  (  41.55,   21.05) mm  rot=Zero layer=Top
   C7  (  47.13,   54.45) mm  rot=Zero layer=Top
  C11  (  36.75,   29.25) mm  rot=Zero layer=Top
   C1  (  30.00,   55.00) mm  rot=Zero layer=Top
-  C2  (  41.55,   21.05) mm  rot=Zero layer=Top
+  C2  (  29.00,   38.00) mm  rot=Zero layer=Top
   C3  (  66.00,   57.00) mm  rot=Zero layer=Top
-  C4  (  29.00,   38.00) mm  rot=Zero layer=Top
+  C4  (  47.00,   60.50) mm  rot=Zero layer=Top
   C5  (  47.00,   15.00) mm  rot=Zero layer=Top
   C6  (  24.00,   61.00) mm  rot=Zero layer=Top
   C9  (  72.00,   63.00) mm  rot=Zero layer=Top
