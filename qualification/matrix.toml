@@ -71,3 +71,36 @@ status = "unsupported"
 expect = "fail"
 expect_source_codes = ["E-SYNTH-VALUE-001"]
 rationale = "Negative test. Most complex reference board; stands in for the Class-D envelope in #41."
+
+[[board]]
+id = "a1_rp2350_debug_target"
+path = "qualification/boards/class-a/a1_rp2350_debug_target.synth"
+class = "A"
+status = "experimental"
+expect = "pass"
+rationale = "Novel Class-A board: RP2350 with SWD header, crystal, reset, boot flash and status LED. #39 case 1."
+
+[[board]]
+id = "a2_i2c_sensor_node"
+path = "qualification/boards/class-a/a2_i2c_sensor_node.synth"
+class = "A"
+status = "experimental"
+expect = "pass"
+rationale = "Novel Class-A board: regulated I2C sensor node with pull-ups, EEPROM and a protected breakout. #39 case 2."
+
+[[board]]
+id = "a3_protected_power_entry"
+path = "qualification/boards/class-a/a3_protected_power_entry.synth"
+class = "A"
+status = "experimental"
+expect = "pass"
+rationale = "Novel Class-A board: reverse-polarity P-FET, polyfuse, TVS, buck, soft-start load switch. #39 case 3."
+
+[[board]]
+id = "a4_negative_broken_mcu_board"
+path = "qualification/boards/class-a/a4_negative_broken_mcu_board.synth"
+class = "A"
+status = "unsupported"
+expect = "fail"
+expect_source_codes = ["E-SYNTH-CONNECT-001", "E-SYNTH-NAME-001", "E-SYNTH-VALUE-001"]
+rationale = "Novel Class-A negative: floating required pins, a duplicated reference and an unvalued passive. #39 negative case."
