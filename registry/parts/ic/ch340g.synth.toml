@@ -45,12 +45,14 @@ required = true
 [[pins]]
 name = "ud_plus"
 number = "5"
-electrical_type = "bidirectional"
+electrical_type = "differential_positive"
+capabilities = ["usb_dp"]
 
 [[pins]]
 name = "ud_minus"
 number = "6"
-electrical_type = "bidirectional"
+electrical_type = "differential_negative"
+capabilities = ["usb_dn"]
 
 [[pins]]
 name = "cts"

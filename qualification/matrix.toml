@@ -145,3 +145,11 @@ class = "C"
 status = "experimental"
 expect = "pass"
 rationale = "Novel Class-C board: six-layer stackup, two independent 90 ohm USB pairs, QSPI at speed, 61-pin MCU and a 20-pin header. #40 constraint surface, minus the length/skew budgets the language cannot express."
+
+[[board]]
+id = "c2_usb_uart_bridge_4layer"
+path = "qualification/boards/class-c/c2_usb_uart_bridge_4layer.synth"
+class = "C"
+status = "experimental"
+expect = "pass"
+rationale = "Novel Class-C board: impedance-controlled 4-layer stackup, CH340G USB pair at 90 ohm with clamps at the connector, crystal and activity indicators. #40 constraint preservation."
