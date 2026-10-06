@@ -73,6 +73,12 @@ fn routability_report() {
         for u in &routing.unrouted_nets {
             println!("  UNROUTED: {}", u.net_name);
         }
+        if routing.pad_escape_rejections > 0 {
+            println!(
+                "  pad-escape rejections: {} paths found by A* then discarded as too close to a foreign pad",
+                routing.pad_escape_rejections
+            );
+        }
     }
 }
 

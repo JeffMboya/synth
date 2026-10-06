@@ -135,6 +135,18 @@ pub struct Routing {
     /// Number of A* cell evaluations performed during routing search.
     #[serde(default)]
     pub cells_expanded: u64,
+    /// Paths the A* search found and then discarded because the emitted
+    /// geometry ran too close to a foreign pad.
+    ///
+    /// This separates the two ways a net fails, which look identical from
+    /// the outside and need opposite responses: a net that never finds a
+    /// path is blocked by congestion, while a net that repeatedly finds one
+    /// and has it rejected cannot escape its own pads. The second is a
+    /// geometry problem at the terminal — on a fine-pitch package it fails
+    /// at any congestion level, so no amount of re-routing or re-placing
+    /// the board will fix it.
+    #[serde(default)]
+    pub pad_escape_rejections: usize,
 }
 
 /// One net the router gave up on. Carries enough context for

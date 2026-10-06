@@ -350,6 +350,7 @@ fn unconnected_pads(
 /// the stuck net. This is the durable fix that the zero-segment priority
 /// pass misses — partial nets are never counted as "unrouted".
 fn rip_up_reroute(
+    pad_escape_rejections: &mut usize,
     base_grid: &Grid,
     board: &Board,
     advisor: &dyn crate::advisor::CongestionAdvisor,
@@ -397,6 +398,7 @@ fn rip_up_reroute(
             let hist = vec![0u32; cap];
             let mut present = vec![0u32; cap];
             route_net(
+                pad_escape_rejections,
                 &mut grid,
                 net,
                 segments,
@@ -428,6 +430,7 @@ fn rip_up_reroute(
                 let h = vec![0u32; cap];
                 let mut p = vec![0u32; cap];
                 route_net(
+                    pad_escape_rejections,
                     &mut grid,
                     cn,
                     segments,
@@ -624,9 +627,11 @@ pub fn route_all_with_profile_and_order(
     });
 
     let mut total_cells_expanded: u64 = 0;
+    let mut pad_escape_rejections: usize = 0;
 
     // Main negotiated-congestion pass.
     let (mut best_segments, mut best_vias, mut best_routed) = negotiate(
+        &mut pad_escape_rejections,
         &ordered,
         &base_grid,
         &pad_keepout,
@@ -683,6 +688,7 @@ pub fn route_all_with_profile_and_order(
             )
         });
         let (segs, vias, count) = negotiate(
+            &mut pad_escape_rejections,
             &priority_ordered,
             &base_grid,
             &pad_keepout,
@@ -755,6 +761,7 @@ pub fn route_all_with_profile_and_order(
     // for explicit recovery on other boards.
     if is_rp2350_board || std::env::var("SYNTH_ENABLE_RIPUP").is_ok() {
         rip_up_reroute(
+            &mut pad_escape_rejections,
             &base_grid,
             board,
             advisor,
@@ -773,6 +780,7 @@ pub fn route_all_with_profile_and_order(
         diff_pair_reports: reports,
         unrouted_nets: unrouted,
         cells_expanded: total_cells_expanded,
+        pad_escape_rejections,
     }
 }
 
@@ -813,6 +821,7 @@ fn net_endpoint_span(net: &synth_ir::Net, placement: &Placement) -> i64 {
 /// compare coverage across differently-ordered net lists during the
 /// priority rip-up loop).
 fn negotiate(
+    pad_escape_rejections: &mut usize,
     ordered: &[&synth_ir::Net],
     base_grid: &Grid,
     pad_keepout: &std::collections::HashMap<(usize, usize, usize), NetId>,
@@ -850,6 +859,7 @@ fn negotiate(
                 continue;
             }
             route_net(
+                pad_escape_rejections,
                 &mut grid,
                 net,
                 &mut segments,
@@ -1048,6 +1058,7 @@ fn is_plane_net(net: &synth_ir::Net, board: &Board) -> bool {
 /// any layer switch back to F.Cu) through an explicit via — no
 /// phantom cross-layer connections.
 pub(crate) fn route_net(
+    pad_escape_rejections: &mut usize,
     grid: &mut Grid,
     net: &synth_ir::Net,
     segments: &mut Vec<Segment>,
@@ -1140,6 +1151,7 @@ pub(crate) fn route_net(
         // short.
         if !emitted_geometry_is_pad_safe(grid, net.id, &new_segments, &new_vias) {
             rejected_geometry_paths = rejected_geometry_paths.saturating_add(1);
+            *pad_escape_rejections = pad_escape_rejections.saturating_add(1);
             if rejected_geometry_paths >= 8 {
                 break;
             }

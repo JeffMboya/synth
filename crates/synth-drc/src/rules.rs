@@ -850,6 +850,7 @@ mod tests {
             diff_pair_reports: Vec::new(),
             unrouted_nets: Vec::new(),
             cells_expanded: 0,
+            pad_escape_rejections: 0,
         }
     }
 

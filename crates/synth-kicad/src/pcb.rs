@@ -2087,6 +2087,7 @@ mod tests {
             diff_pair_reports: vec![],
             unrouted_nets: vec![],
             cells_expanded: 0,
+            pad_escape_rejections: 0,
         };
         let project = Uuid::nil();
         let pcb_sexp = build_pcb(&board, &placement, &routing, &project);
