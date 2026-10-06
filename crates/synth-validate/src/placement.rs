@@ -28,11 +28,7 @@ pub fn validate_placement(board: &Board, placement: &Placement, file: &str) -> V
             let refdes = component.map_or_else(|| format!("#{}", p.id.0), |c| c.refdes.clone());
             let part = component.and_then(|c| c.part.as_ref());
             let (w_mm, h_mm) = part.map_or_else(
-                || {
-                    component.map_or((4.0, 4.0), |c| {
-                        synth_place::fallback_courtyard(&c.kind)
-                    })
-                },
+                || component.map_or((4.0, 4.0), |c| synth_place::fallback_courtyard(&c.kind)),
                 |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
             );
             let (rot_w_nm, rot_h_nm) = match p.rotation {
