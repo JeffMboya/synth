@@ -131,7 +131,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "synth_route".into(),
-            description: "Run deterministic PCB track routing on a SynthSpec design. It first checks the sidecar-adjusted placement visual review and returns placement_requires_revision without entering the expensive router when the layout is structurally poor. Set allow_placement_warnings=true only for intentional manual/debug routing. Agents may provide routing_order as an advisory list of net names to attempt first after inspecting congestion diagnostics; omitted nets retain the deterministic electrical-priority order. Returns routed segments, through-hole vias, unrouted net diagnostics, and total wire length stats.".into(),
+            description: "Run deterministic PCB track routing on a SynthSpec design. It first checks the sidecar-adjusted placement visual review and returns placement_requires_revision without entering the expensive router when the layout is structurally poor. Set allow_placement_warnings=true only for intentional manual/debug routing. Agents may provide routing_order as an advisory list of net names to attempt first after inspecting congestion diagnostics; omitted nets retain the deterministic electrical-priority order. Returns routed segments, through-hole vias, unrouted net diagnostics, and total wire length stats. `pad_escape_rejections` counts paths the search found and then discarded because the emitted geometry ran too close to a foreign pad: a non-zero value means terminals, not congestion, are the obstacle, which no amount of re-ordering or re-placing will fix.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1272,6 +1272,7 @@ fn execute_route(args: &Value, default_registry: Option<&Path>) -> Result<Value,
         "segments_count": routing.segments.len(),
         "vias_count": routing.vias.len(),
         "unrouted_nets_count": routing.unrouted_nets.len(),
+        "pad_escape_rejections": routing.pad_escape_rejections,
         "total_wire_length_mm": total_wire_length_mm,
         "routing_feedback": if recommended_routing_order.is_empty() {
             serde_json::Value::Null
@@ -2509,6 +2510,7 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
         "release_ready": drc_clean,
         "route_complete": route_complete,
         "unrouted_nets": routing.unrouted_nets,
+        "pad_escape_rejections": routing.pad_escape_rejections,
         "drc_clean": drc_clean,
         "warning": if drc_clean { serde_json::Value::Null } else { serde_json::json!("DRAFT ONLY: routing and/or DRC is incomplete. Review and manually complete the PCB before any fabrication use.") },
         "capability_tier": "engineer-review-required",
