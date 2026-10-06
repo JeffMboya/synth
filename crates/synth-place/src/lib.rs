@@ -938,15 +938,20 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
     let region_hints = cem::cem_region_assign(board, usable);
 
     // Child lookup for relative module offset placement and auto-rotation
-    let mut child_module_map: std::collections::HashMap<
-        ComponentId,
-        (ComponentId, Point, Rotation),
-    > = std::collections::HashMap::new();
+    let mut child_module_map: std::collections::HashMap<ComponentId, ChildPlacement> =
+        std::collections::HashMap::new();
     for module in &modules {
         for member in &module.members {
             child_module_map.insert(
                 member.id,
-                (module.anchor_id, member.offset_nm, member.rotation),
+                ChildPlacement {
+                    member: member.id,
+                    anchor: module.anchor_id,
+                    fallback_offset_nm: member.offset_nm,
+                    fallback_rotation: member.rotation,
+                    binding: member.binding,
+                    slot: member.slot,
+                },
             );
         }
     }
@@ -967,6 +972,12 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
     let mut placed: Vec<(ComponentId, Point, Rect)> = Vec::with_capacity(board.components.len());
     let mut grid_start_indices = vec![0_usize; order.len()];
     let mut backtracks = 0_usize;
+    // Rotation each component was actually placed with. A pad-bound module
+    // member is aimed using its anchor's rotation, so the anchor's rotation
+    // has to be readable once it is placed — and the value recorded here is
+    // the one the search used, which is the authoritative answer.
+    let mut placed_rotations: std::collections::HashMap<ComponentId, Rotation> =
+        std::collections::HashMap::new();
 
     let mut order_idx = 0_usize;
     while order_idx < order.len() {
@@ -977,8 +988,19 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
 
         let mut rotation = if let Some(&rot) = resolved_rotation_overrides.get(&id) {
             rot
-        } else if let Some((_, _, rot)) = child_module_map.get(&id) {
-            *rot
+        } else if let Some(child) = child_module_map.get(&id) {
+            // A member bound to an anchor pad turns that pad toward the
+            // anchor; without pad geometry it falls back to the motif's
+            // fixed orientation.
+            child_pad_bound_placement(
+                child,
+                &placed,
+                &placed_rotations,
+                &pad_offsets,
+                &courtyard_lookup,
+                board,
+            )
+            .map_or(child.fallback_rotation, |aim| aim.rotation)
         } else if let Some(target) = fp_targets.get(&id) {
             target.rotation
         } else {
@@ -1154,18 +1176,36 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
 
         let mut target_point = if let Some(t) = hint_target {
             t
-        } else if let Some((anchor_id, rel_offset, _rot)) = child_module_map.get(&id) {
-            if let Some((_, _, anchor_rect)) = placed.iter().find(|(pid, _, _)| pid == anchor_id) {
-                let ac = Point::new(
-                    (anchor_rect.min.x_nm + anchor_rect.max.x_nm) / 2,
-                    (anchor_rect.min.y_nm + anchor_rect.max.y_nm) / 2,
-                );
-                Point::new(ac.x_nm + rel_offset.x_nm, ac.y_nm + rel_offset.y_nm)
-            } else {
-                fp_targets
-                    .get(&id)
-                    .map_or_else(|| Point::new(center_x, center_y), |t| t.point)
-            }
+        } else if let Some(child) = child_module_map.get(&id) {
+            // Pad-bound membership aims at the anchor pad it binds to,
+            // which needs the anchor already placed. Until then, or when
+            // the anchor carries no pad geometry, the member falls back to
+            // the motif's centre offset.
+            child_pad_bound_placement(
+                child,
+                &placed,
+                &placed_rotations,
+                &pad_offsets,
+                &courtyard_lookup,
+                board,
+            )
+            .map_or_else(
+                || {
+                    if let Some((_, anchor_point, _)) =
+                        placed.iter().find(|(pid, _, _)| pid == &child.anchor)
+                    {
+                        Point::new(
+                            anchor_point.x_nm + child.fallback_offset_nm.x_nm,
+                            anchor_point.y_nm + child.fallback_offset_nm.y_nm,
+                        )
+                    } else {
+                        fp_targets
+                            .get(&id)
+                            .map_or_else(|| Point::new(center_x, center_y), |t| t.point)
+                    }
+                },
+                |aim| aim.center,
+            )
         } else if let Some(target) = fp_targets.get(&id) {
             target.point
         } else if let Some(target) = region_hints.hints.get(&id) {
@@ -1228,7 +1268,7 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                                     .or_else(|| {
                                         child_module_map
                                             .get(&anchor.id)
-                                            .map(|(_, _, rotation)| *rotation)
+                                            .map(|child| child.fallback_rotation)
                                     })
                                     .or_else(|| {
                                         fp_targets.get(&anchor.id).map(|target| target.rotation)
@@ -1478,6 +1518,7 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                 pad_extra_nm,
             );
             placed.push((id, centre, courtyard));
+            placed_rotations.insert(id, rotation);
             order_idx += 1;
         } else {
             if order_idx == 0 || backtracks >= MAX_BACKTRACKS {
@@ -1508,10 +1549,12 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
         .iter()
         .map(|(id, anchor, _rect)| {
             let center = *anchor;
-            let rotation = if let Some(rot) = resolved_rotation_overrides.get(id) {
+            let rotation = if let Some(rot) = placed_rotations.get(id) {
                 *rot
-            } else if let Some((_, _, rot)) = child_module_map.get(id) {
+            } else if let Some(rot) = resolved_rotation_overrides.get(id) {
                 *rot
+            } else if let Some(child) = child_module_map.get(id) {
+                child.fallback_rotation
             } else if let Some(target) = fp_targets.get(id) {
                 target.rotation
             } else {
@@ -1528,6 +1571,9 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
     placements.sort_by_key(|p| p.id.0);
 
     if !passives.is_empty() {
+        // Pad aims are resolved inside the packer against live placements:
+        // a passive can anchor another passive, and that anchor is not placed
+        // until the packer reaches it.
         outline_packer::pack_passives_along_outline(
             board,
             &mut placements,
@@ -1535,12 +1581,27 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
             &courtyard_lookup,
             &courtyard_offset_lookup,
             &pad_offsets,
+            &child_module_map,
             usable,
         )?;
     }
 
-    // Stage 2 refinement: disabled because macro floorplan and pin-relative passive packing
-    // already establish human-quality semantic placement. Swapping distorts macro positions.
+    // Stage 2 refinement stays off, and the reason is now measured rather than
+    // assumed.
+    //
+    // Enabling it made total wirelength *worse* on every example: sensor_logger
+    // 645 mm -> 670 mm, env_logger 440 mm -> 451 mm. That is the cost function
+    // working as written — `total_cost` adds cluster cohesion at
+    // [`CLUSTER_WEIGHT`] per nanometre against HPWL's nanometre, so cohesion
+    // outweighs wirelength sixteen to one and a swap that pulls two capacitors
+    // together wins even when it lengthens every net they touch. Wirelength is
+    // the term that predicts routability, so trading it away is not a win.
+    //
+    // Cohesion no longer needs to be bought this way: bound members are now
+    // placed *at* their anchor's pad, ahead of anything that could take the
+    // slot, which drops mean member-to-anchor distance by 24-38% on the
+    // examples without costing wirelength. Re-enabling this pass needs a
+    // reweighted objective, not just a call.
     // if !board.nets.is_empty() {
     //     refine_swaps(board, &mut placements, &courtyard_lookup, usable);
     // }
@@ -2444,7 +2505,6 @@ fn cluster_cohesion(
 ///
 /// Returned pairs are deterministic: recognition order is IR component
 /// order, and member order within a cluster is net-endpoint order.
-#[allow(dead_code)]
 fn build_cluster_pairs(board: &Board) -> Vec<(ComponentId, ComponentId)> {
     let mut out = Vec::new();
     let mut claimed: std::collections::HashSet<ComponentId> = std::collections::HashSet::new();
@@ -2600,6 +2660,65 @@ pub(crate) fn build_pad_offset_lookup(board: &Board) -> PadOffsetLookup {
         map.insert(component.id, row);
     }
     PadOffsetLookup { map }
+}
+
+/// Where a module member sits relative to its anchor.
+///
+/// A member bound to an anchor pad is aimed at that pad; everything else
+/// keeps the motif's centre offset. Resolved during the placement walk,
+/// because aiming needs the anchor's placed centre *and* its rotation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChildPlacement {
+    pub member: ComponentId,
+    pub anchor: ComponentId,
+    pub fallback_offset_nm: Point,
+    pub fallback_rotation: Rotation,
+    pub binding: Option<synth_ir::MemberBinding>,
+    pub slot: u32,
+}
+
+/// Aim a module member at the anchor pad its binding names.
+///
+/// Returns `None` — meaning "use the fallback offset" — when the anchor is
+/// not placed yet, when the binding is absent (the orphan passive sweep
+/// binds by shared net, not by a recognized motif), or when the parts carry
+/// no pad geometry to aim with. A pad-bound member that cannot be aimed
+/// degrades to the previous behaviour rather than failing the board.
+pub(crate) fn child_pad_bound_placement(
+    child: &ChildPlacement,
+    placed: &[(ComponentId, Point, Rect)],
+    placed_rotations: &std::collections::HashMap<ComponentId, Rotation>,
+    pad_offsets: &PadOffsetLookup,
+    courtyard_lookup: &std::collections::HashMap<ComponentId, (f64, f64)>,
+    board: &Board,
+) -> Option<modules::PadBoundPlacement> {
+    let binding = child.binding?;
+    let (_, anchor_center, anchor_courtyard) =
+        placed.iter().find(|(id, _, _)| *id == child.anchor)?;
+    let anchor_rotation = placed_rotations.get(&child.anchor).copied()?;
+    let anchor_pad = pad_offsets.lookup(child.anchor, binding.anchor_pin.0 as usize)?;
+    let member_pad = pad_offsets.lookup(child.member, binding.member_pin.0 as usize)?;
+
+    let member_pin_count = board
+        .component(child.member)
+        .and_then(|c| c.part.as_ref())
+        .map_or(0, |part| part.pins.len());
+    let member_far_pad = modules::far_pad_offset(member_pad, member_pin_count)?;
+
+    let (member_w_mm, member_h_mm) = courtyard_lookup
+        .get(&child.member)
+        .copied()
+        .unwrap_or((2.0, 2.0));
+
+    modules::pad_bound_placement(
+        *anchor_center,
+        anchor_rotation,
+        *anchor_courtyard,
+        anchor_pad,
+        member_pad,
+        member_far_pad,
+        (mm_to_nm(member_w_mm) / 2, mm_to_nm(member_h_mm) / 2),
+    )
 }
 
 /// Net-graph degree per component: how many distinct nets

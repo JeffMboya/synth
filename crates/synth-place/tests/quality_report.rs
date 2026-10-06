@@ -23,6 +23,103 @@ fn load_board(path: &str) -> synth_ir::Board {
     lowered.board.expect("board")
 }
 
+/// Centre distance between each bound cluster member and its anchor, for the
+/// roles the board places beside their anchor.
+///
+/// This is the number pad-aware placement moves. `score_placement`'s own
+/// decap metric cannot be used for that: it pairs every capacitor on a
+/// merged rail with every IC on it, so it measures pairs no placement
+/// decision ever made — on a board with one 3V3 net feeding five parts, the
+/// "worst decoupling distance" is a cap against a part it does not decouple,
+/// and improving real bindings barely moves it.
+///
+/// Centre distance rather than pad distance, because that is what placement
+/// actually decides; on a large anchor the pad and the centre are far apart
+/// even when a member sits right against the pad.
+#[test]
+#[ignore = "diagnostic report, not a gate"]
+#[allow(clippy::cast_precision_loss)]
+fn bound_member_pad_distances() {
+    for path in [
+        "../../examples/sensor_logger.synth",
+        "../../examples/env_logger.synth",
+        "../../fixtures/designs/secure_tracker.synth",
+    ] {
+        if !Path::new(path).exists() {
+            continue;
+        }
+        let board = load_board(path);
+        let Ok(placement) = synth_place::place(&board) else {
+            continue;
+        };
+        let by_id: std::collections::HashMap<_, _> = placement
+            .components
+            .iter()
+            .map(|p| (p.id, p.center))
+            .collect();
+        let mut rows: Vec<(f64, String, String)> = Vec::new();
+        for cluster in synth_ir::recognize_clusters(&board) {
+            if !matches!(
+                cluster.kind,
+                synth_ir::ClusterKind::IcBlock
+                    | synth_ir::ClusterKind::Crystal
+                    | synth_ir::ClusterKind::LdoBlock
+                    | synth_ir::ClusterKind::UsbEsd
+            ) {
+                continue;
+            }
+            let Some(anchor_center) = by_id.get(&cluster.anchor) else {
+                continue;
+            };
+            let anchor_refdes = board
+                .component(cluster.anchor)
+                .map_or_else(|| "?".to_string(), |c| c.refdes.clone());
+            for member in &cluster.members {
+                if !matches!(
+                    member.role,
+                    synth_ir::MemberRole::DecouplingCap
+                        | synth_ir::MemberRole::RailCap
+                        | synth_ir::MemberRole::LoadCap
+                        | synth_ir::MemberRole::EsdDiode
+                ) {
+                    continue;
+                }
+                let Some(member_center) = by_id.get(&member.component) else {
+                    continue;
+                };
+                // Centre-to-centre in millimetres, which is what the placement
+                // decides; pad offsets would need the rotation the exporter
+                // uses, and the centre is the quantity the packer moves.
+                #[allow(clippy::cast_precision_loss)]
+                let dx =
+                    (anchor_center.x_nm - member_center.x_nm).unsigned_abs() as f64 / 1_000_000.0;
+                #[allow(clippy::cast_precision_loss)]
+                let dy =
+                    (anchor_center.y_nm - member_center.y_nm).unsigned_abs() as f64 / 1_000_000.0;
+                let member_refdes = board
+                    .component(member.component)
+                    .map_or_else(|| "?".to_string(), |c| c.refdes.clone());
+                rows.push((dx + dy, anchor_refdes.clone(), member_refdes));
+            }
+        }
+        rows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let total: f64 = rows.iter().map(|r| r.0).sum();
+        let max = rows.first().map_or(0.0, |r| r.0);
+        let mean = if rows.is_empty() {
+            0.0
+        } else {
+            total / rows.len() as f64
+        };
+        println!(
+            "--- {path}: bound members {} | mean {mean:.2} mm | max {max:.2} mm",
+            rows.len()
+        );
+        for (dist, anchor, member) in rows.iter().take(6) {
+            println!("      {dist:6.2} mm  {member} .. {anchor}");
+        }
+    }
+}
+
 #[test]
 #[ignore = "diagnostic report, not a gate"]
 fn placement_quality_report() {
