@@ -709,6 +709,21 @@ impl Parser {
                             "expected near component identifier",
                         ),
                     };
+                    // `near: U1.dvdd` names a pin as well as the component,
+                    // matching how `connect J1.dp` spells an endpoint. The two
+                    // halves are joined back into one string so the rest of the
+                    // pipeline carries `near` unchanged.
+                    let v = match v {
+                        Some(component) if matches!(self.peek_kind(), TokenKind::Dot) => {
+                            self.bump();
+                            self.expect_ident(
+                                "E-SYNTH-PARSE-028",
+                                "expected pin identifier after `.` in near",
+                            )
+                            .map(|pin| format!("{component}.{pin}"))
+                        }
+                        other => other,
+                    };
                     if let Some(v) = v {
                         attrs.push(PlacementHintAttr::Near(v, val_span));
                     }
@@ -1169,12 +1184,31 @@ impl Parser {
                         attrs.push(DiffPairAttr::Impedance(v));
                     }
                 }
+                // Length between the two halves beyond which the pair stops
+                // behaving as a pair. A declared tolerance is checkable; an
+                // undeclared one is a promise the router cannot keep track of.
+                TokenKind::KwMaxSkew => {
+                    self.bump();
+                    if let Some(v) = self.expect_value() {
+                        attrs.push(DiffPairAttr::MaxSkew(v));
+                    }
+                }
+                // How hard the router should try to keep the halves coupled
+                // and matched: `loose` tolerates whatever routes, `tight`
+                // asks for the coupled run.
+                TokenKind::KwCouple => {
+                    // `parse_placement_ident_attr` consumes the keyword
+                    // itself, like `side` and `priority` do.
+                    if let Some((v, sp)) = self.parse_placement_ident_attr("couple") {
+                        attrs.push(DiffPairAttr::Couple { mode: v, span: sp });
+                    }
+                }
                 _ => {
                     self.emit(
                         self.peek().span,
                         "E-SYNTH-PARSE-019",
                         "unexpected attribute inside diff_pair",
-                        "`impedance <value><unit>`",
+                        "`impedance <value><unit>`, `max_skew <value><unit>`, `couple <mode>`",
                         self.describe_current(),
                         None,
                     );
@@ -2411,6 +2445,8 @@ impl Parser {
             TokenKind::KwGroup => "`group`".to_string(),
             TokenKind::KwSheet => "`sheet`".to_string(),
             TokenKind::KwImpedance => "`impedance`".to_string(),
+            TokenKind::KwMaxSkew => "`max_skew`".to_string(),
+            TokenKind::KwCouple => "`couple`".to_string(),
             TokenKind::KwTraceWidth => "`trace_width`".to_string(),
             TokenKind::KwClearance => "`clearance`".to_string(),
             TokenKind::KwRadius => "`radius`".to_string(),

@@ -32,8 +32,8 @@ pub mod units;
 pub(crate) mod test_support;
 
 pub use board::{
-    Board, Component, ComponentId, DiffPair, Group, Keepout, Net, NetClass, NetEndpoint, NetId,
-    Note, PinId, PlacementConstraint, PlacementEdge, PlacementPriority, PlacementRegion,
+    Board, Component, ComponentId, Couple, DiffPair, Group, Keepout, Net, NetClass, NetEndpoint,
+    NetId, Note, PinId, PlacementConstraint, PlacementEdge, PlacementPriority, PlacementRegion,
     PlacementSide, SchematicOverflow, SchematicPaper, Stackup, StackupLayer, Variant,
 };
 pub use clusters::{

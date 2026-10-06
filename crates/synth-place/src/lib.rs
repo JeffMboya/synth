@@ -84,7 +84,7 @@ pub mod score;
 use serde::{Deserialize, Serialize};
 use synth_diagnostics::{Diagnostic, DiagnosticBuilder, Location, Severity, Span};
 use synth_geometry::{mm_to_nm, Layer, Point, Rect, Rotation};
-use synth_ir::{Board, ComponentId};
+use synth_ir::{Board, ComponentId, PinId};
 use thiserror::Error;
 
 /// Final position + orientation of a single component on the PCB.
@@ -1299,11 +1299,9 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                     && !dense_connector_edge_override
                 {
                     if let Some(anchor_refdes) = hint.near.as_deref() {
-                        if let Some(anchor) = board
-                            .components
-                            .iter()
-                            .find(|candidate| candidate.refdes.eq_ignore_ascii_case(anchor_refdes))
-                        {
+                        let (anchor_id, anchor_pin) = resolve_near_target(board, anchor_refdes)
+                            .unwrap_or((ComponentId(u32::MAX), None));
+                        if let Some(anchor) = board.component(anchor_id) {
                             if let Some((_, anchor_point, anchor_rect)) = placed
                                 .iter()
                                 .find(|(placed_id, _, _)| *placed_id == anchor.id)
@@ -1332,6 +1330,9 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                                     rotation: anchor_rotation,
                                     layer: Layer::Top,
                                 };
+                                // A `near` that names a pin aims at that pin's pad. Otherwise any
+                                // net the two share will do, and the first is
+                                // as good as any.
                                 'direct_net: for net in &board.nets {
                                     if !net.endpoints.iter().any(|ep| ep.component == id) {
                                         continue;
@@ -1341,6 +1342,9 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                                     else {
                                         continue;
                                     };
+                                    if anchor_pin.is_some_and(|pin| anchor_endpoint.pin != pin) {
+                                        continue;
+                                    }
                                     let Some(anchor_offset) = pad_offsets
                                         .lookup(anchor.id, anchor_endpoint.pin.0 as usize)
                                     else {
@@ -2694,6 +2698,40 @@ pub(crate) fn build_pad_offset_lookup(board: &Board) -> PadOffsetLookup {
     PadOffsetLookup { map }
 }
 
+/// Split a `near` hint into the component it anchors to and, when the hint
+/// names one, the pin.
+///
+/// `near: U1` anchors to the part; `near: U1.dvdd` anchors to a specific
+/// pad of it, which is what an author needs when a part's pins sit on
+/// different sides and only one of them is the right neighbour — a
+/// decoupling capacitor belongs beside the rail pin it decouples, not
+/// beside the part's centre of mass.
+pub(crate) fn resolve_near_target(
+    board: &Board,
+    near: &str,
+) -> Option<(ComponentId, Option<PinId>)> {
+    let (refdes, pin_name) = match near.split_once('.') {
+        Some((refdes, pin)) => (refdes, Some(pin)),
+        None => (near, None),
+    };
+    let component = board
+        .components
+        .iter()
+        .find(|candidate| candidate.refdes.eq_ignore_ascii_case(refdes))?;
+    let pin = match pin_name {
+        Some(name) => {
+            let part = component.part.as_ref()?;
+            let index = part
+                .pins
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(name))?;
+            Some(PinId(u32::try_from(index).ok()?))
+        }
+        None => None,
+    };
+    Some((component.id, pin))
+}
+
 /// Net-graph degree per component: how many distinct nets
 /// include at least one pin on that component. Used as the
 /// placement-ordering heuristic.
@@ -2983,7 +3021,13 @@ pub fn resolve_hint_target(
     }
 
     if let Some(anchor_refdes) = &hint.near {
-        let anchor_lower = anchor_refdes.to_lowercase();
+        // `near` may name a pin (`U1.dvdd`); the halo and the side offset
+        // are relative to the part either way, so only the refdes is
+        // needed here. The pin is honoured by the pad-local target.
+        let refdes = anchor_refdes
+            .split_once('.')
+            .map_or(anchor_refdes.as_str(), |(refdes, _)| refdes);
+        let anchor_lower = refdes.to_lowercase();
         let anchor_rect = placed_refdes
             .iter()
             .find(|(k, _)| k.to_lowercase() == anchor_lower)
@@ -4607,6 +4651,100 @@ mod tests {
                 action.refdes
             );
         }
+    }
+
+    #[test]
+    fn a_diff_pair_records_its_skew_tolerance_and_coupling() {
+        // A declared tolerance is the only way a design can say whether a
+        // reported skew is acceptable, and `couple` is the author's statement
+        // about how hard the router should try. Both must survive lowering.
+        let source = r#"
+        board "pair_spec" {
+          layers 2
+          component J1: connector "usb_c_receptacle"
+          component U1: mcu "rp2350"
+          connect J1.dp -> U1.usb_dp
+          connect J1.dn -> U1.usb_dn
+          connect J1.gnd -> U1.gnd
+
+          diff_pair J1_dp J1_dn {
+            impedance 90ohm
+            max_skew 0.15mm
+            couple tight
+          }
+        }
+        "#;
+        let file = "pair_spec.synth".to_string();
+        let parse = synth_parser::parse(source, file.clone());
+        let ast = parse.ast.as_ref().expect("parses");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        let lowered = synth_ir::lower(ast, &registry, &file);
+        let board = lowered.board.expect("lowers");
+
+        let pair = board.diff_pairs.first().expect("a pair is declared");
+        assert_eq!(
+            pair.max_skew.map(synth_ir::Length::to_mm),
+            Some(0.15),
+            "the declared skew tolerance reaches the IR"
+        );
+        assert_eq!(pair.couple, Some(synth_ir::Couple::Tight));
+    }
+
+    #[test]
+    fn a_pin_qualified_near_hint_steers_placement_to_that_pin() {
+        // `near: U1.dvdd` must parse as a component *and* a pin, and the
+        // pad-local target must aim at that pin rather than at whichever
+        // net the two parts happened to share first.
+        let source = r#"
+        board "pin_near" {
+          layers 2
+          component U1: mcu "rp2350"
+          component C1: capacitor "c_generic_0805" value "100n" {
+            placement_hint { near: U1.dvdd priority: hard }
+          }
+          connect U1.dvdd -> C1.p1
+          connect U1.gnd -> C1.p2
+        }
+        "#;
+        let file = "pin_near.synth".to_string();
+        let parse = synth_parser::parse(source, file.clone());
+        let ast = parse.ast.as_ref().expect("parses");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        let lowered = synth_ir::lower(ast, &registry, &file);
+        let board = lowered.board.expect("lowers");
+
+        // The hint survives lowering with the pin attached.
+        let by_refdes = |r: &str| {
+            board
+                .components
+                .iter()
+                .find(|c| c.refdes == r)
+                .expect("component")
+        };
+        let c1 = by_refdes("C1");
+        let near = c1
+            .placement_hint
+            .as_ref()
+            .and_then(|hint| hint.near.clone())
+            .expect("near hint");
+        assert_eq!(near, "U1.dvdd");
+
+        // And it resolves to U1's dvdd pin, not to some other pin.
+        let (anchor, pin) = resolve_near_target(&board, &near).expect("resolves");
+        assert_eq!(anchor, by_refdes("U1").id);
+        let pin_name = board
+            .pin(anchor, pin.expect("a pin"))
+            .expect("named pin")
+            .name
+            .clone();
+        assert_eq!(pin_name, "dvdd");
+
+        // Placement must still succeed with the pin-qualified hint.
+        place(&board).expect("place with a pin-qualified near hint");
     }
 
     #[test]

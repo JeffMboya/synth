@@ -341,6 +341,8 @@ mod tests {
             positive_net: None,
             negative_net: None,
             impedance: None,
+            max_skew: None,
+            couple: None,
             source_span: Span::new(0, 0),
         }
     }

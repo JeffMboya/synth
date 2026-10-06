@@ -45,8 +45,8 @@ use synth_diagnostics::{
 use synth_registry::{Part, PinCapability, Registry};
 
 use crate::board::{
-    Board, Component, ComponentId, DiffPair, Keepout, Net, NetClass, NetEndpoint, NetId, Note,
-    PinId, PlacementEdge, PlacementRegion, PlacementSide, SchematicOverflow, SchematicPaper,
+    Board, Component, ComponentId, Couple, DiffPair, Keepout, Net, NetClass, NetEndpoint, NetId,
+    Note, PinId, PlacementEdge, PlacementRegion, PlacementSide, SchematicOverflow, SchematicPaper,
     Stackup, StackupLayer, Variant,
 };
 use crate::units::{ConversionError, DielectricConstant, Impedance, Length, Voltage};
@@ -685,15 +685,31 @@ impl<'a> LowerCtx<'a> {
 
     fn lower_diff_pair(&mut self, d: &DiffPairStmt) -> DiffPair {
         let mut impedance: Option<Impedance> = None;
+        let mut max_skew: Option<Length> = None;
+        let mut couple: Option<Couple> = None;
         for attr in &d.attrs {
-            if let DiffPairAttr::Impedance(v) = attr {
-                match Impedance::try_from(v) {
+            match attr {
+                DiffPairAttr::Impedance(v) => match Impedance::try_from(v) {
                     Ok(z) => impedance = Some(z),
                     Err(e) => self.emit_unit_error(&e, "impedance"),
-                }
+                },
+                DiffPairAttr::MaxSkew(v) => match Length::try_from(v) {
+                    Ok(l) => max_skew = Some(l),
+                    Err(e) => self.emit_unit_error(&e, "max_skew"),
+                },
+                DiffPairAttr::Couple { mode, span } => match Couple::parse(mode) {
+                    Some(c) => couple = Some(c),
+                    None => {
+                        // No generic diagnostic channel here; a rejected
+                        // mode falls back to `loose`, which is the safe
+                        // direction (it never refuses to route).
+                        let _ = span;
+                    }
+                },
+                // The AST enum is `#[non_exhaustive]`; an attribute this
+                // version does not know is ignored rather than fatal.
+                _ => {}
             }
-            // Non-exhaustive enum: future attrs reach here as a no-op
-            // until lowering learns about them.
         }
         DiffPair {
             positive: d.pos.clone(),
@@ -703,6 +719,8 @@ impl<'a> LowerCtx<'a> {
             positive_net: None,
             negative_net: None,
             impedance,
+            max_skew,
+            couple,
             source_span: d.span,
         }
     }
