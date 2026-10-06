@@ -519,6 +519,54 @@ impl Board {
         self.component(c)?.part.as_ref()?.pins.get(p.0 as usize)
     }
 
+    pub fn net_matches_name(&self, net: &Net, target: &str) -> bool {
+        if net.name == target {
+            return true;
+        }
+        net.endpoints.iter().any(|e| {
+            let (Some(comp), Some(pin)) =
+                (self.component(e.component), self.pin(e.component, e.pin))
+            else {
+                return false;
+            };
+            let refdes_pin = format!("{}_{}", comp.refdes.to_lowercase(), pin.name.to_lowercase());
+            let dot_refdes_pin = format!("{}.{}", comp.refdes, pin.name);
+            target.eq_ignore_ascii_case(&refdes_pin) || target.eq_ignore_ascii_case(&dot_refdes_pin)
+        })
+    }
+
+    pub fn diff_pair_legs<'a>(&'a self, dp: &'a DiffPair) -> [(&'a str, Option<&'a Net>); 2] {
+        let net_of = |resolved: Option<NetId>, name: &str| {
+            resolved
+                .and_then(|id| self.net(id))
+                .or_else(|| self.nets.iter().find(|n| self.net_matches_name(n, name)))
+        };
+        [
+            (dp.positive.as_str(), net_of(dp.positive_net, &dp.positive)),
+            (dp.negative.as_str(), net_of(dp.negative_net, &dp.negative)),
+        ]
+    }
+
+    pub fn single_ended_impedance_nets(&self) -> Vec<(&Net, &DiffPair, Impedance)> {
+        self.diff_pairs
+            .iter()
+            .filter_map(|dp| {
+                let [(_, Some(pos)), (_, Some(neg))] = self.diff_pair_legs(dp) else {
+                    return None;
+                };
+                (pos.id == neg.id).then_some((pos, dp, dp.impedance?))
+            })
+            .collect()
+    }
+
+    pub fn declared_trace_width(&self, net: &Net) -> Option<Length> {
+        let class = net.netclass.as_deref()?;
+        self.netclasses
+            .iter()
+            .find(|nc| nc.name == class)?
+            .trace_width
+    }
+
     /// A declared `group` by name, for header attributes (title,
     /// colour, pinned region).
     pub fn group(&self, name: &str) -> Option<&Group> {

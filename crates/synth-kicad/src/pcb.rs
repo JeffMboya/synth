@@ -656,16 +656,14 @@ fn fixed_6(micro: i64) -> String {
 /// verbatim — one `net_class` per declaration, carrying the nets
 /// joined to it via `class "PWR"` — so the width/clearance contract
 /// the designer wrote is what KiCad DRC enforces. Nets without a
-/// join fall back to the heuristic `Default` / `Power` / `RF_50`
-/// buckets; a heuristic bucket whose name matches a declared class
-/// merges into it instead of emitting a duplicate.
+/// join fall back to the heuristic `Default` / `Power` buckets; a
+/// heuristic bucket whose name matches a declared class merges into
+/// it instead of emitting a duplicate.
 ///
 /// Power nets are identified by topological inference via [`synth_ir::infer_power_domains`]
 /// — this correctly handles nets whose names are opaque (`net_0`, `net_1`, …) but whose
 /// connected pins carry `PowerOutput` / `GroundReference` electrical types.
 ///
-/// RF nets fall back to name-based detection (RF nets carry semantic names when declared
-/// via `diff_pair` or registry annotation, e.g. `ant`, `rf`, `bal_`).
 /// One declared `netclass` with its KiCad rules and joined nets,
 /// in source declaration order.
 struct DeclaredGroup {
@@ -673,6 +671,32 @@ struct DeclaredGroup {
     trace_width_mm: f64,
     clearance_mm: f64,
     nets: Vec<String>,
+}
+
+fn derived_controlled_widths(board: &Board) -> Vec<(synth_ir::NetId, synth_ir::Impedance, f64)> {
+    let Some(outer) = board
+        .stackup
+        .as_ref()
+        .and_then(synth_geometry::outer_microstrip_params)
+    else {
+        return Vec::new();
+    };
+    let min_width_mm =
+        synth_ir::Length(synth_drc::ManufacturerProfile::jlc_standard().min_trace_width_nm).to_mm();
+    board
+        .single_ended_impedance_nets()
+        .into_iter()
+        .filter(|(net, ..)| board.declared_trace_width(net).is_none())
+        .filter_map(|(net, _, impedance)| {
+            let width_mm = synth_geometry::derive_microstrip_width_mm(
+                impedance.to_ohms(),
+                &outer,
+                min_width_mm,
+            )
+            .ok()?;
+            Some((net.id, impedance, width_mm))
+        })
+        .collect()
 }
 
 fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
@@ -685,15 +709,6 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
             .as_ref()
             .is_some_and(|part| part.id.0.to_ascii_lowercase().contains("rp2350"))
     });
-
-    let is_rf = |name: &str| {
-        let n = name.to_ascii_lowercase();
-        n.contains("main_ant")
-            || n.contains("rf")
-            || n.contains("ant")
-            || n.contains("bal_")
-            || n.contains("unbal")
-    };
 
     // Secondary name-based power classifier: fires when the topological domain map
     // cannot classify a net (no connected pins with ElectricalType information).
@@ -717,7 +732,8 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
 
     let mut default_nets = Vec::new();
     let mut power_nets = Vec::new();
-    let mut rf_nets = Vec::new();
+    let controlled = derived_controlled_widths(board);
+    let mut controlled_groups: Vec<(synth_ir::Impedance, f64, Vec<String>)> = Vec::new();
 
     // Declared classes in source order. A join naming an undeclared
     // class cannot arrive here through lowering (it is
@@ -741,6 +757,15 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
         }
         // pcb_net_id is 1-indexed; IR NetId is 0-indexed.
         let ir_net_idx = pcb_net_id.saturating_sub(1);
+        if let Some(&(_, impedance, width_mm)) =
+            controlled.iter().find(|(id, ..)| id.0 == ir_net_idx)
+        {
+            match controlled_groups.iter_mut().find(|g| g.0 == impedance) {
+                Some(group) => group.2.push(name.clone()),
+                None => controlled_groups.push((impedance, width_mm, vec![name.clone()])),
+            }
+            continue;
+        }
         // Explicit join first: the designer stated the class.
         if let Some(class) = board
             .net(synth_ir::NetId(ir_net_idx))
@@ -768,11 +793,7 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
                 true
             }
         };
-        if is_rf(name) {
-            if push_heuristic("RF_50", name) {
-                rf_nets.push(name.clone());
-            }
-        } else if is_power_net {
+        if is_power_net {
             if push_heuristic("Power", name) {
                 power_nets.push(name.clone());
             }
@@ -836,20 +857,22 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
         classes.push(Sexp::list("net_class", power_args));
     }
 
-    // RF Net Class (Controlled 50 ohm impedance). Same merge rule.
-    if !rf_nets.is_empty() && !declared.iter().any(|g| g.name == "RF_50") {
-        let mut rf_args = vec![
-            Sexp::str("RF_50"),
-            Sexp::str("Controlled 50 ohm RF"),
+    for (impedance, width_mm, nets) in controlled_groups {
+        let ohms = impedance.to_ohms();
+        let mut args = vec![
+            Sexp::str(format!("Z0_{ohms}OHM")),
+            Sexp::str(format!(
+                "Single-ended {ohms} ohm outer-layer microstrip, width estimated from the stackup"
+            )),
             Sexp::list("clearance", vec![num(0.2)]),
-            Sexp::list("trace_width", vec![num(0.33)]),
+            Sexp::list("trace_width", vec![num(width_mm)]),
             Sexp::list("via_dia", vec![num(0.60)]),
             Sexp::list("via_drill", vec![num(0.30)]),
         ];
-        for name in rf_nets {
-            rf_args.push(Sexp::list("add_net", vec![Sexp::str(&name)]));
+        for name in nets {
+            args.push(Sexp::list("add_net", vec![Sexp::str(&name)]));
         }
-        classes.push(Sexp::list("net_class", rf_args));
+        classes.push(Sexp::list("net_class", args));
     }
 
     classes
@@ -1973,7 +1996,7 @@ mod tests {
         assert!(nc_str.contains("\"Default net class\""));
         assert!(nc_str.contains("\"Power\""));
         assert!(nc_str.contains("\"Power delivery network\""));
-        assert!(nc_str.contains("\"RF_50\""));
+        assert!(!nc_str.contains("RF_50"));
         assert!(nc_str.contains("(add_net \"SIG1\")"));
         assert!(nc_str.contains("(add_net \"VCC\")"));
         assert!(nc_str.contains("(add_net \"GND\")"));

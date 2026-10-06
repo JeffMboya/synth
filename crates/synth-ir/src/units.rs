@@ -323,6 +323,13 @@ impl TryFrom<&ValueWithUnit> for Resistance {
     }
 }
 
+impl Impedance {
+    #[allow(clippy::cast_precision_loss)]
+    pub fn to_ohms(self) -> f64 {
+        self.0 as f64 / MOHM_PER_OHM as f64
+    }
+}
+
 impl TryFrom<&ValueWithUnit> for Impedance {
     type Error = ConversionError;
     fn try_from(v: &ValueWithUnit) -> Result<Self, Self::Error> {

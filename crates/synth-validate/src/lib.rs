@@ -57,6 +57,7 @@ pub use config::{ErcConfig, PinConflictTable};
 pub mod value;
 pub use value::{parse_capacitance, parse_resistance, parse_voltage};
 
+mod impedance;
 pub mod patch_mlp;
 mod stackup;
 pub use patch_mlp::PatchMlp;
@@ -143,6 +144,9 @@ fn all_rules(config: &ErcConfig) -> Vec<Box<dyn ErcRule>> {
         Box::new(DiffPairNetReuseRule),
         Box::new(DiffPairOnPowerNetRule),
         Box::new(RfFeedImpedanceRule),
+        Box::new(impedance::DeclaredWidthRule),
+        Box::new(impedance::UnreachableTargetRule),
+        Box::new(impedance::InnerLayerNotVerifiedRule),
         Box::new(ResidualEnergyAnomalyRule),
         Box::new(CrystalLoadCapBalanceRule),
         Box::new(GraphAnomalyDetectorRule::new()),
@@ -2402,7 +2406,7 @@ impl ErcRule for DiffPairBothLegsConnectedRule {
     fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         for dp in &board.diff_pairs {
-            let [(_, pos), (_, neg)] = diff_pair_legs(board, dp);
+            let [(_, pos), (_, neg)] = board.diff_pair_legs(dp);
             let pos_len = pos.map_or(0, |n| n.endpoints.len());
             let neg_len = neg.map_or(0, |n| n.endpoints.len());
 
@@ -2439,24 +2443,6 @@ impl ErcRule for DiffPairBothLegsConnectedRule {
     }
 }
 
-/// The two legs of a `diff_pair`, each with the net it refers to: the net
-/// resolved at lowering (named nets) when there is one, else the net matching
-/// the leg name or `refdes_pin`.
-fn diff_pair_legs<'a>(
-    board: &'a Board,
-    dp: &'a synth_ir::DiffPair,
-) -> [(&'a str, Option<&'a synth_ir::Net>); 2] {
-    let net_of = |resolved: Option<NetId>, name: &str| {
-        resolved
-            .and_then(|id| board.net(id))
-            .or_else(|| board.nets.iter().find(|n| net_matches_name(board, n, name)))
-    };
-    [
-        (dp.positive.as_str(), net_of(dp.positive_net, &dp.positive)),
-        (dp.negative.as_str(), net_of(dp.negative_net, &dp.negative)),
-    ]
-}
-
 // -----------------------------------------------------------------------------
 // E-SYNTH-DIFF-004 — a net is a leg of more than one differential pair
 // -----------------------------------------------------------------------------
@@ -2478,7 +2464,7 @@ impl ErcRule for DiffPairNetReuseRule {
         let mut claimed: Vec<(NetId, usize, &str)> = Vec::new();
         for (idx, dp) in board.diff_pairs.iter().enumerate() {
             let mut reused = Vec::new();
-            for (leg, net) in diff_pair_legs(board, dp) {
+            for (leg, net) in board.diff_pair_legs(dp) {
                 let Some(net) = net else { continue };
                 // A pair may name one net twice (an impedance target on a
                 // single-ended RF net, see RF-003); only reuse across pairs
@@ -2531,7 +2517,7 @@ impl ErcRule for DiffPairOnPowerNetRule {
         for dp in &board.diff_pairs {
             // One diagnostic per leg, unlike DIFF-004: each leg is a different
             // net with its own power pin to name.
-            for (leg, net) in diff_pair_legs(board, dp) {
+            for (leg, net) in board.diff_pair_legs(dp) {
                 let Some(net) = net else { continue };
                 let power_pin = net.endpoints.iter().find_map(|e| {
                     let pin = board.pin(e.component, e.pin)?;
@@ -2654,23 +2640,6 @@ impl ErcRule for RegulatorFeedbackOnSwitchNodeRule {
     }
 }
 
-fn net_matches_name(board: &Board, net: &synth_ir::Net, target: &str) -> bool {
-    if net.name == target {
-        return true;
-    }
-    net.endpoints.iter().any(|e| {
-        let Some(comp) = board.component(e.component) else {
-            return false;
-        };
-        let Some(pin) = board.pin(e.component, e.pin) else {
-            return false;
-        };
-        let refdes_pin = format!("{}_{}", comp.refdes.to_lowercase(), pin.name.to_lowercase());
-        let dot_refdes_pin = format!("{}.{}", comp.refdes, pin.name);
-        target.eq_ignore_ascii_case(&refdes_pin) || target.eq_ignore_ascii_case(&dot_refdes_pin)
-    })
-}
-
 // -----------------------------------------------------------------------------
 // E-SYNTH-RF-003 — RF feed net missing impedance constraint
 // -----------------------------------------------------------------------------
@@ -2705,8 +2674,8 @@ impl ErcRule for RfFeedImpedanceRule {
                     continue;
                 };
                 let has_impedance = board.diff_pairs.iter().any(|dp| {
-                    (net_matches_name(board, net, &dp.positive)
-                        || net_matches_name(board, net, &dp.negative))
+                    (board.net_matches_name(net, &dp.positive)
+                        || board.net_matches_name(net, &dp.negative))
                         && dp.impedance.is_some()
                 });
                 if !has_impedance {

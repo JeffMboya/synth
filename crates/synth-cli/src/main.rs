@@ -1011,8 +1011,9 @@ const UNSUPPORTED: &[CapabilityLimit] = &[
     (
         "inner_layer_impedance",
         None,
-        "No stackup is modelled, so stripline impedance is not computed for any design net; \
-         synth_evaluate_thermal_si calculates it only from caller-supplied dimensions.",
+        "Only outer-layer microstrip is derived from the stackup, so stripline impedance is not \
+         computed for any design net; synth_evaluate_thermal_si calculates it only from \
+         caller-supplied dimensions.",
     ),
     (
         "split_ground_planes",
@@ -1036,15 +1037,17 @@ const UNVERIFIED: &[CapabilityLimit] = &[
     (
         "diff_pair_impedance",
         Some("diff_pair.impedance"),
-        "The declared value is parsed and its presence is required, but no routing, export or \
-         stackup stage uses or checks it.",
+        "Used only when both legs are one net on a declared stackup: an outer-layer microstrip \
+         width is derived and declared widths are checked, as an estimate. For a true \
+         differential pair the value is parsed and its presence is required, but no stage uses \
+         or checks it.",
     ),
     (
         "rf_net_trace_width",
         None,
-        "RF nets get a fixed trace width chosen by net name unless a net class named RF_50 is \
-         declared; it is not derived from a stackup or a declared impedance, so the 50 ohm \
-         target is not verified.",
+        "The native router still routes RF-named nets at a fixed 0.33 mm chosen by net name, and \
+         ignores derived or declared widths; the width in the exported net class reaches only a \
+         router that reads net classes.",
     ),
 ];
 
@@ -1140,7 +1143,7 @@ fn capability_descriptor() -> serde_json::Value {
                 "order": "top to bottom; copper first, alternating, copper last",
                 "export": "written to the .kicad_pcb setup/stackup section; board thickness becomes the stack total",
                 "default": "none: without a block the board exports the exporter's default thickness and no stackup section",
-                "notes": "No fabricator presets are shipped; every value is declared by the design."
+                "notes": "No fabricator presets are shipped; every value is declared by the design. A single-ended diff_pair impedance derives its net class trace width from the first copper and insulator layers."
             },
             "routing_constraints": {
                 "netclass": ["trace_width", "clearance", "color"],
