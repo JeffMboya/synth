@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn keywords_recognized() {
         let ks = kinds(
-            "board import layers manufacturer revision company schematic stackup legends component connect net power notes dnp module interface bus use bind prefix param as class diff_pair netclass keepout group sheet impedance trace_width clearance radius value tolerance voltage power_rating dielectric variant description",
+            "board import layers manufacturer revision company schematic stackup legends component connect net power notes dnp module interface bus use bind prefix param as class diff_pair netclass keepout group sheet impedance max_skew couple trace_width clearance radius value tolerance voltage power_rating dielectric variant description",
         );
         assert_eq!(
             ks,
