@@ -29,7 +29,8 @@ pub struct NativeDrcOutcome {
     pub evidence: NativeCheckEvidence,
 }
 
-/// Counts from a KiCad DRC report; only `errors` become `violations`.
+/// Counts from a KiCad DRC report; only `errors` become `violations`. The `kicad_drc`
+/// evidence counts errors plus unconnected pads (`blocking_count`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DrcCounts {
     pub errors: usize,
@@ -40,6 +41,20 @@ pub struct DrcCounts {
 impl DrcCounts {
     pub fn is_clean(&self) -> bool {
         self.errors == 0 && self.unconnected == 0 && self.warnings == 0
+    }
+
+    pub fn blocking_count(&self) -> usize {
+        self.errors + self.unconnected
+    }
+}
+
+impl std::fmt::Display for DrcCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "errors {}, unconnected pads {}, warnings {}",
+            self.errors, self.unconnected, self.warnings
+        )
     }
 }
 
@@ -691,9 +706,13 @@ pub fn run_kicad_cli_drc(kicad_pcb_path: &std::path::Path) -> NativeDrcOutcome {
         }
     };
 
-    let evidence = NativeCheckEvidence::concluded(DRC_STAGE, &tool, run.command, violations.len())
+    let blocking = counts.blocking_count();
+    let mut evidence = NativeCheckEvidence::concluded(DRC_STAGE, &tool, run.command, blocking)
         .with_version(version)
         .with_stderr(&run.stderr);
+    if blocking > 0 {
+        evidence.detail = Some(counts.to_string());
+    }
     NativeDrcOutcome {
         violations,
         counts,
@@ -1049,6 +1068,13 @@ mod tests {
             assert_eq!(parsed.violations.len(), 1);
             assert_eq!(parsed.counts, counts(1, 1, 1));
             assert!(!parsed.counts.is_clean());
+        }
+
+        #[test]
+        fn errors_and_unconnected_pads_block_but_warnings_do_not() {
+            assert_eq!(counts(0, 0, 3).blocking_count(), 0);
+            assert_eq!(counts(1, 0, 0).blocking_count(), 1);
+            assert_eq!(counts(0, 3, 0).blocking_count(), 3);
         }
 
         #[test]

@@ -60,8 +60,15 @@ erc` validates the exported artifact after. Both must be clean
    but have no copper path yet (an incomplete route, which still
    exports so it can be finished by hand); _warnings_ are advisory
    findings that are not rule violations. The line ends with
-   `Zero-DRC gate clean` only when all three are zero. The counts are
-   reporting only: pass/fail and the exit status still follow the errors.
+   `Zero-DRC gate clean` only when all three are zero. Errors and
+   unconnected pads make the `kicad_drc` stage `fail`, with the counts in
+   its `detail`; its `violations` count is errors plus unconnected pads,
+   while `NativeDrcOutcome.violations` stays errors only. Warnings alone
+   do not fail it. In release mode (`export-kicad
+   --gerbers`/`--drill`/`--step`, or `synth check --fab`) a failed
+   `kicad_drc` stage exits non-zero and `--force` does not override it. A
+   plain export still writes the board and exits 0 on unconnected pads;
+   only errors fail it, as before.
 
 ---
 

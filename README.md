@@ -38,7 +38,9 @@ could not run is neither a pass nor a failure:
 | `unknown` | No evidence. Missing or unsupported `kicad-cli`, a missing symbol/footprint library, a crash, a timeout, or an unreadable report. |
 
 `unknown` blocks exactly as `fail` does, and `--force` does not override it —
-it overrides Synth's own findings, not the absence of verification. Each
+it overrides Synth's own findings, not the absence of verification. Likewise,
+unconnected pads and KiCad DRC errors block a release export, and `--force`
+does not override that. Each
 `unknown` reports the tool, its version, the exact command, its stderr, and a
 machine-stable reason (`not_installed`, `timeout`, `command_failed`,
 `report_malformed`, `unsupported_version`, ...). `synth check --fab` embeds
