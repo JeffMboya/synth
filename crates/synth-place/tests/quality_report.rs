@@ -172,6 +172,33 @@ fn diff_pair_geometry() {
     }
 }
 
+/// Placement wall time per design, the budget Phase 4 is measured against.
+#[test]
+#[ignore = "diagnostic report, not a gate"]
+fn placement_timing() {
+    for path in [
+        "../../examples/sensor_logger.synth",
+        "../../examples/env_logger.synth",
+        "../../fixtures/designs/secure_tracker.synth",
+        "../../fixtures/designs/feather_m4_express.synth",
+    ] {
+        if !Path::new(path).exists() {
+            continue;
+        }
+        let board = load_board(path);
+        let runs = 5_u32;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            let _ = synth_place::place(&board);
+        }
+        let each = start.elapsed() / runs;
+        println!(
+            "--- {path}: {} components, {each:?} per placement",
+            board.components.len()
+        );
+    }
+}
+
 #[test]
 #[ignore = "diagnostic report, not a gate"]
 fn placement_quality_report() {
