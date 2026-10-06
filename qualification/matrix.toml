@@ -104,3 +104,36 @@ status = "unsupported"
 expect = "fail"
 expect_source_codes = ["E-SYNTH-CONNECT-001", "E-SYNTH-NAME-001", "E-SYNTH-VALUE-001"]
 rationale = "Novel Class-A negative: floating required pins, a duplicated reference and an unvalued passive. #39 negative case."
+
+[[board]]
+id = "b1_buck_regulator_module"
+path = "qualification/boards/class-b/b1_buck_regulator_module.synth"
+class = "B"
+status = "experimental"
+expect = "pass"
+rationale = "Novel Class-B board: 12V-to-3V3 buck with pi filtering both sides, output-sensed feedback and a discrete power-good. #38 case 1."
+
+[[board]]
+id = "b2_precision_analog_frontend"
+path = "qualification/boards/class-b/b2_precision_analog_frontend.synth"
+class = "B"
+status = "experimental"
+expect = "pass"
+rationale = "Novel Class-B board: differential gain stage, buffered mid-rail bias, analog keepout and netclass, SPI bus to the MCU. #38 case 2."
+
+[[board]]
+id = "b3_usb_peripheral"
+path = "qualification/boards/class-b/b3_usb_peripheral.synth"
+class = "B"
+status = "experimental"
+expect = "pass"
+rationale = "Novel Class-B board: USB-C with CC pull-downs, ESD clamps at the connector, a declared 90 ohm pair into native USB pins. #38 case 3."
+
+[[board]]
+id = "b4_negative_unsafe_mixed_signal"
+path = "qualification/boards/class-b/b4_negative_unsafe_mixed_signal.synth"
+class = "B"
+status = "unsupported"
+expect = "fail"
+expect_source_codes = ["E-SYNTH-STACKUP-001", "E-SYNTH-USB-001", "E-SYNTH-POWER-011"]
+rationale = "Novel Class-B negative: stackup contradicting the layer count, USB pair on plain GPIO, and buck feedback taken from the switch node. #38 negative case."
