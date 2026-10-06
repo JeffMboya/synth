@@ -59,7 +59,6 @@ pub mod kicad_zip;
 pub mod maxrects;
 pub mod netclass;
 pub mod ops;
-mod patterns;
 pub mod placer;
 pub mod qualify_facts;
 pub mod route;
@@ -1923,27 +1922,17 @@ pub struct Cluster {
     pub members: Vec<ClusterMember>,
 }
 
-/// The motif a [`Cluster`] was recognized as — one variant per
-/// `patterns::Pattern` impl.
+/// The motif a [`Cluster`] was recognized as.
 ///
-/// Recognition already knows which motif matched; without this the
-/// answer was discarded the moment `build_clusters` merged the passes'
-/// output. Keeping it lets every consumer name a sub-circuit the way
-/// an engineer would ("U1 LDO block") instead of by anchor refdes
-/// alone: sheet and group titles, preview tooltips, and diagnostics
-/// that today can only say which *net* is at fault.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClusterKind {
-    LedIndicator,
-    UsbEsd,
-    LdoBlock,
-    I2cBus,
-    Crystal,
-    IcBlock,
-    Divider,
-    /// A component no motif claimed — its own one-part cluster.
-    Singleton,
-}
+/// Re-exported from [`synth_ir::clusters`] so schematic and PCB
+/// placement name the same motif with the same type. Recognition already
+/// knows which motif matched; without this the answer was discarded the
+/// moment `build_clusters` merged the passes' output. Keeping it lets
+/// every consumer name a sub-circuit the way an engineer would ("U1 LDO
+/// block") instead of by anchor refdes alone: sheet and group titles,
+/// preview tooltips, and diagnostics that today can only say which *net*
+/// is at fault.
+pub use synth_ir::clusters::ClusterKind;
 
 impl Cluster {
     /// Name for this sub-circuit the way an engineer would write it
@@ -1956,26 +1945,6 @@ impl Cluster {
         match self.kind.display_name() {
             Some(motif) => format!("{refdes} {motif}"),
             None => refdes,
-        }
-    }
-}
-
-impl ClusterKind {
-    /// Human-readable motif name, for titles and diagnostics.
-    ///
-    /// `Singleton` has no motif name of its own — a lone part is
-    /// named after the part, not after a pattern — so callers that
-    /// need a label for one should fall back to its refdes.
-    pub fn display_name(self) -> Option<&'static str> {
-        match self {
-            Self::LedIndicator => Some("LED indicator"),
-            Self::UsbEsd => Some("USB ESD protection"),
-            Self::LdoBlock => Some("LDO block"),
-            Self::I2cBus => Some("I2C bus"),
-            Self::Crystal => Some("crystal"),
-            Self::IcBlock => Some("IC block"),
-            Self::Divider => Some("divider"),
-            Self::Singleton => None,
         }
     }
 }
@@ -2011,105 +1980,104 @@ pub enum MemberSide {
 /// Find every cluster in the board — Stage A motif recognition
 /// (§7.8.3 / §7.8.4).
 ///
-/// Multiple recognition passes, ordered by specificity. Each pass
-/// walks `board.components` in declaration order; the first matching
-/// component claims its members so passes later in the list never
-/// steal already-claimed components.
+/// Membership comes from [`synth_ir::recognize_clusters`], the single
+/// recognition pass the whole compiler shares: the PCB placer reads the
+/// same clusters, so a motif drawn together on the sheet is the same
+/// motif the placer binds together on the board. This function only
+/// *presents* those clusters — it decides which side of an anchor each
+/// member is drawn on, and it drops the one motif the schematic has no
+/// use for.
 ///
-/// Order matters (§7.5.4's greedy matcher, priority order):
-///
-/// 1. **LED indicators** — anchor on the LED, claim the
-///    current-limit resistor on its anode net.
-/// 2. **USB+ESD** — anchor on a connector with usb_dp/usb_dn caps,
-///    claim ESD diodes on those nets.
-/// 3. **LDO block** — anchor on a `regulator`; claim input caps on
-///    `vin` and output caps on `vout`.
-/// 4. **I2C bus** — anchor on a part with `i2c_sda` + `i2c_scl` pins;
-///    claim the SDA/SCL pull-up resistors (tied to a common rail).
-/// 5. **Crystal** — anchor on a `crystal`; claim its two load caps.
-/// 6. **IC + decoupling + reset network** — anchor on a component
-///    that has `required_decoupling` and/or a `reset` capability
-///    pin. Claim caps on the decoupling nets (capped per
-///    `required_decoupling.count`) plus any resistor/cap/switch
-///    on the reset pin's net.
-/// 7. **Divider** — anchor on the rail-side resistor of a
-///    two-resistor rail→mid→gnd divider; claim the mid-to-gnd
-///    resistor.
-/// 8. **Singletons** — everything else.
+/// Presentation order is the recognition order: LED indicators, USB+ESD,
+/// LDO blocks, crystals, IC blocks, I²C buses, dividers, adopted rail
+/// capacitors, then singletons in declaration order.
 pub fn build_clusters(board: &Board) -> Vec<Cluster> {
-    use patterns::Pattern as _;
-    let mut claimed: HashSet<ComponentId> = HashSet::new();
-    let mut clusters = Vec::new();
-    clusters.extend(patterns::led_indicator::LedIndicator::recognize(
-        board,
-        &mut claimed,
-    ));
-    clusters.extend(patterns::usb_esd::UsbEsd::recognize(board, &mut claimed));
-    clusters.extend(patterns::ldo_block::LdoBlock::recognize(
-        board,
-        &mut claimed,
-    ));
-    clusters.extend(patterns::crystal::Crystal::recognize(board, &mut claimed));
-    // IcBlock runs *before* I2cBus: an I2C host is usually a full IC
-    // that must claim its own decoupling caps and reset network. If
-    // I2cBus ran first it would `claim` the MCU and starve IcBlock of
-    // the anchor, dropping the MCU's decoupling/reset from the sheet.
-    clusters.extend(patterns::ic_block::IcBlock::recognize(board, &mut claimed));
-    clusters.extend(patterns::i2c_bus::I2cBus::recognize(board, &mut claimed));
-    clusters.extend(patterns::divider::Divider::recognize(board, &mut claimed));
-    // Second sweep before `Singleton` mops up (schematic-quality plan
-    // Phase A2): a decoupling cap on a *shared* rail is reachable
-    // from no single anchor's `required_decoupling`, so it used to
-    // fall through to `Singleton` and get placed by power-flow layer
-    // — 150+ mm from the part it decouples. Running here, after every
-    // structural pass, lets it attach to whichever cluster actually
-    // draws from its rail, `LdoBlock` and `Crystal` included.
-    patterns::ic_block::attach_orphan_rail_caps(board, &mut claimed, &mut clusters);
-    evict_cross_group_members(board, &mut clusters);
-    clusters.extend(patterns::singleton::Singleton::recognize(
-        board,
-        &mut claimed,
-    ));
-    clusters
+    let recognized = synth_ir::recognize_clusters(board);
+    let mut out = Vec::new();
+    let mut drawn: std::collections::HashSet<ComponentId> = std::collections::HashSet::new();
+    for cluster in &recognized {
+        // An RF matching network is a board-placement motif with no
+        // meaningful schematic grouping, so the sheet leaves its parts
+        // to the singleton sweep at the end.
+        if cluster.kind == ClusterKind::RfMatching {
+            continue;
+        }
+        out.push(draw_cluster(board, cluster));
+        drawn.insert(cluster.anchor);
+        drawn.extend(cluster.members.iter().map(|m| m.component));
+    }
+    for component in &board.components {
+        if drawn.insert(component.id) {
+            out.push(Cluster {
+                kind: ClusterKind::Singleton,
+                anchor: component.id,
+                anchor_vertical: false,
+                members: Vec::new(),
+            });
+        }
+    }
+    out
 }
 
-/// A declared `group` bounds cluster membership: drop any member whose
-/// group differs from its anchor's, leaving it to `Singleton`.
+/// Present one recognized cluster on the sheet: every member gets a
+/// [`MemberSide`] from the role recognition gave it, and nothing here
+/// decides membership.
 ///
-/// The pattern passes match on topology alone, so an I²C pull-up
-/// declared inside the sensor's group can be claimed by the MCU's
-/// `IcBlock` two groups away. Placement then puts it in the *anchor's*
-/// region while `group_bounds` still measures it as part of its own —
-/// stretching that group's box across the whole sheet, overlapping
-/// every other box (`E-SYNTH-SCHEM-013`) and pushing the page from A4
-/// to A2. Ungrouped boards are unaffected: every component's group is
-/// `None`, so nothing is ever evicted.
-fn evict_cross_group_members(board: &Board, clusters: &mut Vec<Cluster>) {
-    let group_of =
-        |id: ComponentId| -> Option<String> { board.component(id).and_then(|c| c.group.clone()) };
-    let mut evicted: Vec<ComponentId> = Vec::new();
-    for cluster in clusters.iter_mut() {
-        let anchor_group = group_of(cluster.anchor);
-        cluster.members.retain(|m| {
-            if group_of(m.id) == anchor_group {
-                true
-            } else {
-                evicted.push(m.id);
-                false
-            }
-        });
-    }
-    // Evicted members become their own single-component clusters, in
-    // id order so the result stays deterministic.
-    evicted.sort_by_key(|id| id.0);
-    evicted.dedup();
-    for id in evicted {
-        clusters.push(Cluster {
-            kind: ClusterKind::Singleton,
-            anchor: id,
-            anchor_vertical: false,
-            members: Vec::new(),
-        });
+/// The side is a drawing convention, not a connection: a decoupling cap
+/// hangs below its IC, a pull resistor rises above the pin it pulls, a
+/// reset-network part sits on whichever side the anchor's reset pin
+/// occupies, and an ESD diode stands to the connector's left so its
+/// stub to the connector is a short horizontal run.
+fn draw_cluster(board: &Board, cluster: &synth_ir::FunctionalCluster) -> Cluster {
+    let anchor_part = board
+        .component(cluster.anchor)
+        .and_then(|c| c.part.as_ref());
+    // The sheet draws members in refdes order whatever order recognition
+    // found them in, so a cluster reads the same way every time it is
+    // rendered and its wiring does not depend on net declaration order.
+    let mut ordered: Vec<&synth_ir::ClusterMember> = cluster.members.iter().collect();
+    ordered.sort_by_key(|m| m.component.0);
+    let members = ordered
+        .into_iter()
+        .map(|member| ClusterMember {
+            id: member.component,
+            side: match member.role {
+                synth_ir::MemberRole::DecouplingCap
+                | synth_ir::MemberRole::RailCap
+                | synth_ir::MemberRole::LoadCap
+                | synth_ir::MemberRole::OrphanRailCap
+                | synth_ir::MemberRole::DividerPartner => MemberSide::Below,
+                synth_ir::MemberRole::EsdDiode => MemberSide::Left,
+                synth_ir::MemberRole::SeriesLimit
+                | synth_ir::MemberRole::PullUp
+                | synth_ir::MemberRole::I2cPullUp => MemberSide::Above,
+                synth_ir::MemberRole::ResetNetwork => {
+                    // The stock symbol's geometry wins over the
+                    // synthesized-model convention: STM32F103's NRST
+                    // is on the left even though `Reset → Right` is what
+                    // the heuristic says, and members aligned to a
+                    // phantom pin position produce wires wrapping the
+                    // body.
+                    match anchor_part.map(|part| {
+                        compute_anchor_pin_offset(part, member.binding.anchor_pin.0 as usize).2
+                    }) {
+                        Some(PinSide::Left) | None => MemberSide::Left,
+                        _ => MemberSide::Right,
+                    }
+                }
+                synth_ir::MemberRole::SeriesElement | synth_ir::MemberRole::RfMatchElement => {
+                    MemberSide::Below
+                }
+            },
+        })
+        .collect();
+    Cluster {
+        anchor: cluster.anchor,
+        kind: cluster.kind,
+        // An LED is drawn as a vertical chain: current-limit resistor
+        // above, LED below.
+        anchor_vertical: cluster.kind == ClusterKind::LedIndicator,
+        members,
     }
 }
 
@@ -2203,15 +2171,6 @@ pub fn pcb_courtyard_geometry_for_part(part: &synth_registry::Part) -> ((f64, f6
         return ((0.0, 0.0), (dim.width_mm, dim.height_mm));
     }
     ((0.0, 0.0), (10.0, 10.0))
-}
-
-/// LED detection: kind = "led" OR part id starts with "led_". The
-/// registry is inconsistent about which it uses; recognise both.
-fn is_led(component: &synth_ir::Component) -> bool {
-    component
-        .part
-        .as_ref()
-        .is_some_and(|p| p.kind == "led" || p.id.as_str().starts_with("led_"))
 }
 
 // ----- Cluster placement ---------------------------------------------------

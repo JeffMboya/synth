@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod board;
+pub mod clusters;
 pub mod imports;
 pub mod lower;
 pub mod modules;
@@ -30,6 +31,9 @@ pub use board::{
     Board, Component, ComponentId, DiffPair, Group, Keepout, Net, NetClass, NetEndpoint, NetId,
     Note, PinId, PlacementConstraint, PlacementEdge, PlacementPriority, PlacementRegion,
     PlacementSide, SchematicOverflow, SchematicPaper, Stackup, StackupLayer, Variant,
+};
+pub use clusters::{
+    recognize_clusters, ClusterKind, ClusterMember, FunctionalCluster, MemberBinding, MemberRole,
 };
 pub use imports::{
     resolve as resolve_imports, FsImportLoader, ImportLoadError, ImportLoader, MemoryImportLoader,

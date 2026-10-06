@@ -2429,131 +2429,32 @@ fn cluster_cohesion(
 }
 
 /// Recognise (anchor, member) pairs that the placer should
-/// pull tight: every IC with `required_decoupling` is glued to
-/// the capacitors it shares a power net with, up to the rule's
-/// `count`. Same recognition logic the schematic clusterer uses,
-/// just applied to the PCB.
+/// pull tight.
 ///
-/// Returned pairs are deterministic: outer iteration is IR
-/// component order, inner is net-endpoint order.
-#[allow(clippy::too_many_lines, dead_code)]
+/// Every functional cluster the compiler recognizes becomes one
+/// cohesion pair per member: an IC with its decoupling caps, a crystal
+/// with its load caps, a connector with its ESD diodes, an antenna with
+/// its matching network. The pairs come from the shared recognition
+/// pass, so whatever the schematic groups with an anchor is what the
+/// board placer is asked to keep together — the same fact, read by two
+/// consumers.
+///
+/// A member belongs to exactly one cluster, so the first anchor to claim
+/// it wins and a capacitor cannot be pulled toward two parts at once.
+///
+/// Returned pairs are deterministic: recognition order is IR component
+/// order, and member order within a cluster is net-endpoint order.
+#[allow(dead_code)]
 fn build_cluster_pairs(board: &Board) -> Vec<(ComponentId, ComponentId)> {
     let mut out = Vec::new();
     let mut claimed: std::collections::HashSet<ComponentId> = std::collections::HashSet::new();
-
-    // 1. Decoupling clusters (IC + decoupling caps)
-    for component in &board.components {
-        let Some(part) = component.part.as_ref() else {
-            continue;
-        };
-        for rule in &part.required_decoupling {
-            let Some(pin_idx) = part.pins.iter().position(|p| p.name == rule.net) else {
-                continue;
-            };
-            let mut claimed_for_rule = 0_u32;
-            'outer: for net in &board.nets {
-                let mentions_pin = net
-                    .endpoints
-                    .iter()
-                    .any(|ep| ep.component == component.id && ep.pin.0 as usize == pin_idx);
-                if !mentions_pin {
-                    continue;
-                }
-                for endpoint in &net.endpoints {
-                    if endpoint.component == component.id || claimed.contains(&endpoint.component) {
-                        continue;
-                    }
-                    let Some(other) = board.components.iter().find(|c| c.id == endpoint.component)
-                    else {
-                        continue;
-                    };
-                    let is_cap = other.part.as_ref().is_some_and(|p| p.kind == "capacitor");
-                    if !is_cap {
-                        continue;
-                    }
-                    out.push((component.id, other.id));
-                    claimed.insert(other.id);
-                    claimed_for_rule += 1;
-                    if claimed_for_rule >= rule.count {
-                        break 'outer;
-                    }
-                }
+    for cluster in synth_ir::recognize_clusters(board) {
+        for member in &cluster.members {
+            if claimed.insert(member.component) {
+                out.push((cluster.anchor, member.component));
             }
         }
     }
-
-    // 2. Crystal clusters (crystal + load caps)
-    for component in &board.components {
-        if component.kind != "crystal" {
-            continue;
-        }
-        for net in &board.nets {
-            let mentions_crystal = net.endpoints.iter().any(|ep| ep.component == component.id);
-            if !mentions_crystal {
-                continue;
-            }
-            for endpoint in &net.endpoints {
-                if endpoint.component == component.id || claimed.contains(&endpoint.component) {
-                    continue;
-                }
-                if let Some(other) = board.components.iter().find(|c| c.id == endpoint.component) {
-                    if other.kind == "capacitor" {
-                        out.push((component.id, other.id));
-                        claimed.insert(other.id);
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. USB + ESD protection clusters (USB connector + ESD diodes)
-    for component in &board.components {
-        if component.kind != "connector" {
-            continue;
-        }
-        for net in &board.nets {
-            let mentions_usb = net.endpoints.iter().any(|ep| ep.component == component.id);
-            if !mentions_usb {
-                continue;
-            }
-            for endpoint in &net.endpoints {
-                if endpoint.component == component.id || claimed.contains(&endpoint.component) {
-                    continue;
-                }
-                if let Some(other) = board.components.iter().find(|c| c.id == endpoint.component) {
-                    if other.kind == "diode" {
-                        out.push((component.id, other.id));
-                        claimed.insert(other.id);
-                    }
-                }
-            }
-        }
-    }
-
-    // 4. RF matching network clusters (antenna + RF passives)
-    for component in &board.components {
-        if component.kind != "antenna" {
-            continue;
-        }
-        for net in &board.nets {
-            let mentions_rf = net.endpoints.iter().any(|ep| ep.component == component.id);
-            if !mentions_rf {
-                continue;
-            }
-            for endpoint in &net.endpoints {
-                if endpoint.component == component.id || claimed.contains(&endpoint.component) {
-                    continue;
-                }
-                if let Some(other) = board.components.iter().find(|c| c.id == endpoint.component) {
-                    if matches!(other.kind.as_str(), "resistor" | "capacitor" | "inductor") {
-                        out.push((component.id, other.id));
-                        claimed.insert(other.id);
-                    }
-                }
-            }
-        }
-    }
-
     out
 }
 
