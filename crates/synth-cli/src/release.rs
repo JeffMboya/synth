@@ -172,6 +172,14 @@ impl ReleaseManifest {
         }
     }
 
+    pub fn with_release_blocked(mut self, blocked: bool) -> Self {
+        if blocked {
+            self.production_status = ProductionStatus::Untrusted;
+            self.release_ready = false;
+        }
+        self
+    }
+
     pub fn with_exception(mut self, exception: Option<Exception>) -> Self {
         self.exception = exception;
         self

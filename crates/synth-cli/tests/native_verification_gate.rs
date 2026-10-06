@@ -58,6 +58,7 @@ done"#;
 struct Outcome {
     code: Option<i32>,
     stderr: String,
+    out: PathBuf,
     report: Option<serde_json::Value>,
 }
 
@@ -78,6 +79,12 @@ impl Outcome {
             .as_str()
             .expect("status string")
             .to_string()
+    }
+
+    fn manifest(&self) -> serde_json::Value {
+        let text = std::fs::read_to_string(self.out.join("release.json"))
+            .expect("release manifest written");
+        serde_json::from_str(&text).expect("manifest parses")
     }
 
     fn reason(&self, stage: &str) -> String {
@@ -114,6 +121,7 @@ fn export(label: &str, stub_script: &str, extra: &[&str]) -> Outcome {
     Outcome {
         code: output.status.code(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        out,
         report,
     }
 }
@@ -192,6 +200,10 @@ exit 0"#
 fn drc_stub(report: &str) -> String {
     format!(
         r#"case "$1 $2" in
+  "sch erc")
+    __FIND_OUTPUT__
+    printf '{{"violations":[]}}' > "$out"
+    exit 0 ;;
   "pcb drc")
     __FIND_OUTPUT__
     printf '{report}' > "$out"
@@ -214,6 +226,11 @@ fn unconnected_pads_are_reported_and_the_board_is_not_called_clean() {
         run.stderr
     );
     assert!(!run.stderr.contains("gate clean"), "{}", run.stderr);
+    assert!(
+        run.out.join("hello.kicad_pcb").is_file(),
+        "the incomplete board must still be written"
+    );
+    assert_eq!(run.status("kicad_drc"), "fail");
 }
 
 #[test]
@@ -241,6 +258,73 @@ fn an_all_zero_drc_report_is_still_called_clean() {
         run.stderr
     );
     assert!(run.stderr.contains("Zero-DRC gate clean"), "{}", run.stderr);
+}
+
+const UNCONNECTED: &str = r#"{"violations":[],"unconnected_items":[{"type":"unconnected_items","severity":"error","description":"Missing connection"},{"type":"unconnected_items","severity":"error","description":"Missing connection"},{"type":"unconnected_items","severity":"error","description":"Missing connection"}]}"#;
+const ERRORS: &str = r#"{"violations":[{"type":"clearance","severity":"error","description":"Clearance"}],"unconnected_items":[]}"#;
+const WARNING: &str = r#"{"violations":[{"type":"via_dangling","severity":"warning","description":"Via"}],"unconnected_items":[]}"#;
+
+#[test]
+fn a_release_export_fails_on_unconnected_pads_and_states_the_count() {
+    let run = export(
+        "release_unconnected",
+        &drc_stub(UNCONNECTED),
+        &["--gerbers"],
+    );
+    assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
+    assert_eq!(run.status("kicad_drc"), "fail");
+    assert_eq!(run.report.as_ref().expect("report")["release_ready"], false);
+    assert!(
+        run.stderr.contains("release export blocked")
+            && run.stderr.contains("unconnected pads 3")
+            && run.stderr.contains("--force does not override this"),
+        "the block and the count must be stated: {}",
+        run.stderr
+    );
+    let manifest = run.manifest();
+    assert_eq!(manifest["release_ready"], false, "{manifest:#}");
+    assert_eq!(manifest["production_status"], "untrusted", "{manifest:#}");
+}
+
+#[test]
+fn force_does_not_hide_an_incomplete_release_board() {
+    for (label, report) in [("unconnected", UNCONNECTED), ("errors", ERRORS)] {
+        let run = export(
+            &format!("release_force_{label}"),
+            &drc_stub(report),
+            &["--gerbers", "--force"],
+        );
+        assert_eq!(run.code, Some(1), "{label}: stderr:\n{}", run.stderr);
+        assert_eq!(run.status("kicad_drc"), "fail", "{label}");
+        assert!(
+            run.stderr.contains("--force does not override this"),
+            "{label}: {}",
+            run.stderr
+        );
+        let manifest = run.manifest();
+        assert_eq!(manifest["release_ready"], false, "{label}: {manifest:#}");
+        assert_eq!(manifest["production_status"], "untrusted", "{label}");
+    }
+}
+
+#[test]
+fn a_plain_forced_export_with_drc_errors_records_the_override() {
+    let run = export("plain_force", &drc_stub(ERRORS), &["--force"]);
+    assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
+    let manifest = run.manifest();
+    assert_eq!(
+        manifest["overrides"][0]["code"], "E-SYNTH-DRC-OVERRIDE",
+        "{manifest:#}"
+    );
+    assert_eq!(manifest["release_ready"], false, "{manifest:#}");
+}
+
+#[test]
+fn a_release_export_with_only_warnings_passes() {
+    let run = export("release_warning", &drc_stub(WARNING), &["--gerbers"]);
+    assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
+    assert_eq!(run.status("kicad_drc"), "pass");
+    assert_eq!(run.report.as_ref().expect("report")["release_ready"], true);
 }
 
 #[test]
@@ -532,6 +616,7 @@ exit 0"#
         assert_eq!(report["status"], "pass", "{report:#}");
         assert_eq!(code, Some(0), "{report:#}");
         assert_eq!(manufacturing["native"]["release_ready"], true, "{report:#}");
+        assert_eq!(manufacturing["release_ready"], true, "{report:#}");
         assert!(
             manufacturing["artifacts"]
                 .as_object()
@@ -559,19 +644,73 @@ exit 0"#
 
         assert_eq!(code, Some(1), "{report:#}");
         assert_eq!(manufacturing["status"], "unknown", "{report:#}");
-        let drc = manufacturing["native"]["stages"]
-            .as_array()
-            .expect("native stages")
-            .iter()
-            .find(|s| s["stage"] == "kicad_drc")
-            .expect("drc evidence")
-            .clone();
+        let drc = drc_evidence(&report);
         assert_eq!(drc["reason"], "command_failed", "{drc:#}");
         assert!(
             drc["stderr"]
                 .as_str()
                 .is_some_and(|s| s.contains("Failed to load library")),
             "{drc:#}"
+        );
+    }
+
+    fn drc_evidence(report: &serde_json::Value) -> serde_json::Value {
+        report["stages"]["manufacturing"]["native"]["stages"]
+            .as_array()
+            .expect("native stages")
+            .iter()
+            .find(|s| s["stage"] == "kicad_drc")
+            .unwrap_or_else(|| panic!("no drc evidence: {report:#}"))
+            .clone()
+    }
+
+    #[test]
+    fn unconnected_pads_fail_the_release_check_and_are_counted() {
+        let (code, report) = check_fab(
+            "gate_unconnected",
+            &stub(&scratch("gate_unconnected"), &drc_stub(UNCONNECTED)),
+        );
+        let manufacturing = &report["stages"]["manufacturing"];
+
+        assert_eq!(code, Some(1), "{report:#}");
+        assert_eq!(report["status"], "fail", "{report:#}");
+        assert_eq!(manufacturing["status"], "fail", "{report:#}");
+        assert_eq!(
+            manufacturing["native"]["release_ready"], false,
+            "{report:#}"
+        );
+        assert_eq!(manufacturing["release_ready"], false, "{report:#}");
+        let drc = drc_evidence(&report);
+        assert_eq!(drc["status"], "fail", "{drc:#}");
+        assert!(
+            drc["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("unconnected pads 3")),
+            "{drc:#}"
+        );
+    }
+
+    #[test]
+    fn the_failing_counts_print_under_the_manufacturing_stage() {
+        let cli = stub(&scratch("gate_text"), &drc_stub(UNCONNECTED));
+        let output = Command::new(SYNTH)
+            .arg("check")
+            .arg(design())
+            .arg("--fab")
+            .env("KICAD_CLI", &cli)
+            .output()
+            .expect("run synth check");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<_> = stdout.lines().map(str::trim).collect();
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("manufacturing: fail"))
+            .unwrap_or_else(|| panic!("no manufacturing line:\n{stdout}"));
+
+        assert_eq!(output.status.code(), Some(1), "{stdout}");
+        assert!(
+            lines[at + 1].starts_with("kicad_drc:") && lines[at + 1].contains("unconnected pads 3"),
+            "{stdout}"
         );
     }
 }

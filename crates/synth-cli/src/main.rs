@@ -1371,7 +1371,8 @@ fn check(
         }
         if let Some(release) = &release {
             stage["release"] = serde_json::to_value(release)?;
-            stage["release_ready"] = serde_json::json!(release.release_ready);
+            let verified = stage["native"]["release_ready"].as_bool().unwrap_or(false);
+            stage["release_ready"] = serde_json::json!(release.release_ready && verified);
             // A timeout is the more fundamental reason, so it keeps the field.
             if matches!(verdict, Some(release::GateVerdict::Rejected)) && !export_timed_out {
                 stage["reason"] = serde_json::json!("unauthorized_overrides");
@@ -1407,23 +1408,30 @@ fn check(
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{} {}", if pass { "PASS" } else { "FAIL" }, input.display());
+        let manufacturing = &report["stages"]["manufacturing"];
         for (name, stage) in report["stages"].as_object().into_iter().flatten() {
             println!(
                 "  {name}: {}",
                 stage["status"].as_str().unwrap_or("unknown")
             );
+            if name == "manufacturing" {
+                for native in stage["native"]["stages"].as_array().into_iter().flatten() {
+                    if let (true, Some(detail)) =
+                        (native["status"] == "fail", native["detail"].as_str())
+                    {
+                        println!("    {}: {detail}", native["stage"].as_str().unwrap_or("?"));
+                    }
+                }
+            }
         }
         println!(
             "  source_sha256: {}",
             report["source_sha256"].as_str().unwrap_or("")
         );
-        if let Some(release) = report["stages"]["manufacturing"]["release"].as_object() {
+        if let Some(release) = manufacturing["release"].as_object() {
             println!(
                 "  release_ready: {}",
-                release
-                    .get("release_ready")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
+                manufacturing["release_ready"].as_bool().unwrap_or(false)
             );
             if let Some(overrides) = release.get("overrides").and_then(|o| o.as_array()) {
                 if !overrides.is_empty() {
@@ -3987,6 +3995,14 @@ fn export_kicad(
         has_kicad_drc_errors = !drc.violations.is_empty();
         report_drc_counts(&drc.counts);
     }
+    let release_drc_blocked = production && drc.counts.blocking_count() > 0;
+    if release_drc_blocked {
+        eprintln!(
+            "error: release export blocked: KiCad DRC is not clean ({}); \
+             --force does not override this.",
+            drc.counts
+        );
+    }
     native.push(drc.evidence);
 
     let blocked_by_unknown: Vec<_> = native
@@ -4017,7 +4033,7 @@ fn export_kicad(
         write_verification_report(path, input, &native)?;
     }
 
-    if has_kicad_drc_errors && force {
+    if has_kicad_drc_errors && force && !production {
         overrides.push(release::OverrideRecord::new(
             release::OverrideKind::NativeDrcErrors,
             Vec::new(),
@@ -4031,7 +4047,8 @@ fn export_kicad(
         !fab.is_empty(),
         overrides,
         release::reviewer_state(board),
-    );
+    )
+    .with_release_blocked(release_drc_blocked);
     let manifest_path = manifest
         .write_to(out_dir)
         .map_err(|e| anyhow::anyhow!("could not write the release manifest: {e}"))?;
@@ -4058,6 +4075,7 @@ fn export_kicad(
         || lowered.has_errors()
         || (has_erc_errors && !force)
         || (has_kicad_drc_errors && !force)
+        || release_drc_blocked
         || has_kicad_erc_errs
         || !blocked_by_unknown.is_empty()
         || !external_router_clean;
@@ -4071,10 +4089,7 @@ fn export_kicad(
 const FAB_STAGE: &str = "kicad_fab";
 
 fn report_drc_counts(counts: &synth_drc::DrcCounts) {
-    let line = format!(
-        "kicad-cli pcb drc: errors {}, unconnected pads {}, warnings {}",
-        counts.errors, counts.unconnected, counts.warnings
-    );
+    let line = format!("kicad-cli pcb drc: {counts}");
     if counts.is_clean() {
         eprintln!("{line} (Phase 13 Zero-DRC gate clean)");
     } else {
