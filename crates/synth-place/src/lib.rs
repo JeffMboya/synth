@@ -458,69 +458,147 @@ fn legalize_sidecar_overrides(
         .collect();
     let pitch_nm = mm_to_nm(0.5);
 
-    for _ in 0..overridden.len().max(1) {
-        let mut changed = false;
-        for (component_index, component) in board.components.iter().enumerate() {
-            if !overridden.contains(&component.id) {
-                continue;
-            }
-            let Some(placement_index) = placement
-                .components
-                .iter()
-                .position(|placed| placed.id == component.id)
-            else {
-                continue;
-            };
-            let current = placement.components[placement_index];
-            if sidecar_position_is_legal(board, placement, component_index, current) {
-                continue;
-            }
+    // Honour hard overrides before soft ones, and refdes within a priority,
+    // so which override wins a contested square is a property of the design
+    // file rather than of iteration order.
+    let priority_of = |id: ComponentId| {
+        board
+            .component(id)
+            .and_then(|c| sidecar.components.get(&c.refdes))
+            .map_or(synth_layout::sidecar::OverridePriority::Hard, |entry| {
+                entry.priority
+            })
+    };
+    let mut order: Vec<ComponentId> = overridden.iter().copied().collect();
+    order.sort_by_key(|id| {
+        let reversed = matches!(
+            priority_of(*id),
+            synth_layout::sidecar::OverridePriority::Soft
+        );
+        (
+            reversed,
+            board
+                .component(*id)
+                .map_or(String::new(), |c| c.refdes.clone()),
+        )
+    });
 
-            let mut best: Option<(ComponentPlacement, i64)> = None;
-            // A small square spiral gives the closest *local* legal location
-            // while remaining deterministic. Do not silently move an agent's
-            // requested component across the board: if no nearby slot exists,
-            // leave the coordinate intact so visual review reports the real
-            // collision and the agent can make an intentional revision.
-            for radius in 1_i64..=10 {
-                for dx in -radius..=radius {
-                    for dy in -radius..=radius {
-                        if dx.abs().max(dy.abs()) != radius {
-                            continue;
-                        }
-                        let candidate = ComponentPlacement {
-                            center: Point::new(
-                                current.center.x_nm + dx * pitch_nm,
-                                current.center.y_nm + dy * pitch_nm,
-                            ),
-                            ..current
-                        };
-                        if !sidecar_position_is_legal(board, placement, component_index, candidate)
-                        {
-                            continue;
-                        }
-                        let distance = dx.abs() + dy.abs();
-                        if best
-                            .as_ref()
-                            .is_none_or(|(_, best_distance)| distance < *best_distance)
-                        {
-                            best = Some((candidate, distance));
-                        }
+    for target in order {
+        let Some(component_index) = board
+            .components
+            .iter()
+            .position(|component| component.id == target)
+        else {
+            continue;
+        };
+        let Some(placement_index) = placement
+            .components
+            .iter()
+            .position(|placed| placed.id == target)
+        else {
+            continue;
+        };
+        let requested = placement.components[placement_index];
+        if sidecar_position_is_legal(board, placement, component_index, requested) {
+            continue;
+        }
+
+        // The requested square is occupied. A drag is an instruction, not a
+        // suggestion: whoever is in the way moves, because leaving the board
+        // with two overlapping courtyards is worse than moving a part the
+        // designer did not place by hand. Blockers are lifted first, then the
+        // requested square is re-checked.
+        let blockers: Vec<ComponentId> = placement
+            .components
+            .iter()
+            .filter(|other| other.id != target)
+            .filter(|other| {
+                let rect =
+                    sidecar_courtyard_rect(board, &board.components[component_index], &requested);
+                rect.intersects(&sidecar_courtyard_rect(
+                    board,
+                    board
+                        .component(other.id)
+                        .unwrap_or(&board.components[component_index]),
+                    other,
+                ))
+            })
+            .map(|other| other.id)
+            .collect();
+
+        let mut lifted: Vec<(ComponentId, ComponentPlacement)> = Vec::new();
+        for blocker in &blockers {
+            // A blocker that is itself a hard override outranks this drag and
+            // is left alone; the caller surfaced that conflict already.
+            if overridden.contains(blocker)
+                && priority_of(*blocker) == synth_layout::sidecar::OverridePriority::Hard
+            {
+                continue;
+            }
+            if let Some(index) = placement.components.iter().position(|p| p.id == *blocker) {
+                lifted.push((*blocker, placement.components[index]));
+                placement.components[index].center = Point::new(
+                    placement.board_outline.min.x_nm,
+                    placement.board_outline.min.y_nm,
+                );
+            }
+        }
+
+        if sidecar_position_is_legal(board, placement, component_index, requested) {
+            placement.components[placement_index] = requested;
+            continue;
+        }
+
+        // Something un-liftable is in the way. Fall back to the local search,
+        // then restore whatever was lifted so the board stays legal even if
+        // the request could not be honoured.
+        match nearest_local_slot(board, placement, component_index, requested, pitch_nm) {
+            Some(candidate) => placement.components[placement_index] = candidate,
+            None => {
+                for (id, original) in lifted {
+                    if let Some(index) = placement.components.iter().position(|p| p.id == id) {
+                        placement.components[index] = original;
                     }
                 }
-                if best.is_some() {
-                    break;
-                }
             }
-            if let Some((candidate, _)) = best {
-                placement.components[placement_index] = candidate;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
         }
     }
+}
+
+/// Nearest legal square to `requested`, searched as an expanding ring.
+///
+/// Deterministic: the first legal square found on the smallest ring wins,
+/// and a ring is scanned in a fixed order.
+fn nearest_local_slot(
+    board: &Board,
+    placement: &Placement,
+    component_index: usize,
+    requested: ComponentPlacement,
+    pitch_nm: i64,
+) -> Option<ComponentPlacement> {
+    // Do not silently move an agent's requested component across the board: if
+    // no nearby slot exists, leave the coordinate for visual review to report.
+    const MAX_RING: i64 = 10;
+    for radius in 1..=MAX_RING {
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                if dx.abs().max(dy.abs()) != radius {
+                    continue;
+                }
+                let candidate = ComponentPlacement {
+                    center: Point::new(
+                        requested.center.x_nm + dx * pitch_nm,
+                        requested.center.y_nm + dy * pitch_nm,
+                    ),
+                    ..requested
+                };
+                if sidecar_position_is_legal(board, placement, component_index, candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Run placement with the optional PCB-placement sidecar.
@@ -4527,6 +4605,80 @@ mod tests {
                 !action.action.is_empty(),
                 "recommendation for {} has no action",
                 action.refdes
+            );
+        }
+    }
+
+    #[test]
+    fn a_drag_onto_an_occupied_square_displaces_the_occupant() {
+        // A drag is an instruction, not a suggestion. The old legalization
+        // searched for a *nearby* legal square and, finding none, left the
+        // requested coordinate in place — which put two courtyards on top of
+        // each other and exported an illegal board. Whoever is in the way has
+        // to move.
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let victim = placement
+            .components
+            .iter()
+            .find(|p| board.component(p.id).is_some_and(|c| c.refdes == "C1"))
+            .copied()
+            .expect("C1 placed");
+        let mover = placement
+            .components
+            .iter()
+            .find(|p| board.component(p.id).is_some_and(|c| c.refdes == "C2"))
+            .copied()
+            .expect("C2 placed");
+
+        // Drag C2 exactly onto C1's square.
+        let mut dragged = placement.clone();
+        let index = dragged
+            .components
+            .iter()
+            .position(|p| p.id == mover.id)
+            .expect("C2 placement");
+        dragged.components[index].center = victim.center;
+
+        let sidecar = synth_layout::sidecar::SidecarLayout {
+            schema_version: synth_layout::sidecar::SIDECAR_SCHEMA_VERSION,
+            components: [(
+                "C2".to_string(),
+                synth_layout::sidecar::SidecarPlacement {
+                    x: synth_geometry::nm_to_mm(victim.center.x_nm),
+                    y: synth_geometry::nm_to_mm(victim.center.y_nm),
+                    rotation: 0,
+                    sheet: None,
+                    source: synth_layout::sidecar::OverrideSource::HumanDrag,
+                    priority: synth_layout::sidecar::OverridePriority::Hard,
+                    timestamp: None,
+                    relative_to: None,
+                    dx: 0.0,
+                    dy: 0.0,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            forced_net_labels: Vec::new(),
+            fit_sheet: false,
+        };
+
+        let mut legalized = dragged;
+        apply_sidecar_overrides(&board, &mut legalized, &sidecar);
+
+        // Every pair of courtyards must be clear of one another.
+        let by_refdes = |r: &str| {
+            legalized
+                .component_by_refdes(&board, r)
+                .expect("placed")
+                .center
+        };
+        for (a, b) in [("C1", "C2"), ("C1", "R1"), ("C2", "R1")] {
+            let gap_x = (by_refdes(a).x_nm - by_refdes(b).x_nm).abs();
+            let gap_y = (by_refdes(a).y_nm - by_refdes(b).y_nm).abs();
+            assert!(
+                gap_x > mm_to_nm(0.5) || gap_y > mm_to_nm(0.5),
+                "{a} and {b} overlap after a drag displaced them"
             );
         }
     }
