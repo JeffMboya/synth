@@ -80,12 +80,23 @@ jobs:
       - name: Run the qualification matrix
         run: cargo test --release -p synth-cli --test qualification_matrix -- --ignored --nocapture
 
+      # The matrix says which boards drifted; this says why, when the cause is
+      # a part whose pin map disagrees with its footprint. Only meaningful with
+      # KiCad installed, which is why it lives here and not in the main CI job.
+      - name: Qualify the registry against the installed KiCad libraries
+        if: always()
+        run: |
+          cargo run --release -p synth-cli -- registry qualify \
+            --report target/qualification/registry.json --no-fail
+
       - name: Upload qualification results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qualification-results
-          path: target/qualification/results.json
+          path: |
+            target/qualification/results.json
+            target/qualification/registry.json
           if-no-files-found: warn
 
   # Blocking. The manufacturing stage needs a KiCad install to produce any
