@@ -75,6 +75,7 @@ pub mod logger;
 mod maze;
 pub mod miter;
 pub mod serpentine;
+mod spatial;
 
 pub use logger::{log_routing_outcome, RoutingOutcomeRecord};
 
@@ -134,6 +135,18 @@ pub struct Routing {
     /// Number of A* cell evaluations performed during routing search.
     #[serde(default)]
     pub cells_expanded: u64,
+    /// Paths the A* search found and then discarded because the emitted
+    /// geometry ran too close to a foreign pad.
+    ///
+    /// This separates the two ways a net fails, which look identical from
+    /// the outside and need opposite responses: a net that never finds a
+    /// path is blocked by congestion, while a net that repeatedly finds one
+    /// and has it rejected cannot escape its own pads. The second is a
+    /// geometry problem at the terminal — on a fine-pitch package it fails
+    /// at any congestion level, so no amount of re-routing or re-placing
+    /// the board will fix it.
+    #[serde(default)]
+    pub pad_escape_rejections: usize,
 }
 
 /// One net the router gave up on. Carries enough context for
@@ -633,9 +646,12 @@ mod tests {
 
         let r = route(&board, &placement);
         // See `sensor_logger_routes_cleanly`: guard coverage on the dense
-        // RP2350/USB-C board instead of an unreachable zero.
+        // RP2350/USB-C board instead of an unreachable zero. The bound was 6
+        // while the BG95 resolved to a missing footprint and the router saw a
+        // 5x5 mm placeholder; with the real ~15x13 mm module the board routes
+        // with 9 unrouted nets, the same as HEAD did with the real footprint.
         assert!(
-            r.unrouted_nets.len() <= 6,
+            r.unrouted_nets.len() <= 9,
             "iot_sensor_board routing coverage regressed: {} unrouted nets: {:?}",
             r.unrouted_nets.len(),
             r.unrouted_nets

@@ -4,7 +4,7 @@ version = 0
 lifecycle = "active"
 description = "Quectel BG95-M3 LTE Cat M1/NB2/EGPRS modem with integrated GNSS, LGA-102"
 kicad_symbol = "RF_GSM:BG95-MF"
-kicad_footprint = "RF_Module:Quectel_BG95-M3"
+kicad_footprint = "RF_GSM:Quectel_BG95"
 
 [footprint_dimensions]
 width_mm = 5.0

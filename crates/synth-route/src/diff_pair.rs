@@ -43,7 +43,6 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use synth_ir::{Board, NetId};
-use synth_registry::PinCapability;
 
 /// Per-pair length / skew metric attached to a `Routing`. One
 /// entry per resolved `DiffPair` in IR declaration order.
@@ -62,43 +61,24 @@ pub struct PairReport {
 }
 
 /// Resolve every `DiffPair` declared in `board` to `(positive,
-/// negative)` net id pairs. Pairs whose names don't match an
-/// IR net AND can't be resolved via pin-capability fallback
-/// are silently dropped from the returned set (slice 6 will
-/// promote these to `W-SYNTH-ROUTE-DIFF-UNRESOLVED` warnings).
+/// negative)` net id pairs.
+///
+/// Resolution lives in [`synth_ir::resolve_pairs`] so the router and the
+/// placer agree on which nets form a pair — a capacitor placed "on the
+/// pair corridor" is only meaningful if the corridor is the same corridor
+/// the router will couple. That pass reads polarity from the pins
+/// themselves, so it resolves USB and any other differential pair declared
+/// by electrical type, rather than only pairs whose labels contain `dp`.
+///
+/// Pairs that resolve to nothing are dropped from the returned set (slice 6
+/// will promote these to `W-SYNTH-ROUTE-DIFF-UNRESOLVED` warnings).
 ///
 /// Output preserves the IR declaration order of `diff_pairs`.
 #[must_use]
 pub fn resolve_pair_nets(board: &Board) -> Vec<(NetId, NetId)> {
-    board
-        .diff_pairs
-        .iter()
-        .filter_map(|dp| {
-            // Strategy 1: exact-name lookup. Canonical case
-            // when the user writes
-            // `connect J1.dp -> D1.io as USB_DP`.
-            let by_name = (
-                find_net_by_name(board, &dp.positive),
-                find_net_by_name(board, &dp.negative),
-            );
-            if let (Some(p), Some(n)) = by_name {
-                return Some((p, n));
-            }
-            // Strategy 2: pin-capability detection. USB diff
-            // pairs land here today because our lowering auto-
-            // names every net `net_N`; the pair declaration's
-            // "USB_DP" / "USB_DN" strings are user-facing
-            // identifiers that don't currently flow to the
-            // IR net `name` field.
-            let cap_pos = pin_capability_for_pair_label(&dp.positive, false);
-            let cap_neg = pin_capability_for_pair_label(&dp.negative, true);
-            let p = cap_pos.and_then(|c| find_net_by_capability(board, c));
-            let n = cap_neg.and_then(|c| find_net_by_capability(board, c));
-            match (p, n) {
-                (Some(p), Some(n)) if p != n => Some((p, n)),
-                _ => None,
-            }
-        })
+    synth_ir::resolve_pairs(board)
+        .into_iter()
+        .map(|pair| (pair.positive_net, pair.negative_net))
         .collect()
 }
 
@@ -108,43 +88,4 @@ pub fn resolve_pair_nets(board: &Board) -> Vec<(NetId, NetId)> {
 #[must_use]
 pub fn pair_net_ids(pairs: &[(NetId, NetId)]) -> HashSet<NetId> {
     pairs.iter().flat_map(|(a, b)| [*a, *b]).collect()
-}
-
-fn find_net_by_name(board: &Board, name: &str) -> Option<NetId> {
-    board.nets.iter().find(|n| n.name == name).map(|n| n.id)
-}
-
-/// Heuristic: which `PinCapability` does the diff-pair half's
-/// label imply? Conservative mapping for slice 4 — covers
-/// USB; extension for I²C / SPI differential / RF lives in
-/// slice 4.x as the corpus grows.
-fn pin_capability_for_pair_label(label: &str, _is_negative: bool) -> Option<PinCapability> {
-    let lower = label.to_ascii_lowercase();
-    if lower.contains("dp") {
-        Some(PinCapability::UsbDp)
-    } else if lower.contains("dn") || lower.contains("dm") {
-        Some(PinCapability::UsbDn)
-    } else {
-        None
-    }
-}
-
-fn find_net_by_capability(board: &Board, cap: PinCapability) -> Option<NetId> {
-    for net in &board.nets {
-        for endpoint in &net.endpoints {
-            let Some(component) = board.component(endpoint.component) else {
-                continue;
-            };
-            let Some(part) = component.part.as_ref() else {
-                continue;
-            };
-            let Some(pin) = part.pins.get(endpoint.pin.0 as usize) else {
-                continue;
-            };
-            if pin.capabilities.contains(&cap) {
-                return Some(net.id);
-            }
-        }
-    }
-    None
 }

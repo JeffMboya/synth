@@ -993,15 +993,15 @@ type CapabilityLimit = (&'static str, Option<&'static str>, &'static str);
 const UNSUPPORTED: &[CapabilityLimit] = &[
     (
         "coupled_diff_pair_routing",
-        None,
-        "Synth does not keep the two halves of a differential pair coupled or check that they are; \
-         that is left to the router.",
+        Some("diff_pair.couple"),
+        "`couple tight|loose` is parsed and recorded in the IR, but Synth does not keep the two \
+         halves of a differential pair coupled or check that they are; that is left to the router.",
     ),
     (
         "length_skew_enforcement",
-        None,
-        "No length or skew budget can be declared and nothing fails on residual skew; any \
-         tuning is left to the router.",
+        Some("diff_pair.max_skew"),
+        "`max_skew` can be declared and is recorded in the IR, but nothing enforces it and no \
+         stage fails on residual skew; any tuning is left to the router.",
     ),
     (
         "return_path_and_layer_transition_analysis",
@@ -1147,7 +1147,7 @@ fn capability_descriptor() -> serde_json::Value {
             },
             "routing_constraints": {
                 "netclass": ["trace_width", "clearance", "color"],
-                "diff_pair": ["impedance"],
+                "diff_pair": ["impedance", "max_skew", "couple"],
                 "keepout": ["radius"],
                 "component": ["placement_hint"]
             },
@@ -3190,7 +3190,10 @@ fn dump_place(
                     None => synth_place::place(b),
                 };
                 match result {
-                    Ok(p) => Some(p),
+                    // Publish the external coordinate space (footprint origin),
+                    // not the internal courtyard centre, so `synth place` and
+                    // the exported PCB agree. See `synth_place::to_external`.
+                    Ok(p) => Some(synth_place::to_external(b, &p)),
                     Err(e) => {
                         let diags = e.to_diagnostics(b, &file);
                         let _ = write_diagnostics_to_stderr(&diags);

@@ -19,6 +19,8 @@
 #![forbid(unsafe_code)]
 
 pub mod board;
+pub mod clusters;
+pub mod diff_pairs;
 pub mod imports;
 pub mod lower;
 pub mod modules;
@@ -26,11 +28,18 @@ pub mod multiboard;
 pub mod power_domains;
 pub mod units;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use board::{
-    Board, Component, ComponentId, DiffPair, Group, Keepout, Net, NetClass, NetEndpoint, NetId,
-    Note, PinId, PlacementConstraint, PlacementEdge, PlacementPriority, PlacementRegion,
+    Board, Component, ComponentId, Couple, DiffPair, Group, Keepout, Net, NetClass, NetEndpoint,
+    NetId, Note, PinId, PlacementConstraint, PlacementEdge, PlacementPriority, PlacementRegion,
     PlacementSide, SchematicOverflow, SchematicPaper, Stackup, StackupLayer, Variant,
 };
+pub use clusters::{
+    recognize_clusters, ClusterKind, ClusterMember, FunctionalCluster, MemberBinding, MemberRole,
+};
+pub use diff_pairs::{pair_connections, resolve_pairs, PairConnection, ResolvedPair};
 pub use imports::{
     resolve as resolve_imports, FsImportLoader, ImportLoadError, ImportLoader, MemoryImportLoader,
     ResolveResult as ImportResolveResult, MAX_IMPORT_DEPTH, MAX_IMPORT_SIZE,

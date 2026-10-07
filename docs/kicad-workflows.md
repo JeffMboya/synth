@@ -313,6 +313,38 @@ report --severity-error --severity-warning --refill-zones
   confirm with the engineer. Double-sided assembly is an explicit
   engineer decision, never a default.
 
+### Placement JSON coordinate contract
+
+The placement payload that leaves Synth — the MCP
+`synth_place_with_hints` `component_placements` field and the CLI
+`synth place` document — is in **footprint-origin coordinates**. Each
+component's `center` is the point KiCad writes as the footprint's
+`(at x y)`: the physical origin of the footprint on the board, in
+nanometres. An overlay of the JSON on the exported `.kicad_pcb`
+therefore needs no correction.
+
+This is deliberately **not** the same as the internal
+`synth_place::ComponentPlacement::center`, which is the courtyard-bbox
+centre the placer, DRC and router reason about. The two differ by the
+footprint's courtyard offset for asymmetric footprints (USB
+receptacles, DIP headers):
+
+```
+published_center = courtyard_center - rot(courtyard_offset)
+```
+
+Serialize internal placements only through `synth_place::to_external`;
+the KiCad exporter and `to_external` both derive `(at x y)` from the
+shared `synth_place::footprint_origin` helper, so the board and the
+published placement cannot drift apart. Emitting the internal courtyard
+centre here shifts every downstream consumer — notably the synth-ee
+placement visualisation — relative to the exported board.
+
+The persisted `<design>.placement.layout.toml` sidecar is a separate,
+schema-versioned board-millimetre contract consumed by
+`synth_write_layout_override`; treat it as its own coordinate space and
+never assume a value copied from one is valid in the other.
+
 ---
 
 ## 5. Fabrication exports

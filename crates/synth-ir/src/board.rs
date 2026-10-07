@@ -355,7 +355,38 @@ pub struct DiffPair {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negative_net: Option<NetId>,
     pub impedance: Option<Impedance>,
+    /// Length the two halves may differ by.
+    ///
+    /// Without one the router reports skew but has nothing to measure it
+    /// against, so a declared tolerance is the only way a design can say
+    /// whether a pair is acceptable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_skew: Option<Length>,
+    /// How hard the router should work to keep the halves coupled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub couple: Option<Couple>,
     pub source_span: Span,
+}
+
+/// How hard the router should try to route a differential pair as a pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Couple {
+    /// Route both halves however they route.
+    Loose,
+    /// Prefer a coupled run, even at the cost of not routing.
+    Tight,
+}
+
+impl Couple {
+    #[must_use]
+    pub fn parse(mode: &str) -> Option<Self> {
+        match mode.to_ascii_lowercase().as_str() {
+            "loose" => Some(Self::Loose),
+            "tight" => Some(Self::Tight),
+            _ => None,
+        }
+    }
 }
 
 /// A free-text design note (`notes "Title" { "line" … }`) with the

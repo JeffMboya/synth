@@ -7,7 +7,7 @@
 //! and `W-SYNTH-PLACE-*` diagnostics.
 
 use synth_diagnostics::{Diagnostic, DiagnosticBuilder, Location, Severity};
-use synth_geometry::{mm_to_nm, nm_to_mm, Point, Rect};
+use synth_geometry::{mm_to_nm, nm_to_mm, Rect};
 use synth_ir::{Board, ComponentId, PinId};
 use synth_place::{ComponentPlacement, Placement};
 
@@ -27,13 +27,9 @@ pub fn validate_placement(board: &Board, placement: &Placement, file: &str) -> V
             let component = board.components.iter().find(|c| c.id == p.id);
             let refdes = component.map_or_else(|| format!("#{}", p.id.0), |c| c.refdes.clone());
             let part = component.and_then(|c| c.part.as_ref());
-            let ((cx_mm, cy_mm), (w_mm, h_mm)) = part.map_or_else(
-                || {
-                    component.map_or(((0.0, 0.0), (4.0, 4.0)), |c| {
-                        ((0.0, 0.0), synth_place::fallback_courtyard(&c.kind))
-                    })
-                },
-                synth_layout::pcb_courtyard_geometry_for_part,
+            let (w_mm, h_mm) = part.map_or_else(
+                || component.map_or((4.0, 4.0), |c| synth_place::fallback_courtyard(&c.kind)),
+                |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
             );
             let (rot_w_nm, rot_h_nm) = match p.rotation {
                 synth_geometry::Rotation::Zero | synth_geometry::Rotation::OneEighty => {
@@ -43,9 +39,12 @@ pub fn validate_placement(board: &Board, placement: &Placement, file: &str) -> V
                     (mm_to_nm(h_mm), mm_to_nm(w_mm))
                 }
             };
-            let (rot_cx_nm, rot_cy_nm) = p.rotation.rotate_offset(mm_to_nm(cx_mm), mm_to_nm(cy_mm));
-            let court_center = Point::new(p.center.x_nm + rot_cx_nm, p.center.y_nm + rot_cy_nm);
-            let rect = Rect::from_center_half_extents(court_center, rot_w_nm / 2, rot_h_nm / 2);
+            // `ComponentPlacement::center` is the courtyard centre: the exporter
+            // puts the footprint origin at `center - rot(courtyard offset)`, so the
+            // physical courtyard is centred on `center` exactly. Adding the
+            // footprint's courtyard offset here would double-count it and flag a
+            // correctly-placed part as outside the outline.
+            let rect = Rect::from_center_half_extents(p.center, rot_w_nm / 2, rot_h_nm / 2);
             (p.id, refdes, rect)
         })
         .collect();

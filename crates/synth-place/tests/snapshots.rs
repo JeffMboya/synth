@@ -88,6 +88,48 @@ fn feather_m4_express_placement_snapshot() {
     insta::assert_snapshot!("feather_m4_express_placement", snapshot);
 }
 
+/// The external placement contract publishes the footprint origin (KiCad
+/// `at`), not the internal courtyard centre. For an asymmetric footprint the
+/// two differ by the courtyard offset; publishing the internal value shifts
+/// every downstream consumer (notably synth-ee) relative to the exported PCB.
+#[test]
+fn external_placement_publishes_footprint_origin_not_courtyard_centre() {
+    let board = load_board("examples/sensor_logger.synth");
+    let placement = synth_place::place(&board).expect("place");
+    let external = synth_place::to_external(&board, &placement);
+
+    let mut shifted = Vec::new();
+    for internal in &placement.components {
+        let part = board
+            .component(internal.id)
+            .and_then(|component| component.part.as_ref());
+        let origin = synth_place::footprint_origin(part, internal);
+        let published = external
+            .components
+            .iter()
+            .find(|component| component.id == internal.id)
+            .expect("every internal placement is published");
+        assert_eq!(published.center, origin);
+        if published.center != internal.center {
+            shifted.push(internal.id);
+        }
+    }
+
+    // J1 is the Micro-USB receptacle: its courtyard is offset from the
+    // footprint origin, so this design must exercise the conversion. If this
+    // asserts, the footprint library did not resolve and the test is vacuous.
+    let usb = board
+        .components
+        .iter()
+        .find(|component| component.refdes == "J1")
+        .expect("Micro-USB component");
+    assert!(
+        shifted.contains(&usb.id),
+        "expected J1's courtyard centre to differ from its footprint origin; \
+         are the KiCad footprint libraries installed?"
+    );
+}
+
 #[test]
 fn usb_c_orientation_is_derived_and_wrong_override_is_detected() {
     let board = load_board("fixtures/designs/iot_sensor_board.synth");

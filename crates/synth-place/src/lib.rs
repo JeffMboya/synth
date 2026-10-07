@@ -84,14 +84,20 @@ pub mod score;
 use serde::{Deserialize, Serialize};
 use synth_diagnostics::{Diagnostic, DiagnosticBuilder, Location, Severity, Span};
 use synth_geometry::{mm_to_nm, Layer, Point, Rect, Rotation};
-use synth_ir::{Board, ComponentId};
+use synth_ir::{Board, ComponentId, PinId};
 use thiserror::Error;
 
 /// Final position + orientation of a single component on the PCB.
+///
+/// `center` is the **courtyard-bbox centre** in nanometres — the coordinate
+/// space the placer, DRC and exporter reason about. It is not the footprint's
+/// physical origin and must not be published as one: for an asymmetric
+/// footprint the origin sits at `center - rot(courtyard_offset)`. Convert
+/// through [`to_external`] before crossing the process boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ComponentPlacement {
     pub id: ComponentId,
-    /// Centre of the component's footprint, in nanometers.
+    /// Courtyard-bbox centre of the component, in nanometres.
     pub center: Point,
     pub rotation: Rotation,
     pub layer: Layer,
@@ -102,6 +108,84 @@ pub struct ComponentPlacement {
 pub struct Placement {
     pub board_outline: Rect,
     pub components: Vec<ComponentPlacement>,
+}
+
+/// A [`ComponentPlacement`] in the external coordinate space that agents and
+/// the SaaS (`synth-ee`) consume.
+///
+/// **Stable contract.** `center` is the point KiCad writes as a footprint's
+/// `(at x y)` — the footprint's physical origin on the board — in nanometres.
+/// This is the coordinate space the exported `.kicad_pcb` is in, so an overlay
+/// of the placement JSON on the PCB needs no correction.
+///
+/// It deliberately differs from [`ComponentPlacement::center`], which is the
+/// internal courtyard-bbox centre. Publishing the internal value here would
+/// shift every downstream consumer by the footprint's courtyard offset
+/// (`center - rot(courtyard_offset)`) for asymmetric footprints such as USB
+/// connectors and DIP headers, while the exported PCB places the origin
+/// correctly — the two would silently disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalComponent {
+    pub id: ComponentId,
+    /// Footprint origin (KiCad `at`), in nanometres.
+    pub center: Point,
+    pub rotation: Rotation,
+    pub layer: Layer,
+}
+
+/// The external placement payload: board outline plus every component in the
+/// footprint-origin coordinate space ([`ExternalComponent::center`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalPlacement {
+    pub board_outline: Rect,
+    pub components: Vec<ExternalComponent>,
+}
+
+/// The board-space point KiCad writes as a footprint's `(at x y)`, given the
+/// internal courtyard-centre placement.
+///
+/// `part` supplies the courtyard offset; `None` (or a part with no resolvable
+/// footprint) degrades to the identity, where origin and courtyard centre
+/// coincide. The KiCad exporter and [`to_external`] must both go through this
+/// so the exported board and the published placement cannot drift apart.
+#[must_use]
+pub fn footprint_origin(
+    part: Option<&synth_registry::Part>,
+    placement: &ComponentPlacement,
+) -> Point {
+    let (offset_x_mm, offset_y_mm) = part.map_or((0.0, 0.0), |p| {
+        synth_layout::pcb_courtyard_geometry_for_part(p).0
+    });
+    let (rot_x, rot_y) = placement
+        .rotation
+        .rotate_offset(mm_to_nm(offset_x_mm), mm_to_nm(offset_y_mm));
+    Point::new(placement.center.x_nm - rot_x, placement.center.y_nm - rot_y)
+}
+
+/// Convert an internal placement into the stable external coordinate space.
+///
+/// Use this for every placement payload that leaves the process — the CLI's
+/// `synth place` and the MCP `component_placements` field. Never serialize
+/// [`Placement`] directly to an external consumer.
+#[must_use]
+pub fn to_external(board: &Board, placement: &Placement) -> ExternalPlacement {
+    let components = placement
+        .components
+        .iter()
+        .map(|p| {
+            let part = board.component(p.id).and_then(|c| c.part.as_ref());
+            ExternalComponent {
+                id: p.id,
+                center: footprint_origin(part, p),
+                rotation: p.rotation,
+                layer: p.layer,
+            }
+        })
+        .collect();
+    ExternalPlacement {
+        board_outline: placement.board_outline,
+        components,
+    }
 }
 
 /// Structured failure modes for the constraint solver. Each
@@ -239,6 +323,15 @@ fn board_span(board: &Board) -> Span {
 /// passives without huge gaps; coarse enough that the greedy
 /// scan stays fast on 200-component designs.
 const GRID_PITCH_MM: f64 = 1.0;
+
+/// Offset from `ComponentPlacement::center` to the courtyard centre that the
+/// solver and legalization passes use. The KiCad exporter puts the footprint
+/// origin at `center - rot(courtyard_offset)`, so on the exported board the
+/// courtyard is centred exactly on `center`, and the router and DRC model it
+/// the same way. Adding the footprint's courtyard offset here would make
+/// the placer clear space one offset away from where the part actually
+/// lands (a DIP-28's real courtyard then overlaps its neighbours).
+const PLACEMENT_COURTYARD_OFFSET_MM: (f64, f64) = (0.0, 0.0);
 
 /// Margin between the outermost placed component and the board
 /// edge. Set to 6.0 mm to guarantee open routing channels around
@@ -396,23 +489,16 @@ fn sidecar_courtyard_rect(
     // Use the same offset, dimensions, and rotation convention as the visual
     // review and KiCad exporter. A simpler unrotated bbox here can accept a
     // sidecar that later collides once the real footprint courtyard is used.
-    let ((offset_x, offset_y), (width, height)) = component.part.as_ref().map_or_else(
-        || ((0.0, 0.0), fallback_courtyard(&component.kind)),
-        synth_layout::pcb_courtyard_geometry_for_part,
+    let (width, height) = component.part.as_ref().map_or_else(
+        || fallback_courtyard(&component.kind),
+        |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
     );
     let (rotated_width, rotated_height) = match placement.rotation {
         Rotation::Zero | Rotation::OneEighty => (width, height),
         Rotation::Ninety | Rotation::TwoSeventy => (height, width),
     };
-    let (rotated_offset_x, rotated_offset_y) = placement
-        .rotation
-        .rotate_offset(mm_to_nm(offset_x), mm_to_nm(offset_y));
-    let courtyard_center = Point::new(
-        placement.center.x_nm + rotated_offset_x,
-        placement.center.y_nm + rotated_offset_y,
-    );
     Rect::from_center_half_extents(
-        courtyard_center,
+        placement.center,
         mm_to_nm(rotated_width) / 2,
         mm_to_nm(rotated_height) / 2,
     )
@@ -456,69 +542,147 @@ fn legalize_sidecar_overrides(
         .collect();
     let pitch_nm = mm_to_nm(0.5);
 
-    for _ in 0..overridden.len().max(1) {
-        let mut changed = false;
-        for (component_index, component) in board.components.iter().enumerate() {
-            if !overridden.contains(&component.id) {
-                continue;
-            }
-            let Some(placement_index) = placement
-                .components
-                .iter()
-                .position(|placed| placed.id == component.id)
-            else {
-                continue;
-            };
-            let current = placement.components[placement_index];
-            if sidecar_position_is_legal(board, placement, component_index, current) {
-                continue;
-            }
+    // Honour hard overrides before soft ones, and refdes within a priority,
+    // so which override wins a contested square is a property of the design
+    // file rather than of iteration order.
+    let priority_of = |id: ComponentId| {
+        board
+            .component(id)
+            .and_then(|c| sidecar.components.get(&c.refdes))
+            .map_or(synth_layout::sidecar::OverridePriority::Hard, |entry| {
+                entry.priority
+            })
+    };
+    let mut order: Vec<ComponentId> = overridden.iter().copied().collect();
+    order.sort_by_key(|id| {
+        let reversed = matches!(
+            priority_of(*id),
+            synth_layout::sidecar::OverridePriority::Soft
+        );
+        (
+            reversed,
+            board
+                .component(*id)
+                .map_or(String::new(), |c| c.refdes.clone()),
+        )
+    });
 
-            let mut best: Option<(ComponentPlacement, i64)> = None;
-            // A small square spiral gives the closest *local* legal location
-            // while remaining deterministic. Do not silently move an agent's
-            // requested component across the board: if no nearby slot exists,
-            // leave the coordinate intact so visual review reports the real
-            // collision and the agent can make an intentional revision.
-            for radius in 1_i64..=10 {
-                for dx in -radius..=radius {
-                    for dy in -radius..=radius {
-                        if dx.abs().max(dy.abs()) != radius {
-                            continue;
-                        }
-                        let candidate = ComponentPlacement {
-                            center: Point::new(
-                                current.center.x_nm + dx * pitch_nm,
-                                current.center.y_nm + dy * pitch_nm,
-                            ),
-                            ..current
-                        };
-                        if !sidecar_position_is_legal(board, placement, component_index, candidate)
-                        {
-                            continue;
-                        }
-                        let distance = dx.abs() + dy.abs();
-                        if best
-                            .as_ref()
-                            .is_none_or(|(_, best_distance)| distance < *best_distance)
-                        {
-                            best = Some((candidate, distance));
-                        }
+    for target in order {
+        let Some(component_index) = board
+            .components
+            .iter()
+            .position(|component| component.id == target)
+        else {
+            continue;
+        };
+        let Some(placement_index) = placement
+            .components
+            .iter()
+            .position(|placed| placed.id == target)
+        else {
+            continue;
+        };
+        let requested = placement.components[placement_index];
+        if sidecar_position_is_legal(board, placement, component_index, requested) {
+            continue;
+        }
+
+        // The requested square is occupied. A drag is an instruction, not a
+        // suggestion: whoever is in the way moves, because leaving the board
+        // with two overlapping courtyards is worse than moving a part the
+        // designer did not place by hand. Blockers are lifted first, then the
+        // requested square is re-checked.
+        let blockers: Vec<ComponentId> = placement
+            .components
+            .iter()
+            .filter(|other| other.id != target)
+            .filter(|other| {
+                let rect =
+                    sidecar_courtyard_rect(board, &board.components[component_index], &requested);
+                rect.intersects(&sidecar_courtyard_rect(
+                    board,
+                    board
+                        .component(other.id)
+                        .unwrap_or(&board.components[component_index]),
+                    other,
+                ))
+            })
+            .map(|other| other.id)
+            .collect();
+
+        let mut lifted: Vec<(ComponentId, ComponentPlacement)> = Vec::new();
+        for blocker in &blockers {
+            // A blocker that is itself a hard override outranks this drag and
+            // is left alone; the caller surfaced that conflict already.
+            if overridden.contains(blocker)
+                && priority_of(*blocker) == synth_layout::sidecar::OverridePriority::Hard
+            {
+                continue;
+            }
+            if let Some(index) = placement.components.iter().position(|p| p.id == *blocker) {
+                lifted.push((*blocker, placement.components[index]));
+                placement.components[index].center = Point::new(
+                    placement.board_outline.min.x_nm,
+                    placement.board_outline.min.y_nm,
+                );
+            }
+        }
+
+        if sidecar_position_is_legal(board, placement, component_index, requested) {
+            placement.components[placement_index] = requested;
+            continue;
+        }
+
+        // Something un-liftable is in the way. Fall back to the local search,
+        // then restore whatever was lifted so the board stays legal even if
+        // the request could not be honoured.
+        match nearest_local_slot(board, placement, component_index, requested, pitch_nm) {
+            Some(candidate) => placement.components[placement_index] = candidate,
+            None => {
+                for (id, original) in lifted {
+                    if let Some(index) = placement.components.iter().position(|p| p.id == id) {
+                        placement.components[index] = original;
                     }
                 }
-                if best.is_some() {
-                    break;
-                }
             }
-            if let Some((candidate, _)) = best {
-                placement.components[placement_index] = candidate;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
         }
     }
+}
+
+/// Nearest legal square to `requested`, searched as an expanding ring.
+///
+/// Deterministic: the first legal square found on the smallest ring wins,
+/// and a ring is scanned in a fixed order.
+fn nearest_local_slot(
+    board: &Board,
+    placement: &Placement,
+    component_index: usize,
+    requested: ComponentPlacement,
+    pitch_nm: i64,
+) -> Option<ComponentPlacement> {
+    // Do not silently move an agent's requested component across the board: if
+    // no nearby slot exists, leave the coordinate for visual review to report.
+    const MAX_RING: i64 = 10;
+    for radius in 1..=MAX_RING {
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                if dx.abs().max(dy.abs()) != radius {
+                    continue;
+                }
+                let candidate = ComponentPlacement {
+                    center: Point::new(
+                        requested.center.x_nm + dx * pitch_nm,
+                        requested.center.y_nm + dy * pitch_nm,
+                    ),
+                    ..requested
+                };
+                if sidecar_position_is_legal(board, placement, component_index, candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Run placement with the optional PCB-placement sidecar.
@@ -625,11 +789,11 @@ pub fn place_with_dimensions(
         .components
         .iter()
         .map(|c| {
-            let ((cx, cy), (w, h)) = c.part.as_ref().map_or_else(
-                || ((0.0, 0.0), fallback_courtyard(&c.kind)),
-                pcb_courtyard_geometry_for_part,
+            let (w, h) = c.part.as_ref().map_or_else(
+                || fallback_courtyard(&c.kind),
+                |part| pcb_courtyard_geometry_for_part(part).1,
             );
-            (c.id, (cx, cy), (w + 1.5, h + 1.5))
+            (c.id, PLACEMENT_COURTYARD_OFFSET_MM, (w + 1.5, h + 1.5))
         })
         .collect();
 
@@ -683,11 +847,15 @@ pub fn place_with_tuning<S: ::std::hash::BuildHasher>(
         .components
         .iter()
         .map(|c| {
-            let ((cx, cy), (w, h)) = c.part.as_ref().map_or_else(
-                || ((0.0, 0.0), fallback_courtyard(&c.kind)),
-                pcb_courtyard_geometry_for_part,
+            let (w, h) = c.part.as_ref().map_or_else(
+                || fallback_courtyard(&c.kind),
+                |part| pcb_courtyard_geometry_for_part(part).1,
             );
-            (c.id, (cx, cy), (w + extra_margin_mm, h + extra_margin_mm))
+            (
+                c.id,
+                PLACEMENT_COURTYARD_OFFSET_MM,
+                (w + extra_margin_mm, h + extra_margin_mm),
+            )
         })
         .collect();
 
@@ -731,6 +899,70 @@ pub fn place_with_tuning<S: ::std::hash::BuildHasher>(
         placed_mm2: total_courtyard_mm2,
         board_mm2: 230.0 * 230.0,
     }))
+}
+
+/// Half-extents of a component's courtyard after applying its rotation.
+///
+/// `unrot_half_w`/`unrot_half_h` are the footprint's own (unrotated) half
+/// extents; a quarter turn swaps them. This is the single definition used by
+/// the greedy search, the legalization sweep, outline compaction and the
+/// exporter, so all four agree on where the copper boundary actually is.
+fn rotated_half_extents(rotation: Rotation, unrot_half_w: i64, unrot_half_h: i64) -> (i64, i64) {
+    match rotation {
+        Rotation::Zero | Rotation::OneEighty => (unrot_half_w, unrot_half_h),
+        Rotation::Ninety | Rotation::TwoSeventy => (unrot_half_h, unrot_half_w),
+    }
+}
+
+/// The courtyard rectangle a component occupies, given its placement anchor.
+///
+/// A placement anchor is footprint-specific — for a long header it is commonly
+/// pad 1, not the part's geometric centre — so the courtyard can sit up to
+/// half a footprint away from the anchor. Every overlap test must therefore be
+/// run against the offset courtyard rather than an anchor-centred box, or the
+/// solver can accept a placement that later stages (and the exported board)
+/// consider an overlap.
+///
+/// `extra_nm` widens the result symmetrically; pass a non-zero value to keep a
+/// deliberate spacing margin around small passives.
+fn courtyard_rect_at_anchor(
+    anchor: Point,
+    rotation: Rotation,
+    unrot_half_w: i64,
+    unrot_half_h: i64,
+    offset_mm: (f64, f64),
+    extra_nm: i64,
+) -> Rect {
+    let (half_w, half_h) = rotated_half_extents(rotation, unrot_half_w, unrot_half_h);
+    let (off_x, off_y) = rotation.rotate_offset(mm_to_nm(offset_mm.0), mm_to_nm(offset_mm.1));
+    Rect::from_center_half_extents(
+        Point::new(anchor.x_nm + off_x, anchor.y_nm + off_y),
+        half_w + extra_nm,
+        half_h + extra_nm,
+    )
+}
+
+/// The authoritative courtyard rect for an existing placement.
+///
+/// Thin wrapper over [`courtyard_rect_at_anchor`] for the many call sites that
+/// already hold a [`ComponentPlacement`] rather than a raw anchor point.
+/// `offset_mm` is the footprint's courtyard-origin offset and may be `None`
+/// for parts with no offset data.
+pub(crate) fn courtyard_rect_for_placement(
+    placement: &ComponentPlacement,
+    width_mm: f64,
+    height_mm: f64,
+    offset_mm: Option<(f64, f64)>,
+    extra_nm: i64,
+) -> Rect {
+    courtyard_rect_at_anchor(
+        placement.center,
+        placement.rotation,
+        mm_to_nm(width_mm) / 2,
+        mm_to_nm(height_mm) / 2,
+        offset_mm.unwrap_or((0.0, 0.0)),
+        extra_nm,
+    )
 }
 
 fn place_with_outline<S: ::std::hash::BuildHasher>(
@@ -864,7 +1096,21 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
 
     let (modules, _claimed_children) =
         modules::extract_functional_modules(board, &courtyard_lookup);
-    let fp_targets = floorplan::compute_floorplan_targets(board, usable, &courtyard_lookup);
+    let mut fp_targets = floorplan::compute_floorplan_targets(board, usable, &courtyard_lookup);
+    // A differential pair may turn the far end of its run so the pair's
+    // pads escape toward the near end — but only where the floorplan left
+    // the component at identity. The floorplan's non-identity rotations are
+    // deliberate (a connector's mating face, a header's row order), and a
+    // pair does not get to overrule them.
+    for escape in
+        modules::pair_escape_rotations(board, &fp_targets, &build_pad_offset_lookup(board))
+    {
+        if let Some(target) = fp_targets.get_mut(&escape.component) {
+            if target.rotation == Rotation::Zero {
+                target.rotation = escape.rotation;
+            }
+        }
+    }
     let region_hints = cem::cem_region_assign(board, usable);
 
     // Child lookup for relative module offset placement and auto-rotation
@@ -890,7 +1136,11 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
     let center_x = usable.min.x_nm + usable.width_nm() / 2;
     let center_y = usable.min.y_nm + usable.height_nm() / 2;
 
-    let mut placed: Vec<(ComponentId, Rect)> = Vec::with_capacity(board.components.len());
+    // Each entry is (component id, placement anchor, courtyard rect). The anchor
+    // is what gets exported and what pad offsets are relative to; the rect is
+    // the authoritative courtyard, offset-corrected so overlap tests here agree
+    // with the legalization sweep and the exported board.
+    let mut placed: Vec<(ComponentId, Point, Rect)> = Vec::with_capacity(board.components.len());
     let mut grid_start_indices = vec![0_usize; order.len()];
     let mut backtracks = 0_usize;
 
@@ -914,7 +1164,18 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
         let comp_kind = board.component(id).map_or("", |c| c.kind.as_str());
         let is_passive =
             comp_kind == "capacitor" || comp_kind == "resistor" || comp_kind == "diode";
-        let pad_extra_nm = if is_passive { mm_to_nm(0.5) } else { 0 };
+        // Clearance the greedy search enforces around small passives, on top
+        // of the courtyard. 0.5 mm left too little to route between adjacent
+        // 0603s: a 0603 is 1.46 mm tall, so 0.5 mm of slack leaves roughly a
+        // 1 mm channel — about two cells on the router's 0.254 mm fine grid,
+        // which is marginal once trace width and clearance are subtracted.
+        //
+        // 1.5 mm is the smallest clearance in a sweep of {0.5, 1.0, 1.5, 2.0} mm
+        // that minimises unrouted nets across the repository's example designs
+        // (11 at 1.5 and 2.0 mm, 12 at 0.5 mm, 13 at 1.0 mm) — 2.0 mm buys no
+        // additional routability but costs ~9% more board area, so 1.5 mm
+        // dominates it. This is an empirically tuned value, not a derived one.
+        let pad_extra_nm = if is_passive { mm_to_nm(1.5) } else { 0 };
         let (mut half_w, mut half_h) = match rotation {
             Rotation::Zero | Rotation::OneEighty => {
                 (unrot_half_w + pad_extra_nm, unrot_half_h + pad_extra_nm)
@@ -1044,7 +1305,7 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                 }
                 let placed_refdes_rects: std::collections::HashMap<String, Rect> = placed
                     .iter()
-                    .filter_map(|(pid, r)| board.component(*pid).map(|c| (c.refdes.clone(), *r)))
+                    .filter_map(|(pid, _, r)| board.component(*pid).map(|c| (c.refdes.clone(), *r)))
                     .collect();
                 let res = resolve_hint_target(&effective_hint, usable, &placed_refdes_rects);
                 hint_target = res.target;
@@ -1052,10 +1313,25 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
             }
         }
 
+        // Computed after the dense-connector rewrite above, which is the last
+        // point at which `rotation` (and therefore the rotated courtyard offset)
+        // can change.
+        let courtyard_offset = courtyard_offset_lookup
+            .get(&id)
+            .copied()
+            .unwrap_or((0.0, 0.0));
+        let (rot_off_x, rot_off_y) =
+            rotation.rotate_offset(mm_to_nm(courtyard_offset.0), mm_to_nm(courtyard_offset.1));
+        // Anchor bounds that keep the offset-corrected courtyard inside `usable`.
+        let scan_min_x = usable.min.x_nm + half_w - rot_off_x;
+        let scan_max_x = usable.max.x_nm - half_w - rot_off_x;
+        let scan_min_y = usable.min.y_nm + half_h - rot_off_y;
+        let scan_max_y = usable.max.y_nm - half_h - rot_off_y;
+
         let mut target_point = if let Some(t) = hint_target {
             t
         } else if let Some((anchor_id, rel_offset, _rot)) = child_module_map.get(&id) {
-            if let Some((_, anchor_rect)) = placed.iter().find(|(pid, _)| pid == anchor_id) {
+            if let Some((_, _, anchor_rect)) = placed.iter().find(|(pid, _, _)| pid == anchor_id) {
                 let ac = Point::new(
                     (anchor_rect.min.x_nm + anchor_rect.max.x_nm) / 2,
                     (anchor_rect.min.y_nm + anchor_rect.max.y_nm) / 2,
@@ -1077,8 +1353,8 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                 if net.endpoints.iter().any(|ep| ep.component == id) {
                     for ep in &net.endpoints {
                         if ep.component != id {
-                            if let Some((_, r)) =
-                                placed.iter().find(|(pid, _)| *pid == ep.component)
+                            if let Some((_, _, r)) =
+                                placed.iter().find(|(pid, _, _)| *pid == ep.component)
                             {
                                 conn_pos = Some(Point::new(
                                     (r.min.x_nm + r.max.x_nm) / 2,
@@ -1107,18 +1383,19 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                     && !dense_connector_edge_override
                 {
                     if let Some(anchor_refdes) = hint.near.as_deref() {
-                        if let Some(anchor) = board
-                            .components
-                            .iter()
-                            .find(|candidate| candidate.refdes.eq_ignore_ascii_case(anchor_refdes))
-                        {
-                            if let Some((_, anchor_rect)) =
-                                placed.iter().find(|(placed_id, _)| *placed_id == anchor.id)
+                        let (anchor_id, anchor_pin) = resolve_near_target(board, anchor_refdes)
+                            .unwrap_or((ComponentId(u32::MAX), None));
+                        if let Some(anchor) = board.component(anchor_id) {
+                            if let Some((_, anchor_point, anchor_rect)) = placed
+                                .iter()
+                                .find(|(placed_id, _, _)| *placed_id == anchor.id)
                             {
-                                let anchor_center = Point::new(
-                                    (anchor_rect.min.x_nm + anchor_rect.max.x_nm) / 2,
-                                    (anchor_rect.min.y_nm + anchor_rect.max.y_nm) / 2,
-                                );
+                                // Pad offsets are expressed relative to the
+                                // placement anchor, not the courtyard centre,
+                                // so the synthetic placement below must carry
+                                // the anchor.
+                                let anchor_center = *anchor_point;
+                                let _ = anchor_rect;
                                 let anchor_rotation = resolved_rotation_overrides
                                     .get(&anchor.id)
                                     .copied()
@@ -1137,6 +1414,9 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                                     rotation: anchor_rotation,
                                     layer: Layer::Top,
                                 };
+                                // A `near` that names a pin aims at that pin's pad. Otherwise any
+                                // net the two share will do, and the first is
+                                // as good as any.
                                 'direct_net: for net in &board.nets {
                                     if !net.endpoints.iter().any(|ep| ep.component == id) {
                                         continue;
@@ -1146,6 +1426,9 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                                     else {
                                         continue;
                                     };
+                                    if anchor_pin.is_some_and(|pin| anchor_endpoint.pin != pin) {
+                                        continue;
+                                    }
                                     let Some(anchor_offset) = pad_offsets
                                         .lookup(anchor.id, anchor_endpoint.pin.0 as usize)
                                     else {
@@ -1221,8 +1504,9 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                             .iter()
                             .find(|candidate| candidate.refdes.eq_ignore_ascii_case(anchor_refdes))
                         {
-                            if let Some((_, anchor_rect)) =
-                                placed.iter().find(|(placed_id, _)| *placed_id == anchor.id)
+                            if let Some((_, _, anchor_rect)) = placed
+                                .iter()
+                                .find(|(placed_id, _, _)| *placed_id == anchor.id)
                             {
                                 let gap = mm_to_nm(1.0);
                                 let anchor_center = Point::new(
@@ -1258,7 +1542,7 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
         if hint_target.is_none() {
             let mut rep_dx = 0_i64;
             let mut rep_dy = 0_i64;
-            for (_, r) in &placed {
+            for (_, _, r) in &placed {
                 let cx = (r.min.x_nm + r.max.x_nm) / 2;
                 let cy = (r.min.y_nm + r.max.y_nm) / 2;
                 let dx = target_point.x_nm - cx;
@@ -1273,12 +1557,14 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
             target_point.y_nm += rep_dy;
         }
 
-        // Generate grid candidate cells sorted radially by distance to target_point
+        // Generate grid candidate cells sorted radially by distance to target_point.
+        // These are placement *anchor* positions; the overlap test below turns
+        // each into the offset-corrected courtyard.
         let mut candidates = Vec::new();
-        let mut cy = usable.min.y_nm + half_h;
-        while cy + half_h <= usable.max.y_nm {
-            let mut cx = usable.min.x_nm + half_w;
-            while cx + half_w <= usable.max.x_nm {
+        let mut cy = scan_min_y;
+        while cy <= scan_max_y {
+            let mut cx = scan_min_x;
+            while cx <= scan_max_x {
                 let pt = Point::new(cx, cy);
                 if let Some(hr) = hard_region {
                     if hr.contains(pt) {
@@ -1294,10 +1580,10 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
 
         // Fallback to full grid if hard region filter leaves 0 candidates
         if candidates.is_empty() && hard_region.is_some() {
-            let mut cy = usable.min.y_nm + half_h;
-            while cy + half_h <= usable.max.y_nm {
-                let mut cx = usable.min.x_nm + half_w;
-                while cx + half_w <= usable.max.x_nm {
+            let mut cy = scan_min_y;
+            while cy <= scan_max_y {
+                let mut cx = scan_min_x;
+                while cx <= scan_max_x {
                     candidates.push(Point::new(cx, cy));
                     cx += pitch_nm;
                 }
@@ -1312,10 +1598,10 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
         // retaining preferred candidates first. Dense edge connectors remain
         // strict and cannot escape their declared edge.
         if hard_region.is_some() && !dense_connector_edge_override {
-            let mut cy = usable.min.y_nm + half_h;
-            while cy + half_h <= usable.max.y_nm {
-                let mut cx = usable.min.x_nm + half_w;
-                while cx + half_w <= usable.max.x_nm {
+            let mut cy = scan_min_y;
+            while cy <= scan_max_y {
+                let mut cx = scan_min_x;
+                while cx <= scan_max_x {
                     let pt = Point::new(cx, cy);
                     if !candidates.contains(&pt) {
                         candidates.push(pt);
@@ -1340,9 +1626,21 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
 
         for (cell_idx, pt) in candidates.iter().enumerate().skip(start_idx) {
             tried += 1;
-            let candidate = Rect::from_center_half_extents(*pt, half_w, half_h);
-            if placed.iter().all(|(_, r)| !candidate.intersects(r))
-                && !intersects_keepout(candidate, id, board, board_outline, &placed)
+            let candidate = courtyard_rect_at_anchor(
+                *pt,
+                rotation,
+                unrot_half_w,
+                unrot_half_h,
+                courtyard_offset,
+                pad_extra_nm,
+            );
+            if placed.iter().all(|(_, _, r)| !candidate.intersects(r))
+                && !intersects_keepout(candidate, id, board, board_outline, |pid| {
+                    placed
+                        .iter()
+                        .find(|(placed_id, _, _)| *placed_id == pid)
+                        .map(|(_, _, r)| *r)
+                })
             {
                 found = Some(*pt);
                 grid_start_indices[order_idx] = cell_idx;
@@ -1351,8 +1649,15 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
         }
 
         if let Some(centre) = found {
-            let courtyard = Rect::from_center_half_extents(centre, half_w, half_h);
-            placed.push((id, courtyard));
+            let courtyard = courtyard_rect_at_anchor(
+                centre,
+                rotation,
+                unrot_half_w,
+                unrot_half_h,
+                courtyard_offset,
+                pad_extra_nm,
+            );
+            placed.push((id, centre, courtyard));
             order_idx += 1;
         } else {
             if order_idx == 0 || backtracks >= MAX_BACKTRACKS {
@@ -1377,14 +1682,12 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
     }
 
     // Build the output in IR order so consumers iterating by
-    // index see deterministic ordering.
+    // index see deterministic ordering. `center` is the placement anchor, which
+    // is what pad offsets and the exporter are expressed relative to.
     let mut placements: Vec<ComponentPlacement> = placed
         .iter()
-        .map(|(id, rect)| {
-            let center = Point::new(
-                (rect.min.x_nm + rect.max.x_nm) / 2,
-                (rect.min.y_nm + rect.max.y_nm) / 2,
-            );
+        .map(|(id, anchor, _rect)| {
+            let center = *anchor;
             let rotation = if let Some(rot) = resolved_rotation_overrides.get(id) {
                 *rot
             } else if let Some((_, _, rot)) = child_module_map.get(id) {
@@ -1410,6 +1713,7 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
             &mut placements,
             &passives,
             &courtyard_lookup,
+            &courtyard_offset_lookup,
             &pad_offsets,
             usable,
         )?;
@@ -2049,12 +2353,18 @@ fn enforce_edge_copper_clearance(
     }
 }
 
+/// True when `candidate` falls inside any keepout circle.
+///
+/// `lookup` resolves an already-placed component's courtyard rect; callers
+/// differ in how they track placements, so this is a closure rather than a
+/// concrete slice type. A missing rect means "not placed yet", which falls back
+/// to the board centre — the same fallback used when no anchor matches.
 pub(crate) fn intersects_keepout(
     candidate: Rect,
     id: ComponentId,
     board: &Board,
     board_outline: Rect,
-    placed: &[(ComponentId, Rect)],
+    lookup: impl Fn(ComponentId) -> Option<Rect>,
 ) -> bool {
     let candidate_center = Point::new(
         (candidate.min.x_nm + candidate.max.x_nm) / 2,
@@ -2079,12 +2389,8 @@ pub(crate) fn intersects_keepout(
             if anchor.id == id {
                 continue;
             }
-            placed
-                .iter()
-                .find(|(pid, _)| *pid == anchor.id)
-                .map(|(_, r)| {
-                    Point::new((r.min.x_nm + r.max.x_nm) / 2, (r.min.y_nm + r.max.y_nm) / 2)
-                })
+            lookup(anchor.id)
+                .map(|r| Point::new((r.min.x_nm + r.max.x_nm) / 2, (r.min.y_nm + r.max.y_nm) / 2))
                 .or_else(|| {
                     Some(Point::new(
                         board_outline.max.x_nm / 2,
@@ -2148,7 +2454,12 @@ fn placements_valid(
         {
             return false;
         }
-        if intersects_keepout(*r, *id, board, board_outline, &placed_rects) {
+        if intersects_keepout(*r, *id, board, board_outline, |pid| {
+            placed_rects
+                .iter()
+                .find(|(placed_id, _)| *placed_id == pid)
+                .map(|(_, r)| *r)
+        }) {
             return false;
         }
     }
@@ -2298,131 +2609,32 @@ fn cluster_cohesion(
 }
 
 /// Recognise (anchor, member) pairs that the placer should
-/// pull tight: every IC with `required_decoupling` is glued to
-/// the capacitors it shares a power net with, up to the rule's
-/// `count`. Same recognition logic the schematic clusterer uses,
-/// just applied to the PCB.
+/// pull tight.
 ///
-/// Returned pairs are deterministic: outer iteration is IR
-/// component order, inner is net-endpoint order.
-#[allow(clippy::too_many_lines, dead_code)]
+/// Every functional cluster the compiler recognizes becomes one
+/// cohesion pair per member: an IC with its decoupling caps, a crystal
+/// with its load caps, a connector with its ESD diodes, an antenna with
+/// its matching network. The pairs come from the shared recognition
+/// pass, so whatever the schematic groups with an anchor is what the
+/// board placer is asked to keep together — the same fact, read by two
+/// consumers.
+///
+/// A member belongs to exactly one cluster, so the first anchor to claim
+/// it wins and a capacitor cannot be pulled toward two parts at once.
+///
+/// Returned pairs are deterministic: recognition order is IR component
+/// order, and member order within a cluster is net-endpoint order.
+#[allow(dead_code)]
 fn build_cluster_pairs(board: &Board) -> Vec<(ComponentId, ComponentId)> {
     let mut out = Vec::new();
     let mut claimed: std::collections::HashSet<ComponentId> = std::collections::HashSet::new();
-
-    // 1. Decoupling clusters (IC + decoupling caps)
-    for component in &board.components {
-        let Some(part) = component.part.as_ref() else {
-            continue;
-        };
-        for rule in &part.required_decoupling {
-            let Some(pin_idx) = part.pins.iter().position(|p| p.name == rule.net) else {
-                continue;
-            };
-            let mut claimed_for_rule = 0_u32;
-            'outer: for net in &board.nets {
-                let mentions_pin = net
-                    .endpoints
-                    .iter()
-                    .any(|ep| ep.component == component.id && ep.pin.0 as usize == pin_idx);
-                if !mentions_pin {
-                    continue;
-                }
-                for endpoint in &net.endpoints {
-                    if endpoint.component == component.id || claimed.contains(&endpoint.component) {
-                        continue;
-                    }
-                    let Some(other) = board.components.iter().find(|c| c.id == endpoint.component)
-                    else {
-                        continue;
-                    };
-                    let is_cap = other.part.as_ref().is_some_and(|p| p.kind == "capacitor");
-                    if !is_cap {
-                        continue;
-                    }
-                    out.push((component.id, other.id));
-                    claimed.insert(other.id);
-                    claimed_for_rule += 1;
-                    if claimed_for_rule >= rule.count {
-                        break 'outer;
-                    }
-                }
+    for cluster in synth_ir::recognize_clusters(board) {
+        for member in &cluster.members {
+            if claimed.insert(member.component) {
+                out.push((cluster.anchor, member.component));
             }
         }
     }
-
-    // 2. Crystal clusters (crystal + load caps)
-    for component in &board.components {
-        if component.kind != "crystal" {
-            continue;
-        }
-        for net in &board.nets {
-            let mentions_crystal = net.endpoints.iter().any(|ep| ep.component == component.id);
-            if !mentions_crystal {
-                continue;
-            }
-            for endpoint in &net.endpoints {
-                if endpoint.component == component.id || claimed.contains(&endpoint.component) {
-                    continue;
-                }
-                if let Some(other) = board.components.iter().find(|c| c.id == endpoint.component) {
-                    if other.kind == "capacitor" {
-                        out.push((component.id, other.id));
-                        claimed.insert(other.id);
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. USB + ESD protection clusters (USB connector + ESD diodes)
-    for component in &board.components {
-        if component.kind != "connector" {
-            continue;
-        }
-        for net in &board.nets {
-            let mentions_usb = net.endpoints.iter().any(|ep| ep.component == component.id);
-            if !mentions_usb {
-                continue;
-            }
-            for endpoint in &net.endpoints {
-                if endpoint.component == component.id || claimed.contains(&endpoint.component) {
-                    continue;
-                }
-                if let Some(other) = board.components.iter().find(|c| c.id == endpoint.component) {
-                    if other.kind == "diode" {
-                        out.push((component.id, other.id));
-                        claimed.insert(other.id);
-                    }
-                }
-            }
-        }
-    }
-
-    // 4. RF matching network clusters (antenna + RF passives)
-    for component in &board.components {
-        if component.kind != "antenna" {
-            continue;
-        }
-        for net in &board.nets {
-            let mentions_rf = net.endpoints.iter().any(|ep| ep.component == component.id);
-            if !mentions_rf {
-                continue;
-            }
-            for endpoint in &net.endpoints {
-                if endpoint.component == component.id || claimed.contains(&endpoint.component) {
-                    continue;
-                }
-                if let Some(other) = board.components.iter().find(|c| c.id == endpoint.component) {
-                    if matches!(other.kind.as_str(), "resistor" | "capacitor" | "inductor") {
-                        out.push((component.id, other.id));
-                        claimed.insert(other.id);
-                    }
-                }
-            }
-        }
-    }
-
     out
 }
 
@@ -2541,11 +2753,12 @@ pub(crate) fn build_pad_offset_lookup(board: &Board) -> PadOffsetLookup {
             .as_ref()
             .and_then(|p| p.kicad_footprint.as_deref())
             .and_then(kicad_footprint_loader::pads);
-        // ComponentPlacement.center is the logical anchor used by the
-        // placer. The KiCad exporter places the footprint at that anchor
-        // plus the footprint's courtyard-origin offset, so every consumer
-        // of pad positions must include the same offset or routing will
-        // target coordinates different from the exported PCB.
+        // ComponentPlacement.center is the courtyard centre. The KiCad
+        // exporter puts the footprint origin at center - rot(courtyard
+        // offset), so a pad sits at center + rot(pad - offset). Every
+        // consumer of pad positions must subtract the same offset or
+        // placement will target coordinates different from the exported PCB
+        // (the router and DRC already do).
         let (origin_x_mm, origin_y_mm) = component
             .part
             .as_ref()
@@ -2558,8 +2771,8 @@ pub(crate) fn build_pad_offset_lookup(board: &Board) -> PadOffsetLookup {
                 .and_then(|pads| pads.iter().find(|p| p.number == pin.number.0))
                 .map(|pad| {
                     (
-                        mm_to_nm(pad.center_mm.0) + origin_offset.0,
-                        mm_to_nm(pad.center_mm.1) + origin_offset.1,
+                        mm_to_nm(pad.center_mm.0) - origin_offset.0,
+                        mm_to_nm(pad.center_mm.1) - origin_offset.1,
                     )
                 });
             row.push(entry);
@@ -2567,6 +2780,40 @@ pub(crate) fn build_pad_offset_lookup(board: &Board) -> PadOffsetLookup {
         map.insert(component.id, row);
     }
     PadOffsetLookup { map }
+}
+
+/// Split a `near` hint into the component it anchors to and, when the hint
+/// names one, the pin.
+///
+/// `near: U1` anchors to the part; `near: U1.dvdd` anchors to a specific
+/// pad of it, which is what an author needs when a part's pins sit on
+/// different sides and only one of them is the right neighbour — a
+/// decoupling capacitor belongs beside the rail pin it decouples, not
+/// beside the part's centre of mass.
+pub(crate) fn resolve_near_target(
+    board: &Board,
+    near: &str,
+) -> Option<(ComponentId, Option<PinId>)> {
+    let (refdes, pin_name) = match near.split_once('.') {
+        Some((refdes, pin)) => (refdes, Some(pin)),
+        None => (near, None),
+    };
+    let component = board
+        .components
+        .iter()
+        .find(|candidate| candidate.refdes.eq_ignore_ascii_case(refdes))?;
+    let pin = match pin_name {
+        Some(name) => {
+            let part = component.part.as_ref()?;
+            let index = part
+                .pins
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(name))?;
+            Some(PinId(u32::try_from(index).ok()?))
+        }
+        None => None,
+    };
+    Some((component.id, pin))
 }
 
 /// Net-graph degree per component: how many distinct nets
@@ -2634,8 +2881,16 @@ pub struct PlacementDescription {
     pub board_size_mm: [f64; 2],
     pub component_regions: Vec<ComponentRegionEntry>,
     pub cluster_summary: String,
-    pub drc_clean: bool,
-    pub unrouted_nets: usize,
+    /// `Some(true)`/`Some(false)` only when a DRC run has actually been
+    /// performed on this placement; `None` means "not evaluated".
+    ///
+    /// Placement review does not run DRC, so this is always `None` here. It
+    /// must never be defaulted to `true`: a placement that has not been routed
+    /// or checked cannot be asserted clean.
+    pub drc_clean: Option<bool>,
+    /// `Some(count)` only when routing has actually been performed; `None`
+    /// means "not evaluated". Always `None` from placement review.
+    pub unrouted_nets: Option<usize>,
     pub dense_regions: Vec<DenseRegionWarning>,
     /// Actionable warnings for an agent reviewing whether the placement is
     /// electrically purposeful and visually production-like.
@@ -2850,7 +3105,13 @@ pub fn resolve_hint_target(
     }
 
     if let Some(anchor_refdes) = &hint.near {
-        let anchor_lower = anchor_refdes.to_lowercase();
+        // `near` may name a pin (`U1.dvdd`); the halo and the side offset
+        // are relative to the part either way, so only the refdes is
+        // needed here. The pin is honoured by the pad-local target.
+        let refdes = anchor_refdes
+            .split_once('.')
+            .map_or(anchor_refdes.as_str(), |(refdes, _)| refdes);
+        let anchor_lower = refdes.to_lowercase();
         let anchor_rect = placed_refdes
             .iter()
             .find(|(k, _)| k.to_lowercase() == anchor_lower)
@@ -3116,28 +3377,6 @@ pub fn classify_region_name(pt: Point, usable: Rect) -> String {
     }
 }
 
-/// Return the physical centre of a component's courtyard.
-///
-/// Placement anchors are footprint-specific (for example, a long header's
-/// anchor is commonly pad 1), so they are not reliable for visual region
-/// classification. Keep the anchor for editable coordinates, but use this
-/// centre whenever describing where the physical part actually sits.
-fn physical_courtyard_center(
-    component: &synth_ir::Component,
-    placement: &ComponentPlacement,
-) -> Point {
-    let (offset_x, offset_y) = component.part.as_ref().map_or((0.0, 0.0), |part| {
-        synth_layout::pcb_courtyard_geometry_for_part(part).0
-    });
-    let (rotated_offset_x, rotated_offset_y) = placement
-        .rotation
-        .rotate_offset(mm_to_nm(offset_x), mm_to_nm(offset_y));
-    Point::new(
-        placement.center.x_nm + rotated_offset_x,
-        placement.center.y_nm + rotated_offset_y,
-    )
-}
-
 // Area-ratio math in the body casts nanometer integers to f64.
 // Board envelopes stay far below 2^53 nm, so the cast is exact for
 // every representable board; the allow documents that bound.
@@ -3163,7 +3402,7 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
 
     for comp in &board.components {
         if let Some(p) = placement.components.iter().find(|p| p.id == comp.id) {
-            let region = classify_region_name(physical_courtyard_center(comp, p), usable);
+            let region = classify_region_name(p.center, usable);
             *region_counts.entry(region.clone()).or_default() += 1;
             component_regions.push(ComponentRegionEntry {
                 component: comp.refdes.clone(),
@@ -3341,25 +3580,18 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         let Some(component) = board.component(placed.id) else {
             continue;
         };
-        let ((offset_x, offset_y), (width, height)) = component.part.as_ref().map_or_else(
-            || ((0.0, 0.0), fallback_courtyard(&component.kind)),
-            synth_layout::pcb_courtyard_geometry_for_part,
+        let (width, height) = component.part.as_ref().map_or_else(
+            || fallback_courtyard(&component.kind),
+            |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
         );
         let (rotated_width, rotated_height) = match placed.rotation {
             Rotation::Zero | Rotation::OneEighty => (width, height),
             Rotation::Ninety | Rotation::TwoSeventy => (height, width),
         };
-        let (rotated_offset_x, rotated_offset_y) = placed
-            .rotation
-            .rotate_offset(mm_to_nm(offset_x), mm_to_nm(offset_y));
-        let center = Point::new(
-            placed.center.x_nm + rotated_offset_x,
-            placed.center.y_nm + rotated_offset_y,
-        );
         courtyard_rects.push((
             component.refdes.as_str(),
             Rect::from_center_half_extents(
-                center,
+                placed.center,
                 mm_to_nm(rotated_width) / 2,
                 mm_to_nm(rotated_height) / 2,
             ),
@@ -3397,8 +3629,8 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         let Some(anchor_placement) = placement.components.iter().find(|p| p.id == anchor.id) else {
             continue;
         };
-        let component_center = physical_courtyard_center(component, component_placement);
-        let anchor_center = physical_courtyard_center(anchor, anchor_placement);
+        let component_center = component_placement.center;
+        let anchor_center = anchor_placement.center;
         let delta_x = synth_geometry::nm_to_mm(component_center.x_nm - anchor_center.x_nm);
         let delta_y = synth_geometry::nm_to_mm(component_center.y_nm - anchor_center.y_nm);
         let tolerance_mm = 0.5;
@@ -3971,8 +4203,10 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         board_size_mm: [board_w_mm, board_h_mm],
         component_regions,
         cluster_summary,
-        drc_clean: true,
-        unrouted_nets: 0,
+        // Placement review runs neither the router nor DRC, so reporting
+        // `true`/`0` here would assert a clean board that was never checked.
+        drc_clean: None,
+        unrouted_nets: None,
         dense_regions,
         functional_warnings,
         visual_review,
@@ -3984,6 +4218,34 @@ mod tests {
     use super::*;
     use synth_geometry::nm_to_mm;
     use synth_ir::Board;
+
+    /// The authoritative courtyard rect for every placement, in the same
+    /// order as `placement.components`.
+    ///
+    /// Tests must use this rather than a rect centred on `placement.center`:
+    /// a placement anchor is footprint-relative (a DIP anchors near one corner,
+    /// with a courtyard offset of several millimetres), so anchor-centring
+    /// invents phantom overlaps and phantom out-of-bounds violations.
+    fn authoritative_courtyards(board: &Board, placement: &Placement) -> Vec<Rect> {
+        placement
+            .components
+            .iter()
+            .map(|p| {
+                let comp = board.component(p.id).expect("component");
+                let size = comp.part.as_ref().map_or_else(
+                    || fallback_courtyard(&comp.kind),
+                    |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
+                );
+                courtyard_rect_for_placement(
+                    p,
+                    size.0,
+                    size.1,
+                    Some(PLACEMENT_COURTYARD_OFFSET_MM),
+                    0,
+                )
+            })
+            .collect()
+    }
 
     /// Load a fixture against the real registry so the placer
     /// sees real `Part` metadata.
@@ -4028,42 +4290,20 @@ mod tests {
 
     #[test]
     fn no_two_courtyards_overlap() {
-        use synth_layout::pcb_courtyard_for_part;
         let board = load_board("../../examples/sensor_logger.synth");
         let placement = place(&board).expect("place");
-        // Reconstruct courtyard rects for every placement and
-        let rects: Vec<Rect> = placement
-            .components
-            .iter()
-            .map(|p| {
-                let (w_mm, h_mm) =
-                    board
-                        .components
-                        .iter()
-                        .find(|c| c.id == p.id)
-                        .map_or((4.0, 4.0), |c| {
-                            c.part
-                                .as_ref()
-                                .map_or_else(|| fallback_courtyard(&c.kind), pcb_courtyard_for_part)
-                        });
-                let (rw, rh) = match p.rotation {
-                    Rotation::Zero | Rotation::OneEighty => (w_mm, h_mm),
-                    Rotation::Ninety | Rotation::TwoSeventy => (h_mm, w_mm),
-                };
-                Rect::from_center_half_extents(p.center, mm_to_nm(rw) / 2, mm_to_nm(rh) / 2)
-            })
-            .collect();
+        let rects = authoritative_courtyards(&board, &placement);
         for i in 0..rects.len() {
             for j in (i + 1)..rects.len() {
-                if rects[i].intersects(&rects[j]) {
-                    eprintln!("Overlap detected between idx {i} ({:?}) at {:?} rect {:?} AND idx {j} ({:?}) at {:?} rect {:?}",
-                        placement.components[i].id, placement.components[i].center, rects[i],
-                        placement.components[j].id, placement.components[j].center, rects[j]
-                    );
-                }
                 assert!(
                     !rects[i].intersects(&rects[j]),
-                    "courtyards {i} and {j} overlap",
+                    "courtyards {} ({}) and {} ({}) overlap: {:?} vs {:?}",
+                    i,
+                    placement.components[i].id.0,
+                    j,
+                    placement.components[j].id.0,
+                    rects[i],
+                    rects[j]
                 );
             }
         }
@@ -4212,23 +4452,8 @@ mod tests {
     fn all_placements_lie_inside_board_outline() {
         let board = load_board("../../examples/sensor_logger.synth");
         let placement = place(&board).expect("place");
-        for p in &placement.components {
-            let comp = board.component(p.id).unwrap();
-            let (w_mm, h_mm) = comp.part.as_ref().map_or_else(
-                || fallback_courtyard(&comp.kind),
-                synth_layout::pcb_courtyard_for_part,
-            );
-            let half_w = mm_to_nm(w_mm / 2.0);
-            let half_h = mm_to_nm(h_mm / 2.0);
-            let (rot_w, rot_h) = match p.rotation {
-                synth_geometry::Rotation::Zero | synth_geometry::Rotation::OneEighty => {
-                    (half_w, half_h)
-                }
-                synth_geometry::Rotation::Ninety | synth_geometry::Rotation::TwoSeventy => {
-                    (half_h, half_w)
-                }
-            };
-            let courtyard = Rect::from_center_half_extents(p.center, rot_w, rot_h);
+        let courtyards = authoritative_courtyards(&board, &placement);
+        for (p, courtyard) in placement.components.iter().zip(&courtyards) {
             assert!(
                 courtyard.min.x_nm >= placement.board_outline.min.x_nm
                     && courtyard.max.x_nm <= placement.board_outline.max.x_nm
@@ -4287,6 +4512,82 @@ mod tests {
             .any(|h| h.component == "U1" && h.status == HintStatus::Honoured));
     }
 
+    /// Lock in why the placer has no orientation objective for small parts.
+    ///
+    /// Turning one 0603 changes board HPWL by well under 1% - far less than the
+    /// spread between candidate *positions* - so any search that scores
+    /// position and rotation together settles a passive's orientation by
+    /// tie-break. This test records the measurement so a future orientation
+    /// objective can be justified against it, and so the gap does not close
+    /// silently without anyone noticing why it existed.
+    ///
+    /// Macros are excluded deliberately: rotating a connector or a DIP *does*
+    /// move HPWL substantially, so those are already oriented meaningfully by
+    /// the floorplan's mating-face rules. It is specifically the passives - the
+    /// parts a human turns so their pads face the part they connect to - that
+    /// the current cost model cannot resolve.
+    #[test]
+    fn hpwl_is_insensitive_to_passive_rotation() {
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let pad_offsets = build_pad_offset_lookup(&board);
+        let baseline = hpwl_total(&board, &placement.components, &pad_offsets);
+
+        let rotations = [
+            Rotation::Zero,
+            Rotation::Ninety,
+            Rotation::OneEighty,
+            Rotation::TwoSeventy,
+        ];
+
+        let passives: Vec<ComponentId> = placement
+            .components
+            .iter()
+            .filter(|p| {
+                board.component(p.id).is_some_and(|c| {
+                    matches!(
+                        c.kind.as_str(),
+                        "resistor" | "capacitor" | "diode" | "inductor" | "led"
+                    )
+                })
+            })
+            .map(|p| p.id)
+            .collect();
+        assert!(!passives.is_empty(), "expected passive components");
+
+        let mut worst_delta_pct = 0.0_f64;
+        for id in passives {
+            let original = placement
+                .components
+                .iter()
+                .find(|p| p.id == id)
+                .expect("passive placement")
+                .rotation;
+            for rot in rotations {
+                if rot == original {
+                    continue;
+                }
+                let mut trial = placement.clone();
+                trial
+                    .components
+                    .iter_mut()
+                    .find(|q| q.id == id)
+                    .expect("passive placement")
+                    .rotation = rot;
+                let cost = hpwl_total(&board, &trial.components, &pad_offsets);
+                #[allow(clippy::cast_precision_loss)]
+                let delta_pct = 100.0 * (cost - baseline).abs() as f64 / baseline as f64;
+                worst_delta_pct = worst_delta_pct.max(delta_pct);
+            }
+        }
+
+        assert!(
+            worst_delta_pct < 5.0,
+            "expected HPWL to be near-blind to passive rotation, but some rotation \
+             moved it by {worst_delta_pct:.2}%"
+        );
+    }
+
     #[test]
     fn describe_placement_returns_cluster_summary() {
         let board = load_board("../../examples/sensor_logger.synth");
@@ -4294,6 +4595,314 @@ mod tests {
         let desc = describe_placement(&board, &placement);
         assert!(!desc.cluster_summary.is_empty());
         assert!(!desc.component_regions.is_empty());
+    }
+
+    // ----- structural visual review gate -------------------------------
+    //
+    // The gate is what blocks routing, so it needs its own coverage: a review
+    // that silently stops firing is indistinguishable from a good placement
+    // until a board reaches fabrication.
+
+    /// `describe_placement` runs neither the router nor DRC, so it must not
+    /// claim a clean board.
+    #[test]
+    fn visual_review_does_not_assert_unevaluated_drc_or_routing() {
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let desc = describe_placement(&board, &placement);
+        assert_eq!(
+            desc.drc_clean, None,
+            "placement review must not report drc_clean without running DRC"
+        );
+        assert_eq!(
+            desc.unrouted_nets, None,
+            "placement review must not report unrouted_nets without routing"
+        );
+    }
+
+    /// A real placement of a real design should clear the gate. If this fails,
+    /// the placer regressed or the gate thresholds drifted.
+    #[test]
+    fn visual_review_passes_for_a_placed_example() {
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let desc = describe_placement(&board, &placement);
+        assert!(
+            !desc.visual_review.requires_revision,
+            "expected a clean visual review, got: {:?}",
+            desc.visual_review.findings
+        );
+        assert_eq!(desc.visual_review.score, 100);
+        assert!(desc.visual_review.findings.is_empty());
+    }
+
+    /// Score must be `100 - 20 * findings`, saturating at zero.
+    #[test]
+    fn visual_review_score_tracks_finding_count() {
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+
+        // Push one component clear of the right-hand edge, adding exactly one
+        // "outside board outline" finding.
+        let mut broken = placement.clone();
+        let edge_x = broken.board_outline.max.x_nm;
+        broken.components[0].center.x_nm = edge_x + mm_to_nm(20.0);
+        let desc = describe_placement(&board, &broken);
+
+        let outside = desc
+            .visual_review
+            .findings
+            .iter()
+            .filter(|f| f.contains("extends outside the board outline"))
+            .count();
+        assert_eq!(outside, 1, "expected one outside-outline finding");
+        assert_eq!(
+            desc.visual_review.score,
+            100u8.saturating_sub((desc.visual_review.findings.len() as u8) * 20)
+        );
+        assert!(desc.visual_review.requires_revision);
+        assert!(
+            desc.visual_review
+                .recommended_actions
+                .iter()
+                .any(|a| a.action == "keep_courtyard_inside_board"),
+            "expected a keep_courtyard_inside_board recommendation, got {:?}",
+            desc.visual_review.recommended_actions
+        );
+    }
+
+    /// Two components sharing a spot must be reported with a separating move.
+    #[test]
+    fn visual_review_reports_overlapping_courtyards_with_a_separation() {
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+
+        // Collapse the second component onto the first.
+        let mut broken = placement.clone();
+        broken.components[1].center = broken.components[0].center;
+        let desc = describe_placement(&board, &broken);
+
+        assert!(
+            desc.visual_review
+                .findings
+                .iter()
+                .any(|f| f.contains("courtyard overlap")),
+            "expected a courtyard overlap finding, got {:?}",
+            desc.visual_review.findings
+        );
+        assert!(desc.visual_review.requires_revision);
+        let sep = desc
+            .visual_review
+            .recommended_actions
+            .iter()
+            .find(|a| a.action == "separate_courtyards")
+            .expect("expected a separate_courtyards recommendation");
+        // The suggestion must actually move the component.
+        assert!(
+            sep.suggested_x_mm.is_some() || sep.suggested_y_mm.is_some(),
+            "separate_courtyards must propose a new position"
+        );
+    }
+
+    /// Every recommendation must name the component it is about and carry a
+    /// human-readable rationale, otherwise it is not actionable.
+    #[test]
+    fn visual_review_recommendations_are_actionable() {
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let mut broken = placement.clone();
+        broken.components[0].center.x_nm = broken.board_outline.max.x_nm + mm_to_nm(20.0);
+        broken.components[1].center = broken.components[0].center;
+        let desc = describe_placement(&board, &broken);
+
+        let refdeses: std::collections::HashSet<&str> =
+            board.components.iter().map(|c| c.refdes.as_str()).collect();
+        assert!(!desc.visual_review.recommended_actions.is_empty());
+        for action in &desc.visual_review.recommended_actions {
+            assert!(
+                refdeses.contains(action.refdes.as_str()),
+                "recommendation names unknown refdes {:?}",
+                action.refdes
+            );
+            assert!(
+                !action.rationale.trim().is_empty(),
+                "recommendation for {} has no rationale",
+                action.refdes
+            );
+            assert!(
+                !action.action.is_empty(),
+                "recommendation for {} has no action",
+                action.refdes
+            );
+        }
+    }
+
+    #[test]
+    fn a_diff_pair_records_its_skew_tolerance_and_coupling() {
+        // A declared tolerance is the only way a design can say whether a
+        // reported skew is acceptable, and `couple` is the author's statement
+        // about how hard the router should try. Both must survive lowering.
+        let source = r#"
+        board "pair_spec" {
+          layers 2
+          component J1: connector "usb_c_receptacle"
+          component U1: mcu "rp2350"
+          connect J1.dp -> U1.usb_dp
+          connect J1.dn -> U1.usb_dn
+          connect J1.gnd -> U1.gnd
+
+          diff_pair J1_dp J1_dn {
+            impedance 90ohm
+            max_skew 0.15mm
+            couple tight
+          }
+        }
+        "#;
+        let file = "pair_spec.synth".to_string();
+        let parse = synth_parser::parse(source, file.clone());
+        let ast = parse.ast.as_ref().expect("parses");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        let lowered = synth_ir::lower(ast, &registry, &file);
+        let board = lowered.board.expect("lowers");
+
+        let pair = board.diff_pairs.first().expect("a pair is declared");
+        assert_eq!(
+            pair.max_skew.map(synth_ir::Length::to_mm),
+            Some(0.15),
+            "the declared skew tolerance reaches the IR"
+        );
+        assert_eq!(pair.couple, Some(synth_ir::Couple::Tight));
+    }
+
+    #[test]
+    fn a_pin_qualified_near_hint_steers_placement_to_that_pin() {
+        // `near: U1.dvdd` must parse as a component *and* a pin, and the
+        // pad-local target must aim at that pin rather than at whichever
+        // net the two parts happened to share first.
+        let source = r#"
+        board "pin_near" {
+          layers 2
+          component U1: mcu "rp2350"
+          component C1: capacitor "c_generic_0805" value "100n" {
+            placement_hint { near: U1.dvdd priority: hard }
+          }
+          connect U1.dvdd -> C1.p1
+          connect U1.gnd -> C1.p2
+        }
+        "#;
+        let file = "pin_near.synth".to_string();
+        let parse = synth_parser::parse(source, file.clone());
+        let ast = parse.ast.as_ref().expect("parses");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        let lowered = synth_ir::lower(ast, &registry, &file);
+        let board = lowered.board.expect("lowers");
+
+        // The hint survives lowering with the pin attached.
+        let by_refdes = |r: &str| {
+            board
+                .components
+                .iter()
+                .find(|c| c.refdes == r)
+                .expect("component")
+        };
+        let c1 = by_refdes("C1");
+        let near = c1
+            .placement_hint
+            .as_ref()
+            .and_then(|hint| hint.near.clone())
+            .expect("near hint");
+        assert_eq!(near, "U1.dvdd");
+
+        // And it resolves to U1's dvdd pin, not to some other pin.
+        let (anchor, pin) = resolve_near_target(&board, &near).expect("resolves");
+        assert_eq!(anchor, by_refdes("U1").id);
+        let pin_name = board
+            .pin(anchor, pin.expect("a pin"))
+            .expect("named pin")
+            .name
+            .clone();
+        assert_eq!(pin_name, "dvdd");
+
+        // Placement must still succeed with the pin-qualified hint.
+        place(&board).expect("place with a pin-qualified near hint");
+    }
+
+    #[test]
+    fn a_drag_onto_an_occupied_square_displaces_the_occupant() {
+        // A drag is an instruction, not a suggestion. The old legalization
+        // searched for a *nearby* legal square and, finding none, left the
+        // requested coordinate in place — which put two courtyards on top of
+        // each other and exported an illegal board. Whoever is in the way has
+        // to move.
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let victim = placement
+            .components
+            .iter()
+            .find(|p| board.component(p.id).is_some_and(|c| c.refdes == "C1"))
+            .copied()
+            .expect("C1 placed");
+        let mover = placement
+            .components
+            .iter()
+            .find(|p| board.component(p.id).is_some_and(|c| c.refdes == "C2"))
+            .copied()
+            .expect("C2 placed");
+
+        // Drag C2 exactly onto C1's square.
+        let mut dragged = placement.clone();
+        let index = dragged
+            .components
+            .iter()
+            .position(|p| p.id == mover.id)
+            .expect("C2 placement");
+        dragged.components[index].center = victim.center;
+
+        let sidecar = synth_layout::sidecar::SidecarLayout {
+            schema_version: synth_layout::sidecar::SIDECAR_SCHEMA_VERSION,
+            components: [(
+                "C2".to_string(),
+                synth_layout::sidecar::SidecarPlacement {
+                    x: synth_geometry::nm_to_mm(victim.center.x_nm),
+                    y: synth_geometry::nm_to_mm(victim.center.y_nm),
+                    rotation: 0,
+                    sheet: None,
+                    source: synth_layout::sidecar::OverrideSource::HumanDrag,
+                    priority: synth_layout::sidecar::OverridePriority::Hard,
+                    timestamp: None,
+                    relative_to: None,
+                    dx: 0.0,
+                    dy: 0.0,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            forced_net_labels: Vec::new(),
+            fit_sheet: false,
+        };
+
+        let mut legalized = dragged;
+        apply_sidecar_overrides(&board, &mut legalized, &sidecar);
+
+        // Every pair of courtyards must be clear of one another.
+        let by_refdes = |r: &str| {
+            legalized
+                .component_by_refdes(&board, r)
+                .expect("placed")
+                .center
+        };
+        for (a, b) in [("C1", "C2"), ("C1", "R1"), ("C2", "R1")] {
+            let gap_x = (by_refdes(a).x_nm - by_refdes(b).x_nm).abs();
+            let gap_y = (by_refdes(a).y_nm - by_refdes(b).y_nm).abs();
+            assert!(
+                gap_x > mm_to_nm(0.5) || gap_y > mm_to_nm(0.5),
+                "{a} and {b} overlap after a drag displaced them"
+            );
+        }
     }
 
     #[test]

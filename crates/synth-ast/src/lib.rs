@@ -617,7 +617,12 @@ pub struct DiffPairStmt {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DiffPairAttr {
+    /// Characteristic differential impedance, e.g. `90ohm`.
     Impedance(ValueWithUnit),
+    /// Length the two halves may differ by, e.g. `0.15mm`.
+    MaxSkew(ValueWithUnit),
+    /// How hard the router should work to couple and match the halves.
+    Couple { mode: String, span: Span },
 }
 
 /// A named routing-constraint class: `netclass "PWR" { trace_width 0.5mm clearance 0.2mm }`.

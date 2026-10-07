@@ -113,3 +113,40 @@ jobs:
       - name: Run doctests
         if: matrix.shard == 1
         run: cargo test --workspace --locked --doc
+
+  # The unrouted-net no-regression gate is the only signal that a placement
+  # change did not make routing worse; distance metrics (HPWL, member-to-anchor
+  # distance) all improved while routability regressed. It needs release mode
+  # and is `#[ignore]`d, so the sharded debug run above skips it. Run it here so
+  # every PR is gated. The smaller debug-mode check in
+  # `crates/synth-route/tests/routability_report.rs` runs in the matrix above.
+  routability-gate:
+    name: Routability Gate (release)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-routability-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install kicad-cli and the stock symbol/footprint libraries
+        run: |
+          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            kicad kicad-symbols kicad-footprints
+          mkdir -p "$HOME/.config/kicad/10.0"
+          cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
+          cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
+
+      - name: Run unrouted-net no-regression gate
+        run: |
+          cargo test --release -p synth-route --test routability_report \
+            unrouted_nets_do_not_regress --locked -- --ignored --nocapture
