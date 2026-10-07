@@ -186,11 +186,18 @@ fn diagnose_manufacturing(root: &Path, board: &Path) -> Vec<String> {
     String::from_utf8_lossy(&output.stderr)
         .lines()
         .filter(|l| {
-            let l = l.trim_start();
-            l.starts_with("error") || l.starts_with("warning: UNTRUSTED") || l.contains("refusing")
+            let t = l.trim_start();
+            // The structural gate prints a header and then one indented line
+            // per offending part. Keeping only the header told us a board was
+            // refused but never which part did it.
+            t.starts_with("error")
+                || t.starts_with("warning: UNTRUSTED")
+                || t.contains("refusing")
+                || t.contains("E-SYNTH-QUAL-")
+                || (l.starts_with("  ") && t.contains(": "))
         })
         .map(|l| l.trim().chars().take(300).collect::<String>())
-        .take(6)
+        .take(12)
         .collect()
 }
 
@@ -233,7 +240,13 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
     let codes = source_codes(&report);
     let mut disagreements = Vec::new();
 
-    if actual != spec.expect {
+    // "unestablished" means this board has not yet been observed in the
+    // reference environment, which is CI with KiCad installed. Several rules —
+    // E-SYNTH-PIN-001 among them — only run when footprints are readable, so a
+    // result from a machine without KiCad is not a baseline. The observed value
+    // is recorded either way; it is just not compared, because asserting a
+    // guess is how a gate teaches people to ignore it.
+    if spec.expect != "unestablished" && actual != spec.expect {
         disagreements.push(format!(
             "expected the release command to {}, it reported {actual}",
             spec.expect
@@ -391,8 +404,8 @@ fn the_matrix_is_well_formed() {
             spec.path
         );
         assert!(
-            ["pass", "fail"].contains(&spec.expect.as_str()),
-            "{}: expect must be pass or fail, found {}",
+            ["pass", "fail", "unestablished"].contains(&spec.expect.as_str()),
+            "{}: expect must be pass, fail or unestablished, found {}",
             spec.id,
             spec.expect
         );
