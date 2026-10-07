@@ -10,6 +10,7 @@ path = "fixtures/designs/hello.synth"
 class = "A"
 status = "qualified"
 expect = "pass"
+expect_fab = "pass"
 rationale = "Smallest valid board declaration. Proves the release command itself is sound."
 
 [[board]]
@@ -18,6 +19,7 @@ path = "examples/env_logger.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
+expect_fab = "fail"
 rationale = "USB-C power, LDO, MCU, I2C sensor, debug header. The Class-A envelope in #39."
 
 [[board]]
@@ -26,6 +28,7 @@ path = "examples/sensor_logger.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
+expect_fab = "fail"
 rationale = "Dual I2C sensors, SPI flash, status LEDs. Larger Class-A digital board."
 
 [[board]]
@@ -34,6 +37,7 @@ path = "examples/placement_and_diff_pair.synth"
 class = "C"
 status = "experimental"
 expect = "pass"
+expect_fab = "pass"
 rationale = "Differential-pair constraints, placement hints, keepouts. Class-C constraint surface per #40."
 
 [[board]]
@@ -42,6 +46,7 @@ path = "fixtures/kicad-reference/ref_ldo_sensor.synth"
 class = "A"
 status = "unsupported"
 expect = "fail"
+expect_fab = "unknown"
 expect_source_codes = ["E-SYNTH-VALUE-001"]
 rationale = "Negative test. Generic passives carry no `value`, so the BOM would not be orderable."
 
@@ -51,6 +56,7 @@ path = "fixtures/kicad-reference/ref_crystal_mcu.synth"
 class = "A"
 status = "unsupported"
 expect = "fail"
+expect_fab = "unknown"
 expect_source_codes = ["E-SYNTH-VALUE-001"]
 rationale = "Negative test. Same unvalued-passive defect on a crystal/MCU board."
 
@@ -60,6 +66,7 @@ path = "fixtures/kicad-reference/ref_usb_cdc.synth"
 class = "B"
 status = "unsupported"
 expect = "fail"
+expect_fab = "unknown"
 expect_source_codes = ["E-SYNTH-VALUE-001"]
 rationale = "Negative test. USB-class interface; unvalued passives block it today."
 
@@ -69,6 +76,7 @@ path = "fixtures/kicad-reference/secure_tracker.synth"
 class = "D"
 status = "unsupported"
 expect = "fail"
+expect_fab = "unknown"
 expect_source_codes = ["E-SYNTH-VALUE-001"]
 rationale = "Negative test. Most complex reference board; stands in for the Class-D envelope in #41."
 
@@ -78,6 +86,7 @@ path = "qualification/boards/class-a/a1_rp2350_debug_target.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
+expect_fab = "unestablished"
 rationale = "Novel Class-A board: RP2350 with SWD header, crystal, reset, boot flash and status LED. #39 case 1."
 
 [[board]]
@@ -86,6 +95,7 @@ path = "qualification/boards/class-a/a2_i2c_sensor_node.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
+expect_fab = "unestablished"
 rationale = "Novel Class-A board: regulated I2C sensor node with pull-ups, EEPROM and a protected breakout. #39 case 2."
 
 [[board]]
@@ -94,6 +104,7 @@ path = "qualification/boards/class-a/a3_protected_power_entry.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
+expect_fab = "unestablished"
 rationale = "Novel Class-A board: reverse-polarity P-FET, polyfuse, TVS, buck, soft-start load switch. #39 case 3."
 
 [[board]]
@@ -102,6 +113,7 @@ path = "qualification/boards/class-a/a4_negative_broken_mcu_board.synth"
 class = "A"
 status = "unsupported"
 expect = "fail"
+expect_fab = "unestablished"
 expect_source_codes = ["E-SYNTH-CONNECT-001", "E-SYNTH-NAME-001", "E-SYNTH-VALUE-001"]
 rationale = "Novel Class-A negative: floating required pins, a duplicated reference and an unvalued passive. #39 negative case."
 
@@ -111,6 +123,7 @@ path = "qualification/boards/class-b/b1_buck_regulator_module.synth"
 class = "B"
 status = "experimental"
 expect = "pass"
+expect_fab = "unestablished"
 rationale = "Novel Class-B board: 12V-to-3V3 buck with pi filtering both sides, output-sensed feedback and a discrete power-good. #38 case 1."
 
 [[board]]
@@ -119,6 +132,7 @@ path = "qualification/boards/class-b/b2_precision_analog_frontend.synth"
 class = "B"
 status = "experimental"
 expect = "pass"
+expect_fab = "unestablished"
 rationale = "Novel Class-B board: differential gain stage, buffered mid-rail bias, analog keepout and netclass, SPI bus to the MCU. #38 case 2."
 
 [[board]]
@@ -127,6 +141,7 @@ path = "qualification/boards/class-b/b3_usb_peripheral.synth"
 class = "B"
 status = "experimental"
 expect = "pass"
+expect_fab = "unestablished"
 rationale = "Novel Class-B board: USB-C with CC pull-downs, ESD clamps at the connector, a declared 90 ohm pair into native USB pins. #38 case 3."
 
 [[board]]
@@ -135,6 +150,7 @@ path = "qualification/boards/class-b/b4_negative_unsafe_mixed_signal.synth"
 class = "B"
 status = "unsupported"
 expect = "fail"
+expect_fab = "unestablished"
 expect_source_codes = ["E-SYNTH-STACKUP-001", "E-SYNTH-USB-001", "E-SYNTH-POWER-011"]
 rationale = "Novel Class-B negative: stackup contradicting the layer count, USB pair on plain GPIO, and buck feedback taken from the switch node. #38 negative case."
 
@@ -144,6 +160,7 @@ path = "qualification/boards/class-c/c1_dual_usb_compute.synth"
 class = "C"
 status = "experimental"
 expect = "pass"
+expect_fab = "unestablished"
 rationale = "Novel Class-C board: six-layer stackup, two independent 90 ohm USB pairs, QSPI at speed, 61-pin MCU and a 20-pin header. #40 constraint surface, minus the length/skew budgets the language cannot express."
 
 [[board]]
@@ -152,4 +169,5 @@ path = "qualification/boards/class-c/c2_usb_uart_bridge_4layer.synth"
 class = "C"
 status = "experimental"
 expect = "pass"
+expect_fab = "unestablished"
 rationale = "Novel Class-C board: impedance-controlled 4-layer stackup, CH340G USB pair at 90 ohm with clamps at the connector, crystal and activity indicators. #40 constraint preservation."
