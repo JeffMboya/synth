@@ -1,0 +1,227 @@
+#!/usr/bin/python3
+# Test double for an external PCB router.
+#
+# Installed as `python3` on PATH by the CLI integration tests, so the
+# FreeRouting adapter invokes it exactly as it invokes the real helper: as the
+# interpreter that will run tools/freeroute_autoroute.py. The shebang is an
+# absolute path resolved by the test harness before this file is put on PATH,
+# so it cannot resolve back to itself.
+#
+# Its job is to return a candidate that passes the same independent checks a
+# real engine's output must pass, so the tests around it measure the gate
+# rather than the stub. It does that in two steps:
+#
+#   1. It copies the un-routed baseline to the candidate, so the candidate is
+#      a genuine router output rather than a file the tests wrote themselves.
+#   2. It connects the pads of each net with a straight segment per pad pair.
+#      Without this the fixture designs — which do have a net — would come
+#      back as an unroutable board, and a test about an override or a release
+#      manifest would fail for a reason unrelated to either.
+#
+# This is not a router and does not try to be. What it owes the pipeline is a
+# board whose copper agrees with its own netlist, so that the independent
+# topology and connectivity checks downstream have something real to confirm
+# or reject. It reads only the text of the board it is given.
+
+import json
+import math
+import os
+import re
+import shutil
+import sys
+
+NM_PER_MM = 1_000_000
+# Matches the fabrication minimum the validator enforces, so the stub's
+# copper is not rejected for being under-width.
+TRACK_WIDTH_MM = 0.25
+
+FLAGS_WITH_VALUE = {
+    "--report",
+    "--ses-output",
+    "--stats",
+    "--passes",
+    "--threads",
+    "--jar",
+    "--java",
+    "--repo",
+    "--python",
+    "--escalation",
+    "--fab-tier",
+    "--fab-overrides",
+    "--same-net-pad-clearance",
+}
+
+
+def parse_args(argv):
+    """Return (helper, baseline, candidate, report).
+
+    The positional order is the production contract:
+      <helper> <baseline> <candidate> --jar <jar> --java <java> ...
+    """
+    positional = []
+    report = None
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--report":
+            report = argv[index + 1]
+            index += 2
+        elif arg in FLAGS_WITH_VALUE:
+            index += 2
+        elif arg.startswith("--"):
+            index += 1
+        else:
+            positional.append(arg)
+            index += 1
+    helper = positional[0] if positional else None
+    baseline = positional[1] if len(positional) > 1 else None
+    candidate = positional[2] if len(positional) > 2 else None
+    return helper, baseline, candidate, report
+
+
+NET_TABLE = re.compile(r'^\s*\(net (\d+) "([^"]*)"')
+FOOTPRINT_OPEN = re.compile(r"^\s*\(footprint\b")
+AT_LINE = re.compile(r"^\s*\(at (-?[0-9.]+) (-?[0-9.]+)(?: (-?[0-9.]+))?")
+PAD_WITH_NET = re.compile(
+    r'^\s*\(pad "([^"]+)"\s+smd\b.*?\(at (-?[0-9.]+) (-?[0-9.]+)\)'
+    r'.*?\(net (\d+) "'
+)
+
+
+def route(baseline_text):
+    """Return (segments, net_code).
+
+    One segment per additional pad of a net, anchored on the first pad seen.
+    Pad `(at ...)` is relative to its footprint, so each offset is rotated by
+    the footprint's angle and translated by the footprint origin; skipping
+    either step puts the segment beside the pad instead of on it.
+    """
+    net_names = {}
+    origin = None
+    angle_deg = 0.0
+    first_pad = {}
+    seen = {}
+    segments = []
+    net_code = 0
+
+    for line in baseline_text.splitlines():
+        match = NET_TABLE.match(line)
+        if match:
+            net_names[match.group(1)] = match.group(2)
+            continue
+
+        if FOOTPRINT_OPEN.match(line):
+            origin, angle_deg = None, 0.0
+            continue
+
+        # The footprint origin follows its library name, which sits on its own
+        # line, so this is read as state rather than parsed off one line.
+        match = AT_LINE.match(line)
+        if match and origin is None and not line.lstrip().startswith("(pad"):
+            origin = (float(match.group(1)), float(match.group(2)))
+            angle_deg = float(match.group(3)) if match.group(3) else 0.0
+            continue
+
+        match = PAD_WITH_NET.search(line)
+        if not match or origin is None:
+            continue
+        code = int(match.group(4))
+        if code == 0:
+            continue
+        net_code = code
+        local_x = float(match.group(2))
+        local_y = float(match.group(3))
+        # KiCad angles are counter-clockwise on screen while y runs down the
+        # page, so a positive angle turns local x toward negative y.
+        radians = math.radians(angle_deg)
+        x = origin[0] + local_x * math.cos(radians) + local_y * math.sin(radians)
+        y = origin[1] - local_x * math.sin(radians) + local_y * math.cos(radians)
+
+        key = net_names.get(str(code), str(code))
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] == 1:
+            first_pad[key] = (x, y)
+        else:
+            start = first_pad[key]
+            segments.append((start, (x, y), code))
+
+    return segments, net_code
+
+
+def splice(board_text, segments):
+    """Insert `segments` before the board's closing paren.
+
+    The root list ends with the final `)` in the file. Appending after it would
+    leave two top-level s-expressions, which is not a `.kicad_pcb` at all
+    rather than a board carrying extra copper.
+    """
+    if not segments:
+        return board_text
+    lines = board_text.rstrip("\n").split("\n")
+    if not lines or not lines[-1].strip().startswith(")"):
+        return board_text
+    body, closer = lines[:-1], lines[-1]
+    rendered = [
+        '  (segment (start {:.4f} {:.4f}) (end {:.4f} {:.4f}) (width {}) (layer "F.Cu") (net {}))'.format(
+            start[0], start[1], end[0], end[1], TRACK_WIDTH_MM, code
+        )
+        for start, end, code in segments
+    ]
+    return "\n".join(body + rendered + [closer]) + "\n"
+
+
+def main(argv):
+    _helper, baseline, candidate, report = parse_args(argv)
+    print(
+        "stub-router: baseline={} candidate={}".format(baseline, candidate),
+        file=sys.stderr,
+    )
+
+    if not baseline or not os.path.isfile(baseline):
+        print(
+            "stub-router: the router was not handed the un-routed baseline at "
+            "{}".format(baseline),
+            file=sys.stderr,
+        )
+        return 2
+
+    if report is not None:
+        with open(report, "w") as handle:
+            json.dump(
+                {
+                    "router": "stub",
+                    "jar": "stub-1.0.jar",
+                    "java_version": "stub-jvm",
+                    "imported_segments": 0,
+                    "imported_vias": 0,
+                    "notes": [],
+                },
+                handle,
+            )
+
+    with open(baseline) as handle:
+        board_text = handle.read()
+    segments, net_code = route(board_text)
+    with open(candidate, "w") as handle:
+        handle.write(splice(board_text, segments))
+
+    if report is not None and segments:
+        # The provenance record claims what was actually imported, so the
+        # validator's agreement check has something truthful to compare.
+        with open(report, "w") as handle:
+            json.dump(
+                {
+                    "router": "stub",
+                    "jar": "stub-1.0.jar",
+                    "java_version": "stub-jvm",
+                    "imported_segments": len(segments),
+                    "imported_vias": 0,
+                    "notes": [],
+                },
+                handle,
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

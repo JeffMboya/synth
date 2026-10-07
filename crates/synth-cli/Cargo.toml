@@ -24,7 +24,8 @@ synth-validate = { workspace = true }
 synth-layout = { workspace = true }
 synth-kicad = { workspace = true }
 synth-place = { workspace = true }
-synth-route = { workspace = true }
+synth-pcb = { workspace = true }
+synth-router = { workspace = true }
 synth-drc = { workspace = true }
 synth-mcp = { workspace = true }
 synth-smt = { workspace = true }

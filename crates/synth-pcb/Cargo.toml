@@ -1,0 +1,21 @@
+[package]
+name = "synth-pcb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Copper geometry IR shared by every Synth routing and validation surface."
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[dependencies]
+serde = { workspace = true }
+synth-diagnostics = { workspace = true }
+synth-geometry = { workspace = true }
+synth-ir = { workspace = true }

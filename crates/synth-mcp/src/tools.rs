@@ -131,18 +131,36 @@ pub fn list_tools() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "synth_route".into(),
-            description: "Run deterministic PCB track routing on a SynthSpec design. It first checks the sidecar-adjusted placement visual review and returns placement_requires_revision without entering the expensive router when the layout is structurally poor. Set allow_placement_warnings=true only for intentional manual/debug routing. Agents may provide routing_order as an advisory list of net names to attempt first after inspecting congestion diagnostics; omitted nets retain the deterministic electrical-priority order. Returns routed segments, through-hole vias, unrouted net diagnostics, and total wire length stats. `pad_escape_rejections` counts paths the search found and then discarded because the emitted geometry ran too close to a foreign pad: a non-zero value means terminals, not congestion, are the obstacle, which no amount of re-ordering or re-placing will fix.".into(),
+            description: "Route a SynthSpec design with an external autorouter and report the routing run record. Synth does not generate copper: this exports an un-routed board, hands it to the selected engine, and then re-derives connectivity from the copper that came back. Placement is checked first and `placement_requires_revision` is returned without entering the router when the layout is structurally poor. The terminal state is one of routed / review_required / router_unavailable / validation_failed — a router exit code of zero is never reported as success on its own. Check `synth_router_capabilities` first when the engine may not be installed: an unavailable engine is reported as router_unavailable with the remediation, never as a pass, and never silently retried on another engine.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "source": { "type": "string", "description": "SynthSpec source code string" },
                     "file_path": { "type": "string", "description": "Optional path to .synth source file on disk" },
                     "layout_file_path": { "type": "string", "description": "Optional agent or human placement sidecar" },
-                    "allow_placement_warnings": { "type": "boolean", "description": "Allow routing despite visual-review findings; use only for deliberate manual/debug routing (default false)" },
-                    "routing_order": { "type": "array", "items": { "type": "string" }, "description": "Optional advisory net-name order, e.g. [\"net_14\", \"net_20\"]. Listed nets are attempted first; DRC and placement rules still apply." },
-                    "log_routing_outcomes": { "type": "string", "description": "Optional directory path for logging Dataset 6 routing outcome pairs" },
+                    "allow_placement_warnings": { "type": "boolean", "description": "Route despite visual-review findings; use only for deliberate manual/debug routing (default false)" },
+                    "router": { "type": "string", "description": "External engine: \"freerouting\" (default, managed) or \"kicad-routing-tools\" (external checkout)" },
+                    "freerouting_jar": { "type": "string", "description": "Path to the FreeRouting JAR" },
+                    "freerouting_java": { "type": "string", "description": "Java executable for FreeRouting" },
+                    "kicad_routing_tools_repo": { "type": "string", "description": "KiCadRoutingTools checkout directory" },
+                    "kicad_routing_tools_python": { "type": "string", "description": "Python interpreter with KiCadRoutingTools dependencies" },
+                    "router_timeout_secs": { "type": "number", "description": "Wall-clock budget for the whole external run" },
+                    "allow_via_in_pad": { "type": "boolean", "description": "Permit via-in-pad in the fabrication gate (default false)" },
                     "registry_path": { "type": "string", "description": "Optional custom component registry path" },
                     "workspace_root": { "type": "string", "description": "Optional workspace root path for auto-resolving registry" }
+                }
+            }),
+        },
+        McpToolInfo {
+            name: "synth_router_capabilities".into(),
+            description: "Report which external routing engines are installed and usable on this machine, with the version each would run at and, when unavailable, the reason and the remediation. Discovery is read-only and cheap: it locates the FreeRouting JAR and Java runtime, checks a KiCadRoutingTools checkout for its entry point, and reads each engine's version. Run this before `synth_route` on a new machine, or whenever a route reports router_unavailable.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "freerouting_jar": { "type": "string", "description": "Path to the FreeRouting JAR to probe" },
+                    "freerouting_java": { "type": "string", "description": "Java executable to probe" },
+                    "kicad_routing_tools_repo": { "type": "string", "description": "KiCadRoutingTools checkout to probe" },
+                    "kicad_routing_tools_python": { "type": "string", "description": "Python interpreter to probe" }
                 }
             }),
         },
@@ -190,7 +208,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "synth_export".into(),
-            description: "Export a validated SynthSpec design to KiCad schematic (.kicad_sch), PCB (.kicad_pcb), BOM CSV, or Gerber files. By default this is a release export and rejects incomplete routing or DRC violations. Set allow_incomplete=true only to create explicitly draft artifacts for review/manual routing; draft artifacts are never release-ready. Layout overrides live in two separate sidecars with different coordinate spaces: layout_file_path / <design>.placement.layout.toml is board millimetres (footprints, routing) and schematic_layout_file_path / <design>.schematic.layout.toml is sheet millimetres (component placement on the page). Passing only one of them leaves the other at auto-layout.".into(),
+            description: "Export a validated SynthSpec design to KiCad schematic (.kicad_sch), PCB (.kicad_pcb), BOM CSV, or Gerber files. Copper is generated by the external router named by `router` (default freerouting) and is installed only when it passes independent validation; the un-routed export is always retained as <design>.synth.kicad_pcb. By default this is a release export and rejects a board that is not independently validated. Set allow_incomplete=true only to create explicitly draft artifacts for review/manual routing; draft artifacts are never release-ready. Layout overrides live in two separate sidecars with different coordinate spaces: layout_file_path / <design>.placement.layout.toml is board millimetres (footprints, routing) and schematic_layout_file_path / <design>.schematic.layout.toml is sheet millimetres (component placement on the page). Passing only one of them leaves the other at auto-layout.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -201,7 +219,13 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "layout_file_path": { "type": "string", "description": "Optional agent or human PCB placement sidecar (<design>.placement.layout.toml; board millimetres); exact component positions and rotations are applied to placement and routing. Omit for auto-placement." },
                     "schematic_layout_file_path": { "type": "string", "description": "Optional schematic layout sidecar (<design>.schematic.layout.toml; sheet millimetres); component positions on the exported sheet. Omit for auto-layout. Distinct from layout_file_path: the two files hold the same schema but different coordinate spaces, so passing one where the other is expected silently misplaces parts." },
                     "allow_incomplete": { "type": "boolean", "description": "Export a clearly labelled draft even when routing is incomplete or DRC has violations. Defaults to false; never use this output for fabrication." },
-                    "routing_order": { "type": "array", "items": { "type": "string" }, "description": "Optional net order from synth_route routing_feedback; preserves the ordered recovery route during export." },
+                    "router": { "type": "string", "description": "External engine: \"freerouting\" (default, managed) or \"kicad-routing-tools\" (external checkout)" },
+                    "freerouting_jar": { "type": "string", "description": "Path to the FreeRouting JAR" },
+                    "freerouting_java": { "type": "string", "description": "Java executable for FreeRouting" },
+                    "kicad_routing_tools_repo": { "type": "string", "description": "KiCadRoutingTools checkout directory" },
+                    "kicad_routing_tools_python": { "type": "string", "description": "Python interpreter with KiCadRoutingTools dependencies" },
+                    "router_timeout_secs": { "type": "number", "description": "Wall-clock budget for the whole external run" },
+                    "allow_via_in_pad": { "type": "boolean", "description": "Permit via-in-pad in the fabrication gate (default false)" },
                     "registry_path": { "type": "string", "description": "Optional custom component registry path" },
                     "workspace_root": { "type": "string", "description": "Optional workspace root path for auto-resolving registry" }
                 }
@@ -544,6 +568,7 @@ pub fn call_tool(
         "synth_fix" => execute_fix(args, default_registry),
         "synth_apply_patch" => execute_apply_patch(args, default_registry),
         "synth_route" => execute_route(args, default_registry),
+        "synth_router_capabilities" => execute_router_capabilities(args),
         "synth_preview_schematic" => execute_preview_schematic(args, default_registry),
         "synth_mutate_layout" => execute_mutate_layout(args, default_registry),
         "synth_render_schematic" => execute_render_schematic(args, default_registry),
@@ -1115,21 +1140,99 @@ fn check_board_against_kg(
         .collect())
 }
 
-fn execute_drc_report(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
+/// Resolve the external engine named by a tool's `router` argument.
+///
+/// An unrecognised name is an error rather than a default. Defaulting would
+/// route a board with an engine the caller did not ask for, which is the
+/// silent substitution the contract exists to prevent.
+fn resolve_router(args: &Value) -> Result<synth_router::RouterEngine, String> {
+    let requested = args["router"].as_str().unwrap_or("freerouting");
+    synth_router::RouterEngine::parse(requested).ok_or_else(|| {
+        format!(
+            "unknown router `{requested}`; expected `freerouting` or `kicad-routing-tools`. \
+             Call synth_router_capabilities to see which engines are installed."
+        )
+    })
+}
+
+/// Read the routing arguments a tool accepts, applying environment overrides.
+///
+/// The explicit arguments win because they arrive from the caller; the
+/// environment is the fallback that lets a machine configure its own
+/// checkout once instead of at every call site.
+fn routing_request(args: &Value, engine: synth_router::RouterEngine) -> synth_router::RouteRequest {
+    let mut request =
+        synth_router::RouteRequest::new(Path::new("board.kicad_pcb"), Path::new("."), engine);
+    if let Some(jar) = args["freerouting_jar"].as_str() {
+        std::env::set_var("SYNTH_FREEROUTING_JAR", jar);
+    }
+    if let Some(java) = args["freerouting_java"].as_str() {
+        std::env::set_var("SYNTH_FREEROUTING_JAVA", java);
+    }
+    if let Some(repo) = args["kicad_routing_tools_repo"].as_str() {
+        std::env::set_var("KICAD_ROUTING_TOOLS_REPO", repo);
+    }
+    if let Some(python) = args["kicad_routing_tools_python"].as_str() {
+        std::env::set_var("SYNTH_KRT_PYTHON", python);
+    }
+    if let Some(secs) = args["router_timeout_secs"].as_u64() {
+        request.limits = request.limits.with_wall_clock(secs);
+    }
+    request.policy.allow_via_in_pad = args["allow_via_in_pad"].as_bool().unwrap_or(false);
+    request
+}
+
+/// Report whether external routing engines are installed and usable.
+// Kept as `Result<Value, String>` to match every other tool handler's
+// signature in the dispatch table, even though discovery cannot fail.
+#[allow(clippy::unnecessary_wraps)]
+fn execute_router_capabilities(args: &Value) -> Result<Value, String> {
+    if let Some(jar) = args["freerouting_jar"].as_str() {
+        std::env::set_var("SYNTH_FREEROUTING_JAR", jar);
+    }
+    if let Some(java) = args["freerouting_java"].as_str() {
+        std::env::set_var("SYNTH_FREEROUTING_JAVA", java);
+    }
+    if let Some(repo) = args["kicad_routing_tools_repo"].as_str() {
+        std::env::set_var("KICAD_ROUTING_TOOLS_REPO", repo);
+    }
+    if let Some(python) = args["kicad_routing_tools_python"].as_str() {
+        std::env::set_var("SYNTH_KRT_PYTHON", python);
+    }
+    let out_dir = std::env::temp_dir().join(format!("synth-routers-{}", std::process::id()));
+    let capabilities = synth_router::capability::discover_all_in_out_dir(&out_dir);
+    Ok(serde_json::json!({
+        "engines": capabilities,
+        "default_engine": "freerouting",
+        "hint": "Select an engine with the `router` argument on synth_route and synth_export. An unavailable engine is reported as router_unavailable; it is never silently replaced."
+    }))
+}
+
+/// Compile, place, export, and route a design through the external router.
+///
+/// Shared by `synth_route`, `synth_drc_report`, and `synth_export` so all
+/// three evaluate the identical board through the identical pipeline and
+/// cannot report different routers or different terminal states.
+fn route_design_externally(
+    args: &Value,
+    default_registry: Option<&Path>,
+) -> Result<(synth_router::RouteReport, PathBuf), String> {
+    route_design_externally_with(args, default_registry, None)
+}
+
+/// As [`route_design_externally`], with a caller-supplied request used
+/// instead of one built from the arguments.
+///
+/// `synth_route_with_constraints` needs this so it can tighten the
+/// fabrication floor before the run, rather than after.
+fn route_design_externally_with(
+    args: &Value,
+    default_registry: Option<&Path>,
+    prepared: Option<synth_router::RouteRequest>,
+) -> Result<(synth_router::RouteReport, PathBuf), String> {
     let source = get_source_from_args(args)?;
     let file_name = args["file_path"].as_str().unwrap_or("board.synth");
-
-    let profile_str = args["profile"].as_str().unwrap_or("jlcpcb_standard");
-    let profile = match profile_str {
-        "jlcpcb_standard" | "jlcpcb" => synth_drc::ManufacturerProfile::jlc_standard(),
-        custom_path => {
-            if let Ok(p) = synth_drc::ManufacturerProfile::from_toml_file(Path::new(custom_path)) {
-                p
-            } else {
-                synth_drc::ManufacturerProfile::jlc_standard()
-            }
-        }
-    };
+    let engine = resolve_router(args)?;
 
     let parse = synth_parser::parse(&source, file_name.to_string());
     let ast = parse.ast.ok_or("Parse failed")?;
@@ -1143,148 +1246,148 @@ fn execute_drc_report(args: &Value, default_registry: Option<&Path>) -> Result<V
         .iter()
         .any(|d| d.severity.is_blocking())
     {
-        return Err("Compilation failed during import resolution; DRC aborted".into());
+        return Err("Compilation failed during import resolution; routing aborted".into());
     }
     let registry =
         load_registry_tiered(args, default_registry).map_err(|e| format!("Registry error: {e}"))?;
     let lowered = synth_ir::lower(&resolved.program, &registry, file_name);
     if lowered.diagnostics.iter().any(|d| d.severity.is_blocking()) {
-        return Err("Compilation produced blocking diagnostics; DRC aborted".into());
+        return Err("Compilation produced blocking diagnostics; routing aborted".into());
     }
     let board = lowered.board.ok_or("Lowering failed")?;
 
-    let sidecar_opt = resolve_placement_sidecar(args, file_name);
-    let placement = synth_place::place_with_sidecar(&board, sidecar_opt.as_deref())
-        .map_err(|e| format!("Placement failed: {e:?}"))?;
-
-    let placement_description = synth_place::describe_placement(&board, &placement);
-    if placement_description.visual_review.requires_revision
+    let placement_sidecar = resolve_placement_sidecar(args, file_name);
+    let placement = synth_place::place_with_sidecar(&board, placement_sidecar.as_deref())
+        .map_err(|e| format!("Placement failed: {e}"))?;
+    let description = synth_place::describe_placement(&board, &placement);
+    if description.visual_review.requires_revision
         && !args["allow_placement_warnings"].as_bool().unwrap_or(false)
     {
-        return Ok(serde_json::json!({
-            "status": "placement_requires_revision",
-            "routing_status": "not_run",
-            "drc_status": "not_run",
-            "reason": "Placement visual review requires revision before DRC",
-            "placement_quality": {
-                "visual_review": placement_description.visual_review,
-                "functional_warnings": placement_description.functional_warnings,
-                "dense_regions": placement_description.dense_regions
-            },
-            "hint": "Revise the placement sidecar or hints, rerun placement review, then retry DRC. Use allow_placement_warnings only for deliberate debug validation."
-        }));
-    }
-
-    let routing = synth_route::route(&board, &placement);
-    let report = synth_drc::check(&board, &placement, &routing, &profile);
-
-    let route_complete = routing.unrouted_nets.is_empty();
-    let drc_clean = report.is_clean() && route_complete;
-
-    Ok(serde_json::json!({
-        "status": if drc_clean { "ok" } else { "blocked" },
-        "route_complete": route_complete,
-        "unrouted_nets": routing.unrouted_nets,
-        "drc_clean": drc_clean,
-        "violations": report.violations,
-        "violation_count": report.violations.len()
-    }))
-}
-
-fn execute_route(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
-    let source = get_source_from_args(args)?;
-    let file_name = args["file_path"].as_str().unwrap_or("board.synth");
-
-    let parse = synth_parser::parse(&source, file_name.to_string());
-    let ast = parse.ast.ok_or("Parse failed")?;
-    let import_root = Path::new(file_name)
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let loader = synth_ir::FsImportLoader { root: import_root };
-    let resolved = synth_ir::resolve_imports(&ast, &loader, file_name);
-
-    let registry =
-        load_registry_tiered(args, default_registry).map_err(|e| format!("Registry error: {e}"))?;
-    let lowered = synth_ir::lower(&resolved.program, &registry, file_name);
-    let board = lowered.board.ok_or("Lowering failed")?;
-
-    let sidecar_opt = resolve_placement_sidecar(args, file_name);
-    let placement = synth_place::place_with_sidecar(&board, sidecar_opt.as_deref())
-        .map_err(|e| format!("Placement failed: {e:?}"))?;
-
-    let placement_description = synth_place::describe_placement(&board, &placement);
-    if placement_description.visual_review.requires_revision
-        && !args["allow_placement_warnings"].as_bool().unwrap_or(false)
-    {
-        return Ok(serde_json::json!({
+        return Err(serde_json::json!({
             "status": "placement_requires_revision",
             "routing_status": "not_run",
             "reason": "Placement visual review requires revision before routing",
             "placement_quality": {
-                "visual_review": placement_description.visual_review,
-                "functional_warnings": placement_description.functional_warnings,
-                "dense_regions": placement_description.dense_regions
+                "visual_review": description.visual_review,
+                "functional_warnings": description.functional_warnings,
+                "dense_regions": description.dense_regions
             },
-            "hint": "Revise the SynthSpec placement_hint or layout sidecar using relative_to/dx_mm/dy_mm, then rerun synth_place_with_hints or synth_describe_placement."
-        }));
-    }
-    let routing_order: Vec<String> = args
-        .get("routing_order")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
+            "hint": "Revise the placement sidecar or hints, rerun synth_place_with_hints, then retry."
         })
-        .unwrap_or_default();
-    let routing = if routing_order.is_empty() {
-        synth_route::route(&board, &placement)
-    } else {
-        synth_route::route_with_order(&board, &placement, &routing_order)
-    };
-
-    if let Some(log_dir_str) = args["log_routing_outcomes"].as_str() {
-        let log_dir = PathBuf::from(log_dir_str);
-        if let Err(e) = synth_route::log_routing_outcome(&board, &placement, &routing, &log_dir) {
-            eprintln!("synth_route MCP: failed to log outcome: {e}");
-        }
+        .to_string());
     }
 
-    let diags = routing.to_diagnostics(file_name);
-    let total_wire_length_nm: i64 = routing
-        .segments
-        .iter()
-        .map(|s| (s.end.x_nm - s.start.x_nm).abs() + (s.end.y_nm - s.start.y_nm).abs())
-        .sum();
-    #[allow(clippy::cast_precision_loss)]
-    let total_wire_length_mm = (total_wire_length_nm as f64) / 1_000_000.0;
-    let recommended_routing_order: Vec<String> = routing
-        .unrouted_nets
-        .iter()
-        .take(8)
-        .map(|net| net.net_name.clone())
-        .collect();
-
-    Ok(serde_json::json!({
-        "status": if routing.unrouted_nets.is_empty() { "ok" } else { "unrouted_nets" },
-        "segments_count": routing.segments.len(),
-        "vias_count": routing.vias.len(),
-        "unrouted_nets_count": routing.unrouted_nets.len(),
-        "pad_escape_rejections": routing.pad_escape_rejections,
-        "total_wire_length_mm": total_wire_length_mm,
-        "routing_feedback": if recommended_routing_order.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::json!({
-                "recommended_routing_order": recommended_routing_order,
-                "reason": "Retry at most this bounded set first; preserve the electrical priority classes and inspect the result before expanding the order."
-            })
+    let stem = synth_router::sanitize_stem(&board.name);
+    let out_dir = std::env::temp_dir().join(format!("synth-mcp-route-{stem}"));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let schematic_sidecar =
+        resolve_schematic_sidecar_with(args, file_name, "schematic_layout_file_path");
+    let res = synth_kicad::export_with_sidecars(
+        &board,
+        &out_dir,
+        &synth_kicad::Sidecars {
+            schematic: schematic_sidecar,
+            placement: placement_sidecar,
         },
-        "routing": routing,
-        "diagnostics": diags
-    }))
+    )
+    .map_err(|e| format!("Export failed: {e}"))?;
+
+    let mut request = prepared.unwrap_or_else(|| routing_request(args, engine));
+    request.engine = engine;
+    request.board_path.clone_from(&res.pcb_path);
+    request.out_dir.clone_from(&res.out_dir);
+    request.stem = stem;
+    request.profile_name = board
+        .manufacturer
+        .clone()
+        .unwrap_or_else(|| "jlc-standard".to_string());
+    request.input_hash = sha256_of(&res.pcb_path);
+    request.preserve_baseline().map_err(|f| f.to_string())?;
+
+    let report = synth_router::route(&request);
+    Ok((report, res.out_dir))
+}
+
+fn sha256_of(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    match std::fs::read(path) {
+        Ok(bytes) => format!("{:x}", Sha256::digest(&bytes)),
+        Err(_) => String::new(),
+    }
+}
+
+/// The routing run record as an MCP payload.
+///
+/// The same document the CLI prints and the release gate reads, so a
+/// consumer cannot be told one terminal state here and another there.
+///
+/// The independent-check summary is always present, even when the router never
+/// ran. An agent has to be able to tell "DRC ran and was clean" from "DRC could
+/// not run", and an absent field cannot carry that distinction — so
+/// `drc_performed` is reported alongside `drc_clean`, which is only true when
+/// DRC actually ran and found nothing blocking.
+fn route_report_payload(report: &synth_router::RouteReport) -> Value {
+    let mut payload = serde_json::to_value(report).unwrap_or(Value::Null);
+    // Alias for the trace-length field, under the name every consumer of this
+    // payload has always read. `statistics.wire_length_mm` stays canonical.
+    payload["total_trace_length_mm"] = serde_json::json!(report.statistics.wire_length_mm);
+    let performed = report
+        .validation
+        .as_ref()
+        .is_some_and(|v| v.kicad_drc.is_some());
+    payload["drc_performed"] = serde_json::json!(performed);
+    payload["drc_clean"] = serde_json::json!(
+        performed
+            && report
+                .validation
+                .as_ref()
+                .is_some_and(|v| v.blocking_count() == 0)
+    );
+    payload["violations"] = serde_json::json!(report
+        .validation
+        .as_ref()
+        .map(|v| v.blocking_reasons.clone())
+        .unwrap_or_default());
+    payload
+}
+
+/// Report the independent physical checks over an externally routed board.
+///
+/// The verdict comes from re-reading the routed board — topology against
+/// the baseline, connectivity derived from copper, and `kicad-cli pcb drc`
+/// with zones refilled — so it cannot be satisfied by the router's own
+/// opinion of its work.
+fn execute_drc_report(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
+    let (report, _) = route_design_externally(args, default_registry)?;
+    let payload = route_report_payload(&report);
+
+    // A structurally poor floorplan never reaches the router at all, so
+    // the placement gate keeps its own early return.
+    let Some(validation) = &report.validation else {
+        return Ok(payload);
+    };
+    let mut payload = payload;
+    payload["status"] = serde_json::json!(match report.state {
+        synth_router::RouteState::Routed => "ok",
+        synth_router::RouteState::RouterUnavailable => "router_unavailable",
+        _ => "blocked",
+    });
+    payload["route_complete"] = serde_json::json!(validation.connectivity.open_nets == 0);
+    payload["blocking_count"] = serde_json::json!(validation.blocking_count());
+    Ok(payload)
+}
+
+/// Route a design with the external router and return the run record.
+///
+/// The four terminal states are returned as-is. `router_unavailable` in
+/// particular is a first-class answer rather than an error the agent has
+/// to decode: it means the engine is not installed here, and the payload
+/// says what to install.
+fn execute_route(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
+    let (report, out_dir) = route_design_externally(args, default_registry)?;
+    let mut payload = route_report_payload(&report);
+    payload["out_dir"] = serde_json::json!(out_dir);
+    Ok(payload)
 }
 
 fn execute_fix(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
@@ -2423,66 +2526,53 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
     }
     let board = lowered.board.ok_or("Lowering failed")?;
 
-    // Recompute placement, routing and DRC from the exact board being exported.
-    // A partial route may be exported only as an explicitly requested draft;
-    // the default remains a release gate.
+    // Copper comes from the external router and is installed only when it
+    // passes independent validation. A board that is not fabrication-ready
+    // is emitted only as an explicitly requested draft; the default is a
+    // release gate.
     let allow_incomplete = args["allow_incomplete"].as_bool().unwrap_or(false);
-    let routing_order: Vec<String> = args
-        .get("routing_order")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
     // Two sidecars, two coordinate spaces: board millimetres drive the PCB
-    // placer/router, sheet millimetres drive the schematic. Resolving one
-    // file for both is what made an exported PDF disagree with the rendered
-    // preview, so they are resolved independently here.
+    // placer, sheet millimetres drive the schematic. Resolving one file for
+    // both is what made an exported PDF disagree with the rendered preview,
+    // so they are resolved independently here.
     let placement_sidecar = resolve_placement_sidecar(args, file_name);
     let schematic_sidecar =
         resolve_schematic_sidecar_with(args, file_name, "schematic_layout_file_path");
-    let placement = synth_place::place_with_sidecar(&board, placement_sidecar.as_deref())
-        .map_err(|e| format!("Placement failed: {e}"))?;
-    let routing = if routing_order.is_empty() {
-        synth_route::route(&board, &placement)
-    } else {
-        synth_route::route_with_order(&board, &placement, &routing_order)
-    };
-    let route_complete = routing.unrouted_nets.is_empty();
-    if !route_complete && !allow_incomplete {
-        return Err(format!(
-            "Routing produced {} unrouted net(s); export aborted",
-            routing.unrouted_nets.len()
-        ));
-    }
-    let drc = synth_drc::check(
-        &board,
-        &placement,
-        &routing,
-        &synth_drc::ManufacturerProfile::jlc_standard(),
-    );
-    let drc_clean = drc.is_clean() && route_complete;
-    if !drc.is_clean() && !allow_incomplete {
-        return Err(format!(
-            "DRC produced {} violation(s); export aborted",
-            drc.violations.len()
-        ));
-    }
 
-    let res = synth_kicad::export_with_sidecars_and_routing_order(
+    let res = synth_kicad::export_with_sidecars(
         &board,
         &out_dir,
         &synth_kicad::Sidecars {
             schematic: schematic_sidecar.clone(),
             placement: placement_sidecar.clone(),
         },
-        (!routing_order.is_empty()).then_some(routing_order.as_slice()),
     )
     .map_err(|e| format!("Export failed: {e}"))?;
+
+    let engine = resolve_router(args)?;
+    let mut request = routing_request(args, engine);
+    request.board_path.clone_from(&res.pcb_path);
+    request.out_dir.clone_from(&res.out_dir);
+    request.stem = synth_router::sanitize_stem(&board.name);
+    request.profile_name = board
+        .manufacturer
+        .clone()
+        .unwrap_or_else(|| "jlc-standard".to_string());
+    request.input_hash = sha256_of(&res.pcb_path);
+    request.preserve_baseline().map_err(|f| f.to_string())?;
+    let routing = synth_router::route(&request);
+
+    let route_complete = routing.is_fabrication_ready();
+    if !route_complete && !allow_incomplete {
+        let mut payload = route_report_payload(&routing);
+        payload["hint"] = serde_json::Value::String(format!(
+            "The board is not fabrication-ready. Fix the findings in the routing run \
+             record and retry, or set allow_incomplete=true to emit an explicitly \
+             labelled draft. The un-routed baseline is preserved at {}.",
+            request.baseline_path().display()
+        ));
+        return Ok(payload);
+    }
 
     // Aesthetic schematic ERC over the same layout the exporter used:
     // surfaced to the agent so it can repair readability regressions
@@ -2506,13 +2596,11 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
     };
 
     let mut result = serde_json::json!({
-        "status": if drc_clean { "success" } else { "draft_incomplete" },
-        "release_ready": drc_clean,
+        "status": if route_complete { "success" } else { "draft_incomplete" },
+        "release_ready": route_complete,
         "route_complete": route_complete,
-        "unrouted_nets": routing.unrouted_nets,
-        "pad_escape_rejections": routing.pad_escape_rejections,
-        "drc_clean": drc_clean,
-        "warning": if drc_clean { serde_json::Value::Null } else { serde_json::json!("DRAFT ONLY: routing and/or DRC is incomplete. Review and manually complete the PCB before any fabrication use.") },
+        "routing": routing,
+        "warning": if route_complete { serde_json::Value::Null } else { serde_json::json!("DRAFT ONLY: the board is not fabrication-ready. Review the routing run record and manually complete the PCB before any fabrication use.") },
         "capability_tier": "engineer-review-required",
         "compiler_version": "0.0.1",
         "registry_version": "0.0.1",
@@ -2816,16 +2904,15 @@ fn execute_place_with_hints(
                 }));
             }
 
-            let routing = synth_route::route(&board, &placement);
-            let profile_str = args["profile"].as_str().unwrap_or("jlcpcb_standard");
-            let profile = match profile_str {
-                "jlcpcb_standard" | "jlcpcb" => synth_drc::ManufacturerProfile::jlc_standard(),
-                custom_path => {
-                    synth_drc::ManufacturerProfile::from_toml_file(Path::new(custom_path))
-                        .unwrap_or_else(|_| synth_drc::ManufacturerProfile::jlc_standard())
-                }
-            };
-            let drc_report = synth_drc::check(&board, &placement, &routing, &profile);
+            // Placement-only DRC: the export path emits no copper, so
+            // there is nothing here for a routing-dependent rule to check.
+            // Copper is validated after the external router has run.
+            let drc_report = synth_drc::check(
+                &board,
+                &placement,
+                &synth_pcb::Routing::default(),
+                &synth_drc::ManufacturerProfile::jlc_standard(),
+            );
 
             Ok(serde_json::json!({
                 "status": "ok",
@@ -2840,7 +2927,8 @@ fn execute_place_with_hints(
                 "drc_clean": drc_report.is_clean(),
                 "violations": drc_report.violations,
                 "violation_count": drc_report.violations.len(),
-                "unrouted_nets": routing.unrouted_nets.len()
+                "routing_status": "not_run",
+                "hint_after_placement": "Run synth_route to generate copper with the external router and read its run record."
             }))
         }
         Err(e) => Ok(serde_json::json!({
@@ -3151,12 +3239,17 @@ fn collect_route_constraints(
     (min_width_nm, min_clearance_nm, diagnostics)
 }
 
+/// Route with explicit per-net constraints.
+///
+/// The constraints are validated against the board and folded into the
+/// fabrication policy the external router's output is judged against: a
+/// constraint the router ignored would otherwise look like it had been
+/// honoured, because the router reports success either way. Copper comes
+/// from the engine; the verdict comes from the independent pipeline.
 fn execute_route_with_constraints(
     args: &Value,
     default_registry: Option<&Path>,
 ) -> Result<Value, String> {
-    // Long by design: see `execute_export`.
-    #![allow(clippy::too_many_lines)]
     let source = get_source_from_args(args)?;
     let file_name = args["file_path"].as_str().unwrap_or("board.synth");
 
@@ -3168,112 +3261,40 @@ fn execute_route_with_constraints(
             "diagnostics": parse.diagnostics
         }));
     }
-
     let ast = parse.ast.ok_or("No AST produced")?;
     let import_root = Path::new(file_name)
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let loader = synth_ir::FsImportLoader { root: import_root };
     let resolved = synth_ir::resolve_imports(&ast, &loader, file_name);
-
     let registry =
         load_registry_tiered(args, default_registry).map_err(|e| format!("Registry error: {e}"))?;
-
     let lowered = synth_ir::lower(&resolved.program, &registry, file_name);
     let board = lowered.board.ok_or("Lowering failed")?;
 
     let (min_width_nm, min_clearance_nm, diagnostics) = collect_route_constraints(args, &board);
 
-    let sidecar_opt = resolve_placement_sidecar(args, file_name);
-
-    let mut placement = synth_place::place(&board).map_err(|e| format!("Placement failed: {e}"))?;
-    if let Some(sc_path) = sidecar_opt.as_deref() {
-        if let Some(sidecar) = synth_layout::sidecar::SidecarLayout::load_from_file(sc_path) {
-            synth_place::apply_sidecar_overrides(&board, &mut placement, &sidecar);
-        }
+    let engine = resolve_router(args)?;
+    let mut routed = routing_request(args, engine);
+    // The tightest requested width and clearance become the floor the
+    // independent check enforces, so an engine that routed below them is
+    // rejected rather than trusted.
+    if let Some(width) = min_width_nm {
+        routed.policy.min_track_width_nm = routed.policy.min_track_width_nm.max(width);
+    }
+    if let Some(clearance) = min_clearance_nm {
+        routed.policy.min_clearance_nm = routed.policy.min_clearance_nm.max(clearance);
     }
 
-    let placement_description = synth_place::describe_placement(&board, &placement);
-    if placement_description.visual_review.requires_revision
-        && !args["allow_placement_warnings"].as_bool().unwrap_or(false)
-    {
-        return Ok(serde_json::json!({
-            "status": "placement_requires_revision",
-            "routing_status": "not_run",
-            "reason": "Placement visual review requires revision before constrained routing",
-            "placement_quality": {
-                "visual_review": placement_description.visual_review,
-                "functional_warnings": placement_description.functional_warnings,
-                "dense_regions": placement_description.dense_regions
-            },
-            "hint": "Revise the SynthSpec placement_hint or layout sidecar, rerun placement review, then retry constrained routing."
-        }));
-    }
-
-    let routing_order: Vec<String> = args
-        .get("routing_order")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let width_nm = min_width_nm.unwrap_or(127_000);
-    let clearance_nm = min_clearance_nm.unwrap_or(127_000);
-    let routing = if routing_order.is_empty() {
-        match (min_width_nm, min_clearance_nm) {
-            (Some(w), Some(c)) => synth_route::route_with_profile(&board, &placement, w, c),
-            (Some(w), None) => synth_route::route_with_profile(&board, &placement, w, 127_000),
-            (None, Some(c)) => synth_route::route_with_profile(&board, &placement, 127_000, c),
-            (None, None) => synth_route::route(&board, &placement),
-        }
-    } else {
-        synth_route::route_with_profile_and_order(
-            &board,
-            &placement,
-            width_nm,
-            clearance_nm,
-            &routing_order,
-        )
-    };
-
-    let total_trace_length_mm: f64 = routing
-        .segments
-        .iter()
-        .map(|t| {
-            #[allow(clippy::cast_precision_loss)]
-            let dx = (t.end.x_nm - t.start.x_nm) as f64;
-            #[allow(clippy::cast_precision_loss)]
-            let dy = (t.end.y_nm - t.start.y_nm) as f64;
-            (dx * dx + dy * dy).sqrt() / 1_000_000.0
-        })
-        .sum();
-    let total_vias: usize = routing.vias.len();
-    let unrouted_nets = routing.unrouted_nets.len();
-
-    let profile_str = args["profile"].as_str().unwrap_or("jlcpcb_standard");
-    let profile = match profile_str {
-        "jlcpcb_standard" | "jlcpcb" => synth_drc::ManufacturerProfile::jlc_standard(),
-        custom_path => synth_drc::ManufacturerProfile::from_toml_file(Path::new(custom_path))
-            .unwrap_or_else(|_| synth_drc::ManufacturerProfile::jlc_standard()),
-    };
-    let drc_report = synth_drc::check(&board, &placement, &routing, &profile);
-
-    Ok(serde_json::json!({
-        "status": if unrouted_nets == 0 && drc_report.is_clean() { "ok" } else { "partial" },
-        "segments": routing.segments,
-        "vias": routing.vias,
-        "unrouted_nets": routing.unrouted_nets,
-        "total_trace_length_mm": total_trace_length_mm,
-        "total_vias": total_vias,
-        "drc_clean": drc_report.is_clean(),
-        "violations": drc_report.violations,
-        "violation_count": drc_report.violations.len(),
-        "diagnostics": diagnostics
-    }))
+    let (report, _) = route_design_externally_with(args, default_registry, Some(routed))?;
+    let mut payload = route_report_payload(&report);
+    payload["diagnostics"] = serde_json::json!(diagnostics);
+    payload["constraints"] = serde_json::json!({
+        "min_track_width_nm": min_width_nm,
+        "min_clearance_nm": min_clearance_nm,
+        "note": "Applied as the fabrication floor for independent validation; the external engine selects per-net geometry and is judged against these minimums."
+    });
+    Ok(payload)
 }
 
 fn execute_search_registry_vector(

@@ -350,7 +350,8 @@ project into `out_dir`:
 | `<name>.kicad_sym` | `symbol_lib.rs`               | synthesised symbol library (reuses bundled KiCad stock symbols when available, e.g. `power:GND`/`Device:R`) |
 | `sym-lib-table`    | `export.rs`                   | maps the `synth` library nickname (avoids `lib_symbol_issues` ERC warnings)                                 |
 | `<name>.kicad_sch` | `schematic.rs`                | the schematic (`kicad_sch` version 20260306)                                                                |
-| `<name>.kicad_pcb` | `synth_place` + `synth_route` | placed/routed board                                                                                         |
+| `<name>.kicad_pcb` | `synth_place` + external router + independent validation | routed board, installed only when the state is `routed`                                   |
+| `<name>.routing.json` | external routing run | run record: state, provenance, statistics, independent verdict                                                 |
 | `bom.csv`          | `bom.rs`                      | refdes, value, kind, description, symbol, footprint, `lcsc_pn`, `mpn`                                       |
 
 `schematic.rs` emits:

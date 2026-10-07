@@ -13,8 +13,8 @@
 
 use synth_diagnostics::{NativeCheckEvidence, UnknownReason};
 use synth_geometry::{mm_to_nm, nm_to_mm, Point, Rect, Rotation};
+use synth_pcb::{Routing, Segment, Via};
 use synth_place::Placement;
-use synth_route::{Routing, Segment, Via};
 
 use crate::kicad_cli;
 use crate::profile::ManufacturerProfile;
@@ -621,6 +621,78 @@ fn sort_pair(a: i64, b: i64) -> (i64, i64) {
         (a, b)
     } else {
         (b, a)
+    }
+}
+
+/// Reconstruct a DRC outcome from counts another stage already produced.
+///
+/// The routing pipeline runs `kicad-cli pcb drc` over the board before it
+/// decides whether to install that board, and the release gate needs
+/// evidence for the board it actually delivers. Re-running the check would
+/// be a second opinion on a board that may have changed, so the counts
+/// from the run that gated installation are reused instead.
+///
+/// `counts_performed` is false when the routing pipeline could not run DRC
+/// at all; the evidence is then recorded as unknown, because an
+/// unperformed check is not a pass.
+pub fn replay(counts: &DrcCounts, counts_performed: bool) -> NativeDrcOutcome {
+    let tool = kicad_cli::binary();
+    let version = kicad_cli::version();
+    if !counts_performed {
+        return NativeDrcOutcome {
+            violations: Vec::new(),
+            counts: DrcCounts::default(),
+            evidence: NativeCheckEvidence::unknown(
+                DRC_STAGE,
+                &tool,
+                Vec::new(),
+                UnknownReason::ReportMissing,
+                "the routing pipeline could not run kicad-cli pcb drc; an unperformed \
+                 DRC is not a clean DRC",
+            )
+            .with_version(version),
+        };
+    }
+    let violations: Vec<Violation> = (0..counts.errors)
+        .map(|_| Violation {
+            code: format!("{DRC_STAGE}-REPLAYED"),
+            message: format!(
+                "kicad reported {} error(s) over the routed board; see the routing run \
+                 record for the full report",
+                counts.errors
+            ),
+            witness: Vec::new(),
+            nets: Vec::new(),
+            components: Vec::new(),
+            pos_mm: None,
+            suggested_override: None,
+        })
+        .chain((0..counts.unconnected).map(|_| Violation {
+            code: format!("{DRC_STAGE}-UNCONNECTED"),
+            message: format!(
+                "kicad reported {} unconnected item(s) over the routed board",
+                counts.unconnected
+            ),
+            witness: Vec::new(),
+            nets: Vec::new(),
+            components: Vec::new(),
+            pos_mm: None,
+            suggested_override: None,
+        }))
+        .collect();
+    let blocking = counts.blocking_count();
+    let mut evidence = NativeCheckEvidence::concluded(DRC_STAGE, &tool, Vec::new(), blocking)
+        .with_version(version);
+    // The counts go in `detail` on a failing check, exactly as they do for a
+    // live run: the operator has to be told how many unconnected pads there
+    // are, not only that the board failed.
+    if blocking > 0 {
+        evidence.detail = Some(counts.to_string());
+    }
+    NativeDrcOutcome {
+        violations,
+        counts: *counts,
+        evidence,
     }
 }
 

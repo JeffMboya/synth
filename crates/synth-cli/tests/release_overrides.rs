@@ -2,6 +2,8 @@
 
 #![cfg(unix)]
 
+mod stub_router;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -68,8 +70,17 @@ struct Run {
     manifest: Option<serde_json::Value>,
 }
 
+/// The gate is fail-closed on routing, so every run here gets a stub router.
+/// Without one the export stops at the routing gate and the test would only
+/// ever be asserting that refusal, not the override behaviour it is about.
 fn export(label: &str, part_dir: &str, part_id: &str, footprints: bool, extra: &[&str]) -> Run {
     let dir = scratch(label);
+    // The gate is fail-closed on routing, so every run here gets a stub
+    // router. Without one the export stops at the routing gate and the test
+    // would only ever be asserting that refusal, not the override behaviour
+    // it is actually about.
+    let _lock = stub_router::serialised();
+    let _router = stub_router::install(&dir);
     let cli = kicad_stub(&dir);
     let board = design(&dir, part_id);
     let out = dir.join("out");
@@ -218,6 +229,7 @@ fn no_override_can_produce_a_release_ready_package() {
 #[test]
 fn safe_mode_refuses_to_sit_beside_an_override_flag() {
     let dir = scratch("safe_conflict");
+    // Flag validation happens before any routing, so this one needs no stub.
     let board = design(&dir, "rel_reviewed");
     let output = Command::new(SYNTH)
         .arg("export-kicad")
@@ -272,6 +284,10 @@ mod release_gate {
         extra: &[&str],
     ) -> (Option<i32>, serde_json::Value) {
         let dir = scratch(label);
+        // `check --fab` drives `export-kicad` as a subprocess, so the stub
+        // has to be in the environment for both.
+        let _lock = stub_router::serialised();
+        let _router = stub_router::install(&dir);
         let cli = kicad_stub(&dir);
         let board = design(&dir, part_id);
         let output = Command::new(SYNTH)
@@ -342,6 +358,7 @@ mod release_gate {
     #[test]
     fn an_exception_needs_both_a_reason_and_an_authorizer() {
         let dir = scratch("gate_partial_exception");
+        // Argument validation happens before any routing, so no stub needed.
         let board = design(&dir, "rel_unreviewed");
         let output = Command::new(SYNTH)
             .arg("check")

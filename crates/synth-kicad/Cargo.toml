@@ -17,7 +17,7 @@ synth-ir = { workspace = true }
 synth-geometry = { workspace = true }
 synth-layout = { workspace = true }
 synth-place = { workspace = true }
-synth-route = { workspace = true }
+synth-pcb = { workspace = true }
 synth-drc = { workspace = true }
 synth-registry = { workspace = true }
 rayon = { workspace = true }
