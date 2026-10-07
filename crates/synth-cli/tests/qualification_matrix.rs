@@ -21,6 +21,12 @@ struct BoardSpec {
     class: String,
     status: String,
     expect: String,
+    /// Expected result of the manufacturing stage, which asks a different
+    /// question from the source/DRC gate: a board can be electrically sound
+    /// and still be unable to produce a fab package. Only consulted when the
+    /// run includes `--fab`.
+    #[serde(default)]
+    expect_fab: Option<String>,
     #[serde(default)]
     expect_source_codes: Vec<String>,
     #[serde(default)]
@@ -38,6 +44,10 @@ struct BoardResult {
     drc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     manufacturing: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manufacturing_reason: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    manufacturing_stderr: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     source_codes: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -147,6 +157,43 @@ fn deterministic_artifacts(report: &serde_json::Value) -> BTreeMap<String, Strin
         .unwrap_or_default()
 }
 
+/// Why the manufacturing stage failed.
+///
+/// `synth check` reports the stage's status but not the export's stderr, and
+/// an export that bails early — on a part with no real footprint, say — never
+/// reaches the evidence report either. So on a failure the export is re-run
+/// directly and its complaint recorded, which is the difference between a
+/// result a reviewer can act on and one that only says "fail".
+fn diagnose_manufacturing(root: &Path, board: &Path) -> Vec<String> {
+    let out = root
+        .join("target")
+        .join("qualification")
+        .join("diagnose")
+        .join(board.file_stem().unwrap_or_default());
+    let output = Command::new(SYNTH)
+        .arg("export-kicad")
+        .arg(board)
+        .arg("--out")
+        .arg(&out)
+        .arg("--gerbers")
+        .arg("--drill")
+        .arg("--validate-erc")
+        .current_dir(root)
+        .output();
+    let Ok(output) = output else {
+        return vec!["could not re-run export-kicad".to_string()];
+    };
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter(|l| {
+            let l = l.trim_start();
+            l.starts_with("error") || l.starts_with("warning: UNTRUSTED") || l.contains("refusing")
+        })
+        .map(|l| l.trim().chars().take(300).collect::<String>())
+        .take(6)
+        .collect()
+}
+
 fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
     let root = workspace_root();
     let board = root.join(&spec.path);
@@ -200,6 +247,25 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
         }
     }
 
+    let manufacturing = fab.then(|| stage_status(&report, "manufacturing"));
+    let mut manufacturing_stderr = Vec::new();
+    if let Some(actual_fab) = manufacturing.as_deref() {
+        let expected_fab = spec.expect_fab.as_deref().unwrap_or(&spec.expect);
+        // "unestablished" means no baseline exists yet for this board's
+        // manufacturing stage. The observed value is still recorded, so the
+        // next run's artifact says what to write down; it is just not compared,
+        // because comparing against a guess is how a gate teaches people to
+        // ignore it.
+        if expected_fab != "unestablished" && actual_fab != expected_fab {
+            disagreements.push(format!(
+                "expected the manufacturing stage to {expected_fab}, it reported {actual_fab}"
+            ));
+        }
+        if actual_fab != "pass" {
+            manufacturing_stderr = diagnose_manufacturing(&root, &board);
+        }
+    }
+
     BoardResult {
         id: spec.id.clone(),
         class: spec.class.clone(),
@@ -207,7 +273,11 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
         expected: spec.expect.clone(),
         source: stage_status(&report, "source"),
         drc: stage_status(&report, "drc"),
-        manufacturing: fab.then(|| stage_status(&report, "manufacturing")),
+        manufacturing_reason: report["stages"]["manufacturing"]["reason"]
+            .as_str()
+            .map(str::to_string),
+        manufacturing_stderr,
+        manufacturing,
         source_codes: codes,
         deterministic_artifacts: deterministic_artifacts(&report),
         agrees: disagreements.is_empty(),
@@ -343,6 +413,13 @@ fn the_matrix_is_well_formed() {
             assert_eq!(
                 spec.expect, "fail",
                 "{}: an unsupported board must be a negative test",
+                spec.id
+            );
+        }
+        if let Some(fab) = spec.expect_fab.as_deref() {
+            assert!(
+                ["pass", "fail", "unknown", "unestablished"].contains(&fab),
+                "{}: expect_fab must be pass, fail, unknown or unestablished, found {fab}",
                 spec.id
             );
         }

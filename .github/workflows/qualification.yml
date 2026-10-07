@@ -88,15 +88,15 @@ jobs:
           path: target/qualification/results.json
           if-no-files-found: warn
 
-  # Not yet blocking: the manufacturing stage needs a KiCad install to produce
-  # any evidence at all, so its expectations cannot be established on a
-  # developer machine without one. This job records the first real baseline.
-  # Promote it to blocking (drop continue-on-error) once matrix.toml carries
-  # the manufacturing expectations it produces.
+  # Blocking. The manufacturing stage needs a KiCad install to produce any
+  # evidence at all, so this job established the first baseline and
+  # qualification/matrix.toml now records it per board in `expect_fab`. Boards
+  # whose baseline is not yet known carry `expect_fab = "unestablished"`: the
+  # observed value is recorded in the artifact but not compared, so this gate
+  # blocks on real drift without asserting a guess.
   fab:
-    name: Qualification matrix (manufacturing baseline)
+    name: Qualification matrix (manufacturing)
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - name: Checkout Code
