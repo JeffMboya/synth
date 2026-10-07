@@ -1,0 +1,8 @@
+# Docker images consume the externally built CLI and registry only.
+# Keep host build artifacts and the rest of the source tree out of the context.
+**
+!target/
+!target/release/
+!target/release/synth
+!registry/
+!registry/**
