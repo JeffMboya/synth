@@ -118,7 +118,7 @@ pub fn build_command(
         "--threads".to_string(),
         request.limits.max_threads.to_string(),
         "--ses-output".to_string(),
-        request.session_log_path().display().to_string(),
+        request.ses_path().display().to_string(),
         "--report".to_string(),
         request.router_report_path().display().to_string(),
     ];
@@ -177,12 +177,14 @@ impl Prerequisite {
                 format!("no Java runtime found; looked at {BUNDLED_JRE_DIR}/bin/java and `java`"),
             )
         })?;
-        let python = resolve_python().ok_or_else(|| {
+        let python = resolve_helper_python().ok_or_else(|| {
             RouterFailure::for_stage(
                 RouterEngine::Freerouting,
                 RouterStage::Capability,
                 RouterFailureReason::NotInstalled,
-                "no `python3` interpreter found to run tools/freeroute_autoroute.py",
+                "no `python3` on PATH can import KiCad's `pcbnew` bindings, which \
+                 tools/freeroute_autoroute.py requires; use KiCad's own interpreter or \
+                 point SYNTH_FREEROUTING_PYTHON at one",
             )
         })?;
         let helper = crate::repo_tool(HELPER).ok_or_else(|| {
@@ -320,6 +322,7 @@ fn run_with(
             candidate: Some(request.candidate_path()),
             delivered: Some(request.board_path.clone()),
             session_log: Some(log_path),
+            ses: Some(request.ses_path()),
             router_report: Some(request.router_report_path()),
             ..RouteArtifacts::default()
         }
@@ -379,6 +382,25 @@ pub fn check_process_outcome(
         ));
     }
     if invocation.exit_code != Some(0) {
+        // A missing `pcbnew` is a configuration problem, not a crash: the
+        // interpreter ran and the helper started. Naming it separately turns
+        // a wall of Python traceback into an answer, because the interpreter
+        // that ships with KiCad is rarely the `python3` first on PATH.
+        let output = invocation.combined_output();
+        if output.contains("No module named 'pcbnew'")
+            || output.contains("No module named \"pcbnew\"")
+        {
+            return Err(RouterFailure::for_stage(
+                engine,
+                RouterStage::Route,
+                RouterFailureReason::PythonBindingsMissing,
+                "tools/freeroute_autoroute.py needs KiCad's `pcbnew` module, which the \
+                 interpreter on PATH does not have; set SYNTH_FREEROUTING_PYTHON to \
+                 KiCad's own Python"
+                    .to_string(),
+            )
+            .with_exit_code(invocation.exit_code));
+        }
         return Err(RouterFailure::for_stage(
             engine,
             RouterStage::Route,
@@ -388,7 +410,7 @@ pub fn check_process_outcome(
                 invocation
                     .exit_code
                     .map_or_else(|| "was terminated".to_string(), |c| format!("exited {c}")),
-                first_line(&invocation.combined_output())
+                first_line(&output)
             ),
         )
         .with_exit_code(invocation.exit_code));
@@ -453,8 +475,35 @@ pub fn tool_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn resolve_python() -> Option<PathBuf> {
+/// Whether an interpreter can actually import KiCad's board bindings.
+///
+/// `pcbnew` ships with KiCad's own Python and is often absent from the
+/// `python3` first on PATH — so an interpreter that merely exists is not an
+/// interpreter that can run the helper. Probing here turns a failure that
+/// would otherwise surface as a crashed route, after the board has already
+/// been exported, into a capability answer that says what to install.
+/// The interpreter that runs the FreeRouting helper.
+///
+/// Chosen by preference rather than probed. The helper is invoked *through*
+/// this interpreter — `python3 tools/freeroute_autoroute.py …` — so an
+/// interpreter that only stands in for one (as the tests install) is a valid
+/// answer, and probing it for KiCad's `pcbnew` module would reject the very
+/// substitution the checks need. Whether the chosen interpreter can actually
+/// import `pcbnew` is answered at the route stage, where a failure names the
+/// module and the fix.
+///
+/// `SYNTH_FREEROUTING_PYTHON` overrides the search outright.
+pub fn resolve_helper_python() -> Option<PathBuf> {
+    if let Some(configured) = override_python() {
+        return Some(configured);
+    }
     which("python3").or_else(|| which("python"))
+}
+
+fn override_python() -> Option<PathBuf> {
+    std::env::var_os("SYNTH_FREEROUTING_PYTHON")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
 }
 
 fn read_report(path: &Path) -> Option<FreeroutingReport> {
@@ -530,6 +579,64 @@ mod tests {
             Path::new("/opt/java/bin/java"),
         )
         .join(" ")
+    }
+
+    fn invocation(stderr: &str, exit_code: Option<i32>) -> crate::process::Invocation {
+        crate::process::Invocation {
+            command: Vec::new(),
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+            exit_code,
+            timed_out: false,
+            cancelled: false,
+            output_truncated: false,
+            cwd: PathBuf::from("/tmp"),
+        }
+    }
+
+    #[test]
+    fn a_missing_pcbnew_is_diagnosed_as_a_configuration_problem_not_a_crash() {
+        // The interpreter that ships with KiCad is rarely the `python3` first
+        // on PATH, so this is the common first-run failure. It has to name the
+        // module and the fix rather than presenting a Python traceback as an
+        // engine crash.
+        let output = invocation(
+            "Traceback (most recent call last):\n  File \"tools/freeroute_autoroute.py\", line 24\nModuleNotFoundError: No module named 'pcbnew'\n",
+            Some(1),
+        );
+        let failure = check_process_outcome(RouterEngine::Freerouting, HELPER, &output, &request())
+            .expect_err("a missing module is a failure");
+        assert_eq!(
+            failure.reason,
+            RouterFailureReason::PythonBindingsMissing,
+            "{failure:?}"
+        );
+        assert!(failure.reason.is_unavailable(), "it is a setup problem");
+        assert!(
+            failure.remediation.contains("SYNTH_FREEROUTING_PYTHON"),
+            "the fix must be stated: {failure:?}"
+        );
+    }
+
+    #[test]
+    fn any_other_nonzero_exit_is_still_a_crash() {
+        let output = invocation("Segmentation fault (core dumped)\n", Some(139));
+        let failure = check_process_outcome(RouterEngine::Freerouting, HELPER, &output, &request())
+            .expect_err("non-zero exit is a failure");
+        assert_eq!(failure.reason, RouterFailureReason::Crashed, "{failure:?}");
+    }
+
+    #[test]
+    fn the_ses_result_is_not_written_over_the_session_log() {
+        // Both used to point at the same path, so writing the engine's console
+        // output clobbered the SES and the actual route was lost.
+        let request = request();
+        assert_ne!(
+            request.ses_path(),
+            request.session_log_path(),
+            "the SES and the console log are different artifacts"
+        );
+        assert!(request.ses_path().to_string_lossy().ends_with(".ses"));
     }
 
     #[test]

@@ -184,6 +184,9 @@ pub struct RouteArtifacts {
     /// The router's raw session log.
     #[serde(default)]
     pub session_log: Option<PathBuf>,
+    /// FreeRouting's Specctra session result, when that engine produced one.
+    #[serde(default)]
+    pub ses: Option<PathBuf>,
     /// The engine's own JSON report (KiCadRoutingTools route summary).
     #[serde(default)]
     pub router_report: Option<PathBuf>,
@@ -212,6 +215,7 @@ impl RouteArtifacts {
             .delivered
             .map(|p| resolve(&p))
             .filter(|p| !p.as_os_str().is_empty());
+        self.ses = self.ses.as_ref().filter(|p| p.is_file()).cloned();
         self.session_log = self
             .session_log
             .map(|p| resolve(&p))

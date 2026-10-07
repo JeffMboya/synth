@@ -170,7 +170,49 @@ def splice(board_text, segments):
     return "\n".join(body + rendered + [closer]) + "\n"
 
 
+# The interpreter this file stands in for, baked in by the test harness when
+# it installs the stub. A stub that cannot answer `-c` questions is not a
+# faithful stand-in, and the router pipeline legitimately asks its
+# interpreter whether KiCad's bindings are importable before routing.
+REAL_PYTHON = "@@REAL_PYTHON@@"
+
+
+def delegate_to_real_python(argv) -> None:
+    """Hand an interpreter-style invocation to the real Python.
+
+    The stub is installed *as* `python3`, so anything that is not a routing
+    run is the pipeline talking to its interpreter and must be answered by
+    one. Delegating keeps the stub from having to reimplement Python.
+    """
+    os.execv(REAL_PYTHON, [REAL_PYTHON, *argv])
+
+
+def looks_like_a_routing_run(argv) -> bool:
+    """Whether these arguments are a router invocation rather than a probe.
+
+    A routing run names a helper script and then a board to read and a board
+    to write. Everything else — `-c`, `-m`, `-V`, or nothing at all — is the
+    interpreter being used as an interpreter.
+    """
+    positional = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--report" or arg in FLAGS_WITH_VALUE:
+            index += 2
+        elif arg.startswith("--"):
+            index += 1
+        elif arg in ("-c", "-m", "-V", "--version", "-"):
+            return False
+        else:
+            positional.append(arg)
+            index += 1
+    return len(positional) >= 3 and positional[0].endswith(".py")
+
+
 def main(argv):
+    if not looks_like_a_routing_run(argv):
+        delegate_to_real_python(argv)
     _helper, baseline, candidate, report = parse_args(argv)
     print(
         "stub-router: baseline={} candidate={}".format(baseline, candidate),

@@ -325,6 +325,17 @@ impl RouteRequest {
             .join(format!("{}.{}.log", self.stem, self.engine.artifact_tag()))
     }
 
+    /// FreeRouting's Specctra session result.
+    ///
+    /// Kept separate from [`Self::session_log_path`] deliberately: that path
+    /// holds the engine's console output, and writing the SES there too meant
+    /// one overwrote the other and the actual route was lost.
+    #[must_use]
+    pub fn ses_path(&self) -> PathBuf {
+        self.out_dir
+            .join(format!("{}.{}.ses", self.stem, self.engine.artifact_tag()))
+    }
+
     /// KiCadRoutingTools JSON summary.
     #[must_use]
     pub fn krt_stats_path(&self) -> PathBuf {

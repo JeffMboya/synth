@@ -55,7 +55,8 @@ pub fn install(out_dir: &Path) -> StubRouter {
             "#!/usr/bin/python3",
             &format!("#!{}", real_python.display()),
             1,
-        ),
+        )
+        .replace("@@REAL_PYTHON@@", &real_python.to_string_lossy()),
     )
     .expect("write stub router");
     make_executable(&interpreter);

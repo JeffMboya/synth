@@ -74,6 +74,13 @@ pub enum RouterFailureReason {
     CheckoutMissing,
     /// The Python interpreter KiCadRoutingTools needs is missing.
     PythonMissing,
+    /// A Python interpreter exists, but cannot import KiCad's `pcbnew`
+    /// bindings, which the FreeRouting helper requires.
+    ///
+    /// Distinct from [`Self::PythonMissing`]: the interpreter is present and
+    /// runs, and the fix is to use the one KiCad ships rather than to install
+    /// an interpreter.
+    PythonBindingsMissing,
     /// The process could not be started at all.
     SpawnFailed,
     /// The engine exceeded its wall-clock budget and was terminated.
@@ -103,6 +110,7 @@ impl RouterFailureReason {
             Self::JavaMissing => "java_missing",
             Self::CheckoutMissing => "checkout_missing",
             Self::PythonMissing => "python_missing",
+            Self::PythonBindingsMissing => "python_bindings_missing",
             Self::SpawnFailed => "spawn_failed",
             Self::Timeout => "timeout",
             Self::Cancelled => "cancelled",
@@ -129,6 +137,7 @@ impl RouterFailureReason {
                 | Self::JavaMissing
                 | Self::CheckoutMissing
                 | Self::PythonMissing
+                | Self::PythonBindingsMissing
         )
     }
 }
@@ -258,6 +267,11 @@ fn default_remediation(engine: RouterEngine, reason: RouterFailureReason) -> Str
         RouterFailureReason::PythonMissing => {
             "pass --kicad-routing-tools-python pointing at an interpreter with KiCadRoutingTools' \
              dependencies installed"
+                .to_string()
+        }
+        RouterFailureReason::PythonBindingsMissing => {
+            "tools/freeroute_autoroute.py needs KiCad's pcbnew module, which ships with KiCad's \
+             own Python; point SYNTH_FREEROUTING_PYTHON at that interpreter"
                 .to_string()
         }
         RouterFailureReason::SpawnFailed => {

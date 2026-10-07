@@ -187,6 +187,13 @@ pub struct FabricationVerdict {
     pub fabrication_ready: bool,
     /// Reasons the candidate is not fabrication-ready.
     pub blocking_reasons: Vec<String>,
+    /// KiCad DRC counts for the board the verdict was decided on.
+    ///
+    /// `None` means DRC could not be performed, which is not a clean result:
+    /// that case is also recorded in `unavailable_checks`, so a `routed`
+    /// verdict always has counts here.
+    pub kicad_drc: Option<crate::result::DrcCounts>,
+
     /// Checks that could not be performed. Their absence is itself a
     /// reason not to call the board ready.
     #[serde(default)]
@@ -294,7 +301,14 @@ pub fn validate_candidate(
 
     // KiCad DRC is the last required check. A DRC that could not run
     // leaves the board in review, never in `Routed`.
+    //
+    // The counts are kept on the verdict so the run record reports the same
+    // DRC the verdict was decided on. Re-deriving them later would be a
+    // second run over the same board, which can disagree if the board
+    // changed in between — and would let the summary say `kicad_drc: null`
+    // beside a verdict of `routed`.
     let drc = crate::drc::run(&candidate.candidate_path, request);
+    verdict.kicad_drc = drc.map(Into::into);
     match &drc {
         Some(counts) => {
             if counts.blocking_count() > 0 {
@@ -350,15 +364,28 @@ pub fn compare_topology(baseline: &PcbBoard, routed: &PcbBoard) -> TopologyRepor
     // Pad-level comparison, keyed by `REF.PAD` so a pad that moved nets
     // under the same designator is caught rather than passing as
     // "still present".
-    let baseline_pads: BTreeMap<String, Option<u32>> = baseline
+    //
+    // A pad's net is compared by *name*, not by numeric code. The code is
+    // only meaningful within one file: an engine that writes a board without
+    // a net table (KiCadRoutingTools does) numbers its nets by whatever order
+    // the names fall in, so an unchanged net can carry a different code in
+    // the candidate than in the baseline. Comparing codes would then report
+    // every pad as renetted.
+    let baseline_nets = baseline.nets.clone();
+    let routed_nets = routed.nets.clone();
+    let name_of = |table: &BTreeMap<u32, String>, code: Option<u32>| {
+        code.and_then(|c| table.get(&c).cloned())
+    };
+
+    let baseline_pads: BTreeMap<String, Option<String>> = baseline
         .pads()
         .filter(|p| p.net.is_some_and(|n| n != 0))
-        .map(|p| (p.id(), p.net))
+        .map(|p| (p.id(), name_of(&baseline_nets, p.net)))
         .collect();
-    let routed_pads: BTreeMap<String, Option<u32>> = routed
+    let routed_pads: BTreeMap<String, Option<String>> = routed
         .pads()
         .filter(|p| p.net.is_some_and(|n| n != 0))
-        .map(|p| (p.id(), p.net))
+        .map(|p| (p.id(), name_of(&routed_nets, p.net)))
         .collect();
 
     let mut missing_pads: Vec<String> = baseline_pads
@@ -401,6 +428,11 @@ enum Item {
 /// Union-find over pads, tracks, and vias: two items join when their
 /// copper shapes touch on a shared layer. A net is connected when all its
 /// pads land in one island. Nothing here reads a router-reported count.
+///
+/// Filled zone copper counts. A ground net is normally routed as stitching
+/// vias between plane pours rather than as a trace to every pad, so ignoring
+/// zones would report every plane-backed net as open however correctly it
+/// was routed.
 #[must_use]
 pub fn check_connectivity(board: &PcbBoard, policy: &FabricationPolicy) -> ConnectivityReport {
     let mut report = ConnectivityReport::default();
@@ -446,15 +478,13 @@ pub fn check_connectivity(board: &PcbBoard, policy: &FabricationPolicy) -> Conne
             }
         }
 
-        // Pairwise touching tests. Quadratic per net, which is fine at the
-        // scale a net reaches in practice and keeps the geometry check
-        // readable — an off-by-one in a spatial index would misreport
-        // opens, which is the failure this pass exists to prevent.
-        for i in 0..items.len() {
-            for j in (i + 1)..items.len() {
-                if items_touch(board, &items[i], &items[j], &pad_by_id) {
-                    islands.union(i, j);
-                }
+        union_touching_items(board, &items, &mut islands, &pad_by_id);
+
+        // Anything this net's own pour touches is one electrical island.
+        let pour_items = zone_copper_items(board, net, &items);
+        if let Some((&anchor, rest)) = pour_items.split_first() {
+            for &other in rest {
+                islands.union(anchor, other);
             }
         }
 
@@ -477,26 +507,14 @@ pub fn check_connectivity(board: &PcbBoard, policy: &FabricationPolicy) -> Conne
             report.connected_nets += 1;
         } else {
             report.open_nets += 1;
-            // Report the smallest island: that is the net's real symptom,
-            // and it names the pad that is stranded.
-            let (root, size) = island_sizes
-                .iter()
-                .min_by_key(|(root, size)| (**size, **root))
-                .map_or((0, 0), |(root, size)| (*root, *size));
-            let stranded = pad_indices
-                .iter()
-                .find(|idx| islands.find(**idx) == root)
-                .and_then(|idx| match &items[*idx] {
-                    Item::Pad(id) => Some(id.clone()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| format!("net {net_name}"));
-            report.open.push(OpenConnection {
-                net: net_name,
-                pad: stranded,
-                island_size: size,
+            report.open.push(stranded_connection(
+                &items,
+                &mut islands,
+                &island_sizes,
+                &pad_indices,
+                net_name,
                 pad_count,
-            });
+            ));
         }
     }
 
@@ -542,6 +560,153 @@ fn describe_via(board: &PcbBoard, via: &crate::pcb_read::Via) -> String {
 }
 
 /// Whether two copper items touch on a shared layer.
+/// The smallest island of a split net, as an open connection.
+///
+/// The smallest island is the net's real symptom, and naming one of its pads
+/// is what makes the report actionable — "net GND is open" does not say where.
+fn stranded_connection(
+    items: &[Item],
+    islands: &mut UnionFind,
+    island_sizes: &BTreeMap<usize, usize>,
+    pad_indices: &[usize],
+    net_name: String,
+    pad_count: usize,
+) -> OpenConnection {
+    let (root, size) = island_sizes
+        .iter()
+        .min_by_key(|(root, size)| (**size, **root))
+        .map_or((0, 0), |(root, size)| (*root, *size));
+    let stranded = pad_indices
+        .iter()
+        .find(|idx| islands.find(**idx) == root)
+        .and_then(|idx| match &items[*idx] {
+            Item::Pad(id) => Some(id.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| format!("net {net_name}"));
+    OpenConnection {
+        net: net_name,
+        pad: stranded,
+        island_size: size,
+        pad_count,
+    }
+}
+
+/// Union every pair of items whose copper touches on a shared layer.
+///
+/// Quadratic per net, which is fine at the scale a net reaches in practice
+/// and keeps the geometry check readable — an off-by-one in a spatial index
+/// would misreport opens, which is the failure this pass exists to prevent.
+fn union_touching_items(
+    board: &PcbBoard,
+    items: &[Item],
+    islands: &mut UnionFind,
+    pad_by_id: &BTreeMap<String, &Pad>,
+) {
+    for i in 0..items.len() {
+        for j in (i + 1)..items.len() {
+            if items_touch(board, &items[i], &items[j], pad_by_id) {
+                islands.union(i, j);
+            }
+        }
+    }
+}
+
+/// Items of `items` that this net's own filled zone copper reaches.
+///
+/// Only zones carrying the same net count: a pour of a different net is a
+/// different conductor, and treating it as one would short nets together.
+/// Only zones set to fill are considered, and only on the layers each item
+/// actually occupies, so a pour on `In1.Cu` does not join a pad on `B.Cu`.
+fn zone_copper_items(board: &PcbBoard, net: u32, items: &[Item]) -> Vec<usize> {
+    let zones: Vec<_> = board
+        .zones
+        .iter()
+        .filter(|zone| zone.filled && zone.net == Some(net))
+        .flat_map(|zone| zone.outlines.iter().map(move |outline| (zone, outline)))
+        .collect();
+    if zones.is_empty() {
+        return Vec::new();
+    }
+
+    let pads: BTreeMap<String, &Pad> = board.pads().map(|p| (p.id(), p)).collect();
+    let mut reached = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let touched = match item {
+            Item::Pad(id) => pads.get(id).is_some_and(|pad| {
+                pad.layers
+                    .iter()
+                    .any(|layer| entry_is_copper(layer) && covered_by_zone(&zones, layer, &pad.at))
+            }),
+            Item::Segment(idx) => {
+                let segment = &board.segments[*idx];
+                covered_by_zone(&zones, &segment.layer, &segment.start)
+                    || covered_by_zone(&zones, &segment.layer, &segment.end)
+            }
+            Item::Via(idx) => {
+                let via = &board.vias[*idx];
+                via.layers
+                    .iter()
+                    .any(|layer| covered_by_zone(&zones, layer, &via.at))
+            }
+        };
+        if touched {
+            reached.push(index);
+        }
+    }
+    reached
+}
+
+/// Whether a pour of this net covers `(at, layer)`.
+fn covered_by_zone(
+    zones: &[(&crate::pcb_read::Zone, &(String, Vec<Point>))],
+    layer: &str,
+    at: &Point,
+) -> bool {
+    zones.iter().any(|(_, (zone_layer, polygon))| {
+        layer_entries_match(zone_layer, layer) && point_in_polygon(at, polygon)
+    })
+}
+
+/// Ray-casting point-in-polygon test.
+///
+/// A point exactly on an edge counts as inside: the pour's own outline is
+/// where its copper ends, and a via drilled on the outline is stitched to it.
+fn point_in_polygon(point: &Point, polygon: &[Point]) -> bool {
+    let mut inside = false;
+    let count = polygon.len();
+    for i in 0..count {
+        let a = &polygon[i];
+        let b = &polygon[(i + 1) % count];
+        if point_on_segment(point, a, b) {
+            return true;
+        }
+        let (a_y, b_y) = (a.y_nm, b.y_nm);
+        if (a_y > point.y_nm) != (b_y > point.y_nm) {
+            // x of the edge at the point's y
+            let t = (point.y_nm - a_y) as f64 / (b_y - a_y) as f64;
+            let x = a.x_nm as f64 + t * (b.x_nm - a.x_nm) as f64;
+            if x > point.x_nm as f64 {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+fn point_on_segment(point: &Point, a: &Point, b: &Point) -> bool {
+    let cross =
+        (b.x_nm - a.x_nm) * (point.y_nm - a.y_nm) - (b.y_nm - a.y_nm) * (point.x_nm - a.x_nm);
+    if cross.abs() > TOUCH_TOLERANCE_NM {
+        return false;
+    }
+    let within_x = point.x_nm >= a.x_nm.min(b.x_nm) - TOUCH_TOLERANCE_NM
+        && point.x_nm <= a.x_nm.max(b.x_nm) + TOUCH_TOLERANCE_NM;
+    let within_y = point.y_nm >= a.y_nm.min(b.y_nm) - TOUCH_TOLERANCE_NM
+        && point.y_nm <= a.y_nm.max(b.y_nm) + TOUCH_TOLERANCE_NM;
+    within_x && within_y
+}
+
 fn items_touch(board: &PcbBoard, a: &Item, b: &Item, pads: &BTreeMap<String, &Pad>) -> bool {
     match (a, b) {
         (Item::Pad(x), Item::Pad(y)) => {
@@ -552,7 +717,12 @@ fn items_touch(board: &PcbBoard, a: &Item, b: &Item, pads: &BTreeMap<String, &Pa
                 return false;
             };
             let segment = &board.segments[*s];
-            pad_layers(&pad.layers).contains(&segment.layer)
+            // Matched by name with the wildcard rule, not by set membership:
+            // a through-hole pad's `"*.Cu"` is in no `BTreeSet` alongside a
+            // literal `B.Cu`.
+            pad_layers(&pad.layers)
+                .iter()
+                .any(|l| layer_entries_match(l, &segment.layer))
                 && point_segment_distance(pad.at, segment.start, segment.end)
                     <= pad.radius_nm() + segment.width_nm / 2 + TOUCH_TOLERANCE_NM
         }
@@ -592,23 +762,40 @@ fn items_touch(board: &PcbBoard, a: &Item, b: &Item, pads: &BTreeMap<String, &Pa
     }
 }
 
-/// Copper layers a pad participates in.
+/// Whether a `(layers ...)` entry names copper.
 ///
-/// A pad's `(layers ...)` list may include non-copper layers such as
-/// `F.Mask` and `F.Paste`; only copper layers can carry a connection.
+/// KiCad spells through-hole pads `"*.Cu"`, which is a wildcard for every
+/// copper layer rather than a single layer name. Treating it as
+/// non-copper — because it does not literally end in `.Cu` — silently put
+/// every through-hole pad on no layer at all, so no track could ever touch
+/// one and each THT net read as unroutable no matter what the router drew.
+fn entry_is_copper(entry: &str) -> bool {
+    entry.ends_with(".Cu") || entry.ends_with(".CuIn") || entry == "*.Cu"
+}
+
+/// Whether one layer entry refers to the same layer as another.
+///
+/// `*.Cu` matches any copper layer, so a through-hole pad and a track on
+/// `B.Cu` do share a layer even though neither name contains the other's.
+fn layer_entries_match(a: &str, b: &str) -> bool {
+    a == b || (a == "*.Cu" && entry_is_copper(b)) || (b == "*.Cu" && entry_is_copper(a))
+}
+
+/// Copper layers a pad participates in.
 fn pad_layers(layers: &[String]) -> BTreeSet<&String> {
-    layers.iter().filter(|l| l.ends_with(".Cu")).collect()
+    layers.iter().filter(|l| entry_is_copper(l)).collect()
 }
 
 /// Whether two named layer sets share a layer.
 fn layers_intersect(a: &[String], b: &[String]) -> bool {
-    a.iter().any(|l| b.iter().any(|other| other == l))
+    a.iter()
+        .any(|l| b.iter().any(|other| layer_entries_match(l, other)))
 }
 
 fn shares_layer(pad: &Pad, via_layers: &[String]) -> bool {
     pad_layers(&pad.layers)
         .iter()
-        .any(|l| via_layers.iter().any(|v| v == *l))
+        .any(|l| via_layers.iter().any(|v| layer_entries_match(l, v)))
 }
 
 fn pads_touch(a: &Pad, b: &Pad) -> bool {
@@ -1039,6 +1226,138 @@ mod tests {
   (gr_line (start 0 0) (end 0 30) (layer "Edge.Cuts") (width 0.1))
   (gr_line (start 40 0) (end 40 30) (layer "Edge.Cuts") (width 0.1))
 )"#;
+
+    // A through-hole pad joined to a pad on the far side, the way KiCad
+    // writes a THT net: the pads carry a wildcard copper layer rather than a
+    // named one.
+    const THROUGH_HOLE_BOARD: &str = r#"(kicad_pcb
+  (version 20260206)
+  (generator "synth-eda")
+  (layers
+    (0 "F.Cu" signal)
+    (31 "B.Cu" signal)
+    (44 "Edge.Cuts" user)
+  )
+  (net 0 "")
+  (net 1 "SIG")
+  (footprint "Connector:Pin_1x02"
+    (layer "F.Cu")
+    (at 10 20)
+    (property "Reference" "J1" (at 0 -1) (layer "F.SilkS"))
+    (pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (drill 0.8)
+      (layers "*.Cu" "*.Mask") (net 1 "SIG"))
+    (pad "2" thru_hole circle (at 2.54 0) (size 1.6 1.6) (drill 0.8)
+      (layers "*.Cu" "*.Mask") (net 0 ""))
+  )
+  (footprint "Package_QFN:QFN-32"
+    (layer "B.Cu")
+    (at 30 20)
+    (property "Reference" "U1" (at 0 -1) (layer "B.SilkS"))
+    (pad "1" smd roundrect (at -1 0) (size 0.6 0.3)
+      (layers "B.Cu" "B.Paste" "B.Mask") (net 1 "SIG"))
+  )
+  (segment (start 10 20) (end 29 20) (width 0.25) (layer "B.Cu") (net 1))
+  (gr_line (start 0 0) (end 40 0) (layer "Edge.Cuts") (width 0.1))
+  (gr_line (start 0 0) (end 0 30) (layer "Edge.Cuts") (width 0.1))
+  (gr_line (start 40 0) (end 40 30) (layer "Edge.Cuts") (width 0.1))
+  (gr_line (start 0 30) (end 40 30) (layer "Edge.Cuts") (width 0.1))
+)"#;
+
+    /// A ground net completed by a plane: two pads joined only by a filled
+    /// zone, with the zone naming its net the way a table-less board does.
+    const PLANE_BOARD: &str = r#"(kicad_pcb
+  (version 20260206)
+  (generator "pcbnew")
+  (layers
+    (0 "F.Cu" signal)
+    (44 "Edge.Cuts" user)
+  )
+  (footprint "Connector:Pin_1x02"
+    (layer "F.Cu")
+    (at 10 20)
+    (property "Reference" "J1" (at 0 -1) (layer "F.SilkS"))
+    (pad "1" thru_hole circle (at 0 0) (size 1.6 1.6) (drill 0.8)
+      (layers "*.Cu" "*.Mask") (net "GND"))
+    (pad "2" thru_hole circle (at 20 20) (size 1.6 1.6) (drill 0.8)
+      (layers "*.Cu" "*.Mask") (net "GND"))
+  )
+  (zone
+    (net "GND")
+    (layer "F.Cu")
+    (fill yes)
+    (polygon (pts (xy 0 0) (xy 40 0) (xy 40 40) (xy 0 40)))
+  )
+  (gr_line (start 0 0) (end 40 0) (layer "Edge.Cuts") (width 0.1))
+  (gr_line (start 0 0) (end 0 40) (layer "Edge.Cuts") (width 0.1))
+  (gr_line (start 40 0) (end 40 40) (layer "Edge.Cuts") (width 0.1))
+  (gr_line (start 0 40) (end 40 40) (layer "Edge.Cuts") (width 0.1))
+)"#;
+
+    #[test]
+    fn a_filled_plane_connects_its_nets_pads() {
+        // A ground net is normally routed as a plane, not as a trace to every
+        // pad. Counting only tracks reported every plane-backed net as open
+        // however correctly it was routed.
+        let report = check_connectivity(&board(PLANE_BOARD), &FabricationPolicy::default());
+        assert_eq!(report.connected_nets, 1, "{report:?}");
+        assert!(report.open.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn a_zone_whose_net_is_name_only_still_connects_its_pads() {
+        // KiCadRoutingTools writes a board with no net table, so the zone
+        // binds its net as `(net "GND")` with no code. Reading only the
+        // numeric form left the pour unassigned and the net read as open.
+        let report = check_connectivity(&board(PLANE_BOARD), &FabricationPolicy::default());
+        assert!(report.open.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn a_zone_of_another_net_does_not_join_pads() {
+        // The pour is a conductor of its own net; treating it as common
+        // copper would short two nets together.
+        // Only the zone's net moves; the pads stay on GND.
+        let text = PLANE_BOARD.replace("(zone\n    (net \"GND\")", "(zone\n    (net \"OTHER\")");
+        let report = check_connectivity(&board(&text), &FabricationPolicy::default());
+        assert_eq!(
+            report.open_nets, 1,
+            "the pour must not join them: {report:?}"
+        );
+    }
+
+    #[test]
+    fn an_unfilled_zone_is_not_copper() {
+        // `(fill no)` leaves the outline as a drawing, not a conductor.
+        let text = PLANE_BOARD.replace("(fill yes)", "(fill no)");
+        let report = check_connectivity(&board(&text), &FabricationPolicy::default());
+        assert_eq!(report.open_nets, 1, "{report:?}");
+    }
+
+    #[test]
+    fn a_through_hole_pad_is_routable_from_a_track_on_any_copper_layer() {
+        // KiCad writes a through-hole pad's layers as `"*.Cu"`, a wildcard
+        // for every copper layer. Reading that as "not copper" put the pad on
+        // no layer at all, so no track could touch it and every THT net
+        // reported as unroutable however well it was routed.
+        let board = board(THROUGH_HOLE_BOARD);
+        let report = check_connectivity(&board, &FabricationPolicy::default());
+        assert!(
+            report.open.is_empty(),
+            "a THT pad must join the track on B.Cu: {report:?}"
+        );
+        assert_eq!(report.connected_nets, 1);
+    }
+
+    #[test]
+    fn a_through_hole_pad_joins_a_via_from_any_copper_layer() {
+        let text = THROUGH_HOLE_BOARD.replace(
+            r#"(segment (start 10 20) (end 29 20) (width 0.25) (layer "B.Cu") (net 1))"#,
+            r#"(via (at 10 20) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))
+  (segment (start 10 20) (end 29 20) (width 0.25) (layer "B.Cu") (net 1))"#,
+        );
+        let report = check_connectivity(&board(&text), &FabricationPolicy::default());
+        assert!(report.open.is_empty(), "{report:?}");
+    }
 
     #[test]
     fn a_pad_the_design_left_unassigned_is_not_a_routing_failure() {

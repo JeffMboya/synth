@@ -379,11 +379,24 @@ pub fn checkout_commit(repo: &Path) -> String {
     krt_commit(repo)
 }
 
+/// The version of a KiCadRoutingTools checkout.
+///
+/// Prefers the git commit, but falls back to the checkout's `VERSION` file.
+/// A system-wide install is normally owned by root (`/opt/...`) and git
+/// refuses to read it — "detected dubious ownership" — so keying the version
+/// to git alone reports `unknown` for exactly the deployments most likely to
+/// be shared. The `VERSION` file needs no ownership check and always names the
+/// release KRT's own build_router.py fetched.
 fn krt_commit(repo: &Path) -> String {
-    let Some(git) = which("git") else {
-        return "unknown".to_string();
-    };
-    let ok = crate::process::run(
+    if let Some(commit) = git_commit(repo) {
+        return commit;
+    }
+    version_file(repo).unwrap_or_else(|| "unknown".to_string())
+}
+
+fn git_commit(repo: &Path) -> Option<String> {
+    let git = which("git")?;
+    let invocation = crate::process::run(
         &git,
         &[
             "-C".to_string(),
@@ -394,24 +407,51 @@ fn krt_commit(repo: &Path) -> String {
         ],
         PROBE_BUDGET,
         4096,
-    );
-    let Ok(invocation) = ok else {
-        return "unknown".to_string();
-    };
+    )
+    .ok()?;
     if !invocation.succeeded() {
-        return "unknown".to_string();
+        return None;
     }
     let commit = invocation.stdout.trim().to_string();
-    if commit.is_empty() {
-        "unknown".to_string()
-    } else {
-        commit
-    }
+    (!commit.is_empty()).then_some(commit)
+}
+
+fn version_file(repo: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(repo.join("VERSION")).ok()?;
+    let version = text.trim().lines().next()?.trim().to_string();
+    (!version.is_empty()).then_some(version)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_checkout_git_refuses_still_yields_its_release_version() {
+        // A system-wide install (/opt/...) is normally owned by root and git
+        // refuses to read it ("dubious ownership"), so a version keyed to git
+        // alone reads `unknown` for exactly the deployments most likely to be
+        // shared. The VERSION file KRT writes during setup names the release.
+        let dir = std::env::temp_dir().join(format!(
+            "krt-version-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(dir.join("VERSION"), "0.22.1\n").expect("version file");
+        assert_eq!(checkout_commit(&dir), "0.22.1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_checkout_with_no_version_marker_is_reported_as_unknown() {
+        let dir = std::env::temp_dir().join(format!("krt-noversion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        assert_eq!(checkout_commit(&dir), "unknown");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn a_missing_freerouting_jar_names_the_paths_it_searched() {

@@ -102,6 +102,23 @@ synth export-kicad board.synth --out output/board
 `--autoroute` no longer exists. It used to opt in to the external router; the
 router is now the only path, and passing it is an error that points here.
 
+#### Prerequisites
+
+FreeRouting needs a Java runtime and a FreeRouting JAR; both are found
+automatically, and a missing one is reported as `router_unavailable` with the
+paths that were searched. The helper that drives FreeRouting also imports
+KiCad's `pcbnew` module, which ships with **KiCad's own Python** and is often
+absent from the `python3` first on `PATH`. Point the pipeline at the right
+interpreter when that happens:
+
+```text
+SYNTH_FREEROUTING_PYTHON=/usr/bin/python3.14 synth export-kicad board.synth --out output/board
+```
+
+The failure is named `python_bindings_missing` and says so, rather than
+surfacing a Python traceback as an engine crash. `synth routers` reports what
+is installed and usable.
+
 The four terminal states are distinct, and only one is fabricable:
 
 | State               | Meaning                                                  |
@@ -123,14 +140,18 @@ Every run writes a record next to the board:
 | `<name>.routing.json`         | Run record: state, provenance, statistics, verdict |
 | `<name>.<engine>.log`         | Engine session log                               |
 | `<name>.freerouting.json`     | Engine's own provenance report                   |
+| `<name>.freerouting.ses`      | FreeRouting's Specctra session result            |
 | `<name>.connectivity.json`    | Independent connectivity and topology findings   |
 | `<name>.drc.json`             | `kicad-cli pcb drc` result over the routed board  |
 
 The independent check re-reads the routed board and compares it to the
 baseline: footprint, pad and net topology must be unchanged, each net must be
 continuous through real copper, and track/via geometry must meet the
-fabrication floor. Zones are refilled before DRC so clearances are checked
-against copper that actually exists.
+fabrication floor. A net completed through a filled zone — a ground plane
+reached by stitching vias — counts as connected; counting only tracks would
+report every plane-backed net as open however correctly it was routed. Zones
+are refilled before DRC so clearances are checked against copper that actually
+exists.
 
 To compare two engines by hand, route each and run the same check over both:
 

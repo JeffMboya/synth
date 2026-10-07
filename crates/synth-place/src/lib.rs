@@ -542,6 +542,20 @@ fn legalize_sidecar_overrides(
         .collect();
     let pitch_nm = mm_to_nm(0.5);
 
+    // Snapshot every override's requested slot before anything moves.
+    //
+    // Legalising a conflicting override displaces a component, and a later
+    // iteration reads its "requested" slot from the live placement. If that
+    // component was the one displaced, the read returns where it was parked
+    // rather than where the sidecar asked for it — which is how a part ends
+    // up at the board origin instead of its overridden coordinate.
+    let requested_by_id: std::collections::HashMap<ComponentId, ComponentPlacement> = placement
+        .components
+        .iter()
+        .filter(|placed| overridden.contains(&placed.id))
+        .map(|placed| (placed.id, *placed))
+        .collect();
+
     // Honour hard overrides before soft ones, and refdes within a priority,
     // so which override wins a contested square is a property of the design
     // file rather than of iteration order.
@@ -582,16 +596,19 @@ fn legalize_sidecar_overrides(
         else {
             continue;
         };
-        let requested = placement.components[placement_index];
+        let requested = requested_by_id
+            .get(&target)
+            .copied()
+            .unwrap_or(placement.components[placement_index]);
         if sidecar_position_is_legal(board, placement, component_index, requested) {
+            placement.components[placement_index] = requested;
             continue;
         }
 
         // The requested square is occupied. A drag is an instruction, not a
         // suggestion: whoever is in the way moves, because leaving the board
         // with two overlapping courtyards is worse than moving a part the
-        // designer did not place by hand. Blockers are lifted first, then the
-        // requested square is re-checked.
+        // designer did not place by hand.
         let blockers: Vec<ComponentId> = placement
             .components
             .iter()
@@ -610,7 +627,12 @@ fn legalize_sidecar_overrides(
             .map(|other| other.id)
             .collect();
 
-        let mut lifted: Vec<(ComponentId, ComponentPlacement)> = Vec::new();
+        // Move each movable blocker to its *own* nearest legal slot rather
+        // than parking it at the outline corner. A corner parking spot overlaps
+        // whatever already sits there, and a blocker that is itself overridden
+        // would later be read back from the corner instead of its sidecar
+        // coordinate.
+        let mut displaced: Vec<(usize, ComponentPlacement)> = Vec::new();
         for blocker in &blockers {
             // A blocker that is itself a hard override outranks this drag and
             // is left alone; the caller surfaced that conflict already.
@@ -619,12 +641,26 @@ fn legalize_sidecar_overrides(
             {
                 continue;
             }
-            if let Some(index) = placement.components.iter().position(|p| p.id == *blocker) {
-                lifted.push((*blocker, placement.components[index]));
-                placement.components[index].center = Point::new(
-                    placement.board_outline.min.x_nm,
-                    placement.board_outline.min.y_nm,
-                );
+            let Some(blocker_component_index) = board
+                .components
+                .iter()
+                .position(|component| component.id == *blocker)
+            else {
+                continue;
+            };
+            let Some(blocker_index) = placement
+                .components
+                .iter()
+                .position(|placed| placed.id == *blocker)
+            else {
+                continue;
+            };
+            let current = placement.components[blocker_index];
+            if let Some(slot) =
+                nearest_local_slot(board, placement, blocker_component_index, current, pitch_nm)
+            {
+                displaced.push((blocker_index, current));
+                placement.components[blocker_index] = slot;
             }
         }
 
@@ -633,18 +669,17 @@ fn legalize_sidecar_overrides(
             continue;
         }
 
-        // Something un-liftable is in the way. Fall back to the local search,
-        // then restore whatever was lifted so the board stays legal even if
-        // the request could not be honoured.
-        match nearest_local_slot(board, placement, component_index, requested, pitch_nm) {
-            Some(candidate) => placement.components[placement_index] = candidate,
-            None => {
-                for (id, original) in lifted {
-                    if let Some(index) = placement.components.iter().position(|p| p.id == id) {
-                        placement.components[index] = original;
-                    }
-                }
-            }
+        // Something un-movable is still in the way. Put back whatever moved,
+        // then place the target as near its request as the board allows; if
+        // even that fails, it keeps its automatic position for visual review
+        // to report.
+        for (index, original) in displaced {
+            placement.components[index] = original;
+        }
+        if let Some(candidate) =
+            nearest_local_slot(board, placement, component_index, requested, pitch_nm)
+        {
+            placement.components[placement_index] = candidate;
         }
     }
 }
@@ -4901,6 +4936,80 @@ mod tests {
             assert!(
                 gap_x > mm_to_nm(0.5) || gap_y > mm_to_nm(0.5),
                 "{a} and {b} overlap after a drag displaced them"
+            );
+        }
+    }
+
+    #[test]
+    fn a_soft_override_that_blocks_another_does_not_strand_it_at_the_origin() {
+        // Two soft overrides land on the same square. Legalising the first
+        // displaces the second; if the second's "requested" slot were then
+        // read back from the live placement it would return wherever it was
+        // parked — the outline corner — and the part would be exported at
+        // (0, 0) instead of where the sidecar asked.
+        let board = load_board("../../examples/sensor_logger.synth");
+        let auto = place(&board).expect("place");
+        let square = |refdes: &str| {
+            auto.component_by_refdes(&board, refdes)
+                .expect("placed")
+                .center
+        };
+        let contested = square("C2");
+        let entry = |refdes: &str, center: synth_geometry::Point| {
+            (
+                refdes.to_string(),
+                synth_layout::sidecar::SidecarPlacement {
+                    x: synth_geometry::nm_to_mm(center.x_nm),
+                    y: synth_geometry::nm_to_mm(center.y_nm),
+                    rotation: 0,
+                    sheet: None,
+                    source: synth_layout::sidecar::OverrideSource::Agent,
+                    priority: synth_layout::sidecar::OverridePriority::Soft,
+                    timestamp: None,
+                    relative_to: None,
+                    dx: 0.0,
+                    dy: 0.0,
+                },
+            )
+        };
+        let sidecar = synth_layout::sidecar::SidecarLayout {
+            schema_version: synth_layout::sidecar::SIDECAR_SCHEMA_VERSION,
+            components: [entry("C1", contested), entry("C2", contested)]
+                .into_iter()
+                .collect(),
+            forced_net_labels: Vec::new(),
+            fit_sheet: false,
+        };
+
+        let mut placement = auto.clone();
+        apply_sidecar_overrides(&board, &mut placement, &sidecar);
+
+        let origin = synth_geometry::Point::new(
+            placement.board_outline.min.x_nm,
+            placement.board_outline.min.y_nm,
+        );
+        // The exact landing spot depends on the local legalizer, but neither
+        // part may be left at the parking corner, and both must be legal and
+        // inside the board.
+        for refdes in ["C1", "C2"] {
+            let component_index = board
+                .components
+                .iter()
+                .position(|component| component.refdes == refdes)
+                .expect("component");
+            let placement_index = placement
+                .components
+                .iter()
+                .position(|placed| placed.id == board.components[component_index].id)
+                .expect("placement");
+            let current = placement.components[placement_index];
+            assert_ne!(
+                current.center, origin,
+                "{refdes} was parked at the outline corner"
+            );
+            assert!(
+                sidecar_position_is_legal(&board, &placement, component_index, current),
+                "{refdes} ended somewhere illegal"
             );
         }
     }

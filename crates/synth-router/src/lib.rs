@@ -225,7 +225,7 @@ fn finalize(
             fabrication_ready: verdict.fabrication_ready,
             topology: verdict.topology,
             connectivity: verdict.connectivity,
-            kicad_drc: crate::drc::run(&request.candidate_path(), request).map(Into::into),
+            kicad_drc: verdict.kicad_drc,
             blocking_reasons: verdict.blocking_reasons,
             unavailable_checks: verdict.unavailable_checks,
         }),

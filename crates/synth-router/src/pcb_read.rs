@@ -168,10 +168,16 @@ impl Node {
     /// integer.
     #[must_use]
     pub fn layer_names(&self) -> Vec<String> {
-        let Some(layers) = self.find("layers") else {
-            return Vec::new();
-        };
-        layers.body().iter().filter_map(Node::layer_label).collect()
+        // A zone names its layers `(layer "F.Cu")` (singular) while the
+        // stackup and a pad use `(layers ...)`. Reading only the plural left
+        // every zone with no layer at all, so its pour matched nothing.
+        if let Some(layers) = self.find("layers") {
+            return layers.body().iter().filter_map(Node::layer_label).collect();
+        }
+        if let Some(layer) = self.find("layer") {
+            return layer.body().iter().filter_map(Node::layer_label).collect();
+        }
+        Vec::new()
     }
 
     /// A `(layers ...)` element read as a single layer name.
@@ -197,19 +203,33 @@ impl Node {
     /// reading separately: the code is what identifies the net inside one
     /// file, the name is what a human reads. Validating only the name
     /// would let a renumbered net pass unnoticed.
+    ///
+    /// A board written without a net table carries only the name, as
+    /// `(net "net_0")`. That form still returns a binding — with no code —
+    /// rather than nothing, because discarding it makes every net on such a
+    /// board invisible and a correctly routed board looks like one whose
+    /// nets went missing.
     #[must_use]
-    pub fn net_binding(&self, key: &str) -> Option<(i64, Option<String>)> {
+    pub fn net_binding(&self, key: &str) -> Option<(Option<i64>, Option<String>)> {
         let net = self.find(key).or_else(|| {
             let idx = self.body().iter().position(|n| n.as_str() == Some(key))?;
             self.body().get(idx + 1)
         })?;
-        let code = net.body().first().and_then(Node::as_str)?.parse().ok()?;
-        let name = net
-            .body()
-            .get(1)
-            .and_then(Node::as_str)
-            .map(ToString::to_string);
-        Some((code, name))
+        let first = net.body().first().and_then(Node::as_str)?;
+        let code = first.parse::<i64>().ok();
+        if code.is_some() {
+            let name = net
+                .body()
+                .get(1)
+                .and_then(Node::as_str)
+                .map(ToString::to_string);
+            Some((code, name))
+        } else if first.is_empty() {
+            None
+        } else {
+            // Name-only form: the name is the whole binding.
+            Some((None, Some(first.to_string())))
+        }
     }
 }
 
@@ -404,6 +424,9 @@ pub struct Footprint {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
     pub net: Option<u32>,
+    /// Net name as written, kept so a board written without a net table can
+    /// still be keyed (see [`PcbBoard::rebind_nets_by_name`]).
+    pub net_name: Option<String>,
     pub layer: String,
     pub start: Point,
     pub end: Point,
@@ -414,6 +437,8 @@ pub struct Segment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Via {
     pub net: Option<u32>,
+    /// Net name as written, for the same reason as [`Segment::net_name`].
+    pub net_name: Option<String>,
     pub at: Point,
     pub size_nm: i64,
     pub drill_nm: i64,
@@ -426,6 +451,67 @@ pub struct Zone {
     pub net: Option<u32>,
     pub net_name: Option<String>,
     pub layers: Vec<String>,
+    /// Outlines of the pour, per layer, as closed polygons in board
+    /// coordinates.
+    ///
+    /// Read from the declared outline rather than the `filled_polygon` that
+    /// KiCad only writes after a refill. The independent check refills zones
+    /// itself, so the declared outline is what it can rely on being there —
+    /// and a ground net connected through a plane is connected through this
+    /// copper, so connectivity has to see it.
+    pub outlines: Vec<(String, Vec<Point>)>,
+    /// Whether the zone is set to fill at all.
+    pub filled: bool,
+}
+
+/// Read a zone's pour outlines, keyed by layer.
+///
+/// A zone names one `(polygon (pts ...))` per layer, and a multi-layer zone
+/// repeats the same outline once per layer it covers.
+fn zone_outlines(zone: &Node) -> Vec<(String, Vec<Point>)> {
+    zone.find_all("polygon")
+        .filter_map(|polygon| {
+            let points = polygon.find("pts")?;
+            let vertices: Vec<Point> = points
+                .find_all("xy")
+                .filter_map(|xy| {
+                    let x = xy
+                        .body()
+                        .first()
+                        .and_then(Node::as_str)?
+                        .parse::<f64>()
+                        .ok()?;
+                    let y = xy
+                        .body()
+                        .get(1)
+                        .and_then(Node::as_str)?
+                        .parse::<f64>()
+                        .ok()?;
+                    Some(Point::new(mm_to_nm(x), mm_to_nm(y)))
+                })
+                .collect();
+            if vertices.len() < 3 {
+                return None;
+            }
+            Some((String::new(), vertices))
+        })
+        .flat_map(|(_, vertices)| {
+            zone.layer_names()
+                .into_iter()
+                .map(move |layer| (layer, vertices.clone()))
+        })
+        .collect()
+}
+
+/// Whether a zone is set to fill.
+///
+/// `(fill yes ...)` is explicit; a zone with no `(fill ...)` block is left
+/// unfilled by KiCad and is not copper.
+fn zone_fill_enabled(zone: &Node) -> bool {
+    match zone.find("fill") {
+        Some(fill) => fill.body().first().and_then(Node::as_str) != Some("no"),
+        None => false,
+    }
 }
 
 /// A routed board as read back from disk.
@@ -478,13 +564,17 @@ impl PcbBoard {
 
         board.layers = root.layer_names();
 
+        // Net codes come from the net table, which is written
+        // `(net <code> "<name>")`. Only that shape declares a net; a
+        // name-only `(net "<name>")` is a pad or track *referring* to a net,
+        // and treating one as a declaration invents a code for it — which
+        // renumbers every net after it and makes the whole board look
+        // renetted against its baseline.
         for net in root.find_all("net") {
-            let Some(code) = net
-                .body()
-                .first()
-                .and_then(Node::as_str)
-                .and_then(|s| s.parse().ok())
-            else {
+            let Some(first) = net.body().first().and_then(Node::as_str) else {
+                continue;
+            };
+            let Some(code) = first.parse::<u32>().ok() else {
                 continue;
             };
             let name = net
@@ -495,6 +585,12 @@ impl PcbBoard {
                 .to_string();
             board.nets.insert(code, name);
         }
+
+        // Some engines (KiCadRoutingTools among them) write a board with no
+        // net table at all, binding nets by name on each pad and track. Those
+        // names are collected here and reconciled into codes once everything
+        // else has been parsed; without it every pad reads as netless and a
+        // correctly routed board is reported as one whose nets went missing.
 
         for footprint in root.find_all("footprint") {
             board.footprints.push(parse_footprint(footprint));
@@ -510,10 +606,23 @@ impl PcbBoard {
             }
         }
         for zone in root.find_all("zone") {
+            // A zone's net is written `(net <code>)`, `(net <code> "<name>")`,
+            // or — on a board with no net table, as KiCadRoutingTools writes
+            // — `(net "<name>")`. `net_name` is a separate optional child.
+            // Reading only the numeric form left the pour's net unset, so it
+            // never matched its own net and a ground plane read as no copper:
+            // every pad on that net was then reported stranded.
+            let (code, bound_name) = match zone.net_binding("net") {
+                Some((code, name)) => (code, name),
+                None => (None, None),
+            };
             board.zones.push(Zone {
-                net: zone.child_i64("net").and_then(|n| u32::try_from(n).ok()),
-                net_name: zone.child_atom("net_name").map(ToString::to_string),
+                net: code.and_then(|c| u32::try_from(c).ok()),
+                net_name: bound_name
+                    .or_else(|| zone.child_atom("net_name").map(ToString::to_string)),
                 layers: zone.layer_names(),
+                outlines: zone_outlines(zone),
+                filled: zone_fill_enabled(zone),
             });
         }
         for graphic in root
@@ -524,7 +633,94 @@ impl PcbBoard {
             collect_edge_cuts(graphic, &mut board.edge_cuts);
         }
 
+        board.reconcile_name_only_nets();
+
         Ok(board)
+    }
+
+    /// Give every net that is referred to only by name a code.
+    ///
+    /// A board with no net table — as KiCadRoutingTools writes — binds nets
+    /// by name on each pad, track, via and zone, and declares none. Those
+    /// names are gathered here and numbered, because without a code every
+    /// reference reads as netless and a correctly routed board looks like one
+    /// whose nets went missing.
+    ///
+    /// A board that *does* have a table keeps its own numbering, which is
+    /// what makes it comparable with its baseline; renumbering it would
+    /// report every pad as renetted.
+    fn reconcile_name_only_nets(&mut self) {
+        if !self.nets.is_empty() && self.nets.len() > 1 {
+            return;
+        }
+        let mut referenced: BTreeSet<String> = BTreeSet::new();
+        for footprint in &self.footprints {
+            for pad in &footprint.pads {
+                if let Some(name) = &pad.net_name {
+                    referenced.insert(name.clone());
+                }
+            }
+        }
+        for segment in &self.segments {
+            if let Some(name) = &segment.net_name {
+                referenced.insert(name.clone());
+            }
+        }
+        for via in &self.vias {
+            if let Some(name) = &via.net_name {
+                referenced.insert(name.clone());
+            }
+        }
+        for zone in &self.zones {
+            if let Some(name) = &zone.net_name {
+                referenced.insert(name.clone());
+            }
+        }
+        referenced.remove("");
+        if referenced.is_empty() {
+            return;
+        }
+
+        let mut codes: BTreeMap<String, u32> = BTreeMap::new();
+        for (next, name) in (1u32..).zip(referenced.iter()) {
+            codes.insert(name.clone(), next);
+            if !self.nets.values().any(|existing| existing == name) {
+                self.nets.insert(next, name.clone());
+            }
+        }
+        self.rebind_nets_by_name(&codes);
+    }
+
+    /// Re-key net bindings that carry only a name.
+    ///
+    /// Assigns each name the code from `codes` on every pad, segment and via
+    /// that names it, so a board written without a net table compares and
+    /// validates like one that has it.
+    fn rebind_nets_by_name(&mut self, codes: &BTreeMap<String, u32>) {
+        for footprint in &mut self.footprints {
+            for pad in &mut footprint.pads {
+                if let Some(name) = &pad.net_name {
+                    pad.net = codes.get(name).copied();
+                }
+            }
+        }
+        for segment in &mut self.segments {
+            if let Some(name) = &segment.net_name {
+                segment.net = codes.get(name).copied();
+            }
+        }
+        for via in &mut self.vias {
+            if let Some(name) = &via.net_name {
+                via.net = codes.get(name).copied();
+            }
+        }
+        for zone in &mut self.zones {
+            if zone.net.is_none() {
+                if let Some(name) = &zone.net_name {
+                    zone.net = codes.get(name).copied();
+                }
+            }
+        }
     }
 
     /// Every pad on the board.
@@ -660,7 +856,7 @@ fn parse_footprint(node: &Node) -> Footprint {
             );
             let layers = pad.layer_names();
             let (net, net_name) = match pad.net_binding("net") {
-                Some((code, name)) => (u32::try_from(code).ok(), name),
+                Some((code, name)) => (code.and_then(|c| u32::try_from(c).ok()), name),
                 None => (None, None),
             };
             Some(Pad {
@@ -715,6 +911,11 @@ impl From<Point> for (i64, i64) {
 fn parse_segment(node: &Node) -> Option<Segment> {
     Some(Segment {
         net: node.child_i64("net").and_then(|n| u32::try_from(n).ok()),
+        net_name: node
+            .find("net")
+            .and_then(|n| n.body().first())
+            .and_then(Node::as_str)
+            .map(ToString::to_string),
         layer: node
             .child_atom("layer")
             .map_or_else(|| "F.Cu".to_string(), ToString::to_string),
@@ -727,6 +928,11 @@ fn parse_segment(node: &Node) -> Option<Segment> {
 fn parse_via(node: &Node) -> Option<Via> {
     Some(Via {
         net: node.child_i64("net").and_then(|n| u32::try_from(n).ok()),
+        net_name: node
+            .find("net")
+            .and_then(|n| n.body().first())
+            .and_then(Node::as_str)
+            .map(ToString::to_string),
         at: parse_point(node, "at")?,
         size_nm: node.child_f64("size").map_or(0, mm_to_nm),
         drill_nm: node.child_f64("drill").map_or(0, mm_to_nm),
@@ -810,14 +1016,47 @@ mod tests {
     }
 
     #[test]
-    fn nets_are_read_with_their_codes_and_names() {
-        let board = PcbBoard::parse(SAMPLE_BOARD).expect("sample parses");
-        assert_eq!(board.nets.get(&1).map(String::as_str), Some("GND"));
-        assert_eq!(board.nets.get(&2).map(String::as_str), Some("SDA"));
-        // Net 0 is KiCad's unconnected net and is not a design net.
-        assert!(!board.net_names().contains(""));
+    fn a_board_with_no_net_table_still_yields_usable_net_codes() {
+        // KiCadRoutingTools writes a board with no `(net <code> "<name>")`
+        // table at all, binding nets by name on each pad and track. Reading
+        // only the table made every net invisible, so a correctly routed
+        // board was reported as one whose nets had gone missing.
+        let text = r#"(kicad_pcb
+  (version 20260206)
+  (generator "pcbnew")
+  (layers (0 "F.Cu" signal) (44 "Edge.Cuts" user))
+  (footprint "R:R_0603"
+    (layer "F.Cu") (at 10 20)
+    (property "Reference" "R1" (at 0 -1) (layer "F.SilkS"))
+    (pad "1" smd roundrect (at -0.825 0) (size 0.8 0.95)
+      (layers "F.Cu" "F.Paste" "F.Mask") (net "net_0"))
+    (pad "2" smd roundrect (at 0.825 0) (size 0.8 0.95)
+      (layers "F.Cu" "F.Paste" "F.Mask") (net "net_1")))
+  (footprint "R:R_0603"
+    (layer "F.Cu") (at 20 20)
+    (property "Reference" "R2" (at 0 -1) (layer "F.SilkS"))
+    (pad "1" smd roundrect (at -0.825 0) (size 0.8 0.95)
+      (layers "F.Cu" "F.Paste" "F.Mask") (net "net_0"))
+    (pad "2" smd roundrect (at 0.825 0) (size 0.8 0.95)
+      (layers "F.Cu" "F.Paste" "F.Mask") (net 0 "")))
+  (segment (start 9.175 20) (end 19.175 20) (width 0.25)
+    (layer "F.Cu") (net "net_0"))
+  (gr_line (start 0 0) (end 40 0) (layer "Edge.Cuts") (width 0.1))
+)"#;
+        let board = PcbBoard::parse(text).expect("table-less board parses");
+        assert_eq!(board.nets.len(), 2, "{:?}", board.nets);
+        assert!(
+            board.nets.values().any(|n| n == "net_0"),
+            "the named net must survive: {:?}",
+            board.nets
+        );
+        // The pad and the track must agree on the reconstructed code, or the
+        // net reads as two islands.
+        let r1_1 = board.pads().find(|p| p.id() == "R1.1").expect("R1 pad 1");
+        let r2_1 = board.pads().find(|p| p.id() == "R2.1").expect("R2 pad 1");
+        assert_eq!(r1_1.net, r2_1.net, "both pads must share a code");
+        assert_eq!(board.segments[0].net, r1_1.net, "track shares the code");
     }
-
     #[test]
     fn pads_carry_their_net_layer_and_absolute_position() {
         let board = PcbBoard::parse(SAMPLE_BOARD).expect("sample parses");

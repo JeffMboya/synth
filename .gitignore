@@ -50,3 +50,8 @@ __pycache__/
 # Temporary test logs and reports
 audit.jsonl
 *.rpt
+
+# Installed router engines: a downloaded FreeRouting JAR and a bundled JRE.
+# These are fetched per machine (see docs/kicad-workflows.md), not vendored.
+/tools/freerouting/
+/tools/jre25/
