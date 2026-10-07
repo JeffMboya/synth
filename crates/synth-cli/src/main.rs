@@ -3187,7 +3187,10 @@ fn dump_place(
                     None => synth_place::place(b),
                 };
                 match result {
-                    Ok(p) => Some(p),
+                    // Publish the external coordinate space (footprint origin),
+                    // not the internal courtyard centre, so `synth place` and
+                    // the exported PCB agree. See `synth_place::to_external`.
+                    Ok(p) => Some(synth_place::to_external(b, &p)),
                     Err(e) => {
                         let diags = e.to_diagnostics(b, &file);
                         let _ = write_diagnostics_to_stderr(&diags);

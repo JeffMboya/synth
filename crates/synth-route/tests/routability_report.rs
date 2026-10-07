@@ -82,6 +82,52 @@ fn routability_report() {
     }
 }
 
+/// Deterministic routability gate for the normal (debug) CI run.
+///
+/// The full `unrouted_nets_do_not_regress` gate below needs release mode and
+/// minutes, so it lives in the dedicated release workflow. This smaller check
+/// runs on every commit in seconds and catches the same class of regression —
+/// a placement change that increases unrouted nets — on fixed small designs.
+/// Raise a baseline deliberately, never as a side effect of a change that was
+/// not measured against this.
+#[test]
+fn small_designs_do_not_regress_unrouted_nets() {
+    // (design, max unrouted nets tolerated)
+    let expected = [
+        ("../../fixtures/designs/three_components.synth", 0_usize),
+        ("../../fixtures/designs/four_components.synth", 0_usize),
+        ("../../fixtures/designs/decoupling_heavy.synth", 0_usize),
+    ];
+    let mut regressions = Vec::new();
+    for (path, tolerated) in expected {
+        if !Path::new(path).exists() {
+            continue;
+        }
+        let board = load_board(path);
+        let Ok(placement) = synth_place::place(&board) else {
+            regressions.push(format!("{path}: placement failed"));
+            continue;
+        };
+        let routing = synth_route::route(&board, &placement);
+        let unrouted = routing.unrouted_nets.len();
+        if unrouted > tolerated {
+            regressions.push(format!(
+                "{path}: {unrouted} unrouted, tolerates {tolerated} ({:?})",
+                routing
+                    .unrouted_nets
+                    .iter()
+                    .map(|net| net.net_name.as_str())
+                    .collect::<Vec<_>>()
+            ));
+        }
+    }
+    assert!(
+        regressions.is_empty(),
+        "routability regressed:\n  {}",
+        regressions.join("\n  ")
+    );
+}
+
 /// Unrouted nets must not regress.
 ///
 /// This is the gate that the placement work of phases 2 and 4 failed, and
@@ -90,16 +136,20 @@ fn routability_report() {
 /// routability got worse, which is exactly the case a distance metric
 /// cannot catch.
 ///
-/// Ignored by default because a debug-build route takes minutes; run it the
-/// way the reports above are run:
+/// It is `#[ignore]`d in the normal test run and executed by the dedicated
+/// `routability-gate` release job in `.github/workflows/ci.yml`, which every
+/// PR runs:
 ///
 /// `cargo test --release -p synth-route --test routability_report unrouted_nets_do_not_regress -- --ignored`
+///
+/// The smaller, non-ignored `small_designs_do_not_regress_unrouted_nets`
+/// above guards the same property on every debug-mode CI run.
 ///
 /// The recorded figures are the pre-placement-change baseline. Raise them
 /// deliberately, never as a side effect of a change that was not measured
 /// against this.
 #[test]
-#[ignore = "release-mode gate; takes minutes"]
+#[ignore = "release-mode gate; run by the routability-gate CI job"]
 fn unrouted_nets_do_not_regress() {
     // (design, max unrouted nets tolerated)
     let expected = [

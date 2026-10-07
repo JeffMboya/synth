@@ -88,10 +88,16 @@ use synth_ir::{Board, ComponentId, PinId};
 use thiserror::Error;
 
 /// Final position + orientation of a single component on the PCB.
+///
+/// `center` is the **courtyard-bbox centre** in nanometres — the coordinate
+/// space the placer, DRC and exporter reason about. It is not the footprint's
+/// physical origin and must not be published as one: for an asymmetric
+/// footprint the origin sits at `center - rot(courtyard_offset)`. Convert
+/// through [`to_external`] before crossing the process boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ComponentPlacement {
     pub id: ComponentId,
-    /// Centre of the component's footprint, in nanometers.
+    /// Courtyard-bbox centre of the component, in nanometres.
     pub center: Point,
     pub rotation: Rotation,
     pub layer: Layer,
@@ -102,6 +108,84 @@ pub struct ComponentPlacement {
 pub struct Placement {
     pub board_outline: Rect,
     pub components: Vec<ComponentPlacement>,
+}
+
+/// A [`ComponentPlacement`] in the external coordinate space that agents and
+/// the SaaS (`synth-ee`) consume.
+///
+/// **Stable contract.** `center` is the point KiCad writes as a footprint's
+/// `(at x y)` — the footprint's physical origin on the board — in nanometres.
+/// This is the coordinate space the exported `.kicad_pcb` is in, so an overlay
+/// of the placement JSON on the PCB needs no correction.
+///
+/// It deliberately differs from [`ComponentPlacement::center`], which is the
+/// internal courtyard-bbox centre. Publishing the internal value here would
+/// shift every downstream consumer by the footprint's courtyard offset
+/// (`center - rot(courtyard_offset)`) for asymmetric footprints such as USB
+/// connectors and DIP headers, while the exported PCB places the origin
+/// correctly — the two would silently disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalComponent {
+    pub id: ComponentId,
+    /// Footprint origin (KiCad `at`), in nanometres.
+    pub center: Point,
+    pub rotation: Rotation,
+    pub layer: Layer,
+}
+
+/// The external placement payload: board outline plus every component in the
+/// footprint-origin coordinate space ([`ExternalComponent::center`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalPlacement {
+    pub board_outline: Rect,
+    pub components: Vec<ExternalComponent>,
+}
+
+/// The board-space point KiCad writes as a footprint's `(at x y)`, given the
+/// internal courtyard-centre placement.
+///
+/// `part` supplies the courtyard offset; `None` (or a part with no resolvable
+/// footprint) degrades to the identity, where origin and courtyard centre
+/// coincide. The KiCad exporter and [`to_external`] must both go through this
+/// so the exported board and the published placement cannot drift apart.
+#[must_use]
+pub fn footprint_origin(
+    part: Option<&synth_registry::Part>,
+    placement: &ComponentPlacement,
+) -> Point {
+    let (offset_x_mm, offset_y_mm) = part.map_or((0.0, 0.0), |p| {
+        synth_layout::pcb_courtyard_geometry_for_part(p).0
+    });
+    let (rot_x, rot_y) = placement
+        .rotation
+        .rotate_offset(mm_to_nm(offset_x_mm), mm_to_nm(offset_y_mm));
+    Point::new(placement.center.x_nm - rot_x, placement.center.y_nm - rot_y)
+}
+
+/// Convert an internal placement into the stable external coordinate space.
+///
+/// Use this for every placement payload that leaves the process — the CLI's
+/// `synth place` and the MCP `component_placements` field. Never serialize
+/// [`Placement`] directly to an external consumer.
+#[must_use]
+pub fn to_external(board: &Board, placement: &Placement) -> ExternalPlacement {
+    let components = placement
+        .components
+        .iter()
+        .map(|p| {
+            let part = board.component(p.id).and_then(|c| c.part.as_ref());
+            ExternalComponent {
+                id: p.id,
+                center: footprint_origin(part, p),
+                rotation: p.rotation,
+                layer: p.layer,
+            }
+        })
+        .collect();
+    ExternalPlacement {
+        board_outline: placement.board_outline,
+        components,
+    }
 }
 
 /// Structured failure modes for the constraint solver. Each

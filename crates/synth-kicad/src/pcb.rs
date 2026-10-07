@@ -899,14 +899,12 @@ fn build_footprint_instance(
     project: &Uuid,
     pad_net_lookup: &PadNetLookup,
 ) -> Sexp {
-    // Keep the center pairs as single tuple bindings — destructured
-    // `*_x_*`/`*_y_*` names trip clippy's `similar_names`.
-    let (court_center_mm, _) = synth_layout::pcb_courtyard_geometry_for_part(part);
-    let rot_center_nm = placement
-        .rotation
-        .rotate_offset(mm_to_nm(court_center_mm.0), mm_to_nm(court_center_mm.1));
-    let x = nm_to_mm(placement.center.x_nm - rot_center_nm.0);
-    let y = nm_to_mm(placement.center.y_nm - rot_center_nm.1);
+    // Route the origin through the same helper the external placement
+    // contract uses (`synth_place::to_external`), so the exported `(at x y)`
+    // and the published placement JSON cannot drift apart.
+    let origin = synth_place::footprint_origin(Some(part), placement);
+    let x = nm_to_mm(origin.x_nm);
+    let y = nm_to_mm(origin.y_nm);
     let angle = f64::from(placement.rotation.degrees());
     let layer_name = match placement.layer {
         Layer::Top => "F.Cu",

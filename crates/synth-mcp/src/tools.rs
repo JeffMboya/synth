@@ -304,7 +304,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "synth_place_with_hints".into(),
-            description: "Run the PCB placer with explicit semantic placement hints (region, edge, near/side) for one or more components. Does not modify the source file. Returns placement positions, hint satisfaction, structural visual-review findings, functional-cluster warnings, compactness warnings, unrouted net count, and full DRC violation reports. Call with run_routing=false first; if placement_quality.visual_review.requires_revision is true, revise the hints or sidecar before routing. A combined run also stops before the router when review requires revision; use synth_route with allow_placement_warnings=true only for deliberate manual/debug routing. For production layouts, keep MCU/flash/decouplers and interface passives close, keep connectors edge-oriented, then use a sidecar for relative or exact refinements.".into(),
+            description: "Run the PCB placer with explicit semantic placement hints (region, edge, near/side) for one or more components. Does not modify the source file. Returns placement positions, hint satisfaction, structural visual-review findings, functional-cluster warnings, compactness warnings, unrouted net count, and full DRC violation reports. Call with run_routing=false first; if placement_quality.visual_review.requires_revision is true, revise the hints or sidecar before routing. A combined run also stops before the router when review requires revision; use synth_route with allow_placement_warnings=true only for deliberate manual/debug routing. For production layouts, keep MCU/flash/decouplers and interface passives close, keep connectors edge-oriented, then use a sidecar for relative or exact refinements. Each `component_placements[].center` is the footprint origin (the point KiCad writes as the footprint `(at x y)`), in nanometres, so it overlays the exported PCB exactly; it is not the placement sidecar's coordinate space.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2778,7 +2778,7 @@ fn execute_place_with_hints(
                 return Ok(serde_json::json!({
                     "status": "placed",
                     "board_size_mm": [board_w_mm, board_h_mm],
-                    "component_placements": placement.components,
+                    "component_placements": synth_place::to_external(&board, &placement).components,
                     "hint_satisfaction": report,
                     "placement_quality": {
                         "functional_warnings": placement_description.functional_warnings,
@@ -2803,7 +2803,7 @@ fn execute_place_with_hints(
                 return Ok(serde_json::json!({
                     "status": "placement_requires_revision",
                     "board_size_mm": [board_w_mm, board_h_mm],
-                    "component_placements": placement.components,
+                    "component_placements": synth_place::to_external(&board, &placement).components,
                     "hint_satisfaction": report,
                     "placement_quality": {
                         "functional_warnings": placement_description.functional_warnings,
@@ -2830,7 +2830,7 @@ fn execute_place_with_hints(
             Ok(serde_json::json!({
                 "status": "ok",
                 "board_size_mm": [board_w_mm, board_h_mm],
-                "component_placements": placement.components,
+                "component_placements": synth_place::to_external(&board, &placement).components,
                 "hint_satisfaction": report,
                 "placement_quality": {
                     "functional_warnings": placement_description.functional_warnings,
