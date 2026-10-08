@@ -105,20 +105,55 @@ pub struct Finding {
     pub found: String,
 }
 
-/// Codes that describe the physical pin map: a pin that is not a pad, a pad no
-/// pin claims, a duplicate or blank pad number, a pin absent from the symbol,
-/// or a footprint presented on the wrong side.
+/// Blocking codes that say a part definition is simply wrong about the
+/// physical package, rather than being a judgement call.
 ///
-/// An allow-list, not a deny-list. These are the only findings that refuse a
-/// fab export with no override, so a new code has to be added here
-/// deliberately rather than inheriting that power by default.
-pub const STRUCTURAL_CODES: [&str; 6] = [
+/// These are the only findings that refuse a fab export with no override, so
+/// an allow-list rather than a deny-list: a new code has to be added here
+/// deliberately instead of inheriting that power by default.
+///
+/// - `001` a declared pin is not a pad, or lands on a pad with no copper
+/// - `002` the footprint has copper pads no pin declares
+/// - `003` two pins claim one pad number
+/// - `004` two pins share one logical name
+/// - `005` a declared pin is not on the referenced KiCad symbol
+/// - `011` a do-not-connect pin is marked required, so every design using the
+///   part is forced to connect a pin the manufacturer says must float
+/// - `012` copper pads sit on the back layer on a top-side part
+/// - `013` a pin carries no pad number at all
+///
+/// [`NON_STRUCTURAL_BLOCKING`] carries the blocking codes deliberately left
+/// out, with the reason. Between them the two lists must cover every blocking
+/// code the engine emits; `every_blocking_code_is_classified` enforces that,
+/// because the omission of `013` from an earlier version of this list was
+/// invisible until a reviewer read it.
+pub const STRUCTURAL_CODES: [&str; 8] = [
     "E-SYNTH-QUAL-001",
     "E-SYNTH-QUAL-002",
     "E-SYNTH-QUAL-003",
     "E-SYNTH-QUAL-004",
     "E-SYNTH-QUAL-005",
+    "E-SYNTH-QUAL-011",
     "E-SYNTH-QUAL-012",
+    "E-SYNTH-QUAL-013",
+];
+
+/// Blocking codes that are deliberately not structural, and why.
+///
+/// `006` and `007` judge `footprint_dimensions`, which is declared metadata the
+/// exporter consults only when it has to synthesize a footprint. When a real
+/// footprint resolves — the case for anything heading to fabrication — those
+/// values touch no copper, so refusing a fab submission over them, under a
+/// message about the pin map, blames the wrong thing.
+///
+/// `008` and `015` are provenance: nobody has reviewed the part, or the review
+/// metadata is incomplete. That is a judgement call about trust, and it already
+/// has its own gate in `--allow-unverified-parts`.
+pub const NON_STRUCTURAL_BLOCKING: [&str; 4] = [
+    "E-SYNTH-QUAL-006",
+    "E-SYNTH-QUAL-007",
+    "E-SYNTH-QUAL-008",
+    "E-SYNTH-QUAL-015",
 ];
 
 impl Finding {
@@ -1165,6 +1200,90 @@ mod tests {
 
     /// Structural is an allow-list so a future code cannot inherit the power
     /// to refuse a fab export with no override.
+    /// Every blocking code the engine emits must be classified, in exactly one
+    /// of STRUCTURAL_CODES or NON_STRUCTURAL_BLOCKING.
+    ///
+    /// The emitted set is read out of this file rather than hand-listed, so a
+    /// new `Finding::blocking` fails the test until somebody decides whether it
+    /// refuses a fab export. E-SYNTH-QUAL-013 was emitted as blocking and
+    /// missing from the allow-list, which silently made a blank pad number
+    /// overrideable; nothing cross-checked the two, so only a reviewer caught
+    /// it.
+    #[test]
+    fn every_blocking_code_is_classified() {
+        let source = include_str!("qualify.rs");
+        let mut emitted: BTreeSet<&str> = BTreeSet::new();
+        let mut rest = source;
+        while let Some(at) = rest.find("Finding::blocking(") {
+            rest = &rest[at + "Finding::blocking(".len()..];
+            let Some(open) = rest.find('"') else { break };
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('"') else { break };
+            let code = &after[..close];
+            if code.starts_with("E-SYNTH-QUAL-") {
+                emitted.insert(code);
+            }
+        }
+
+        assert!(
+            emitted.len() >= 10,
+            "the scan should find every blocking site, found {}: {emitted:?}",
+            emitted.len()
+        );
+
+        for code in &emitted {
+            let structural = STRUCTURAL_CODES.contains(code);
+            let excluded = NON_STRUCTURAL_BLOCKING.contains(code);
+            assert!(
+                structural || excluded,
+                "{code} is emitted as blocking but classified nowhere. Add it to \
+                 STRUCTURAL_CODES if a wrong part definition must refuse a fab \
+                 export with no override, or to NON_STRUCTURAL_BLOCKING with the \
+                 reason it should not."
+            );
+            assert!(
+                !(structural && excluded),
+                "{code} is in both classification lists"
+            );
+        }
+
+        for code in STRUCTURAL_CODES {
+            assert!(
+                emitted.contains(code),
+                "{code} is listed as structural but never emitted as blocking"
+            );
+        }
+    }
+
+    /// A blank pad number is a pin-map defect, so it refuses a fab export.
+    /// Regression for the omission reported on #78.
+    #[test]
+    fn a_blank_pad_number_is_structural() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.pins[1].number = PinNumber("   ".to_string());
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        let codes: Vec<&str> = q.structural_defects().map(|f| f.code.as_str()).collect();
+        assert!(
+            codes.contains(&"E-SYNTH-QUAL-013"),
+            "a pin with no pad number must block a fab export: {:#?}",
+            q.checks
+        );
+        assert!(q.has_structural_defect());
+    }
+
+    /// A do-not-connect pin marked required forces every design to connect a
+    /// pin the manufacturer says must float, so it refuses a fab export too.
+    #[test]
+    fn a_required_no_connect_pin_is_structural() {
+        let mut dnc = pin("nc", "2");
+        dnc.electrical_type = ElectricalType::DoNotConnect;
+        dnc.required = true;
+        let part = part_with(vec![pin("a", "1"), dnc]);
+        let q = qualify_part(&part, &two_pads(), &two_pin_symbol());
+        let codes: Vec<&str> = q.structural_defects().map(|f| f.code.as_str()).collect();
+        assert!(codes.contains(&"E-SYNTH-QUAL-011"), "{:#?}", q.checks);
+    }
+
     #[test]
     fn only_pin_map_codes_are_structural() {
         for code in STRUCTURAL_CODES {

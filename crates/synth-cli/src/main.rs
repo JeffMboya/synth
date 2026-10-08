@@ -1588,9 +1588,10 @@ fn structural_refusal(board: &synth_ir::Board) -> Option<String> {
     }
 
     let mut out = String::from(
-        "error: [E-SYNTH-QUAL-000] refusing fab export: part definitions disagree with their \
-         KiCad footprint or symbol. A wrong pin map routes nets to the wrong pads, which no \
-         flag should wave through.\n",
+        "error: [E-SYNTH-QUAL-000] refusing fab export: part definitions are wrong about \
+         their physical package — a pin map that disagrees with the footprint or symbol, or a \
+         pin whose declared role contradicts the package. That routes nets to the wrong pads, \
+         which no flag should wave through.\n",
     );
     for part in defective {
         for finding in part.structural_defects() {
