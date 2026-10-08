@@ -5,9 +5,9 @@
 
 ## What this means
 
-A single-ended controlled-impedance net is on a board whose `stackup` has inner copper layers. The router may place the net on an inner layer, and Synth derives and checks only outer-layer microstrip width, so the impedance there is not verified.
+A single-ended controlled-impedance net, or a differential pair with an `impedance`, is on a board whose `stackup` has inner copper layers. The router may place the net on an inner layer, and Synth derives and checks only outer-layer microstrip width (and, for a pair, gap), so the impedance there is not verified.
 
-The estimate Synth does make (about 10 percent) does not replace expert analysis.
+The estimate Synth does make (about 10 percent for a single-ended net; not characterised for a pair) does not replace expert analysis.
 
 ## Minimal reproduction
 

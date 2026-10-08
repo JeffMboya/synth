@@ -578,24 +578,58 @@ impl Board {
         ]
     }
 
-    pub fn single_ended_impedance_nets(&self) -> Vec<(&Net, &DiffPair, Impedance)> {
-        self.diff_pairs
-            .iter()
-            .filter_map(|dp| {
-                let [(_, Some(pos)), (_, Some(neg))] = self.diff_pair_legs(dp) else {
-                    return None;
-                };
-                (pos.id == neg.id).then_some((pos, dp, dp.impedance?))
+    pub fn impedance_legs(&self) -> impl Iterator<Item = (&Net, &Net, &DiffPair, Impedance)> {
+        self.diff_pairs.iter().filter_map(|dp| {
+            let [(_, Some(pos)), (_, Some(neg))] = self.diff_pair_legs(dp) else {
+                return None;
+            };
+            Some((pos, neg, dp, dp.impedance?))
+        })
+    }
+
+    pub fn declared_leg_geometry(
+        &self,
+        leg: &Net,
+        default_gap: Length,
+    ) -> Option<(Length, Length)> {
+        Some((
+            self.declared_trace_width(leg)?,
+            self.declared_clearance(leg).unwrap_or(default_gap),
+        ))
+    }
+
+    pub fn netclass_pair_geometry(
+        &self,
+        class: &str,
+        default_gap: Length,
+    ) -> Option<(Length, Length)> {
+        let mut carried = self
+            .impedance_legs()
+            .filter(|(pos, neg, ..)| {
+                pos.id != neg.id
+                    && [pos, neg]
+                        .iter()
+                        .any(|leg| leg.netclass.as_deref() == Some(class))
             })
-            .collect()
+            .map(|(pos, neg, ..)| {
+                let geometry = self.declared_leg_geometry(pos, default_gap)?;
+                (self.declared_leg_geometry(neg, default_gap)? == geometry).then_some(geometry)
+            });
+        let first = carried.next()??;
+        carried.all(|g| g == Some(first)).then_some(first)
+    }
+
+    fn declared_netclass(&self, net: &Net) -> Option<&NetClass> {
+        let class = net.netclass.as_deref()?;
+        self.netclasses.iter().find(|nc| nc.name == class)
     }
 
     pub fn declared_trace_width(&self, net: &Net) -> Option<Length> {
-        let class = net.netclass.as_deref()?;
-        self.netclasses
-            .iter()
-            .find(|nc| nc.name == class)?
-            .trace_width
+        self.declared_netclass(net)?.trace_width
+    }
+
+    pub fn declared_clearance(&self, net: &Net) -> Option<Length> {
+        self.declared_netclass(net)?.clearance
     }
 
     /// A declared `group` by name, for header attributes (title,

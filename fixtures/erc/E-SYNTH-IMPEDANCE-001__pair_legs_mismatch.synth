@@ -1,0 +1,32 @@
+// Same as pass__impedance_pair_width_gap_ok, but the negative leg is in a class with a different width: the legs declare different geometry.
+board "pair_legs_mismatch" {
+  layers 2
+
+  netclass "USB" {
+    trace_width 0.242mm
+    clearance 0.127mm
+  }
+
+  netclass "USB_N" {
+    trace_width 0.17mm
+    clearance 0.127mm
+  }
+
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+  component R3: resistor "r_generic_0603" value "10k"
+  component R4: resistor "r_generic_0603" value "10k"
+
+  connect R1.p1 -> R2.p1 as "USB_DP" class "USB"
+  connect R3.p1 -> R4.p1 as "USB_DN" class "USB_N"
+
+  diff_pair USB_DP USB_DN {
+    impedance 90ohm
+  }
+
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4
+    copper 0.035mm
+  }
+}

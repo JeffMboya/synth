@@ -766,6 +766,17 @@ fn build_net_settings<'a>(
         );
     }
 
+    let pairs: BTreeMap<&str, (f64, f64)> = board
+        .netclasses
+        .iter()
+        .filter_map(|nc| {
+            Some((
+                nc.name.as_str(),
+                crate::pcb::declared_pair_geometry(board, nc)?,
+            ))
+        })
+        .collect();
+
     let rgba = |rgb: [u8; 3]| format!("rgba({}, {}, {}, 1.000)", rgb[0], rgb[1], rgb[2]);
     let mut classes = Vec::new();
     for (index, name) in names.iter().enumerate() {
@@ -774,6 +785,7 @@ fn build_net_settings<'a>(
             .copied()
             .unwrap_or_else(|| synth_layout::netclass::net_class_color(name));
         let (track_width, clearance) = rules.get(name.as_str()).copied().unwrap_or((0.2, 0.2));
+        let (pair_width, pair_gap) = pairs.get(name.as_str()).copied().unwrap_or((0.2, 0.25));
         // KiCad gives Default the max priority so it always loses to a
         // specific class; specific classes count up from 0.
         let priority = if name == "Default" {
@@ -784,9 +796,9 @@ fn build_net_settings<'a>(
         classes.push(json!({
             "bus_width": 12,
             "clearance": clearance,
-            "diff_pair_gap": 0.25,
+            "diff_pair_gap": pair_gap,
             "diff_pair_via_gap": 0.25,
-            "diff_pair_width": 0.2,
+            "diff_pair_width": pair_width,
             "line_style": 0,
             "microvia_diameter": 0.3,
             "microvia_drill": 0.1,

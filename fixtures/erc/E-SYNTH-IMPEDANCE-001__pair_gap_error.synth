@@ -1,0 +1,27 @@
+// Same as pass__impedance_pair_width_gap_ok with a 0.5 mm gap: about 117 ohm, over 20 percent off 90 ohm.
+board "pair_gap_error" {
+  layers 2
+
+  netclass "USB" {
+    trace_width 0.242mm
+    clearance 0.5mm
+  }
+
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+  component R3: resistor "r_generic_0603" value "10k"
+  component R4: resistor "r_generic_0603" value "10k"
+
+  connect R1.p1 -> R2.p1 as "USB_DP" class "USB"
+  connect R3.p1 -> R4.p1 as "USB_DN" class "USB"
+
+  diff_pair USB_DP USB_DN {
+    impedance 90ohm
+  }
+
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4
+    copper 0.035mm
+  }
+}

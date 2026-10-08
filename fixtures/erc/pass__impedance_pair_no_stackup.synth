@@ -1,0 +1,21 @@
+// A valid pair with no stackup is not checked.
+board "impedance_pair_no_stackup" {
+  layers 2
+
+  netclass "USB" {
+    trace_width 0.242mm
+    clearance 0.127mm
+  }
+
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+  component R3: resistor "r_generic_0603" value "10k"
+  component R4: resistor "r_generic_0603" value "10k"
+
+  connect R1.p1 -> R2.p1 as "USB_DP" class "USB"
+  connect R3.p1 -> R4.p1 as "USB_DN" class "USB"
+
+  diff_pair USB_DP USB_DN {
+    impedance 90ohm
+  }
+}
