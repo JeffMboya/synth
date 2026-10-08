@@ -789,8 +789,15 @@ fn the_input_hash_identifies_the_board_the_engine_was_given() {
 
 fn sha256_of(path: &Path) -> String {
     use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
     match std::fs::read(path) {
-        Ok(bytes) => format!("{:x}", Sha256::digest(&bytes)),
+        Ok(bytes) => {
+            let mut out = String::with_capacity(64);
+            for byte in Sha256::digest(&bytes) {
+                let _ = write!(out, "{byte:02x}");
+            }
+            out
+        }
         Err(_) => "<unreadable>".to_string(),
     }
 }

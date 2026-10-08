@@ -76,11 +76,16 @@ fn svg_attr(svg: &str, attr: &str) -> String {
 }
 
 fn fingerprint(svg: &str) -> Fingerprint {
+    use std::fmt::Write as _;
     let normalised = normalise(svg);
     let mut hasher = Sha256::new();
     hasher.update(normalised.as_bytes());
+    let mut digest = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        let _ = write!(digest, "{byte:02x}");
+    }
     Fingerprint {
-        sha256: format!("{:x}", hasher.finalize()),
+        sha256: digest,
         width: svg_attr(svg, "width"),
         height: svg_attr(svg, "height"),
         paths: normalised.matches("<path").count(),

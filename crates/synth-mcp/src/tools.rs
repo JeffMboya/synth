@@ -1330,11 +1330,22 @@ fn route_design_externally_with(
 }
 
 fn sha256_of(path: &Path) -> String {
-    use sha2::{Digest, Sha256};
     match std::fs::read(path) {
-        Ok(bytes) => format!("{:x}", Sha256::digest(&bytes)),
+        Ok(bytes) => sha256_hex(&bytes),
         Err(_) => String::new(),
     }
+}
+
+/// Hex-encode a SHA-256 digest. `Sha256::digest` returns a byte array that does
+/// not implement `LowerHex`, so the hex has to be written byte by byte.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(64);
+    for byte in sha2::Sha256::digest(bytes) {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// The routing run record as an MCP payload.
@@ -2145,15 +2156,13 @@ fn baseline_paths(args: &Value, file_name: &str) -> Result<(PathBuf, PathBuf), S
 const BASELINE_DRIFT_PCT: f64 = 2.0;
 
 fn layout_fingerprint(board: &synth_ir::Board, sidecar: Option<&Path>) -> String {
-    use sha2::Digest as _;
     let layout = synth_layout::layout_with_sidecar(board, sidecar);
     let bytes = serde_json::to_vec(&layout).unwrap_or_default();
-    format!("{:x}", sha2::Sha256::digest(&bytes))
+    sha256_hex(&bytes)
 }
 
 fn source_fingerprint(source: &str) -> String {
-    use sha2::Digest as _;
-    format!("{:x}", sha2::Sha256::digest(source.as_bytes()))
+    sha256_hex(source.as_bytes())
 }
 
 /// Compare the first rendered sheet against a stored baseline. Returns a

@@ -49,9 +49,14 @@ pub struct NormalisedRecord {
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    let mut out = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// Import a KiCad project directory, computing source hashes and extracting canonical project metadata without mutating originals.
