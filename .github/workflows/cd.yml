@@ -107,19 +107,97 @@ jobs:
     name: GitHub Release
     needs: [bin]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+          else
+            version=$(awk '
+              /^\[workspace\.package\]/ { in_section=1; next }
+              /^\[/ { in_section=0 }
+              in_section && /^version[[:space:]]*=/ {
+                gsub(/.*=[[:space:]]*"/, "")
+                gsub(/".*/, "")
+                print
+                exit
+              }
+            ' Cargo.toml)
+            if [ -z "${version}" ]; then
+              echo "::error::Could not read [workspace.package].version from Cargo.toml"
+              exit 1
+            fi
+            if ! printf '%s' "${version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+              echo "::error::Cargo.toml version '${version}' is not semver (expected X.Y.Z)"
+              exit 1
+            fi
+            tag="v${version}"
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            exists=true
+          else
+            exists=false
+          fi
+
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "tag_exists=${exists}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved tag ${tag} (exists=${exists})"
+
+      - name: Create and push tag if missing
+        id: tag
+        if: steps.version.outputs.tag_exists == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "chore: release version ${VERSION}"
+          git push origin "refs/tags/${TAG}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "Created tag ${TAG}"
+
+      - name: Decide whether to release
+        id: decide
+        run: |
+          set -euo pipefail
+          # Release when the run is on a tag, or when this run just created it
+          # from a version bump on main.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] || [ "${{ steps.tag.outputs.created }}" = "true" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} already exists; skipping release."
+          fi
+
       - name: Download all artifacts
+        if: steps.decide.outputs.release == 'true'
         uses: actions/download-artifact@v8
         with:
           path: dist/
           merge-multiple: true
 
       - name: Create GitHub release
+        if: steps.decide.outputs.release == 'true'
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           files: dist/**
           generate_release_notes: true
           body: |
@@ -138,7 +216,7 @@ jobs:
             ## From source
 
             ```bash
-            cargo install --git https://github.com/absmach/synth --tag ${{ github.ref_name }} synth-cli
+            cargo install --git https://github.com/absmach/synth --tag ${{ steps.version.outputs.tag }} synth-cli
             ```
 
             ## Optional: KiCad integration
