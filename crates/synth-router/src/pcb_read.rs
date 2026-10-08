@@ -425,7 +425,7 @@ pub struct Footprint {
 pub struct Segment {
     pub net: Option<u32>,
     /// Net name as written, kept so a board written without a net table can
-    /// still be keyed (see [`PcbBoard::rebind_nets_by_name`]).
+    /// still be keyed (see `PcbBoard::rebind_nets_by_name`).
     pub net_name: Option<String>,
     pub layer: String,
     pub start: Point,

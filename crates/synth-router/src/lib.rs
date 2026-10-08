@@ -23,7 +23,7 @@
 //!    trusted, and checked against the baseline it was routed from;
 //! 4. connectivity is re-derived from copper geometry — union-find over
 //!    pads, tracks, and vias — never read from the router's own bookkeeping
-//!    ([`validate::connectivity`]);
+//!    ([`validate::check_connectivity`]);
 //! 5. zones are refilled and `kicad-cli pcb drc` runs against the resolved
 //!    fabrication profile;
 //! 6. only a candidate that survives all of that becomes [`RouteState::Routed`].

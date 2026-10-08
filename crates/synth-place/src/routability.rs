@@ -33,7 +33,7 @@ pub struct RoutabilityEstimate {
     /// Total half-perimeter wire length: the standard cheap proxy for how
     /// much copper a route will need. Lower is easier to route.
     pub copper_length_nm: u64,
-    /// Nets whose half-perimeter exceeds [`OVERLONG_NET_NM`].
+    /// Nets whose half-perimeter exceeds `OVERLONG_NET_NM`.
     ///
     /// A handful of long nets is a much worse sign than the same total length
     /// spread evenly, because each one is a congestion event the router has

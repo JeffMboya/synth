@@ -10,7 +10,7 @@
 //! rules.
 //!
 //! The important behaviour here is what happens when KiCad is missing.
-//! [`run`] returns `None` rather than an empty [`DrcCounts`], because "we
+//! [`run`] returns `None` rather than an empty [`synth_drc::DrcCounts`], because "we
 //! could not check" and "we checked and found nothing" must never look
 //! the same to the release gate.
 
