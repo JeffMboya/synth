@@ -1411,13 +1411,11 @@ fn check(
     exception: Option<&release::Exception>,
     json: bool,
 ) -> anyhow::Result<u8> {
-    use sha2::{Digest, Sha256};
-
     if !input.is_file() {
         anyhow::bail!("input file {} does not exist", input.display());
     }
     let source = std::fs::read(input)?;
-    let source_hash = format!("{:x}", Sha256::digest(&source));
+    let source_hash = sha256_hex(&source);
     let exe = std::env::current_exe()?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1553,7 +1551,7 @@ fn check(
                             .unwrap_or(&path)
                             .to_string_lossy()
                             .to_string();
-                        files.push((rel, format!("{:x}", Sha256::digest(bytes))));
+                        files.push((rel, sha256_hex(&bytes)));
                     }
                 }
             }
@@ -4488,10 +4486,21 @@ fn build_route_request(
 }
 
 fn sha256_file(path: &Path) -> anyhow::Result<String> {
-    use sha2::{Digest, Sha256};
     let bytes = std::fs::read(path)
         .map_err(|e| anyhow::anyhow!("could not read {}: {e}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(&bytes)))
+    Ok(sha256_hex(&bytes))
+}
+
+/// Hex-encode a SHA-256 digest. `Sha256::digest` returns a byte array that does
+/// not implement `LowerHex`, so the hex has to be written byte by byte.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// Run the external router and report the outcome to the operator.

@@ -262,7 +262,7 @@ and re-validate."
 
 ### `synth schema diagnostic`
 
-Print the JSON Schema (draft-07) for the diagnostic protocol to
+Print the JSON Schema (draft 2020-12) for the diagnostic protocol to
 stdout. Useful for tooling that validates third-party diagnostic
 producers or consumers.
 
