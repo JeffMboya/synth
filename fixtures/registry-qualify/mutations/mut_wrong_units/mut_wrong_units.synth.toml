@@ -5,8 +5,8 @@ mpn = "QUAL-MCU-8"
 kicad_footprint = "Qual:QFN-8-1EP"
 
 [footprint_dimensions]
-width_mm = 96.52
-height_mm = 48.26
+width_mm = 149.606
+height_mm = 74.803
 courtyard_margin_mm = 0.25
 
 [provenance]
