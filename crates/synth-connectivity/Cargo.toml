@@ -8,13 +8,16 @@ repository.workspace = true
 authors.workspace = true
 description = "Authoritative connectivity derivation and netlist for Synth EDA compiler"
 
+[lints]
+workspace = true
+
 [dependencies]
-synth-ir = { path = "../synth-ir" }
-synth-registry = { path = "../synth-registry" }
-synth-diagnostics = { path = "../synth-diagnostics" }
-synth-layout = { path = "../synth-layout" }
-thiserror = "1.0"
-uuid = { version = "1.26", features = ["v4", "serde"] }
-serde = { version = "1.0", features = ["derive"] }
+synth-ir = { workspace = true }
+synth-registry = { workspace = true }
+synth-diagnostics = { workspace = true }
+synth-layout = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
 indexmap = "2.14"
 smallvec = "1.16"

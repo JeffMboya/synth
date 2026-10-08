@@ -2,10 +2,16 @@
 
 [package]
 name = "synth-knowledge"
-version = "0.0.1"
-edition = "2021"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 description = "Circuit-design knowledge graph: declarative support-circuit templates (decoupling, debounce, pull-ups, flyback, ESD) that drive production-grade schematic generation and checking"
+
+[lints]
+workspace = true
 
 [dependencies]
 include_dir = { workspace = true }
