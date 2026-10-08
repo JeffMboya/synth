@@ -3097,9 +3097,10 @@ dependencies = [
  "synth-layout",
  "synth-mcp",
  "synth-parser",
+ "synth-pcb",
  "synth-place",
  "synth-registry",
- "synth-route",
+ "synth-router",
  "synth-smt",
  "synth-supply",
  "synth-validate",
@@ -3150,6 +3151,7 @@ dependencies = [
  "synth-ir",
  "synth-layout",
  "synth-parser",
+ "synth-pcb",
  "synth-place",
  "synth-registry",
  "synth-route",
@@ -3195,9 +3197,9 @@ dependencies = [
  "synth-ir",
  "synth-layout",
  "synth-parser",
+ "synth-pcb",
  "synth-place",
  "synth-registry",
- "synth-route",
  "tempfile",
  "thiserror 2.0.21",
  "uuid",
@@ -3253,10 +3255,11 @@ dependencies = [
  "synth-knowledge",
  "synth-layout",
  "synth-parser",
+ "synth-pcb",
  "synth-place",
  "synth-registry",
  "synth-render",
- "synth-route",
+ "synth-router",
  "synth-supply",
  "synth-validate",
  "tempfile",
@@ -3279,6 +3282,17 @@ dependencies = [
  "synth-diagnostics",
  "synth-ir",
  "synth-registry",
+]
+
+[[package]]
+name = "synth-pcb"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "synth-diagnostics",
+ "synth-geometry",
+ "synth-ir",
 ]
 
 [[package]]
@@ -3330,6 +3344,25 @@ dependencies = [
  "synth-geometry",
  "synth-ir",
  "synth-layout",
+ "synth-parser",
+ "synth-pcb",
+ "synth-place",
+ "synth-registry",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "synth-router"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "synth-diagnostics",
+ "synth-drc",
+ "synth-geometry",
+ "synth-ir",
+ "synth-kicad",
  "synth-parser",
  "synth-place",
  "synth-registry",

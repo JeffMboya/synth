@@ -41,24 +41,11 @@
 
 use std::collections::HashSet;
 
-use serde::{Deserialize, Serialize};
 use synth_ir::{Board, NetId};
 
-/// Per-pair length / skew metric attached to a `Routing`. One
-/// entry per resolved `DiffPair` in IR declaration order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PairReport {
-    pub positive: NetId,
-    pub negative: NetId,
-    /// Total trace length on the positive half, in nm.
-    /// `0` when the half wasn't routed (slice 3's max-coverage
-    /// fallback may leave a pair half unrouted; consumers
-    /// detect that as `length == 0`).
-    pub positive_length_nm: i64,
-    pub negative_length_nm: i64,
-    /// Absolute skew between the two halves, in nm.
-    pub skew_nm: i64,
-}
+/// The pair report shape lives in [`synth_pcb`] with the rest of the copper
+/// geometry it describes.
+pub use synth_pcb::PairReport;
 
 /// Resolve every `DiffPair` declared in `board` to `(positive,
 /// negative)` net id pairs.

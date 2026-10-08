@@ -68,11 +68,11 @@ mod rules;
 use serde::{Deserialize, Serialize};
 use synth_geometry::Point;
 use synth_ir::{Board, NetId};
+use synth_pcb::Routing;
 use synth_place::Placement;
-use synth_route::Routing;
 
 pub use profile::{ManufacturerProfile, ProfileError};
-pub use rules::{run_kicad_cli_drc, DrcCounts, NativeDrcOutcome, DRC_STAGE};
+pub use rules::{replay, run_kicad_cli_drc, DrcCounts, NativeDrcOutcome, DRC_STAGE};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuggestedOverride {

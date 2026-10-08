@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Run FreeRouting on a Synth/KiCad board and import its SES result.
 
-This is intentionally an opt-in post-router. The default preserves Synth's
-partial route as input; clean-netlist mode instead routes and imports into a
-matching copper-free duplicate so the SES geometry has the same board state
-on both sides of the external router.
+The board arrives un-routed, because routing is the only path: clean-netlist
+mode therefore always applies, so the SES geometry is produced against the
+same board state on both sides of the external router.
+
+The `--report` this writes is the router's own account of what it did. It is
+recorded, and the independent checks downstream compare it against the copper
+that was actually written, rather than taking it as the answer.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -73,6 +77,44 @@ def _restore_netclasses(source_path: str, output_path: str) -> None:
     )
 
 
+def all_tracks(board) -> list:
+    """Every track and via on the board, as owned Python objects.
+
+    `GetTracks()` is the documented accessor but it is not usable on every
+    KiCad build: its SWIG iterator calls `it.next()`, a name Python 3 removed,
+    so on KiCad 10 it raises `AttributeError` before yielding anything.
+    Indexing `Tracks()` directly avoids the iterator entirely and works on
+    both, so it is tried first and the accessor is only a fallback.
+    """
+    container = board.Tracks()
+    tracks = []
+    index = 0
+    while True:
+        try:
+            tracks.append(container[index])
+        except IndexError:
+            return tracks
+        except (TypeError, AttributeError):
+            break
+        index += 1
+    try:
+        return list(board.GetTracks())
+    except (AttributeError, TypeError):
+        return tracks
+
+
+def java_version(java: str) -> str | None:
+    """First line of the interpreter's version banner, if it answers."""
+    try:
+        out = subprocess.run(
+            [java, "-version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    banner = (out.stderr or out.stdout).strip()
+    return banner.splitlines()[0] if banner else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("input_board")
@@ -88,17 +130,41 @@ def main() -> int:
         "--ses-output",
         help="copy the FreeRouting SES result to this path before KiCad import",
     )
+    # Accepted and ignored: every route is now a clean-netlist route, so the
+    # flag no longer selects anything. The adapter still passes it.
     parser.add_argument(
         "--clean-netlist",
         action="store_true",
-        help="route a duplicate board after removing Synth's existing copper",
+        help="accepted for compatibility; always applied",
     )
     parser.add_argument(
         "--no-import",
         action="store_true",
         help="stop after routing and SES export",
     )
+    parser.add_argument(
+        "--report",
+        help="write a JSON record of what the engine reported here",
+    )
+    parser.add_argument(
+        "--no-retain-session",
+        dest="retain_session",
+        action="store_false",
+        default=True,
+        help="delete FreeRouting's scratch data directory when finished",
+    )
     args = parser.parse_args()
+
+    def write_report(**fields: object) -> None:
+        """Record the engine's own account of the run.
+
+        Written even on the failure paths below, because "the router ran and
+        then failed" and "the router never ran" are different diagnoses and
+        the run record has to tell them apart.
+        """
+        if not args.report:
+            return
+        Path(args.report).write_text(json.dumps(fields, indent=2, sort_keys=True))
 
     with tempfile.TemporaryDirectory(prefix="synth-freerouting-") as work:
         dsn = os.path.join(work, "board.dsn")
@@ -106,34 +172,33 @@ def main() -> int:
         data = os.path.join(work, "freerouting-data")
         os.makedirs(data)
 
-        board = pcbnew.LoadBoard(args.input_board)
-        export_board = board
-        if args.clean_netlist:
-            export_board = pcbnew.LoadBoard(args.input_board)
-            # `Tracks()` exposes a SWIG vector whose indexed values can be
-            # borrowed wrappers on newer KiCad builds.  Remove owned Python
-            # objects from `GetTracks()` instead; this works with KiCad 9/10
-            # and avoids the `SwigPyObject.thisown` failure.
-            ground_net_codes = {zone.GetNetCode() for zone in export_board.Zones()}
-            for track in list(export_board.GetTracks()):
-                # Ground stitching vias are part of the board's plane
-                # topology, not FreeRouting's candidate geometry. Keep them
-                # in the clean netlist so the six-layer planes remain
-                # electrically joined after SES import.
-                if (
-                    track.GetClass() == "PCB_VIA"
-                    and track.GetNetCode() in ground_net_codes
-                ):
-                    continue
-                export_board.Remove(track)
-            print("routing a clean duplicate netlist", flush=True)
+        # The board arrives un-routed, but strip any copper anyway: a stale
+        # track would be routed around by the engine and then merged over,
+        # and the independent check would be looking at geometry that was
+        # never validated as a route.
+        #
+        # `Tracks()` exposes a SWIG vector whose indexed values can be
+        # borrowed wrappers on newer KiCad builds.  Remove owned Python
+        # objects from `GetTracks()` instead; this works with KiCad 9/10
+        # and avoids the `SwigPyObject.thisown` failure.
+        export_board = pcbnew.LoadBoard(args.input_board)
+        ground_net_codes = {zone.GetNetCode() for zone in export_board.Zones()}
+        for track in all_tracks(export_board):
+            # Ground stitching vias are part of the board's plane topology,
+            # not FreeRouting's candidate geometry. Keep them in the clean
+            # netlist so the planes remain electrically joined after import.
+            if track.GetClass() == "PCB_VIA" and track.GetNetCode() in ground_net_codes:
+                continue
+            export_board.Remove(track)
+        print("routing a clean netlist", flush=True)
         # KiCad's SES importer can discard named netclasses. Keep the source
         # settings alive and restore them after import so the routed board is
         # checked with the same Power/RF constraints as the exported board.
         if not pcbnew.ExportSpecctraDSN(export_board, dsn):
+            write_report(router="freerouting", error="dsn_export_failed")
             raise SystemExit("KiCad Specctra DSN export failed")
 
-        subprocess.run(
+        completed = subprocess.run(
             [
                 args.java,
                 "-Djava.awt.headless=true",
@@ -149,14 +214,46 @@ def main() -> int:
                 str(args.threads),
                 "--user_data_path=" + data,
             ],
-            check=True,
+            capture_output=True,
+            text=True,
         )
+        if completed.returncode != 0:
+            write_report(
+                router="freerouting",
+                jar=str(args.jar),
+                java_version=completed.stderr.strip()[:200] or None,
+                exit_code=completed.returncode,
+                notes=["freerouting exited non-zero"],
+            )
+            sys.stderr.write(completed.stdout)
+            sys.stderr.write(completed.stderr)
+            raise SystemExit(completed.returncode)
 
         if args.ses_output:
             shutil.copyfile(ses, args.ses_output)
             print(f"saved SES result to {args.ses_output}", flush=True)
 
+        # The engine's own account goes to stdout so it lands in the run's
+        # session log. A partial route is the case where it matters most: the
+        # SES shows what was produced, and this says why the rest was not.
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+
+        if not args.retain_session:
+            shutil.rmtree(data, ignore_errors=True)
+
         if args.no_import:
+            write_report(
+                router="freerouting",
+                jar=str(args.jar),
+                java_version=java_version(args.java),
+                passes=args.passes,
+                threads=args.threads,
+                ses_path=ses,
+                imported_segments=None,
+                imported_vias=None,
+                notes=["ses exported without import"],
+            )
             return 0
 
         # KiCad 10's Python ImportSpecctraSES can segfault on otherwise valid
@@ -173,6 +270,27 @@ def main() -> int:
         subprocess.run(
             [sys.executable, merger, merge_input, ses, args.output_board],
             check=True,
+        )
+
+        # Counted from the merged board rather than from the engine's log, so
+        # the claim can be checked against the file that was written.
+        written = pcbnew.LoadBoard(args.output_board)
+        tracks = all_tracks(written)
+        # KiCad names a routed track `PCB_TRACK`; the constant is matched by
+        # suffix so a build that spells it differently still counts, and an
+        # unmatched name is reported rather than quietly folded into a zero.
+        segments = sum(1 for t in tracks if t.GetClass().endswith("TRACK"))
+        vias = sum(1 for t in tracks if t.GetClass().endswith("VIA"))
+        write_report(
+            router="freerouting",
+            jar=str(args.jar),
+            java_version=java_version(args.java),
+            passes=args.passes,
+            threads=args.threads,
+            ses_path=ses,
+            imported_segments=segments,
+            imported_vias=vias,
+            notes=[],
         )
     return 0
 

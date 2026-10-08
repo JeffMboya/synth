@@ -39,8 +39,8 @@ use std::collections::HashMap;
 use synth_geometry::{mm_to_nm, nm_to_mm, Point, Rect, Rotation};
 use synth_ir::{Board, ComponentId, NetId};
 use synth_layout::kicad_footprint_loader;
+use synth_pcb::{Routing, Segment};
 use synth_place::Placement;
-use synth_route::{Routing, Segment};
 
 use crate::profile::ManufacturerProfile;
 use crate::Violation;

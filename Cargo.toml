@@ -13,6 +13,8 @@ members = [
   "crates/synth-validate",
   "crates/synth-kicad",
   "crates/synth-place",
+  "crates/synth-pcb",
+  "crates/synth-router",
   "crates/synth-route",
   "crates/synth-drc",
   "crates/synth-web",
@@ -105,6 +107,8 @@ synth-validate = { path = "crates/synth-validate", version = "0.0.1" }
 synth-kicad = { path = "crates/synth-kicad", version = "0.0.1" }
 synth-place = { path = "crates/synth-place", version = "0.0.1" }
 synth-route = { path = "crates/synth-route", version = "0.0.1" }
+synth-router = { path = "crates/synth-router", version = "0.0.1" }
+synth-pcb = { path = "crates/synth-pcb", version = "0.0.1" }
 synth-drc = { path = "crates/synth-drc", version = "0.0.1" }
 synth-web = { path = "crates/synth-web", version = "0.0.1" }
 synth-mcp = { path = "crates/synth-mcp", version = "0.0.1" }

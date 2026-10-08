@@ -129,6 +129,68 @@ pub enum ProductionStatus {
     Untrusted,
 }
 
+/// What the release gate knows about the board's routing.
+///
+/// Recorded rather than inferred, because "which router produced this
+/// copper, at what version, and did anyone check it" is the first question
+/// a fabricator or an auditor asks, and it cannot be recovered from a
+/// `.kicad_pcb` afterwards.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutingState {
+    /// Which external engine generated the copper.
+    pub engine: String,
+    /// That engine's version, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_version: Option<String>,
+    /// Terminal state: `routed`, `review_required`, `router_unavailable`,
+    /// or `validation_failed`.
+    pub state: String,
+    /// SHA-256 of the board handed to the router.
+    pub input_hash: String,
+    /// Path of the run record, so the details can be read.
+    pub run_record: String,
+    /// Why the gate is not satisfied, when it is not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+}
+
+impl RoutingState {
+    /// Build the release-gate view of a routing run record.
+    pub fn from_report(report: &synth_router::RouteReport, run_record: &Path) -> Self {
+        let mut reasons: Vec<String> = report
+            .validation
+            .as_ref()
+            .map(|v| {
+                v.blocking_reasons
+                    .iter()
+                    .chain(v.unavailable_checks.iter())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(failure) = &report.failure {
+            reasons.push(failure.remediation.clone());
+        }
+        Self {
+            engine: report.engine.as_str().to_string(),
+            engine_version: report.provenance.engine_version.clone(),
+            state: report.state.as_str().to_string(),
+            input_hash: report.provenance.input_hash.clone(),
+            run_record: run_record.display().to_string(),
+            reasons,
+        }
+    }
+
+    /// Whether this board may go to fabrication.
+    ///
+    /// Fail-closed: only a validated route qualifies. Neither a router's
+    /// exit code nor the absence of complaints can turn an un-routed or
+    /// unchecked board into a deliverable one.
+    pub fn is_fabrication_ready(&self) -> bool {
+        self.state == "routed" && self.reasons.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseManifest {
     pub schema_version: String,
@@ -143,6 +205,8 @@ pub struct ReleaseManifest {
     pub exception: Option<Exception>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviewer_state: Vec<ReviewerState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingState>,
 }
 
 impl ReleaseManifest {
@@ -169,7 +233,24 @@ impl ReleaseManifest {
             overrides,
             exception: None,
             reviewer_state,
+            routing: None,
         }
+    }
+
+    /// Record the routing run the package was built from.
+    ///
+    /// An unvalidated route downgrades the manifest the same way an
+    /// override does: the package is not fabricable, and the reason is in
+    /// the manifest rather than only in a stderr line nobody archived.
+    pub fn with_routing(mut self, routing: Option<RoutingState>) -> Self {
+        if let Some(state) = &routing {
+            if !state.is_fabrication_ready() {
+                self.production_status = ProductionStatus::Untrusted;
+                self.release_ready = false;
+            }
+        }
+        self.routing = routing;
+        self
     }
 
     pub fn with_release_blocked(mut self, blocked: bool) -> Self {
@@ -190,8 +271,44 @@ impl ReleaseManifest {
     }
 
     pub fn banner(&self) -> Option<String> {
-        if !self.has_overrides() {
+        let routing_block = self
+            .routing
+            .as_ref()
+            .is_some_and(|r| !r.is_fabrication_ready());
+        if !self.has_overrides() && !routing_block {
             return None;
+        }
+        if routing_block {
+            let state = self.routing.as_ref();
+            let mut out = format!(
+                "{UNTRUSTED_BANNER} — this package is not fabricable:\n  \
+                 routing state: {}\n",
+                state.map_or("unknown", |s| s.state.as_str())
+            );
+            let reasons: &[String] = state.map_or(&[], |s| s.reasons.as_slice());
+            for reason in reasons {
+                out.push_str("    ");
+                out.push_str(reason);
+                out.push('\n');
+            }
+            if let Some(state) = state {
+                use std::fmt::Write as _;
+                let _ = writeln!(out, "    run record: {}", state.run_record);
+            }
+            if self.has_overrides() {
+                out.push_str("  the package also carries export overrides:\n");
+            }
+            for record in &self.overrides {
+                out.push_str("  ");
+                out.push_str(&record.summary_line());
+                out.push('\n');
+            }
+            out.push_str(
+                "\nDo not submit this package for fabrication. Copper is generated by an \
+                 external router and must pass independent validation; see \
+                 docs/kicad-workflows.md.\n",
+            );
+            return Some(out);
         }
         let mut out = format!("{UNTRUSTED_BANNER} — this package carries export overrides:\n");
         for record in &self.overrides {

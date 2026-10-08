@@ -1,0 +1,21 @@
+schema_version = 2
+# Two surgical moves, both shortening a trunk that crosses the board:
+#   * U1 (3V3 LDO) toward the MCU it feeds  -> shortens net_4 (3V3, 19 pads)
+#   * U3 (sensor) and its decoupling cap toward the MCU's I2C side
+#     -> shortens net_9/net_10 (I2C) and the I2C pull-up runs
+# Connectors stay on their edges and the hub (U2) is left where the placer
+# puts it: compacting around the hub measured worse on this 2-layer board.
+[components.U1]
+x = 33.0
+y = 32.0
+rotation = 0
+
+[components.U3]
+x = 59.0
+y = 31.0
+rotation = 0
+
+[components.C6]
+x = 63.0
+y = 34.0
+rotation = 0

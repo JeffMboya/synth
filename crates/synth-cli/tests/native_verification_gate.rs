@@ -2,6 +2,8 @@
 
 #![cfg(unix)]
 
+mod stub_router;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -95,12 +97,14 @@ impl Outcome {
     }
 }
 
-fn export(label: &str, stub_script: &str, extra: &[&str]) -> Outcome {
-    let dir = scratch(label);
-    let cli = stub(&dir, stub_script);
+/// The gate is fail-closed on routing, so every run here gets a stub
+/// router. Without one the export stops at the routing gate and the test
+/// would pass or fail for a reason it is not about.
+fn run_export(dir: &Path, cli: &Path, extra: &[&str]) -> std::process::Output {
+    let _lock = stub_router::serialised();
+    let _router = stub_router::install(dir);
     let out = dir.join("out");
     let report_path = dir.join("verification.json");
-
     let mut command = Command::new(SYNTH);
     command
         .arg("export-kicad")
@@ -110,10 +114,18 @@ fn export(label: &str, stub_script: &str, extra: &[&str]) -> Outcome {
         .arg("--verification-report")
         .arg(&report_path)
         .args(extra)
-        .env("KICAD_CLI", &cli)
+        .env("KICAD_CLI", cli)
         .env("SYNTH_KICAD_CLI_TIMEOUT_SECS", "2");
+    command.output().expect("run synth export-kicad")
+}
 
-    let output = command.output().expect("run synth export-kicad");
+fn export(label: &str, stub_script: &str, extra: &[&str]) -> Outcome {
+    let dir = scratch(label);
+    let cli = stub(&dir, stub_script);
+    let out = dir.join("out");
+    let report_path = dir.join("verification.json");
+
+    let output = run_export(&dir, &cli, extra);
     let report = std::fs::read_to_string(&report_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
@@ -216,9 +228,18 @@ exit 0"#
 
 #[test]
 fn unconnected_pads_are_reported_and_the_board_is_not_called_clean() {
+    // An unconnected pad blocks fabrication, and since the copper now comes
+    // from an external router that had to be validated independently, it also
+    // fails the export. The operator still gets the count and still gets the
+    // board on disk for review.
     let report = r#"{"violations":[],"unconnected_items":[{"type":"unconnected_items","severity":"error","description":"Missing connection between items"}]}"#;
     let run = export("unconnected", &drc_stub(report), &[]);
-    assert_eq!(run.code, Some(0), "reporting only:\n{}", run.stderr);
+    assert_eq!(
+        run.code,
+        Some(1),
+        "an unconnected pad is not clean:\n{}",
+        run.stderr
+    );
     assert!(
         run.stderr
             .contains("errors 0, unconnected pads 1, warnings 0"),
@@ -309,14 +330,23 @@ fn force_does_not_hide_an_incomplete_release_board() {
 
 #[test]
 fn a_plain_forced_export_with_drc_errors_records_the_override() {
+    // --force still records the override, and still cannot rescue the export:
+    // routing validation is an independent check of externally generated
+    // copper, so overriding it would defeat the whole point of the gate.
     let run = export("plain_force", &drc_stub(ERRORS), &["--force"]);
-    assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
+    assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
+    assert!(
+        run.stderr.contains("failed independent validation"),
+        "the routing gate must be the stated reason:\n{}",
+        run.stderr
+    );
     let manifest = run.manifest();
     assert_eq!(
         manifest["overrides"][0]["code"], "E-SYNTH-DRC-OVERRIDE",
         "{manifest:#}"
     );
     assert_eq!(manifest["release_ready"], false, "{manifest:#}");
+    assert_eq!(manifest["production_status"], "untrusted", "{manifest:#}");
 }
 
 #[test]
@@ -332,6 +362,10 @@ fn a_missing_executable_is_unknown_and_blocks_a_requested_check() {
     let dir = scratch("missing");
     let out = dir.join("out");
     let report_path = dir.join("verification.json");
+    // The gate is fail-closed on routing, so a router has to be present for
+    // this test to be about the missing KiCad and nothing else.
+    let _lock = stub_router::serialised();
+    let _router = stub_router::install(&dir);
     let output = Command::new(SYNTH)
         .arg("export-kicad")
         .arg(design())
@@ -451,6 +485,8 @@ fn an_unsupported_version_is_unknown_before_the_tool_runs() {
         std::fs::set_permissions(&cli, perms).expect("chmod");
     }
     let report_path = dir.join("verification.json");
+    let _lock = stub_router::serialised();
+    let _router = stub_router::install(&dir);
     let output = Command::new(SYNTH)
         .arg("export-kicad")
         .arg(design())
@@ -503,6 +539,11 @@ fn force_does_not_convert_an_unavailable_check_into_a_pass() {
 fn a_plain_export_still_succeeds_but_records_the_unknown() {
     let dir = scratch("plain");
     let report_path = dir.join("verification.json");
+    // The gate is fail-closed on routing, so this test needs a route to
+    // isolate what it is about: KiCad being absent is an unknown, not a
+    // failure, and that must stay true once routing is satisfied.
+    let _lock = stub_router::serialised();
+    let _router = stub_router::install(&dir);
     let output = Command::new(SYNTH)
         .arg("export-kicad")
         .arg(design())
@@ -517,10 +558,13 @@ fn a_plain_export_still_succeeds_but_records_the_unknown() {
         serde_json::from_str(&std::fs::read_to_string(&report_path).expect("report written"))
             .expect("report parses");
 
+    // Without KiCad there is no DRC evidence, so the independently validated
+    // route cannot be confirmed: the export is review-only rather than a
+    // success. It must say so rather than exit zero.
     assert_eq!(
         output.status.code(),
-        Some(0),
-        "a plain export must not require KiCad; stderr:\n{}",
+        Some(1),
+        "an export with no DRC evidence is not fabricable; stderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
@@ -542,6 +586,12 @@ mod release_gate {
     use super::*;
 
     fn check_fab(label: &str, kicad_cli: &Path) -> (Option<i32>, serde_json::Value) {
+        // The gate is fail-closed on routing, and `synth check` drives
+        // `export-kicad` as a subprocess, so the stub router has to be in
+        // the environment for both.
+        let dir = scratch(&format!("check_{label}"));
+        let _lock = stub_router::serialised();
+        let _router = stub_router::install(&dir);
         let output = Command::new(SYNTH)
             .arg("check")
             .arg(design())
@@ -692,7 +742,10 @@ exit 0"#
 
     #[test]
     fn the_failing_counts_print_under_the_manufacturing_stage() {
-        let cli = stub(&scratch("gate_text"), &drc_stub(UNCONNECTED));
+        let dir = scratch("gate_text");
+        let cli = stub(&dir, &drc_stub(UNCONNECTED));
+        let _lock = stub_router::serialised();
+        let _router = stub_router::install(&dir);
         let output = Command::new(SYNTH)
             .arg("check")
             .arg(design())

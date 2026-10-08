@@ -40,8 +40,8 @@ use std::fmt::Write as _;
 
 use synth_geometry::{mm_to_nm, nm_to_mm, Layer, Rotation};
 use synth_ir::{Board, ComponentId, Stackup, StackupLayer};
+use synth_pcb::{Routing, Segment};
 use synth_place::{ComponentPlacement, Placement};
-use synth_route::{Routing, Segment};
 use uuid::Uuid;
 
 use crate::sexp::{num, pair, str_pair, Sexp};
@@ -241,7 +241,7 @@ fn ground_plane_layers(layer_count: u32) -> Vec<&'static str> {
 
 /// Emit a single `(via ...)` block.
 fn build_via(
-    via: &synth_route::Via,
+    via: &synth_pcb::Via,
     idx: usize,
     net_id_lookup: &HashMap<synth_ir::NetId, u32>,
     project: &Uuid,

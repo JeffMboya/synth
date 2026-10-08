@@ -152,12 +152,14 @@ enum Command {
         /// Promote user-part shadowing of shipped parts to a load error.
         #[arg(long)]
         strict_registry: bool,
-        /// Run the optional FreeRouting post-router on the exported PCB.
-        /// The Synth partial route is preserved as `<name>.synth.kicad_pcb`.
-        #[arg(long)]
+        /// Deprecated. Every export now routes through the selected
+        /// external router; there is no Synth-native route to enable.
+        #[arg(long, hide = true)]
         autoroute: bool,
-        /// External post-router to use when `--autoroute` is enabled.
-        /// FreeRouting remains the default for compatibility.
+        /// External router that generates the copper. FreeRouting is the
+        /// managed default; `kicad-routing-tools` requires an installed
+        /// checkout. A missing engine is a capability error, never a
+        /// silent fallback.
         #[arg(long, value_enum, default_value_t = ExternalRouter::FreeRouting)]
         router: ExternalRouter,
         /// FreeRouting JAR. Defaults to tools/freerouting/freerouting-2.4.1.jar.
@@ -190,6 +192,10 @@ enum Command {
         /// Permit via-in-pad in the KRT production gate.
         #[arg(long)]
         krt_allow_via_in_pad: bool,
+        /// Try every installed engine and keep the best attempt, judged by
+        /// the independent checks rather than by either engine's own report.
+        #[arg(long)]
+        best_of: bool,
     },
 
     /// Apply the highest-confidence `suggested_fix` from every
@@ -266,37 +272,131 @@ enum Command {
         pretty: bool,
     },
 
-    /// Parse + lower + place + route (Phase 8). Dumps the
-    /// `Routing` IR (per-net trace segments + vias) as JSON to
-    /// stdout. Slice 1A returns an empty routing; subsequent
-    /// slices add the Lee maze + A* router and negotiated
-    /// congestion.
-    Route {
-        input: PathBuf,
-        #[arg(long, value_name = "DIR")]
-        registry: Option<PathBuf>,
-        /// Path to directory for logging routing outcome pairs (Dataset 6).
-        #[arg(long = "log-routing-outcomes", value_name = "DIR")]
-        log_routing_outcomes: Option<PathBuf>,
-        /// Comma-separated net names to prioritize on a recovery route.
-        #[arg(long = "routing-order", value_delimiter = ',')]
-        routing_order: Vec<String>,
+    /// Report which external routers are installed and usable on this
+    /// machine, with the reason each is or is not.
+    ///
+    /// Discovery is read-only and cheap: it locates the FreeRouting JAR and
+    /// Java runtime, checks a KiCadRoutingTools checkout for its entry
+    /// point, and records the version each would run at. Run this first when
+    /// a routing run reports the engine as unavailable — the output names
+    /// the exact path that was searched.
+    Routers {
         #[arg(long)]
         pretty: bool,
     },
 
-    /// Parse + lower + place + route + DRC (Phase 9). Dumps
-    /// the `DrcReport` (per-rule violations against the
-    /// supplied manufacturer profile, or JLC's standard
-    /// hobbyist tier when no profile is given) as JSON to
-    /// stdout. Exits with the validation error code if any
-    /// violation fires.
-    Drc {
+    /// Route a design with an external router and dump the routing run
+    /// record — router identity and version, settings, input hash, retained
+    /// artifacts, and the terminal state — as JSON to stdout.
+    ///
+    /// Synth does not generate copper. The run record is the answer, and
+    /// exit code 0 means the board was independently validated rather than
+    /// that a router exited successfully. See `synth routers` for what is
+    /// installed.
+    Route {
+        /// Path to a `.synth` source file.
         input: PathBuf,
+
         #[arg(long, value_name = "DIR")]
         registry: Option<PathBuf>,
+
+        /// External router to use. FreeRouting is the managed default;
+        /// `kicad-routing-tools` requires an installed checkout.
+        #[arg(long, value_enum, default_value_t = ExternalRouter::FreeRouting)]
+        router: ExternalRouter,
+        /// FreeRouting JAR. Defaults to tools/freerouting/freerouting-2.4.1.jar.
+        #[arg(long, value_name = "JAR")]
+        freerouting_jar: Option<PathBuf>,
+        /// Java executable used for FreeRouting. Defaults to the bundled
+        /// tools/jre25/bin/java when present, otherwise `java`.
+        #[arg(long, value_name = "JAVA")]
+        freerouting_java: Option<PathBuf>,
+        /// KiCadRoutingTools checkout, required with
+        /// `--router kicad-routing-tools`.
+        #[arg(long, value_name = "DIR")]
+        kicad_routing_tools_repo: Option<PathBuf>,
+        /// Python interpreter containing KiCadRoutingTools dependencies.
+        #[arg(long, value_name = "PYTHON")]
+        kicad_routing_tools_python: Option<PathBuf>,
+        /// KiCadRoutingTools rule-relaxation policy. `board` preserves the
+        /// board's declared minimums; `fab` may use the selected fab floor.
+        #[arg(long, value_enum, default_value_t = KrtEscalation::Board)]
+        krt_escalation: KrtEscalation,
+        /// KiCadRoutingTools fabrication capability floor.
+        #[arg(long, value_enum, default_value_t = KrtFabTier::Auto)]
+        krt_fab_tier: KrtFabTier,
+        /// Optional KRT fab-floor override file (`key = value` lines).
         #[arg(long, value_name = "FILE")]
-        profile: Option<PathBuf>,
+        krt_fab_overrides: Option<PathBuf>,
+        /// Minimum same-net pad clearance for KRT vias, in millimetres.
+        #[arg(long, default_value_t = 0.1, value_name = "MM")]
+        krt_same_net_pad_clearance: f64,
+        /// Permit via-in-pad in the KRT production gate.
+        #[arg(long)]
+        krt_allow_via_in_pad: bool,
+        /// Wall-clock budget for the whole external run, in seconds.
+        #[arg(long, value_name = "SECS")]
+        router_timeout: Option<u64>,
+        /// Try every installed engine and keep the best attempt, judged by
+        /// the independent checks rather than by either engine's own report.
+        #[arg(long)]
+        best_of: bool,
+
+        #[arg(long)]
+        pretty: bool,
+    },
+
+    /// Route a design externally and report the independent physical checks:
+    /// topology against the baseline the router was given, connectivity
+    /// re-derived from copper, and `kicad-cli pcb drc` with zones refilled.
+    ///
+    /// Dumps the routing run record as JSON to stdout, and exits with the
+    /// validation error code unless the board is fabrication-ready.
+    Drc {
+        /// Path to a `.synth` source file.
+        input: PathBuf,
+
+        #[arg(long, value_name = "DIR")]
+        registry: Option<PathBuf>,
+
+        /// External router to use. FreeRouting is the managed default;
+        /// `kicad-routing-tools` requires an installed checkout.
+        #[arg(long, value_enum, default_value_t = ExternalRouter::FreeRouting)]
+        router: ExternalRouter,
+        /// FreeRouting JAR. Defaults to tools/freerouting/freerouting-2.4.1.jar.
+        #[arg(long, value_name = "JAR")]
+        freerouting_jar: Option<PathBuf>,
+        /// Java executable used for FreeRouting. Defaults to the bundled
+        /// tools/jre25/bin/java when present, otherwise `java`.
+        #[arg(long, value_name = "JAVA")]
+        freerouting_java: Option<PathBuf>,
+        /// KiCadRoutingTools checkout, required with
+        /// `--router kicad-routing-tools`.
+        #[arg(long, value_name = "DIR")]
+        kicad_routing_tools_repo: Option<PathBuf>,
+        /// Python interpreter containing KiCadRoutingTools dependencies.
+        #[arg(long, value_name = "PYTHON")]
+        kicad_routing_tools_python: Option<PathBuf>,
+        /// KiCadRoutingTools rule-relaxation policy. `board` preserves the
+        /// board's declared minimums; `fab` may use the selected fab floor.
+        #[arg(long, value_enum, default_value_t = KrtEscalation::Board)]
+        krt_escalation: KrtEscalation,
+        /// KiCadRoutingTools fabrication capability floor.
+        #[arg(long, value_enum, default_value_t = KrtFabTier::Auto)]
+        krt_fab_tier: KrtFabTier,
+        /// Optional KRT fab-floor override file (`key = value` lines).
+        #[arg(long, value_name = "FILE")]
+        krt_fab_overrides: Option<PathBuf>,
+        /// Minimum same-net pad clearance for KRT vias, in millimetres.
+        #[arg(long, default_value_t = 0.1, value_name = "MM")]
+        krt_same_net_pad_clearance: f64,
+        /// Permit via-in-pad in the KRT production gate.
+        #[arg(long)]
+        krt_allow_via_in_pad: bool,
+        /// Wall-clock budget for the whole external run, in seconds.
+        #[arg(long, value_name = "SECS")]
+        router_timeout: Option<u64>,
+
         #[arg(long)]
         pretty: bool,
     },
@@ -669,13 +769,46 @@ enum Format {
     Json,
 }
 
-#[derive(Debug, Copy, Clone, ValueEnum, PartialEq, Eq)]
+/// The external router an operator selected.
+///
+/// FreeRouting is the default because it is the managed path; the other is
+/// an external checkout and therefore always an explicit choice. There is
+/// no third variant, and no built-in router: a missing engine is a
+/// capability error, never a silent fallback to something else.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 enum ExternalRouter {
     FreeRouting,
     KicadRoutingTools,
 }
 
-#[derive(Debug, Copy, Clone, ValueEnum)]
+impl From<ExternalRouter> for synth_router::RouterEngine {
+    fn from(value: ExternalRouter) -> Self {
+        match value {
+            ExternalRouter::FreeRouting => Self::Freerouting,
+            ExternalRouter::KicadRoutingTools => Self::KiCadRoutingTools,
+        }
+    }
+}
+
+impl ExternalRouter {
+    fn as_str(self) -> &'static str {
+        synth_router::RouterEngine::from(self).as_str()
+    }
+}
+
+impl From<KrtEscalation> for synth_router::KrtEscalation {
+    fn from(value: KrtEscalation) -> Self {
+        // One conversion point so the CLI's spelling and the engine's
+        // spelling cannot drift into two different meanings.
+        match value.as_str() {
+            "off" => Self::Off,
+            "fab" => Self::Fab,
+            _ => Self::Board,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 enum KrtEscalation {
     Off,
     Board,
@@ -683,6 +816,11 @@ enum KrtEscalation {
 }
 
 impl KrtEscalation {
+    /// The value forwarded to the engine.
+    ///
+    /// Kept alongside the adapter's own `KrtEscalation` rather than
+    /// replaced by it so the CLI surface stays a plain clap enum, and the
+    /// two are converted explicitly in one place.
     fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -692,7 +830,7 @@ impl KrtEscalation {
     }
 }
 
-#[derive(Debug, Copy, Clone, ValueEnum)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 enum KrtFabTier {
     Standard,
     Advanced,
@@ -804,6 +942,7 @@ fn main() -> ExitCode {
             krt_fab_overrides,
             krt_same_net_pad_clearance,
             krt_allow_via_in_pad,
+            best_of,
         } => export_kicad(
             &input,
             registry.as_deref(),
@@ -831,6 +970,7 @@ fn main() -> ExitCode {
             krt_fab_overrides.as_deref(),
             krt_same_net_pad_clearance,
             krt_allow_via_in_pad,
+            best_of,
         ),
         Command::Fix {
             input,
@@ -863,22 +1003,74 @@ fn main() -> ExitCode {
         Command::Route {
             input,
             registry,
-            log_routing_outcomes,
-            routing_order,
+            router,
+            freerouting_jar,
+            freerouting_java,
+            kicad_routing_tools_repo,
+            kicad_routing_tools_python,
+            krt_escalation,
+            krt_fab_tier,
+            krt_fab_overrides,
+            krt_same_net_pad_clearance,
+            krt_allow_via_in_pad,
+            router_timeout,
+            best_of,
             pretty,
         } => dump_route(
             &input,
             registry.as_deref(),
-            log_routing_outcomes.as_deref(),
-            &routing_order,
+            router,
+            &router_options(
+                router,
+                freerouting_jar.as_deref(),
+                freerouting_java.as_deref(),
+                kicad_routing_tools_repo.as_deref(),
+                kicad_routing_tools_python.as_deref(),
+                krt_escalation,
+                krt_fab_tier,
+                krt_fab_overrides.as_deref(),
+                krt_same_net_pad_clearance,
+                krt_allow_via_in_pad,
+            )
+            .with_timeout(router_timeout),
+            best_of,
             pretty,
         ),
         Command::Drc {
             input,
             registry,
-            profile,
+            router,
+            freerouting_jar,
+            freerouting_java,
+            kicad_routing_tools_repo,
+            kicad_routing_tools_python,
+            krt_escalation,
+            krt_fab_tier,
+            krt_fab_overrides,
+            krt_same_net_pad_clearance,
+            krt_allow_via_in_pad,
+            router_timeout,
             pretty,
-        } => dump_drc(&input, registry.as_deref(), profile.as_deref(), pretty),
+        } => dump_drc(
+            &input,
+            registry.as_deref(),
+            router,
+            &router_options(
+                router,
+                freerouting_jar.as_deref(),
+                freerouting_java.as_deref(),
+                kicad_routing_tools_repo.as_deref(),
+                kicad_routing_tools_python.as_deref(),
+                krt_escalation,
+                krt_fab_tier,
+                krt_fab_overrides.as_deref(),
+                krt_same_net_pad_clearance,
+                krt_allow_via_in_pad,
+            )
+            .with_timeout(router_timeout),
+            pretty,
+        ),
+        Command::Routers { pretty } => dump_routers(pretty),
         Command::Check {
             input,
             registry,
@@ -1251,7 +1443,7 @@ fn check(
         .unwrap_or_else(|_| serde_json::json!({"diagnostics": [], "parse_error": true}));
     let validate_pass = !validate_timed_out && validate_output.status.success();
 
-    let (drc_json, drc_pass, drc_timed_out) = if validate_pass {
+    let (drc_json, drc_outcome, drc_timed_out) = if validate_pass {
         let mut drc_args = base.clone();
         drc_args.extend(["drc".into(), "--pretty".into(), input.display().to_string()]);
         if let Some(dir) = registry {
@@ -1261,13 +1453,17 @@ fn check(
         (
             serde_json::from_slice::<serde_json::Value>(&drc_output.stdout)
                 .unwrap_or_else(|_| serde_json::json!({"status": "unknown", "parse_error": true})),
-            drc_output.status.success(),
+            if timed_out {
+                PreFabDrc::Unknown
+            } else {
+                pre_fab_drc(&drc_output)
+            },
             timed_out,
         )
     } else {
         (
             serde_json::json!({"status": "unknown", "reason": "source gate failed"}),
-            false,
+            PreFabDrc::Unknown,
             false,
         )
     };
@@ -1285,17 +1481,25 @@ fn check(
         serde_json::json!({
             "status": if !validate_pass || drc_timed_out {
                 "unknown"
-            } else if drc_pass {
-                "pass"
             } else {
-                "fail"
+                drc_outcome.stage_status()
             },
             "result": drc_json,
         }),
     );
 
+    let drc_pass = drc_outcome.is_clean();
     let mut fab_pass = true;
-    if fab && validate_pass && drc_pass {
+    // Only a failed source gate skips the export.
+    //
+    // A DRC outcome of any kind does not: the export is the only thing that
+    // produces the `kicad_drc` evidence, so skipping it on a violation or an
+    // unrunnable check would replace a specific, counted diagnosis with
+    // "upstream source or DRC gate failed" — or, worse, report an unknown
+    // tool as a clean upstream stage. The export's own gate is fail-closed,
+    // so running it on a dirty board cannot release anything; it writes into
+    // this command's scratch directory either way.
+    if fab && validate_pass {
         let export_dir = work.join("release");
         let verification_path = work.join("verification.json");
         let mut export_args = base.clone();
@@ -1455,6 +1659,62 @@ fn check(
     } else {
         EXIT_VALIDATION_ERRORS
     })
+}
+
+/// What the pre-fab `synth drc` run established, before the export runs.
+///
+/// Three states, not two. `synth drc` exits non-zero for any board that is
+/// not fabricable, which includes one whose router could not run, so its
+/// exit code cannot answer "did DRC find a violation?" on its own.
+///
+/// Only [`PreFabDrc::Unknown`] stops the export, and that is a deliberate
+/// asymmetry with [`PreFabDrc::Violations`]. A violation does not stop it:
+/// the export's own gate refuses a dirty board anyway, and that run is what
+/// produces the `kicad_drc` evidence naming the violation and its count, so
+/// skipping it would replace a specific diagnosis with "upstream gate
+/// failed". An unrunnable check is the opposite case, because then only the
+/// export's native stages can say *why* it was unrunnable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreFabDrc {
+    /// DRC ran and found nothing blocking.
+    Clean,
+    /// DRC ran and found errors or unconnected items.
+    Violations,
+    /// DRC could not be performed, or the record is unreadable.
+    Unknown,
+}
+
+impl PreFabDrc {
+    fn is_clean(self) -> bool {
+        matches!(self, Self::Clean)
+    }
+
+    fn stage_status(self) -> &'static str {
+        match self {
+            Self::Clean => "pass",
+            Self::Violations => "fail",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Classify a `synth drc` run record.
+fn pre_fab_drc(output: &std::process::Output) -> PreFabDrc {
+    let Ok(report) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        // No readable record: unresolved, not clean.
+        return PreFabDrc::Unknown;
+    };
+    let counts = &report["validation"]["kicad_drc"];
+    if counts.is_null() {
+        return PreFabDrc::Unknown;
+    }
+    let errors = counts["errors"].as_u64().unwrap_or(0);
+    let unconnected = counts["unconnected"].as_u64().unwrap_or(0);
+    if errors == 0 && unconnected == 0 {
+        PreFabDrc::Clean
+    } else {
+        PreFabDrc::Violations
+    }
 }
 
 fn manufacturing_status(
@@ -2622,7 +2882,7 @@ fn fetch_lcsc_footprint_svg(code: &str) -> anyhow::Result<String> {
     })
 }
 
-fn read_source(input: &PathBuf) -> anyhow::Result<(String, String)> {
+fn read_source(input: &Path) -> anyhow::Result<(String, String)> {
     let source = std::fs::read_to_string(input)
         .map_err(|e| anyhow::anyhow!("could not read {}: {e}", input.display()))?;
     let file = input.to_string_lossy().into_owned();
@@ -2862,7 +3122,7 @@ fn is_flat_user_registry(dir: &Path) -> bool {
 }
 
 fn validate(
-    input: &PathBuf,
+    input: &Path,
     format: Format,
     registry_dir: Option<&Path>,
     user_registry: Option<&Path>,
@@ -2964,7 +3224,7 @@ fn validate(
     })
 }
 
-fn dump_ast(input: &PathBuf, pretty: bool) -> anyhow::Result<u8> {
+fn dump_ast(input: &Path, pretty: bool) -> anyhow::Result<u8> {
     let (source, file) = read_source(input)?;
     let result = synth_parser::parse(&source, file);
     write_diagnostics_to_stderr(&result.diagnostics)?;
@@ -2986,7 +3246,7 @@ fn dump_ast(input: &PathBuf, pretty: bool) -> anyhow::Result<u8> {
     })
 }
 
-fn dump_ir(input: &PathBuf, registry_dir: Option<&Path>, pretty: bool) -> anyhow::Result<u8> {
+fn dump_ir(input: &Path, registry_dir: Option<&Path>, pretty: bool) -> anyhow::Result<u8> {
     let (source, file) = read_source(input)?;
     let parse = synth_parser::parse(&source, file.clone());
     write_diagnostics_to_stderr(&parse.diagnostics)?;
@@ -3038,7 +3298,7 @@ fn dump_ir(input: &PathBuf, registry_dir: Option<&Path>, pretty: bool) -> anyhow
 }
 
 fn dump_layout(
-    input: &PathBuf,
+    input: &Path,
     registry_dir: Option<&Path>,
     pretty: bool,
     score: bool,
@@ -3124,7 +3384,7 @@ fn dump_layout(
 }
 
 fn dump_place(
-    input: &PathBuf,
+    input: &Path,
     registry_dir: Option<&Path>,
     width: Option<f64>,
     height: Option<f64>,
@@ -3225,201 +3485,119 @@ fn dump_place(
     })
 }
 
+/// Route a design through the external router and report the run record.
+///
+/// The command keeps its name and its JSON-on-stdout contract, but the
+/// answer is now the run record: which engine ran, at what version, over
+/// what input, and which of the four terminal states the run reached. An
+/// exit code of zero means the board is independently validated, not that
+/// a router exited successfully.
 fn dump_route(
-    input: &PathBuf,
+    input: &Path,
     registry_dir: Option<&Path>,
-    log_routing_outcomes: Option<&Path>,
-    routing_order: &[String],
+    engine: ExternalRouter,
+    options: &RouterOptions,
+    best_of: bool,
     pretty: bool,
 ) -> anyhow::Result<u8> {
-    let (source, file) = read_source(input)?;
-    let parse = synth_parser::parse(&source, file.clone());
-    write_diagnostics_to_stderr(&parse.diagnostics)?;
-
-    let import_root = input
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let loader = synth_ir::FsImportLoader { root: import_root };
-
-    let mut has_errors = parse.has_errors();
-    let routing = if let Some(ast) = parse.ast.as_ref() {
-        let resolved = synth_ir::resolve_imports(ast, &loader, &file);
-        write_diagnostics_to_stderr(&resolved.diagnostics)?;
-        if resolved
-            .diagnostics
-            .iter()
-            .any(|d| d.severity.is_blocking())
-        {
-            has_errors = true;
-        }
-        if let Some(registry) = load_registry(registry_dir) {
-            let lowered = synth_ir::lower(&resolved.program, &registry, &file);
-            write_diagnostics_to_stderr(&lowered.diagnostics)?;
-            if lowered.has_errors() {
-                has_errors = true;
-            }
-            lowered
-                .board
-                .as_ref()
-                .and_then(|b| match synth_place::place(b) {
-                    Ok(p) => {
-                        let r = if routing_order.is_empty() {
-                            synth_route::route(b, &p)
-                        } else {
-                            synth_route::route_with_order(b, &p, routing_order)
-                        };
-                        if let Some(log_dir) = log_routing_outcomes {
-                            if let Err(e) = synth_route::log_routing_outcome(b, &p, &r, log_dir) {
-                                eprintln!("synth route: failed to log routing outcome: {e}");
-                            }
-                        }
-                        // Slice 6: emit a structured diagnostic
-                        // for every unrouted net.
-                        let route_diags = r.to_diagnostics(&file);
-                        if !route_diags.is_empty() {
-                            let _ = write_diagnostics_to_stderr(&route_diags);
-                            has_errors = true;
-                        }
-                        Some(r)
-                    }
-                    Err(e) => {
-                        let diags = e.to_diagnostics(b, &file);
-                        let _ = write_diagnostics_to_stderr(&diags);
-                        has_errors = true;
-                        None
-                    }
-                })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // `display_segments`: the same routing, cosmetically 45°-mitered for
-    // rendering/export (see synth_route::miter::apply_octilinear_mitering
-    // and its module-level safety note). This is purely additive —
-    // `segments` (`r`, never mutated) stays the untouched, axis-aligned
-    // ground truth DRC/length/export are computed from; mitering only ever
-    // runs on `mitered`, a disposable clone that's read for this one JSON
-    // field and then dropped. No `Grid` is available here to feed the
-    // mitering pass's optional clearance re-check, so it falls back to its
-    // geometry-only safety (a miter only ever removes copper from the
-    // inside of a bend).
-    let json_value = match &routing {
-        Some(r) => {
-            let mut v = serde_json::to_value(r)?;
-            let mut mitered = r.clone();
-            synth_route::miter::apply_octilinear_mitering(&mut mitered, None);
-            if let serde_json::Value::Object(ref mut map) = v {
-                map.insert(
-                    "display_segments".to_string(),
-                    serde_json::to_value(&mitered.segments)?,
-                );
-            }
-            v
-        }
-        None => serde_json::Value::Null,
-    };
+    let report = route_design(input, registry_dir, engine, options, best_of)?;
+    print_route_report(&report);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
+    let value = serde_json::to_value(&report)?;
     if pretty {
-        serde_json::to_writer_pretty(&mut out, &json_value)?;
+        serde_json::to_writer_pretty(&mut out, &value)?;
     } else {
-        serde_json::to_writer(&mut out, &json_value)?;
+        serde_json::to_writer(&mut out, &value)?;
     }
     writeln!(&mut out)?;
 
-    Ok(if has_errors {
-        EXIT_VALIDATION_ERRORS
-    } else {
+    Ok(if report.is_fabrication_ready() {
         EXIT_SUCCESS
+    } else {
+        EXIT_VALIDATION_ERRORS
     })
 }
 
-fn dump_drc(
-    input: &PathBuf,
+/// Compile, place, export, and route a design through the external router.
+///
+/// The un-routed export lands in a scratch directory rather than over the
+/// operator's own output tree, so inspecting a route never disturbs a
+/// previous package.
+fn route_design(
+    input: &Path,
     registry_dir: Option<&Path>,
-    profile_path: Option<&Path>,
-    pretty: bool,
-) -> anyhow::Result<u8> {
+    engine: ExternalRouter,
+    options: &RouterOptions,
+    best_of: bool,
+) -> anyhow::Result<synth_router::RouteReport> {
     let (source, file) = read_source(input)?;
     let parse = synth_parser::parse(&source, file.clone());
     write_diagnostics_to_stderr(&parse.diagnostics)?;
 
     let import_root = input
         .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        .map_or_else(|| Path::new(".").to_path_buf(), Path::to_path_buf);
     let loader = synth_ir::FsImportLoader { root: import_root };
+    let ast = parse
+        .ast
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("parse failed; nothing to route"))?;
+    let resolved = synth_ir::resolve_imports(ast, &loader, &file);
+    write_diagnostics_to_stderr(&resolved.diagnostics)?;
+    let registry = load_registry(registry_dir)
+        .ok_or_else(|| anyhow::anyhow!("registry could not be loaded"))?;
+    let lowered = synth_ir::lower(&resolved.program, &registry, &file);
+    write_diagnostics_to_stderr(&lowered.diagnostics)?;
+    let board = lowered
+        .board
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("lowering produced no IR; nothing to route"))?;
 
-    let mut has_errors = parse.has_errors();
-    let report = if let Some(ast) = parse.ast.as_ref() {
-        let resolved = synth_ir::resolve_imports(ast, &loader, &file);
-        write_diagnostics_to_stderr(&resolved.diagnostics)?;
-        if resolved
-            .diagnostics
-            .iter()
-            .any(|d| d.severity.is_blocking())
-        {
-            has_errors = true;
-        }
-        if let Some(registry) = load_registry(registry_dir) {
-            let lowered = synth_ir::lower(&resolved.program, &registry, &file);
-            write_diagnostics_to_stderr(&lowered.diagnostics)?;
-            if lowered.has_errors() {
-                has_errors = true;
-            }
-            lowered.board.as_ref().and_then(|b| {
-                let placement = match synth_place::place(b) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        let _ = write_diagnostics_to_stderr(&e.to_diagnostics(b, &file));
-                        has_errors = true;
-                        return None;
-                    }
-                };
-                let routing = synth_route::route(b, &placement);
-                let profile = match profile_path {
-                    Some(p) => match synth_drc::ManufacturerProfile::from_toml_file(p) {
-                        Ok(prof) => prof,
-                        Err(e) => {
-                            eprintln!("synth drc: {e}");
-                            has_errors = true;
-                            return None;
-                        }
-                    },
-                    None => synth_drc::ManufacturerProfile::jlc_standard(),
-                };
-                let r = synth_drc::check(b, &placement, &routing, &profile);
-                if !r.is_clean() {
-                    has_errors = true;
-                    for v in &r.violations {
-                        eprintln!("error: [{}] {}", v.code, v.message);
-                    }
-                }
-                Some(r)
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let out_dir = std::env::temp_dir().join(format!(
+        "synth-route-{}-{}",
+        board.name.replace(
+            |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-',
+            "_"
+        ),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let sidecars = synth_kicad::Sidecars::resolve_for(input);
+    let result = synth_kicad::export_with_sidecars(board, &out_dir, &sidecars)
+        .map_err(|e| anyhow::anyhow!("kicad export failed: {e}"))?;
+    route_externally(board, &result, input, engine, options, best_of)
+}
+
+/// Report the physical state of a design after routing it externally.
+///
+/// The independent checks are the same ones the export gate runs, on the
+/// same board, so a clean result here means the same thing it does there.
+fn dump_drc(
+    input: &Path,
+    registry_dir: Option<&Path>,
+    engine: ExternalRouter,
+    options: &RouterOptions,
+    pretty: bool,
+) -> anyhow::Result<u8> {
+    let report = route_design(input, registry_dir, engine, options, false)?;
+    print_route_report(&report);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
+    let value = serde_json::to_value(&report)?;
     if pretty {
-        serde_json::to_writer_pretty(&mut out, &report)?;
+        serde_json::to_writer_pretty(&mut out, &value)?;
     } else {
-        serde_json::to_writer(&mut out, &report)?;
+        serde_json::to_writer(&mut out, &value)?;
     }
     writeln!(&mut out)?;
 
-    Ok(if has_errors {
-        EXIT_VALIDATION_ERRORS
-    } else {
+    Ok(if report.is_fabrication_ready() {
         EXIT_SUCCESS
+    } else {
+        EXIT_VALIDATION_ERRORS
     })
 }
 
@@ -3694,7 +3872,7 @@ fn part_resolve_footprint(
 // would need a variant per combination for no clarity gain.
 #[allow(clippy::fn_params_excessive_bools)]
 fn export_kicad(
-    input: &PathBuf,
+    input: &Path,
     registry_dir: Option<&Path>,
     user_registry: Option<&Path>,
     strict_registry: bool,
@@ -3716,7 +3894,18 @@ fn export_kicad(
     krt_fab_overrides: Option<&Path>,
     krt_same_net_pad_clearance: f64,
     krt_allow_via_in_pad: bool,
+    best_of: bool,
 ) -> anyhow::Result<u8> {
+    if autoroute {
+        // Still parsed, so an existing script fails with something
+        // actionable instead of "unexpected argument".
+        anyhow::bail!(
+            "--autoroute was removed: Synth no longer routes copper itself. Every export \\
+             now runs --router <engine> (default: freerouting) and validates the result \\
+             independently. Drop the flag, or pass --router kicad-routing-tools to select \\
+             an external checkout."
+        );
+    }
     let (source, file) = read_source(input)?;
     let parse = synth_parser::parse(&source, file.clone());
     write_diagnostics_to_stderr(&parse.diagnostics)?;
@@ -3851,33 +4040,35 @@ fn export_kicad(
     synth_kicad::attach_schem_erc_locations(&mut schem_diags, board, &input.display().to_string());
     write_diagnostics_to_stderr(&schem_diags)?;
 
-    if let Some(notice) = synth_layout::SidecarKind::Schematic.migration_notice(input.as_path()) {
+    if let Some(notice) = synth_layout::SidecarKind::Schematic.migration_notice(input) {
         eprintln!("warning: {notice}");
     }
 
     let result = synth_kicad::export_with_sidecars(board, out_dir, &sidecars)
         .map_err(|e| anyhow::anyhow!("kicad export failed: {e}"))?;
 
-    let mut external_router_clean = true;
-    if autoroute || router != ExternalRouter::FreeRouting {
-        match router {
-            ExternalRouter::FreeRouting => {
-                run_freerouting_postpass(&result.pcb_path, freerouting_jar, freerouting_java)?;
-            }
-            ExternalRouter::KicadRoutingTools => {
-                external_router_clean = run_kicad_routing_tools_postpass(
-                    &result.pcb_path,
-                    kicad_routing_tools_repo,
-                    kicad_routing_tools_python,
-                    krt_escalation,
-                    krt_fab_tier,
-                    krt_fab_overrides,
-                    krt_same_net_pad_clearance,
-                    krt_allow_via_in_pad,
-                )?;
-            }
-        }
-    }
+    // Copper is generated by the external router, never by Synth. The
+    // export above is the un-routed baseline; this run reads it, routes it,
+    // and installs the result only if it passes independent validation.
+    let routing = route_externally(
+        board,
+        &result,
+        input,
+        router,
+        &router_options(
+            router,
+            freerouting_jar,
+            freerouting_java,
+            kicad_routing_tools_repo,
+            kicad_routing_tools_python,
+            krt_escalation,
+            krt_fab_tier,
+            krt_fab_overrides,
+            krt_same_net_pad_clearance,
+            krt_allow_via_in_pad,
+        ),
+        best_of,
+    )?;
 
     eprintln!("wrote {}", result.project_path.display());
     eprintln!("wrote {}", result.schematic_path.display());
@@ -3989,9 +4180,25 @@ fn export_kicad(
         native.push(erc.evidence);
     }
 
-    // Slice 13.4: Run KiCad native PCB DRC verification gate
+    // KiCad DRC over the delivered board.
+    //
+    // Reuse the run the routing pipeline already performed rather than
+    // invoking KiCad a second time: two runs over the same board can
+    // disagree if the board changed in between, and the one that actually
+    // gated installation is the one whose result matters. When routing did
+    // not produce a DRC result at all, the check is run here so the gate
+    // still has evidence.
     let mut has_kicad_drc_errors = false;
-    let drc = synth_drc::run_kicad_cli_drc(&result.pcb_path);
+    let drc = match routing.validation.as_ref().and_then(|v| v.kicad_drc) {
+        Some(counts) => {
+            let performed = routing
+                .validation
+                .as_ref()
+                .is_some_and(|v| !v.unavailable_checks.iter().any(|c| c.contains("drc")));
+            synth_drc::replay(&counts.into(), performed)
+        }
+        None => synth_drc::run_kicad_cli_drc(&result.pcb_path),
+    };
     if drc.evidence.status == NativeCheckStatus::Unknown {
         report_unavailable_check(&drc.evidence);
     } else {
@@ -4047,6 +4254,11 @@ fn export_kicad(
         ));
     }
 
+    // The routing run is part of the package's identity: which engine
+    // generated the copper, at what version, and whether anyone checked it.
+    // An unvalidated route downgrades the manifest for the same reason an
+    // override does.
+    let run_record = request_run_record_path(board, &result);
     let manifest = release::ReleaseManifest::new(
         &format!("synth-cli {}", env!("CARGO_PKG_VERSION")),
         input,
@@ -4054,7 +4266,11 @@ fn export_kicad(
         overrides,
         release::reviewer_state(board),
     )
-    .with_release_blocked(release_drc_blocked);
+    .with_release_blocked(release_drc_blocked)
+    .with_routing(Some(release::RoutingState::from_report(
+        &routing,
+        &run_record,
+    )));
     let manifest_path = manifest
         .write_to(out_dir)
         .map_err(|e| anyhow::anyhow!("could not write the release manifest: {e}"))?;
@@ -4084,7 +4300,11 @@ fn export_kicad(
         || release_drc_blocked
         || has_kicad_erc_errs
         || !blocked_by_unknown.is_empty()
-        || !external_router_clean;
+        // Fail-closed: an un-routed export is not fabricable, and neither
+        // is a board whose router could not run or whose copper failed
+        // independent validation. `--force` deliberately does not override
+        // this, for the same reason it does not override a KiCad DRC error.
+        || !routing.is_fabrication_ready();
     Ok(if has_errors {
         EXIT_VALIDATION_ERRORS
     } else {
@@ -4147,203 +4367,319 @@ fn write_verification_report(
     Ok(())
 }
 
-fn run_freerouting_postpass(
-    pcb_path: &Path,
-    jar_arg: Option<&Path>,
-    java_arg: Option<&Path>,
-) -> anyhow::Result<()> {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| anyhow::anyhow!("cannot locate Synth repository root"))?;
-    let script = repo_root.join("tools/freeroute_autoroute.py");
-    if !script.is_file() {
-        anyhow::bail!("FreeRouting helper not found: {}", script.display());
-    }
-
-    let default_tools = [repo_root.join("tools"), repo_root.join("..").join("tools")];
-    let jar = jar_arg.map_or_else(
-        || {
-            default_tools
-                .iter()
-                .map(|tools| tools.join("freerouting/freerouting-2.4.1.jar"))
-                .find(|candidate| candidate.is_file())
-                .unwrap_or_else(|| default_tools[0].join("freerouting/freerouting-2.4.1.jar"))
-        },
-        Path::to_path_buf,
-    );
-    if !jar.is_file() {
-        anyhow::bail!(
-            "FreeRouting JAR not found: {} (pass --freerouting-jar)",
-            jar.display()
-        );
-    }
-    let java = java_arg.map_or_else(
-        || {
-            default_tools
-                .iter()
-                .map(|tools| tools.join("jre25/bin/java"))
-                .find(|candidate| candidate.is_file())
-                .unwrap_or_else(|| PathBuf::from("java"))
-        },
-        Path::to_path_buf,
-    );
-    let java = if java.is_file() {
-        java
-    } else {
-        PathBuf::from("java")
-    };
-
-    let stem = pcb_path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or("board");
-    let partial = pcb_path.with_file_name(format!("{stem}.synth.kicad_pcb"));
-    std::fs::copy(pcb_path, &partial).map_err(|error| {
-        anyhow::anyhow!(
-            "could not preserve Synth partial board at {}: {error}",
-            partial.display()
-        )
-    })?;
-    let routed = pcb_path.with_file_name(format!("{stem}.freerouting.kicad_pcb"));
-
-    eprintln!("running FreeRouting post-pass on {}", pcb_path.display());
-    let status = ProcessCommand::new("python3")
-        .arg(&script)
-        .arg(&partial)
-        .arg(&routed)
-        .arg("--jar")
-        .arg(&jar)
-        .arg("--java")
-        .arg(&java)
-        .status()
-        .map_err(|error| anyhow::anyhow!("could not start FreeRouting helper: {error}"))?;
-    if !status.success() {
-        anyhow::bail!("FreeRouting post-pass failed with status {status}");
-    }
-    std::fs::rename(&routed, pcb_path).map_err(|error| {
-        anyhow::anyhow!(
-            "could not install FreeRouting board {}: {error}",
-            pcb_path.display()
-        )
-    })?;
-    eprintln!("FreeRouting result installed at {}", pcb_path.display());
-    Ok(())
+/// Everything the CLI can configure about a routing run.
+///
+/// Collected in one place so the CLI's flags, the MCP tool arguments, and
+/// the adapters read the same settings, and so the settings that reach the
+/// report are exactly the ones the run record claims were applied.
+#[derive(Debug, Clone, PartialEq)]
+struct RouterOptions {
+    freerouting_jar: Option<PathBuf>,
+    freerouting_java: Option<PathBuf>,
+    kicad_routing_tools_repo: Option<PathBuf>,
+    kicad_routing_tools_python: Option<PathBuf>,
+    escalation: KrtEscalation,
+    fab_tier: KrtFabTier,
+    fab_overrides: Option<PathBuf>,
+    same_net_pad_clearance: f64,
+    allow_via_in_pad: bool,
+    /// Wall-clock budget for the whole external run.
+    timeout_secs: u64,
 }
 
-fn run_kicad_routing_tools_postpass(
-    pcb_path: &Path,
-    repo_arg: Option<&Path>,
-    python_arg: Option<&Path>,
+impl RouterOptions {
+    /// Apply an explicit wall-clock override.
+    ///
+    /// A zero or absent flag keeps the default rather than meaning "no
+    /// budget", which would kill every run instantly.
+    fn with_timeout(mut self, secs: Option<u64>) -> Self {
+        if let Some(secs) = secs.filter(|s| *s > 0) {
+            self.timeout_secs = secs;
+        }
+        self
+    }
+}
+
+#[allow(clippy::fn_params_excessive_bools)]
+fn router_options(
+    _router: ExternalRouter,
+    freerouting_jar: Option<&Path>,
+    freerouting_java: Option<&Path>,
+    kicad_routing_tools_repo: Option<&Path>,
+    kicad_routing_tools_python: Option<&Path>,
     escalation: KrtEscalation,
     fab_tier: KrtFabTier,
     fab_overrides: Option<&Path>,
     same_net_pad_clearance: f64,
     allow_via_in_pad: bool,
-) -> anyhow::Result<bool> {
-    let repo = repo_arg
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::var_os("KICAD_ROUTING_TOOLS_REPO").map(PathBuf::from))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "KiCadRoutingTools selected but no checkout was provided; pass \
-                 --kicad-routing-tools-repo or set KICAD_ROUTING_TOOLS_REPO"
-            )
-        })?;
-    if !repo.join("py_router/route.py").is_file() {
-        anyhow::bail!(
-            "KiCadRoutingTools route.py not found under {}",
-            repo.display()
-        );
+) -> RouterOptions {
+    RouterOptions {
+        freerouting_jar: freerouting_jar.map(Path::to_path_buf),
+        freerouting_java: freerouting_java.map(Path::to_path_buf),
+        kicad_routing_tools_repo: kicad_routing_tools_repo.map(Path::to_path_buf),
+        kicad_routing_tools_python: kicad_routing_tools_python.map(Path::to_path_buf),
+        escalation,
+        fab_tier,
+        fab_overrides: fab_overrides.map(Path::to_path_buf),
+        same_net_pad_clearance,
+        allow_via_in_pad,
+        timeout_secs: default_router_timeout_secs(),
     }
-    let python = python_arg.map_or_else(|| PathBuf::from("python3"), Path::to_path_buf);
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| anyhow::anyhow!("cannot locate Synth repository root"))?;
-    let script = repo_root.join("tools/kicad_routing_tools_route.py");
-    if !script.is_file() {
-        anyhow::bail!("KiCadRoutingTools helper not found: {}", script.display());
-    }
-    let partial = pcb_path.with_file_name(format!(
-        "{}.synth.kicad_pcb",
-        pcb_path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .unwrap_or("board")
-    ));
-    std::fs::copy(pcb_path, &partial).map_err(|error| {
-        anyhow::anyhow!(
-            "could not preserve Synth partial board at {}: {error}",
-            partial.display()
-        )
-    })?;
-    let routed = pcb_path.with_file_name(format!(
-        "{}.kicadroutingtools.kicad_pcb",
-        pcb_path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .unwrap_or("board")
-    ));
-    eprintln!(
-        "running KiCadRoutingTools post-pass on {}",
-        pcb_path.display()
-    );
-    let status = ProcessCommand::new(&python)
-        .arg(&script)
-        .arg(&partial)
-        .arg(&routed)
-        .arg("--repo")
-        .arg(&repo)
-        .arg("--python")
-        .arg(&python)
-        .arg("--escalation")
-        .arg(escalation.as_str())
-        .arg("--fab-tier")
-        .arg(fab_tier.as_str())
-        .args(
-            fab_overrides
-                .map(|path| {
-                    vec![
-                        "--fab-overrides".to_string(),
-                        path.to_string_lossy().into_owned(),
-                    ]
-                })
-                .unwrap_or_default(),
-        )
-        .arg("--same-net-pad-clearance")
-        .arg(same_net_pad_clearance.to_string())
-        .arg("--strict-sizes")
-        .args(allow_via_in_pad.then_some("--allow-via-in-pad"))
-        .status()
-        .map_err(|error| anyhow::anyhow!("could not start KiCadRoutingTools helper: {error}"))?;
-    if !routed.is_file() {
-        anyhow::bail!(
-            "KiCadRoutingTools produced no output board (status {status}); Synth partial board is at {}",
-            partial.display()
-        );
-    }
-    std::fs::rename(&routed, pcb_path).map_err(|error| {
-        anyhow::anyhow!(
-            "could not install KiCadRoutingTools board {}: {error}",
-            pcb_path.display()
-        )
-    })?;
-    eprintln!(
-        "KiCadRoutingTools result installed at {}",
-        pcb_path.display()
-    );
-    if !status.success() {
-        eprintln!(
-            "warning: KiCadRoutingTools did not satisfy the selected policy; installed board is review-only"
-        );
-    }
-    Ok(status.success())
 }
 
-/// Run the full validate pipeline and return every diagnostic.
-/// Shared between `validate` (which formats them) and `fix`
-/// (which picks patches out of them).
+fn default_router_timeout_secs() -> u64 {
+    std::env::var("SYNTH_ROUTER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or_else(|| synth_router::RouterLimits::default().wall_clock.as_secs())
+}
+
+/// Build the adapter request for a board that has just been exported.
+///
+/// The exported PCB is preserved as the baseline before the router is
+/// started, so a failed or partial run still leaves a reviewable board
+/// behind rather than nothing.
+fn build_route_request(
+    board: &synth_ir::Board,
+    result: &synth_kicad::ExportResult,
+    engine: synth_router::RouterEngine,
+    options: &RouterOptions,
+) -> anyhow::Result<synth_router::RouteRequest> {
+    let stem = result
+        .pcb_path
+        .file_stem()
+        .map_or_else(|| "board".to_string(), |s| s.to_string_lossy().into_owned());
+    let mut request = synth_router::RouteRequest::new(&result.pcb_path, &result.out_dir, engine);
+    request.stem = stem;
+    request.limits = synth_router::RouterLimits::default().with_wall_clock(options.timeout_secs);
+    request.kicad_routing_tools.escalation = synth_router::KrtEscalation::from(options.escalation);
+    request.kicad_routing_tools.fab_tier = options.fab_tier.as_str().to_string();
+    request.kicad_routing_tools.same_net_pad_clearance_mm = options.same_net_pad_clearance;
+    request.policy.allow_via_in_pad = options.allow_via_in_pad;
+    request.use_profile_floor(
+        &board
+            .manufacturer
+            .clone()
+            .unwrap_or_else(|| "jlc-standard".to_string()),
+    );
+    request.input_hash = sha256_file(&result.pcb_path)?;
+    request
+        .kicad_routing_tools
+        .fab_overrides
+        .clone_from(&options.fab_overrides);
+    // Environment-only configuration reaches the adapters through the
+    // environment they already read; explicit flags win because they are
+    // exported here before discovery runs.
+    if let Some(jar) = &options.freerouting_jar {
+        std::env::set_var("SYNTH_FREEROUTING_JAR", jar);
+    }
+    if let Some(java) = &options.freerouting_java {
+        std::env::set_var("SYNTH_FREEROUTING_JAVA", java);
+    }
+    if let Some(repo) = &options.kicad_routing_tools_repo {
+        std::env::set_var("KICAD_ROUTING_TOOLS_REPO", repo);
+    }
+    if let Some(python) = &options.kicad_routing_tools_python {
+        std::env::set_var("SYNTH_KRT_PYTHON", python);
+    }
+    request.preserve_baseline()?;
+    Ok(request)
+}
+
+fn sha256_file(path: &Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("could not read {}: {e}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+/// Run the external router and report the outcome to the operator.
+///
+/// The returned report is the same document every other surface reads, so
+/// the router identity and terminal state the CLI prints cannot drift from
+/// what the run record says.
+fn route_externally(
+    board: &synth_ir::Board,
+    result: &synth_kicad::ExportResult,
+    input: &Path,
+    engine: ExternalRouter,
+    options: &RouterOptions,
+    best_of: bool,
+) -> anyhow::Result<synth_router::RouteReport> {
+    let mut request = build_route_request(board, result, engine.into(), options)?;
+    eprintln!(
+        "routing {} with {}",
+        request.router_input_path().display(),
+        if best_of {
+            "every installed engine"
+        } else {
+            engine.as_str()
+        }
+    );
+    // A prior attempt on this exact board may have left advice worth starting
+    // from; say so before the run rather than only in the log afterwards.
+    let outcomes_dir = synth_router::outcomes::configured_dir();
+    if let Some(dir) = &outcomes_dir {
+        if let Some(order) = synth_router::outcomes::best_known_order(dir, &request.input_hash) {
+            eprintln!(
+                "  known-good retry order from previous runs: {}",
+                order.join(", ")
+            );
+        }
+    }
+    let report = if best_of {
+        let base_out = request.out_dir.clone();
+        let portfolio = synth_router::route_best_of(&request, &synth_router::RouterEngine::all());
+        for attempt in &portfolio.attempts {
+            eprintln!("  attempt: {}", attempt.summary());
+        }
+        eprintln!("  winner: {}", portfolio.winner.as_str());
+        // The winner's artifacts live in its own subdirectory; point the
+        // request there so the reports below reference the board that won.
+        request.engine = portfolio.winner;
+        request.out_dir = base_out.join(portfolio.winner.artifact_tag());
+        portfolio.report().clone()
+    } else {
+        synth_router::route(&request)
+    };
+    print_route_report(&report);
+
+    if let Some(dir) = &outcomes_dir {
+        let record = synth_router::outcomes::OutcomeRecord::from_report(&report);
+        let _ = synth_router::outcomes::append(dir, &record);
+    }
+
+    if let Some(validation) = &report.validation {
+        let _ = synth_router::write_artifact(&request.connectivity_report_path(), validation);
+    }
+
+    // Fabricating without a validated route is exactly the outcome the
+    // gate exists to prevent, so say why rather than emitting files that
+    // look deliverable.
+    if !report.is_fabrication_ready() {
+        if report.state == synth_router::RouteState::RouterUnavailable {
+            eprintln!(
+                "error: {} is not available; the exported board at {} is the \
+                 un-routed baseline and is preserved for review.",
+                engine.as_str(),
+                request.baseline_path().display()
+            );
+        } else if report.state == synth_router::RouteState::ValidationFailed {
+            eprintln!(
+                "error: the routed board failed independent validation; see {}.",
+                request.report_path().display()
+            );
+        } else {
+            eprintln!(
+                "warning: the routed board is review-only — a required check could \
+                 not be performed, which is not the same as a clean result. See {}.",
+                request.report_path().display()
+            );
+        }
+        eprintln!("(design: {})", input.display());
+    }
+    Ok(report)
+}
+
+fn print_route_report(report: &synth_router::RouteReport) {
+    eprintln!("{}", report.summary());
+    if let Some(provenance) = Some(&report.provenance) {
+        if let Some(version) = &provenance.engine_version {
+            eprintln!("  router version: {version}");
+        }
+        if let Some(runtime) = &provenance.runtime_version {
+            eprintln!("  runtime: {runtime}");
+        }
+        eprintln!("  duration: {} ms", provenance.duration_ms);
+    }
+    for reason in report
+        .validation
+        .as_ref()
+        .map(|v| v.blocking_reasons.clone())
+        .unwrap_or_default()
+    {
+        eprintln!("  blocking: {reason}");
+    }
+    for check in report
+        .validation
+        .as_ref()
+        .map(|v| v.unavailable_checks.clone())
+        .unwrap_or_default()
+    {
+        eprintln!("  not checked: {check}");
+    }
+    if let Some(counts) = report.validation.as_ref().and_then(|v| v.kicad_drc) {
+        eprintln!(
+            "  kicad-cli pcb drc: {} error(s), {} unconnected, {} warning(s)",
+            counts.errors, counts.unconnected, counts.warnings
+        );
+    }
+    // Reported before the router is judged, because it explains a failure the
+    // router cannot avoid: a fine-pitch package that cannot take a fab-floor
+    // via will produce sub-floor vias however well it is routed.
+    for escape in &report.escape {
+        eprintln!("  escape: {}", escape.summary_line());
+        eprintln!("    fix: {}", escape.remediation);
+    }
+    if !report.recommended_routing_order.is_empty() {
+        eprintln!(
+            "  retry order: {}  (pass as routing_order to reserve routes for the hardest nets first)",
+            report.recommended_routing_order.join(", ")
+        );
+    }
+}
+
+/// Where the run record for a given export lives.
+///
+/// Derived from the same stem the adapter used, so the manifest points at
+/// the file the router actually wrote rather than at a path recomputed
+/// here and liable to drift.
+fn request_run_record_path(board: &synth_ir::Board, result: &synth_kicad::ExportResult) -> PathBuf {
+    result.out_dir.join(format!(
+        "{}.routing.json",
+        synth_router::sanitize_stem(&board.name)
+    ))
+}
+
+/// Print the availability of every supported routing engine.
+fn dump_routers(pretty: bool) -> anyhow::Result<u8> {
+    let out_dir = std::env::temp_dir().join(format!("synth-routers-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let capabilities = synth_router::capability::discover_all_in_out_dir(&out_dir);
+    let _ = std::fs::remove_dir_all(&out_dir);
+
+    if pretty {
+        eprintln!("{}", serde_json::to_string_pretty(&capabilities)?);
+    } else {
+        eprintln!("{}", serde_json::to_string(&capabilities)?);
+    }
+    for capability in &capabilities {
+        match (&capability.version, capability.available) {
+            (Some(version), true) => eprintln!(
+                "{}: available ({} on {})",
+                capability.engine,
+                version,
+                capability
+                    .runtime_version
+                    .as_deref()
+                    .unwrap_or("unknown runtime")
+            ),
+            (_, true) => eprintln!("{}: available (version unrecorded)", capability.engine),
+            (_, false) => {
+                eprintln!("{}: unavailable", capability.engine);
+                if let Some(detail) = &capability.detail {
+                    eprintln!("  {detail}");
+                }
+                if let Some(failure) = capability.failure() {
+                    eprintln!("  fix: {}", failure.remediation);
+                }
+            }
+        }
+    }
+    Ok(EXIT_SUCCESS)
+}
+
 fn collect_diagnostics(
     input: &Path,
     registry_dir: Option<&Path>,
@@ -4511,11 +4847,7 @@ fn write_diagnostics_to_stderr(
     Ok(())
 }
 
-fn supply_chain(
-    input: &PathBuf,
-    registry_dir: Option<&Path>,
-    format: Format,
-) -> anyhow::Result<u8> {
+fn supply_chain(input: &Path, registry_dir: Option<&Path>, format: Format) -> anyhow::Result<u8> {
     let (source, file) = read_source(input)?;
     let parse = synth_parser::parse(&source, file.clone());
     let ast = parse
@@ -4613,7 +4945,7 @@ fn supply_chain(
 }
 
 fn render(
-    input: &PathBuf,
+    input: &Path,
     out_path: &Path,
     quality: RenderQuality,
     side: &str,
