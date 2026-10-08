@@ -46,6 +46,7 @@
 pub mod capability;
 pub mod contract;
 pub mod drc;
+pub mod escape;
 pub mod failure;
 pub mod freerouting;
 pub mod kicad_routing_tools;
@@ -109,7 +110,8 @@ pub fn route(request: &RouteRequest) -> RouteReport {
 
     let capability = capability::discover(request);
     if let Some(failure) = capability.failure() {
-        let report = RouteReport::unavailable(request, &Some(capability.clone()), failure);
+        let mut report = RouteReport::unavailable(request, &Some(capability.clone()), failure);
+        report.escape = escape::analyse_baseline(request);
         write_report(&report, request);
         return report;
     }
@@ -119,10 +121,13 @@ pub fn route(request: &RouteRequest) -> RouteReport {
         RouterEngine::KiCadRoutingTools => kicad_routing_tools::route(request),
     };
 
-    let report = match run {
+    let mut report = match run {
         Ok(candidate) => finalize(request, Some(&capability), candidate),
         Err(failure) => RouteReport::failed(request, &Some(capability), failure),
     };
+    // A property of the design and the process, not of the attempt, so it is
+    // reported whatever the run did — including when the engine was missing.
+    report.escape = escape::analyse_baseline(request);
     write_report(&report, request);
     report
 }
@@ -230,6 +235,7 @@ fn finalize(
             unavailable_checks: verdict.unavailable_checks,
         }),
         failure: None,
+        escape: Vec::new(),
     }
 }
 

@@ -104,6 +104,19 @@ router is now the only path, and passing it is an error that points here.
 
 #### Prerequisites
 
+Install both engines, idempotently and without root:
+
+```text
+scripts/setup-routing-engines.sh
+```
+
+It downloads the pinned FreeRouting JAR into `tools/freerouting/`, clones
+KiCadRoutingTools under `~/.local/share/synth/`, layers a virtualenv over an
+interpreter that imports `pcbnew` so its Python dependencies install without
+touching the system packages, builds KRT's Rust router, and prints the
+environment Synth needs. Re-run it any time; it skips what is already there.
+`--check` reports what is installed without changing anything.
+
 FreeRouting needs a Java runtime and a FreeRouting JAR; both are found
 automatically, and a missing one is reported as `router_unavailable` with the
 paths that were searched. The helper that drives FreeRouting also imports
@@ -144,6 +157,29 @@ Every run writes a record next to the board:
 | `<name>.connectivity.json`    | Independent connectivity and topology findings   |
 | `<name>.drc.json`             | `kicad-cli pcb drc` result over the routed board  |
 
+#### Escape feasibility (before routing)
+
+A fine-pitch package can be unescapable at the chosen process long before a
+router runs, and the failure arrives as mysterious necked-down vias rather
+than as an answer. Every run therefore reports the dense packages whose pads
+cannot be fanned out at the fabrication floor, in the run record's `escape`
+field and on the terminal:
+
+```text
+escape: U2 (Package_QFP:LQFP-48_7x7mm_P0.5mm, 48 pads, 0.500 mm pitch):
+  adjacent pins are 0.500 mm apart and the pads leave 0.200 mm between them;
+  a fabrication-floor via needs 0.727 mm between centres, so the drill that
+  would fit is 0.073 mm; even a minimum track needs 0.254 mm of gap
+  fix: route this package on more layers, use via-in-pad if the process
+  allows, or choose a coarser-pitch part
+```
+
+It is advisory, not a gate: a router can still complete such a board by
+staggering vias or necking tracks. What it cannot change is the arithmetic,
+so the finding states it — the pitch the package offers, the via the floor
+requires, and the drill that would actually fit. (Idea borrowed from
+[TraceMaker](https://github.com/DingoOz/TraceMaker)'s `escape` command.)
+
 The independent check re-reads the routed board and compares it to the
 baseline: footprint, pad and net topology must be unchanged, each net must be
 continuous through real copper, and track/via geometry must meet the
@@ -175,16 +211,13 @@ install it in a separate checkout and Python environment, then use the adapter
 in `tools/kicad_routing_tools_route.py`:
 
 ```text
-git clone https://github.com/drandyhaas/KiCadRoutingTools.git /tmp/KiCadRoutingTools
-python3 -m venv /tmp/krt-venv
-/tmp/krt-venv/bin/pip install -r /tmp/KiCadRoutingTools/requirements.txt
-/tmp/krt-venv/bin/python /tmp/KiCadRoutingTools/build_router.py
+scripts/setup-routing-engines.sh            # installs the checkout and its Python
 
 python3 tools/kicad_routing_tools_route.py \
   output/board/board.synth.kicad_pcb \
   output/board/board.kicad_routingtools.kicad_pcb \
-  --repo /tmp/KiCadRoutingTools \
-  --python /tmp/krt-venv/bin/python
+  --repo "${KICAD_ROUTING_TOOLS_REPO}" \
+  --python /usr/bin/python3.14
 ```
 
 The same path is available directly from Synth. FreeRouting is the default;

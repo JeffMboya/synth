@@ -4562,6 +4562,13 @@ fn print_route_report(report: &synth_router::RouteReport) {
             counts.errors, counts.unconnected, counts.warnings
         );
     }
+    // Reported before the router is judged, because it explains a failure the
+    // router cannot avoid: a fine-pitch package that cannot take a fab-floor
+    // via will produce sub-floor vias however well it is routed.
+    for escape in &report.escape {
+        eprintln!("  escape: {}", escape.summary_line());
+        eprintln!("    fix: {}", escape.remediation);
+    }
 }
 
 /// Where the run record for a given export lives.

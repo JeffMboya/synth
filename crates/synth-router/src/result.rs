@@ -365,6 +365,13 @@ pub struct RouteReport {
     pub validation: Option<ValidationSummary>,
     #[serde(default)]
     pub failure: Option<RouterFailure>,
+    /// Dense packages whose pads cannot be escaped at the fabrication floor.
+    ///
+    /// Computed from the un-routed baseline before the engine runs, so it is a
+    /// property of the design and process rather than of the attempt. Empty
+    /// when every package can be fanned out. See [`crate::escape`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub escape: Vec<crate::escape::PackageEscape>,
 }
 
 impl RouteReport {
@@ -394,6 +401,7 @@ impl RouteReport {
             }
             .resolved(),
             validation: None,
+            escape: Vec::new(),
             failure: Some(failure.clone()),
         }
     }
@@ -429,6 +437,7 @@ impl RouteReport {
             }
             .resolved(),
             validation: None,
+            escape: Vec::new(),
             failure: Some(failure),
         }
     }
@@ -623,6 +632,7 @@ mod tests {
             },
             artifacts: RouteArtifacts::default(),
             validation: None,
+            escape: Vec::new(),
             failure: Some(
                 RouterFailure::for_stage(
                     RouterEngine::KiCadRoutingTools,

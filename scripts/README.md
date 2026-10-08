@@ -4,6 +4,25 @@ This directory contains developer tooling for fixtures, registry maintenance, an
 
 ---
 
+## Routing Engine Setup (`setup-routing-engines.sh`)
+
+Installs the external routers Synth drives — the pinned FreeRouting JAR and a
+KiCadRoutingTools checkout with a Python that imports `pcbnew`. No root, no
+`--break-system-packages`: KRT's Python dependencies go into a virtualenv
+layered over KiCad's interpreter. Idempotent, so it is safe to re-run.
+
+```bash
+scripts/setup-routing-engines.sh                 # both engines
+scripts/setup-routing-engines.sh --check         # report only, change nothing
+scripts/setup-routing-engines.sh --krt-dir /opt/KiCadRoutingTools
+```
+
+It prints the `SYNTH_FREEROUTING_JAR`, `SYNTH_FREEROUTING_PYTHON` and
+`KICAD_ROUTING_TOOLS_REPO` exports to set; `synth routers` then reports what is
+usable. See `docs/kicad-workflows.md`.
+
+---
+
 ## Anomaly Detector Training (`train_anomaly_model.py`)
 
 Trains the **One-Class SVM Graph Anomaly Detector** (`W-SYNTH-ANOMALY-001`) used by `synth-validate`.
