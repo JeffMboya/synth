@@ -180,6 +180,45 @@ so the finding states it — the pitch the package offers, the via the floor
 requires, and the drill that would actually fit. (Idea borrowed from
 [TraceMaker](https://github.com/DingoOz/TraceMaker)'s `escape` command.)
 
+#### Trying every engine at once
+
+Engines disagree on the same board — one completes a net the other cannot, or
+uses far fewer vias. `--best-of` runs every installed engine, validates each
+result independently, and keeps the best attempt:
+
+```text
+synth export-kicad board.synth --out output/board --best-of
+synth route board.synth --best-of
+```
+
+The winner is chosen by the independent verdict, never by an engine's own
+report: validated state first, then fewer blocking findings, fewer vias, and
+shorter copper. Each attempt gets its own subdirectory, so every result
+survives for inspection, and an engine that is not installed simply does not
+win — the run degrades to the engines present rather than failing.
+
+#### Learning from earlier runs
+
+Set `SYNTH_ROUTING_OUTCOMES_DIR` (or pass `log_routing_outcomes` over MCP) and
+every run appends a record — board hash, engine, state, open nets, vias,
+copper length, and the retry order it recommends. A later run on the same
+board reads the best prior attempt back and prints the order that worked
+best *before* routing, so a retry starts from where the last one left off:
+
+```text
+SYNTH_ROUTING_OUTCOMES_DIR=~/.local/share/synth/outcomes \
+  synth export-kicad board.synth --out output/board
+```
+
+Unset, nothing is written: logging is opt-in.
+
+#### The fabrication floor follows the board's process
+
+The minimums the gate enforces — trace width, clearance, drill, annular ring —
+come from the board's `manufacturer` (`jlcpcb`, `pcbway`, `oshpark`) via the
+same profiles `synth drc` uses, not from a built-in default. A design that
+declares a finer process as its manufacturer is judged against that process.
+
 The independent check re-reads the routed board and compares it to the
 baseline: footprint, pad and net topology must be unchanged, each net must be
 continuous through real copper, and track/via geometry must meet the

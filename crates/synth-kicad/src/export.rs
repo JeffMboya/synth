@@ -622,8 +622,14 @@ fn place_for_export(
     let rotation_overrides = flash_rotation_overrides(board);
     let hinted =
         synth_place::place_with_tuning_and_sidecar(board, margin, &rotation_overrides, sidecar)?;
-    let relaxed = relaxed_placement_score(board, &hinted);
-    if relaxed < placement_score(board, &hinted) && has_placement_hints(board) {
+    let mut candidates = vec![hinted];
+
+    // The hinted placement is not automatically the better one. A hint pins a
+    // part where the author asked, which can be worse for routing than where
+    // the solver would have put it; the export path has no router to ask, so
+    // it decides on legality first and on the route-aware estimate second.
+    // Only a candidate that is no less legal is allowed to win.
+    if hints_are_all_soft(board) {
         let mut unhinted = board.clone();
         for component in &mut unhinted.components {
             component.placement_hint = None;
@@ -634,13 +640,28 @@ fn place_for_export(
             &rotation_overrides,
             sidecar,
         ) {
-            let score = placement_score(board, &candidate);
-            if score < relaxed {
-                return Ok(candidate);
-            }
+            candidates.push(candidate);
         }
     }
-    Ok(hinted)
+
+    Ok(candidates
+        .into_iter()
+        .min_by_key(|placement| placement_key(board, placement))
+        .expect("the hinted placement is always a candidate"))
+}
+
+/// Ordering key for candidate placements: legality, then routability.
+///
+/// Violations lead — an illegal placement is never preferred, however short
+/// its copper — then net hazards, then total copper.
+fn placement_key(board: &Board, placement: &synth_place::Placement) -> (usize, usize, u64) {
+    let violations = placement_score(board, placement);
+    let estimate = synth_place::routability(board, placement);
+    (
+        violations,
+        estimate.overlong_nets,
+        estimate.copper_length_nm,
+    )
 }
 
 /// Orientation overrides for QSPI flash on an RP2350 board.
@@ -670,11 +691,23 @@ fn flash_rotation_overrides(
         .collect()
 }
 
-fn has_placement_hints(board: &Board) -> bool {
-    board
-        .components
-        .iter()
-        .any(|component| component.placement_hint.is_some())
+/// Whether the board carries hints and every one of them is soft.
+///
+/// A hard hint is a contract — an edge connector stays on its edge, a
+/// decoupling cap stays by its pin — and routability may not talk the export
+/// path out of it. Soft hints are preferences, and those may be relaxed for a
+/// placement that routes better.
+fn hints_are_all_soft(board: &Board) -> bool {
+    let mut saw_hint = false;
+    for component in &board.components {
+        if let Some(hint) = &component.placement_hint {
+            saw_hint = true;
+            if hint.priority == synth_ir::PlacementPriority::Hard {
+                return false;
+            }
+        }
+    }
+    saw_hint
 }
 
 /// Count of placement-only DRC violations.
@@ -687,10 +720,6 @@ fn placement_score(board: &Board, placement: &synth_place::Placement) -> usize {
     synth_drc::check(board, placement, &synth_pcb::Routing::default(), &profile)
         .violations
         .len()
-}
-
-fn relaxed_placement_score(board: &Board, placement: &synth_place::Placement) -> usize {
-    placement_score(board, placement)
 }
 
 /// Build the `.kicad_pro` `net_settings` block (schematic-quality

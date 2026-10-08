@@ -87,6 +87,9 @@ use synth_geometry::{mm_to_nm, Layer, Point, Rect, Rotation};
 use synth_ir::{Board, ComponentId, PinId};
 use thiserror::Error;
 
+mod routability;
+pub use routability::{routability, RoutabilityEstimate};
+
 /// Final position + orientation of a single component on the PCB.
 ///
 /// `center` is the **courtyard-bbox centre** in nanometres — the coordinate
@@ -4297,6 +4300,48 @@ mod tests {
         let resolved = synth_ir::resolve_imports(ast, &loader, &file);
         let lowered = synth_ir::lower(&resolved.program, &registry, &file);
         lowered.board.expect("board")
+    }
+
+    #[test]
+    fn a_rigid_translation_does_not_change_the_routability_estimate() {
+        // The estimate is built from net bounding boxes, so moving the whole
+        // board cannot change it. If it did, the exporter would pick between
+        // placements on absolute position rather than on routing.
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let mut shifted = placement.clone();
+        for component in &mut shifted.components {
+            component.center = Point::new(
+                component.center.x_nm + mm_to_nm(20.0),
+                component.center.y_nm + mm_to_nm(15.0),
+            );
+        }
+        assert_eq!(
+            routability(&board, &placement),
+            routability(&board, &shifted)
+        );
+    }
+
+    #[test]
+    fn pulling_one_part_away_from_its_nets_scores_worse() {
+        let board = load_board("../../examples/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let baseline = routability(&board, &placement);
+
+        let mut stretched = placement.clone();
+        let mut ids: Vec<ComponentId> = board.components.iter().map(|c| c.id).collect();
+        ids.sort();
+        let victim = ids[0];
+        if let Some(placed) = stretched.components.iter_mut().find(|p| p.id == victim) {
+            placed.center = Point::new(
+                placed.center.x_nm + mm_to_nm(30.0),
+                placed.center.y_nm + mm_to_nm(30.0),
+            );
+        }
+        assert!(
+            routability(&board, &stretched).key() > baseline.key(),
+            "a part dragged off its nets must not score better"
+        );
     }
 
     #[test]

@@ -372,6 +372,15 @@ pub struct RouteReport {
     /// when every package can be fanned out. See [`crate::escape`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub escape: Vec<crate::escape::PackageEscape>,
+    /// Net names to try first on a retry, hardest first.
+    ///
+    /// A router that failed on this board is telling us something: these are
+    /// the nets it could not complete. Re-running with them first is the
+    /// cheapest way to use that, and costs nothing when the run succeeded
+    /// (the list is empty). Advisory, exactly like `synth_route`'s
+    /// `routing_order`: it changes the search order, never the verdict.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recommended_routing_order: Vec<String>,
 }
 
 impl RouteReport {
@@ -402,6 +411,7 @@ impl RouteReport {
             .resolved(),
             validation: None,
             escape: Vec::new(),
+            recommended_routing_order: Vec::new(),
             failure: Some(failure.clone()),
         }
     }
@@ -438,6 +448,7 @@ impl RouteReport {
             .resolved(),
             validation: None,
             escape: Vec::new(),
+            recommended_routing_order: Vec::new(),
             failure: Some(failure),
         }
     }
@@ -446,6 +457,35 @@ impl RouteReport {
     #[must_use]
     pub fn is_fabrication_ready(&self) -> bool {
         self.state.is_fabrication_ready()
+    }
+
+    /// Ordering key for choosing between engines' attempts on one board.
+    ///
+    /// Larger is better. The state leads because a validated route beats a
+    /// merely-present one however short its copper; the tiebreakers favour
+    /// fewer blocking findings, fewer vias, and shorter copper, then the
+    /// engine name so the winner does not depend on iteration order.
+    #[must_use]
+    pub fn portfolio_rank(&self) -> PortfolioRank {
+        PortfolioRank {
+            state: match self.state {
+                RouteState::Routed => 3,
+                RouteState::ReviewRequired => 2,
+                RouteState::ValidationFailed => 1,
+                RouteState::RouterUnavailable => 0,
+            },
+            produced_a_board: u8::from(
+                self.artifacts.delivered.is_some() || self.artifacts.candidate.is_some(),
+            ),
+            blocking: std::cmp::Reverse(
+                self.validation
+                    .as_ref()
+                    .map_or(usize::MAX, ValidationSummary::blocking_count),
+            ),
+            vias: std::cmp::Reverse(self.statistics.vias),
+            shorter_copper: -(self.statistics.wire_length_mm * 1000.0) as i64,
+            engine: self.engine.as_str().to_string(),
+        }
     }
 
     /// One-line summary for stderr.
@@ -633,6 +673,7 @@ mod tests {
             artifacts: RouteArtifacts::default(),
             validation: None,
             escape: Vec::new(),
+            recommended_routing_order: Vec::new(),
             failure: Some(
                 RouterFailure::for_stage(
                     RouterEngine::KiCadRoutingTools,
@@ -663,5 +704,64 @@ mod tests {
         .resolved();
         assert!(artifacts.baseline.as_os_str().is_empty());
         assert!(artifacts.session_log.is_none());
+    }
+}
+
+/// Total order over run reports for portfolio selection; larger is better.
+///
+/// Named rather than a tuple so the intent of each term survives the next
+/// edit; see [`RouteReport::portfolio_rank`] for what each one means.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PortfolioRank {
+    state: u8,
+    produced_a_board: u8,
+    blocking: std::cmp::Reverse<usize>,
+    vias: std::cmp::Reverse<usize>,
+    shorter_copper: i64,
+    engine: String,
+}
+
+#[cfg(test)]
+mod portfolio_tests {
+    use super::*;
+    use crate::contract::{RouteRequest, RouterEngine};
+    use crate::failure::{RouterFailure, RouterFailureReason, RouterStage};
+
+    fn request() -> RouteRequest {
+        RouteRequest::new(
+            std::path::Path::new("/tmp/x.kicad_pcb"),
+            std::path::Path::new("/tmp"),
+            RouterEngine::Freerouting,
+        )
+    }
+
+    #[test]
+    fn an_attempt_that_ran_outranks_one_that_could_not_start() {
+        // The portfolio must never let a missing engine win over one that
+        // produced a board it could at least judge.
+        let unavailable = RouteReport::unavailable(
+            &request(),
+            &None,
+            &RouterFailure::for_stage(
+                RouterEngine::Freerouting,
+                RouterStage::Capability,
+                RouterFailureReason::JarMissing,
+                "no jar",
+            ),
+        );
+        let crashed = RouteReport::failed(
+            &request(),
+            &None,
+            RouterFailure::for_stage(
+                RouterEngine::Freerouting,
+                RouterStage::Route,
+                RouterFailureReason::Crashed,
+                "engine exited 139",
+            ),
+        );
+        assert!(
+            crashed.portfolio_rank() > unavailable.portfolio_rank(),
+            "a run that started must outrank one that could not"
+        );
     }
 }

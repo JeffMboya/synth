@@ -50,6 +50,7 @@ pub mod escape;
 pub mod failure;
 pub mod freerouting;
 pub mod kicad_routing_tools;
+pub mod outcomes;
 pub mod pcb_read;
 pub mod process;
 pub mod result;
@@ -63,7 +64,9 @@ pub use contract::{
     RouterEngine, RouterLimits,
 };
 pub use failure::{RouterFailure, RouterFailureReason, RouterStage};
-pub use result::{RouteReport, RouteState, RouteStatistics, RouterProvenance, ValidationSummary};
+pub use result::{
+    PortfolioRank, RouteReport, RouteState, RouteStatistics, RouterProvenance, ValidationSummary,
+};
 pub use validate::{
     validate_candidate, ConnectivityReport, FabricationVerdict, OpenConnection, TopologyReport,
 };
@@ -108,6 +111,16 @@ pub fn route(request: &RouteRequest) -> RouteReport {
         }
     };
 
+    // The baseline must exist before any engine reads it. Do it here rather
+    // than trusting the caller, so a portfolio that runs each engine in its
+    // own directory gets a baseline in each without a second setup step.
+    if let Err(failure) = request.preserve_baseline() {
+        let mut report = RouteReport::failed(request, &None, failure);
+        report.escape = escape::analyse_baseline(request);
+        write_report(&report, request);
+        return report;
+    }
+
     let capability = capability::discover(request);
     if let Some(failure) = capability.failure() {
         let mut report = RouteReport::unavailable(request, &Some(capability.clone()), failure);
@@ -130,6 +143,72 @@ pub fn route(request: &RouteRequest) -> RouteReport {
     report.escape = escape::analyse_baseline(request);
     write_report(&report, request);
     report
+}
+
+/// Run every engine over the board and keep the best attempt.
+///
+/// Both engines are installed and they disagree on the same board — one may
+/// complete a net the other cannot, or use far fewer vias. Running them and
+/// choosing by the independent verdict (never by the engines' own opinion) is
+/// strictly better than picking one up front, and it costs only the extra
+/// route.
+///
+/// Each engine gets its own output directory, so no attempt clobbers another
+/// and every attempt's artifacts survive for inspection. The winner is chosen
+/// by [`RouteReport::portfolio_rank`]: state first, then blocking findings,
+/// vias, copper length, and finally engine name so the result is deterministic.
+///
+/// An engine that is not installed contributes a `RouterUnavailable` report and
+/// never wins over one that produced a board, so a portfolio degrades to the
+/// engines that are present instead of failing.
+#[must_use]
+pub fn route_best_of(base: &RouteRequest, engines: &[RouterEngine]) -> Portfolio {
+    let mut attempts = Vec::with_capacity(engines.len());
+    for engine in engines {
+        let mut request = base.clone();
+        request.engine = *engine;
+        request.out_dir = base.out_dir.join(engine.artifact_tag());
+        attempts.push(route(&request));
+    }
+
+    let mut winner = 0usize;
+    for index in 1..attempts.len() {
+        if attempts[index].portfolio_rank() > attempts[winner].portfolio_rank() {
+            winner = index;
+        }
+    }
+    Portfolio {
+        winner: engines.get(winner).copied().unwrap_or(base.engine),
+        attempts,
+    }
+}
+
+/// The result of a portfolio run: every attempt, and which engine won.
+#[derive(Debug, Clone)]
+pub struct Portfolio {
+    /// The engine whose attempt was chosen.
+    pub winner: RouterEngine,
+    /// Every attempt, in the order the engines were tried.
+    pub attempts: Vec<RouteReport>,
+}
+
+impl Portfolio {
+    /// The winning attempt.
+    ///
+    /// # Panics
+    /// Never in practice: [`route_best_of`] pushes exactly one attempt per
+    /// engine and is never called with an empty engine list. The fallback
+    /// exists so a future caller cannot index out of bounds.
+    #[must_use]
+    pub fn report(&self) -> &RouteReport {
+        // `route_best_of` always pushes one attempt per engine, and `engines`
+        // is never empty in practice; fall back to the first defensively.
+        self.attempts
+            .iter()
+            .find(|report| report.engine == self.winner)
+            .or_else(|| self.attempts.first())
+            .expect("a portfolio always has at least one attempt")
+    }
 }
 
 /// Reduce a design name to a filesystem-safe stem.
@@ -218,6 +297,8 @@ fn finalize(
             .collect();
     }
 
+    let recommended_routing_order = recommended_order(&verdict.connectivity.open);
+
     RouteReport {
         schema_version: ROUTE_REPORT_SCHEMA.to_string(),
         state,
@@ -236,7 +317,31 @@ fn finalize(
         }),
         failure: None,
         escape: Vec::new(),
+        recommended_routing_order,
     }
+}
+
+/// Net names to try first on a retry, hardest first.
+///
+/// "Hardest" is the net with the most pads that still failed, tie-broken by
+/// the smallest stranded island: a 21-pad net that did not complete is the
+/// one worth reserving routes for, not a two-pad net that merely lost its
+/// second endpoint. Deterministic, so the advice does not move between runs.
+fn recommended_order(open: &[crate::validate::OpenConnection]) -> Vec<String> {
+    let mut nets: Vec<&crate::validate::OpenConnection> = open.iter().collect();
+    nets.sort_by(|a, b| {
+        b.pad_count
+            .cmp(&a.pad_count)
+            .then(a.island_size.cmp(&b.island_size))
+            .then(a.net.cmp(&b.net))
+    });
+    let mut names: Vec<String> = Vec::new();
+    for connection in nets {
+        if !names.iter().any(|name| name == &connection.net) {
+            names.push(connection.net.clone());
+        }
+    }
+    names
 }
 
 /// Write any serializable artifact to `path` as pretty JSON.
@@ -297,5 +402,48 @@ pub(crate) fn repo_root() -> Option<PathBuf> {
             return Some(dir);
         }
         dir = dir.parent()?.to_path_buf();
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    use crate::validate::OpenConnection;
+
+    #[test]
+    fn the_hardest_open_net_is_recommended_first() {
+        let open = vec![
+            OpenConnection {
+                net: "net_8".to_string(),
+                pad: "U2.30".to_string(),
+                island_size: 1,
+                pad_count: 2,
+            },
+            OpenConnection {
+                net: "net_1".to_string(),
+                pad: "D1.2".to_string(),
+                island_size: 1,
+                pad_count: 33,
+            },
+            OpenConnection {
+                net: "net_4".to_string(),
+                pad: "U2.9".to_string(),
+                island_size: 3,
+                pad_count: 19,
+            },
+        ];
+        assert_eq!(
+            recommended_order(&open),
+            vec![
+                "net_1".to_string(),
+                "net_4".to_string(),
+                "net_8".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_clean_run_recommends_nothing() {
+        assert!(recommended_order(&[]).is_empty());
     }
 }

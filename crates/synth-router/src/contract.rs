@@ -251,16 +251,67 @@ pub struct FabricationPolicy {
     pub min_clearance_nm: i64,
     /// Minimum acceptable drill diameter, in nanometres.
     pub min_drill_diameter_nm: i64,
+    /// Minimum annular ring — copper radius minus drill radius — in nm.
+    ///
+    /// Carried so the escape check can size a via from the process rather
+    /// than from an assumption; it is a profile rule, not a board one.
+    pub min_annular_ring_nm: i64,
 }
 
 impl Default for FabricationPolicy {
     fn default() -> Self {
+        // JLCPCB's standard hobbyist tier, matching `ManufacturerProfile`.
         Self {
             allow_via_in_pad: false,
             min_track_width_nm: 127_000,
             min_clearance_nm: 127_000,
             min_drill_diameter_nm: 300_000,
+            min_annular_ring_nm: 130_000,
         }
+    }
+}
+
+impl FabricationPolicy {
+    /// The routing floor a named manufacturer profile imposes.
+    ///
+    /// The board's declared manufacturer is a *process* choice, and the
+    /// minimums that follow from it are what the independent gate and the
+    /// escape analysis must enforce. Using a built-in default for every board
+    /// meant a design that legitimately declares 0.2 mm vias was judged
+    /// against a floor it never agreed to.
+    #[must_use]
+    pub fn from_profile(profile: &synth_drc::ManufacturerProfile) -> Self {
+        Self {
+            allow_via_in_pad: false,
+            min_track_width_nm: profile.min_trace_width_nm,
+            min_clearance_nm: profile.min_copper_clearance_nm,
+            min_drill_diameter_nm: profile.min_drill_diameter_nm,
+            min_annular_ring_nm: profile.min_annular_ring_nm,
+        }
+    }
+
+    /// [`Self::from_profile`] for a profile name (`jlcpcb`, `pcbway`, ...).
+    ///
+    /// An unrecognised name resolves to the JLC standard tier, which is what
+    /// `ManufacturerProfile::from_name` does, so an unspecified manufacturer
+    /// and an unknown one behave the same and neither silently widens the
+    /// floor.
+    #[must_use]
+    pub fn from_profile_name(name: &str) -> Self {
+        Self::from_profile(&synth_drc::ManufacturerProfile::from_name(name))
+    }
+}
+
+impl RouteRequest {
+    /// Adopt the fabrication floor a manufacturer profile imposes.
+    ///
+    /// Keeps whatever via-in-pad decision was already made: that is a process
+    /// approval, not a profile rule, so it is not reset here.
+    pub fn use_profile_floor(&mut self, manufacturer: &str) {
+        let allow_via_in_pad = self.policy.allow_via_in_pad;
+        self.policy = FabricationPolicy::from_profile_name(manufacturer);
+        self.policy.allow_via_in_pad = allow_via_in_pad;
+        self.profile_name = manufacturer.to_string();
     }
 }
 
@@ -377,6 +428,13 @@ impl RouteRequest {
     pub fn preserve_baseline(&self) -> Result<(), RouterFailure> {
         if self.board_path == self.baseline_path() {
             return Ok(());
+        }
+        // A portfolio runs each engine in its own subdirectory, so the
+        // baseline's parent may not exist yet. Copying into a missing
+        // directory fails, and the failure would be reported as the engine
+        // crashing rather than as the setup it is.
+        if let Some(parent) = self.baseline_path().parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
         std::fs::copy(&self.board_path, self.baseline_path())
             .map(|_| ())

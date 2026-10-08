@@ -192,6 +192,10 @@ enum Command {
         /// Permit via-in-pad in the KRT production gate.
         #[arg(long)]
         krt_allow_via_in_pad: bool,
+        /// Try every installed engine and keep the best attempt, judged by
+        /// the independent checks rather than by either engine's own report.
+        #[arg(long)]
+        best_of: bool,
     },
 
     /// Apply the highest-confidence `suggested_fix` from every
@@ -333,6 +337,10 @@ enum Command {
         /// Wall-clock budget for the whole external run, in seconds.
         #[arg(long, value_name = "SECS")]
         router_timeout: Option<u64>,
+        /// Try every installed engine and keep the best attempt, judged by
+        /// the independent checks rather than by either engine's own report.
+        #[arg(long)]
+        best_of: bool,
 
         #[arg(long)]
         pretty: bool,
@@ -934,6 +942,7 @@ fn main() -> ExitCode {
             krt_fab_overrides,
             krt_same_net_pad_clearance,
             krt_allow_via_in_pad,
+            best_of,
         } => export_kicad(
             &input,
             registry.as_deref(),
@@ -961,6 +970,7 @@ fn main() -> ExitCode {
             krt_fab_overrides.as_deref(),
             krt_same_net_pad_clearance,
             krt_allow_via_in_pad,
+            best_of,
         ),
         Command::Fix {
             input,
@@ -1004,6 +1014,7 @@ fn main() -> ExitCode {
             krt_same_net_pad_clearance,
             krt_allow_via_in_pad,
             router_timeout,
+            best_of,
             pretty,
         } => dump_route(
             &input,
@@ -1022,6 +1033,7 @@ fn main() -> ExitCode {
                 krt_allow_via_in_pad,
             )
             .with_timeout(router_timeout),
+            best_of,
             pretty,
         ),
         Command::Drc {
@@ -3485,9 +3497,10 @@ fn dump_route(
     registry_dir: Option<&Path>,
     engine: ExternalRouter,
     options: &RouterOptions,
+    best_of: bool,
     pretty: bool,
 ) -> anyhow::Result<u8> {
-    let report = route_design(input, registry_dir, engine, options)?;
+    let report = route_design(input, registry_dir, engine, options, best_of)?;
     print_route_report(&report);
 
     let stdout = std::io::stdout();
@@ -3517,6 +3530,7 @@ fn route_design(
     registry_dir: Option<&Path>,
     engine: ExternalRouter,
     options: &RouterOptions,
+    best_of: bool,
 ) -> anyhow::Result<synth_router::RouteReport> {
     let (source, file) = read_source(input)?;
     let parse = synth_parser::parse(&source, file.clone());
@@ -3553,7 +3567,7 @@ fn route_design(
     let sidecars = synth_kicad::Sidecars::resolve_for(input);
     let result = synth_kicad::export_with_sidecars(board, &out_dir, &sidecars)
         .map_err(|e| anyhow::anyhow!("kicad export failed: {e}"))?;
-    route_externally(board, &result, input, engine, options)
+    route_externally(board, &result, input, engine, options, best_of)
 }
 
 /// Report the physical state of a design after routing it externally.
@@ -3567,7 +3581,7 @@ fn dump_drc(
     options: &RouterOptions,
     pretty: bool,
 ) -> anyhow::Result<u8> {
-    let report = route_design(input, registry_dir, engine, options)?;
+    let report = route_design(input, registry_dir, engine, options, false)?;
     print_route_report(&report);
 
     let stdout = std::io::stdout();
@@ -3880,6 +3894,7 @@ fn export_kicad(
     krt_fab_overrides: Option<&Path>,
     krt_same_net_pad_clearance: f64,
     krt_allow_via_in_pad: bool,
+    best_of: bool,
 ) -> anyhow::Result<u8> {
     if autoroute {
         // Still parsed, so an existing script fails with something
@@ -4052,6 +4067,7 @@ fn export_kicad(
             krt_same_net_pad_clearance,
             krt_allow_via_in_pad,
         ),
+        best_of,
     )?;
 
     eprintln!("wrote {}", result.project_path.display());
@@ -4441,10 +4457,12 @@ fn build_route_request(
     request.kicad_routing_tools.fab_tier = options.fab_tier.as_str().to_string();
     request.kicad_routing_tools.same_net_pad_clearance_mm = options.same_net_pad_clearance;
     request.policy.allow_via_in_pad = options.allow_via_in_pad;
-    request.profile_name = board
-        .manufacturer
-        .clone()
-        .unwrap_or_else(|| "jlc-standard".to_string());
+    request.use_profile_floor(
+        &board
+            .manufacturer
+            .clone()
+            .unwrap_or_else(|| "jlc-standard".to_string()),
+    );
     request.input_hash = sha256_file(&result.pcb_path)?;
     request
         .kicad_routing_tools
@@ -4487,15 +4505,50 @@ fn route_externally(
     input: &Path,
     engine: ExternalRouter,
     options: &RouterOptions,
+    best_of: bool,
 ) -> anyhow::Result<synth_router::RouteReport> {
-    let request = build_route_request(board, result, engine.into(), options)?;
+    let mut request = build_route_request(board, result, engine.into(), options)?;
     eprintln!(
         "routing {} with {}",
         request.router_input_path().display(),
-        engine.as_str()
+        if best_of {
+            "every installed engine"
+        } else {
+            engine.as_str()
+        }
     );
-    let report = synth_router::route(&request);
+    // A prior attempt on this exact board may have left advice worth starting
+    // from; say so before the run rather than only in the log afterwards.
+    let outcomes_dir = synth_router::outcomes::configured_dir();
+    if let Some(dir) = &outcomes_dir {
+        if let Some(order) = synth_router::outcomes::best_known_order(dir, &request.input_hash) {
+            eprintln!(
+                "  known-good retry order from previous runs: {}",
+                order.join(", ")
+            );
+        }
+    }
+    let report = if best_of {
+        let base_out = request.out_dir.clone();
+        let portfolio = synth_router::route_best_of(&request, &synth_router::RouterEngine::all());
+        for attempt in &portfolio.attempts {
+            eprintln!("  attempt: {}", attempt.summary());
+        }
+        eprintln!("  winner: {}", portfolio.winner.as_str());
+        // The winner's artifacts live in its own subdirectory; point the
+        // request there so the reports below reference the board that won.
+        request.engine = portfolio.winner;
+        request.out_dir = base_out.join(portfolio.winner.artifact_tag());
+        portfolio.report().clone()
+    } else {
+        synth_router::route(&request)
+    };
     print_route_report(&report);
+
+    if let Some(dir) = &outcomes_dir {
+        let record = synth_router::outcomes::OutcomeRecord::from_report(&report);
+        let _ = synth_router::outcomes::append(dir, &record);
+    }
 
     if let Some(validation) = &report.validation {
         let _ = synth_router::write_artifact(&request.connectivity_report_path(), validation);
@@ -4568,6 +4621,12 @@ fn print_route_report(report: &synth_router::RouteReport) {
     for escape in &report.escape {
         eprintln!("  escape: {}", escape.summary_line());
         eprintln!("    fix: {}", escape.remediation);
+    }
+    if !report.recommended_routing_order.is_empty() {
+        eprintln!(
+            "  retry order: {}  (pass as routing_order to reserve routes for the hardest nets first)",
+            report.recommended_routing_order.join(", ")
+        );
     }
 }
 

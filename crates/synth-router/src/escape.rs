@@ -34,13 +34,12 @@ const DENSE_MIN_PADS: usize = 8;
 /// fab-floor via fits between adjacent pins with room to spare.
 const DENSE_MAX_PITCH_MM: f64 = 1.3;
 
-/// Annular ring assumed when the board has no vias to measure one from.
-///
-/// A common minimum for the processes Synth targets. Used only to make the
-/// arithmetic concrete; it never turns a warning into a pass or a failure.
-const DEFAULT_ANNULAR_MM: f64 = 0.15;
-
 const NM_PER_MM: f64 = 1_000_000.0;
+
+/// Copper layers a board needs before an inner plane can rescue a dense
+/// package's escapes. Two-layer boards have nowhere for a fine-pitch pin to
+/// go; four give it a plane to change into.
+const PLANE_LAYER_COUNT: usize = 4;
 
 /// Pairs closer than this are coincident, not a pitch.
 ///
@@ -81,6 +80,11 @@ pub struct PackageEscape {
     /// The largest via drill whose escape vias clear each other at this pitch,
     /// in millimetres. Negative when even a zero-drill via cannot.
     pub max_drill_mm: f64,
+    /// Copper layers the board actually has.
+    pub layers: usize,
+    /// The layer count that would give this package somewhere to escape, when
+    /// the board is too thin for one. `None` when it already has enough.
+    pub suggested_layers: Option<usize>,
     /// Which limit the package hits.
     pub limit: EscapeLimit,
     /// The arithmetic, in words.
@@ -122,11 +126,12 @@ pub fn analyse_baseline(request: &crate::contract::RouteRequest) -> Vec<PackageE
 /// first. An empty result means every package can be fanned out.
 #[must_use]
 pub fn analyse(board: &PcbBoard, policy: &FabricationPolicy) -> Vec<PackageEscape> {
-    let annular_nm = observed_annular_nm(board).unwrap_or_else(|| mm(DEFAULT_ANNULAR_MM));
+    let layers = board.copper_layers().len();
     // Two parallel tracks need their centres `width + clearance` apart; the
     // same holds for two vias, where the width is the via's copper diameter.
     let track_span_nm = policy.min_track_width_nm + policy.min_clearance_nm;
-    let via_span_nm = policy.min_drill_diameter_nm + 2 * annular_nm + policy.min_clearance_nm;
+    let via_span_nm =
+        policy.min_drill_diameter_nm + 2 * policy.min_annular_ring_nm + policy.min_clearance_nm;
 
     let mut findings: Vec<PackageEscape> = board
         .footprints
@@ -150,7 +155,7 @@ pub fn analyse(board: &PcbBoard, policy: &FabricationPolicy) -> Vec<PackageEscap
             if !via_blocked && !track_blocked {
                 return None;
             }
-            let max_drill_nm = pitch_nm - policy.min_clearance_nm - 2 * annular_nm;
+            let max_drill_nm = pitch_nm - policy.min_clearance_nm - 2 * policy.min_annular_ring_nm;
             Some(PackageEscape {
                 refdes: footprint.reference.clone(),
                 package: footprint.lib_id.clone(),
@@ -159,13 +164,15 @@ pub fn analyse(board: &PcbBoard, policy: &FabricationPolicy) -> Vec<PackageEscap
                 gap_mm: as_mm(gap_nm),
                 via_span_mm: as_mm(via_span_nm),
                 max_drill_mm: as_mm(max_drill_nm),
+                layers,
+                suggested_layers: (layers < PLANE_LAYER_COUNT).then_some(PLANE_LAYER_COUNT),
                 limit: if track_blocked {
                     EscapeLimit::Track
                 } else {
                     EscapeLimit::Via
                 },
                 detail: describe(pitch_nm, gap_nm, via_span_nm, track_span_nm, max_drill_nm),
-                remediation: remediate(track_blocked),
+                remediation: remediate(track_blocked, layers),
             })
         })
         .collect();
@@ -219,15 +226,22 @@ fn describe(
     text
 }
 
-fn remediate(track_blocked: bool) -> String {
-    if track_blocked {
-        "route this package on more layers, use via-in-pad if the process allows, or choose a \
-         coarser-pitch part"
-            .to_string()
+fn remediate(track_blocked: bool, layers: usize) -> String {
+    use std::fmt::Write as _;
+    let mut text = if track_blocked {
+        "use via-in-pad if the process allows, or choose a coarser-pitch part".to_string()
     } else {
         "allow via-in-pad, accept a sub-floor via from the router, or choose a coarser-pitch part"
             .to_string()
+    };
+    if layers < PLANE_LAYER_COUNT {
+        let _ = write!(
+            text,
+            "; this board has {layers} copper layers — an inner plane at {PLANE_LAYER_COUNT} \
+             layers gives these pins somewhere to change layers"
+        );
     }
+    text
 }
 
 /// The smallest centre-to-centre distance between two *distinct* pad sites.
@@ -281,21 +295,6 @@ fn rect_gap_nm(a: &Pad, b: &Pad) -> i64 {
     } else {
         dx.max(dy).max(0)
     }
-}
-
-/// The annular ring the board's own vias use, if it has any.
-fn observed_annular_nm(board: &PcbBoard) -> Option<i64> {
-    let mut rings: Vec<i64> = board
-        .vias
-        .iter()
-        .filter(|via| via.drill_nm > 0 && via.size_nm > via.drill_nm)
-        .map(|via| (via.size_nm - via.drill_nm) / 2)
-        .collect();
-    if rings.is_empty() {
-        return None;
-    }
-    rings.sort_unstable();
-    Some(rings[rings.len() / 2])
 }
 
 fn mm(value: f64) -> i64 {
@@ -354,6 +353,26 @@ mod tests {
         assert!(escape.detail.contains("0.500"), "{escape:?}");
         assert!(!escape.remediation.is_empty());
         assert!(escape.summary_line().contains("U1"));
+        // The fixture is a 2-layer board, so the fix must name the layer count.
+        assert_eq!(escape.layers, 2, "{escape:?}");
+        assert_eq!(escape.suggested_layers, Some(4), "{escape:?}");
+        assert!(escape.remediation.contains("4 layers"), "{escape:?}");
+    }
+
+    #[test]
+    fn a_four_layer_board_is_not_told_to_add_layers() {
+        let text = row(12, 0.5, 0.23, 1.5, "Package_QFP:LQFP-48_7x7mm_P0.5mm").replace(
+            r#"(layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))"#,
+            r#"(layers (0 "F.Cu" signal) (4 "In1.Cu" power) (6 "In2.Cu" power) (31 "B.Cu" signal) (44 "Edge.Cuts" user))"#,
+        );
+        let findings = analyse(&board(&text), &FabricationPolicy::default());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].layers, 4, "{findings:?}");
+        assert_eq!(findings[0].suggested_layers, None, "{findings:?}");
+        assert!(
+            !findings[0].remediation.contains("4 layers"),
+            "{findings:?}"
+        );
     }
 
     #[test]
@@ -406,6 +425,7 @@ mod tests {
             min_track_width_nm: 90_000,
             min_clearance_nm: 50_000,
             min_drill_diameter_nm: 140_000,
+            min_annular_ring_nm: 130_000,
             allow_via_in_pad: true,
         };
         assert!(

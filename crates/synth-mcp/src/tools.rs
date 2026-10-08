@@ -146,6 +146,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "kicad_routing_tools_python": { "type": "string", "description": "Python interpreter with KiCadRoutingTools dependencies" },
                     "router_timeout_secs": { "type": "number", "description": "Wall-clock budget for the whole external run" },
                     "allow_via_in_pad": { "type": "boolean", "description": "Permit via-in-pad in the fabrication gate (default false)" },
+                    "log_routing_outcomes": { "type": "string", "description": "Optional directory to append a Dataset 6 routing outcome record to; a later run on the same board reads it back as retry advice" },
                     "registry_path": { "type": "string", "description": "Optional custom component registry path" },
                     "workspace_root": { "type": "string", "description": "Optional workspace root path for auto-resolving registry" }
                 }
@@ -226,6 +227,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "kicad_routing_tools_python": { "type": "string", "description": "Python interpreter with KiCadRoutingTools dependencies" },
                     "router_timeout_secs": { "type": "number", "description": "Wall-clock budget for the whole external run" },
                     "allow_via_in_pad": { "type": "boolean", "description": "Permit via-in-pad in the fabrication gate (default false)" },
+                    "log_routing_outcomes": { "type": "string", "description": "Optional directory to append a Dataset 6 routing outcome record to; a later run on the same board reads it back as retry advice" },
                     "registry_path": { "type": "string", "description": "Optional custom component registry path" },
                     "workspace_root": { "type": "string", "description": "Optional workspace root path for auto-resolving registry" }
                 }
@@ -434,6 +436,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "allow_placement_warnings": { "type": "boolean", "description": "Allow routing despite visual-review findings; use only for deliberate manual/debug routing (default false)" },
                     "profile":          { "type": "string", "description": "Optional manufacturer DRC profile ('jlcpcb_standard' or path to toml)" },
                     "routing_order":    { "type": "array", "items": { "type": "string" }, "description": "Optional net order from routing feedback; preserved with the requested width/clearance profile." },
+                    "log_routing_outcomes": { "type": "string", "description": "Optional directory to append a Dataset 6 routing outcome record to; a later run on the same board reads it back as retry advice" },
                     "registry_path":    { "type": "string", "description": "Optional custom component registry path" },
                     "workspace_root":   { "type": "string", "description": "Optional workspace root path" },
                     "net_constraints": {
@@ -1182,6 +1185,22 @@ fn routing_request(args: &Value, engine: synth_router::RouterEngine) -> synth_ro
     request
 }
 
+/// Append a Dataset 6 outcome record when a caller asked for one.
+///
+/// Honours the per-call argument first, then `SYNTH_ROUTING_OUTCOMES_DIR`, so
+/// an agent can log one run explicitly and a deployment can log every run
+/// without the agent mentioning it. A logging failure never fails the route.
+fn log_routing_outcome(args: &Value, report: &synth_router::RouteReport) {
+    let dir = args["log_routing_outcomes"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(synth_router::outcomes::configured_dir);
+    if let Some(dir) = dir {
+        let record = synth_router::outcomes::OutcomeRecord::from_report(report);
+        let _ = synth_router::outcomes::append(&dir, &record);
+    }
+}
+
 /// Report whether external routing engines are installed and usable.
 // Kept as `Result<Value, String>` to match every other tool handler's
 // signature in the dispatch table, even though discovery cannot fail.
@@ -1297,10 +1316,12 @@ fn route_design_externally_with(
     request.board_path.clone_from(&res.pcb_path);
     request.out_dir.clone_from(&res.out_dir);
     request.stem = stem;
-    request.profile_name = board
-        .manufacturer
-        .clone()
-        .unwrap_or_else(|| "jlc-standard".to_string());
+    request.use_profile_floor(
+        &board
+            .manufacturer
+            .clone()
+            .unwrap_or_else(|| "jlc-standard".to_string()),
+    );
     request.input_hash = sha256_of(&res.pcb_path);
     request.preserve_baseline().map_err(|f| f.to_string())?;
 
@@ -1385,6 +1406,7 @@ fn execute_drc_report(args: &Value, default_registry: Option<&Path>) -> Result<V
 /// says what to install.
 fn execute_route(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
     let (report, out_dir) = route_design_externally(args, default_registry)?;
+    log_routing_outcome(args, &report);
     let mut payload = route_report_payload(&report);
     payload["out_dir"] = serde_json::json!(out_dir);
     Ok(payload)
@@ -2554,10 +2576,12 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
     request.board_path.clone_from(&res.pcb_path);
     request.out_dir.clone_from(&res.out_dir);
     request.stem = synth_router::sanitize_stem(&board.name);
-    request.profile_name = board
-        .manufacturer
-        .clone()
-        .unwrap_or_else(|| "jlc-standard".to_string());
+    request.use_profile_floor(
+        &board
+            .manufacturer
+            .clone()
+            .unwrap_or_else(|| "jlc-standard".to_string()),
+    );
     request.input_hash = sha256_of(&res.pcb_path);
     request.preserve_baseline().map_err(|f| f.to_string())?;
     let routing = synth_router::route(&request);
@@ -3287,6 +3311,7 @@ fn execute_route_with_constraints(
     }
 
     let (report, _) = route_design_externally_with(args, default_registry, Some(routed))?;
+    log_routing_outcome(args, &report);
     let mut payload = route_report_payload(&report);
     payload["diagnostics"] = serde_json::json!(diagnostics);
     payload["constraints"] = serde_json::json!({
