@@ -93,7 +93,11 @@ jobs:
           src="target/${{ matrix.target }}/release/synth${{ matrix.ext }}"
           asset="synth-${{ matrix.label }}${{ matrix.ext }}"
           cp "$src" "dist/$asset"
-          ( cd dist && sha256sum "$asset" > "$asset.sha256" )
+          ( cd dist && if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$asset" > "$asset.sha256"
+            else
+              shasum -a 256 "$asset" > "$asset.sha256"
+            fi )
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -201,26 +205,70 @@ jobs:
           files: dist/**
           generate_release_notes: true
           body: |
+            Synth compiles text-based circuit designs (SynthSpec) into KiCad schematics, PCB layouts, and bills of materials. This release ships prebuilt CLI binaries for five platforms, each with a SHA-256 checksum.
+
             ## Install
 
-            Download the archive for your platform, verify its checksum, and put `synth` on your `PATH`:
+            Download the binary for your platform and verify it against the matching `.sha256` file before running:
+
+            | Platform       | Asset                     |
+            | -------------- | ------------------------- |
+            | Linux x86-64   | `synth-linux-amd64`       |
+            | Linux arm64    | `synth-linux-arm64`       |
+            | macOS arm64    | `synth-darwin-arm64`      |
+            | macOS x86-64   | `synth-darwin-amd64`      |
+            | Windows x86-64 | `synth-windows-amd64.exe` |
 
             ```bash
+            # Linux
             sha256sum -c synth-linux-amd64.sha256
-            chmod +x synth-linux-amd64
-            ./synth-linux-amd64 --help
+            # macOS
+            shasum -a 256 -c synth-darwin-arm64.sha256
+            # Windows (PowerShell)
+            certutil -hashfile synth-windows-amd64.exe SHA256
             ```
 
-            Available builds: `linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`, `windows-amd64`.
+            Then make it executable and confirm the build:
+
+            ```bash
+            chmod +x synth-linux-amd64
+            ./synth-linux-amd64 --version
+            ```
 
             ## From source
+
+            Requires a current stable Rust toolchain.
 
             ```bash
             cargo install --git https://github.com/absmach/synth --tag ${{ steps.version.outputs.tag }} synth-cli
             ```
 
+            ## Quick start
+
+            ```bash
+            synth validate fixtures/designs/hello.synth
+            synth export-kicad fixtures/designs/hello.synth --out output/hello
+            ```
+
+            `synth check DESIGN.synth --json` is the deterministic, model-free gate for CI: it runs compiler validation and DRC and returns structured diagnostics with source locations. Add `--fab` to require a complete KiCad manufacturing export and receive SHA-256 hashes for the emitted files.
+
+            ## Agent integration
+
+            ```bash
+            synth mcp --stdio
+            ```
+
+            The MCP server exposes the SynthSpec language reference, registry search, validation, fixes, and every compiler stage with structured diagnostics, so agents can iterate on a design end to end.
+
             ## Optional: KiCad integration
 
-            Electrical-rule checks, schematic rendering, and fabrication outputs shell out to `kicad-cli`. Install KiCad 10 to enable them. Without it, `synth export-kicad` still generates a project, but every native check reports `unknown` rather than passing, and any command that asked for verification (`--validate-erc`, `--gerbers`/`--drill`/`--step`, `synth check --fab`) fails closed. Set `KICAD_CLI` if the binary is not on `PATH`.
+            Electrical-rule checks, schematic rendering, and fabrication outputs shell out to `kicad-cli`. Install KiCad 10 to enable them. Without it, `synth export-kicad` still generates a project, but every native check reports `unknown` rather than passing, and any command that asked for verification (`--validate-erc`, `--gerbers`/`--drill`/`--step`, `synth check --fab`) fails closed. Set `KICAD_CLI` if the binary is not on `PATH`, and `SYNTH_KICAD_CLI_TIMEOUT_SECS` to change the per-run budget (default 300s).
 
-            See the [README](https://github.com/absmach/synth) for the language, the MCP server, and the review workflow.
+            ## Documentation
+
+            - [Quick start](https://absmach.eu/docs/synth/user-guide/quick-start/)
+            - [KiCad workflows](https://github.com/absmach/synth/blob/${{ steps.version.outputs.tag }}/docs/kicad-workflows.md)
+            - [MCP server](https://github.com/absmach/synth/blob/${{ steps.version.outputs.tag }}/crates/synth-mcp/README.md)
+            - [Component registry](https://github.com/absmach/synth/blob/${{ steps.version.outputs.tag }}/registry/README.md)
+
+            The auto-generated list of changes and contributors follows below.
