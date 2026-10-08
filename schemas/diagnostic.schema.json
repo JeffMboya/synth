@@ -1,8 +1,7 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "Candidate": {
-      "description": "A candidate value the diagnostic suggests instead of what was found. Distinct from a [`Patch`] in that candidates are *informational* — they describe possibilities, not edits.",
+      "description": "A candidate value the diagnostic suggests instead of what was found.\nDistinct from a [`Patch`] in that candidates are *informational* —\nthey describe possibilities, not edits.",
       "oneOf": [
         {
           "properties": {
@@ -10,15 +9,13 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "component"
-              ],
+              "const": "component",
               "type": "string"
             }
           },
           "required": [
-            "id",
-            "kind"
+            "kind",
+            "id"
           ],
           "type": "object"
         },
@@ -28,9 +25,7 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "pin"
-              ],
+              "const": "pin",
               "type": "string"
             },
             "pin": {
@@ -38,8 +33,8 @@
             }
           },
           "required": [
-            "component",
             "kind",
+            "component",
             "pin"
           ],
           "type": "object"
@@ -47,9 +42,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "net"
-              ],
+              "const": "net",
               "type": "string"
             },
             "name": {
@@ -68,24 +61,20 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "constraint"
-              ],
+              "const": "constraint",
               "type": "string"
             }
           },
           "required": [
-            "id",
-            "kind"
+            "kind",
+            "id"
           ],
           "type": "object"
         },
         {
           "properties": {
             "kind": {
-              "enum": [
-                "module"
-              ],
+              "const": "module",
               "type": "string"
             },
             "name": {
@@ -111,7 +100,7 @@
       "type": "object"
     },
     "EntityRef": {
-      "description": "A reference to a domain entity (component, pin, net, ...) that the diagnostic concerns. Tagged on `kind` for forward compatibility.",
+      "description": "A reference to a domain entity (component, pin, net, ...) that the\ndiagnostic concerns. Tagged on `kind` for forward compatibility.",
       "oneOf": [
         {
           "properties": {
@@ -119,15 +108,13 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "component"
-              ],
+              "const": "component",
               "type": "string"
             }
           },
           "required": [
-            "id",
-            "kind"
+            "kind",
+            "id"
           ],
           "type": "object"
         },
@@ -137,9 +124,7 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "pin"
-              ],
+              "const": "pin",
               "type": "string"
             },
             "pin": {
@@ -147,8 +132,8 @@
             }
           },
           "required": [
-            "component",
             "kind",
+            "component",
             "pin"
           ],
           "type": "object"
@@ -156,9 +141,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "net"
-              ],
+              "const": "net",
               "type": "string"
             },
             "name": {
@@ -177,24 +160,20 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "constraint"
-              ],
+              "const": "constraint",
               "type": "string"
             }
           },
           "required": [
-            "id",
-            "kind"
+            "kind",
+            "id"
           ],
           "type": "object"
         },
         {
           "properties": {
             "kind": {
-              "enum": [
-                "module"
-              ],
+              "const": "module",
               "type": "string"
             },
             "name": {
@@ -214,22 +193,22 @@
       "properties": {
         "byte_end": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "byte_start": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "col_end": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "col_start": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "file": {
@@ -237,40 +216,38 @@
         },
         "line_end": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "line_start": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "byte_end",
-        "byte_start",
-        "col_end",
-        "col_start",
         "file",
+        "byte_start",
+        "byte_end",
+        "line_start",
+        "col_start",
         "line_end",
-        "line_start"
+        "col_end"
       ],
       "type": "object"
     },
     "Patch": {
-      "description": "A machine-applicable patch primitive.\n\nEvery diagnostic carries zero or more `Patch` entries in its `suggested_fixes`. Patches are total functions: applying a `Patch` to the original source bytes either produces new bytes or returns `PatchError::Conflict`. They never panic.\n\nPatch primitives are tagged on `kind` for forward compatibility; new variants are added in minor schema bumps.",
+      "description": "A machine-applicable patch primitive.\n\nEvery diagnostic carries zero or more `Patch` entries in its\n`suggested_fixes`. Patches are total functions: applying a `Patch` to\nthe original source bytes either produces new bytes or returns\n`PatchError::Conflict`. They never panic.\n\nPatch primitives are tagged on `kind` for forward compatibility; new\nvariants are added in minor schema bumps.",
       "oneOf": [
         {
           "description": "Replace the bytes in `range` with `replacement`.",
           "properties": {
             "kind": {
-              "enum": [
-                "replace_range"
-              ],
+              "const": "replace_range",
               "type": "string"
             },
             "range": {
-              "$ref": "#/definitions/Span"
+              "$ref": "#/$defs/Span"
             },
             "replacement": {
               "type": "string"
@@ -288,13 +265,11 @@
           "properties": {
             "at": {
               "format": "uint32",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": "integer"
             },
             "kind": {
-              "enum": [
-                "insert_at"
-              ],
+              "const": "insert_at",
               "type": "string"
             },
             "text": {
@@ -302,8 +277,8 @@
             }
           },
           "required": [
-            "at",
             "kind",
+            "at",
             "text"
           ],
           "type": "object"
@@ -312,13 +287,11 @@
           "description": "Delete the bytes in `range`.",
           "properties": {
             "kind": {
-              "enum": [
-                "delete_range"
-              ],
+              "const": "delete_range",
               "type": "string"
             },
             "range": {
-              "$ref": "#/definitions/Span"
+              "$ref": "#/$defs/Span"
             }
           },
           "required": [
@@ -328,16 +301,14 @@
           "type": "object"
         },
         {
-          "description": "Insert a new statement (semantic, not textual) at the appropriate scope. The host re-renders the source.",
+          "description": "Insert a new statement (semantic, not textual) at the\nappropriate scope. The host re-renders the source.",
           "properties": {
             "kind": {
-              "enum": [
-                "add_statement"
-              ],
+              "const": "add_statement",
               "type": "string"
             },
             "scope": {
-              "description": "Identifier of the enclosing scope (e.g., a board name or module name). Empty string means the top-level scope.",
+              "description": "Identifier of the enclosing scope (e.g., a board name or module\nname). Empty string means the top-level scope.",
               "type": "string"
             },
             "statement": {
@@ -358,15 +329,13 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "remove_statement"
-              ],
+              "const": "remove_statement",
               "type": "string"
             }
           },
           "required": [
-            "id",
-            "kind"
+            "kind",
+            "id"
           ],
           "type": "object"
         },
@@ -377,9 +346,7 @@
               "type": "string"
             },
             "kind": {
-              "enum": [
-                "solve_smt"
-              ],
+              "const": "solve_smt",
               "type": "string"
             },
             "replacement_template": {
@@ -391,7 +358,7 @@
             "target_range": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/Span"
+                  "$ref": "#/$defs/Span"
                 },
                 {
                   "type": "null"
@@ -400,22 +367,22 @@
             }
           },
           "required": [
-            "constraint",
-            "kind"
+            "kind",
+            "constraint"
           ],
           "type": "object"
         }
       ],
       "properties": {
         "confidence": {
-          "description": "Confidence score in `[0.0, 1.0]`. Agents typically apply the highest-confidence patch first.",
+          "description": "Confidence score in `[0.0, 1.0]`. Agents typically apply the\nhighest-confidence patch first.",
           "format": "float",
           "type": "number"
         },
         "patch_consequence_preview": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PatchConsequencePreview"
+              "$ref": "#/$defs/PatchConsequencePreview"
             },
             {
               "type": "null"
@@ -472,35 +439,33 @@
       "type": "string"
     },
     "Span": {
-      "description": "Half-open byte range `[start, end)` within a single source file.\n\nAlways carry the file id alongside (see [`Location`]); a `Span` alone is only meaningful inside the parser's per-file context.",
+      "description": "Half-open byte range `[start, end)` within a single source file.\n\nAlways carry the file id alongside (see [`Location`]); a `Span` alone is\nonly meaningful inside the parser's per-file context.",
       "properties": {
         "byte_end": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "byte_start": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "byte_end",
-        "byte_start"
+        "byte_start",
+        "byte_end"
       ],
       "type": "object"
     },
     "SuggestedAction": {
-      "description": "A non-textual next step the agent can take to resolve the diagnostic — distinct from a [`Patch`] in that it does not edit the source file's bytes. Applying one means calling the named MCP tool (or CLI equivalent) with the given arguments, not patching `board.synth`.\n\nIntroduced for `E-SYNTH-COMP-001` (Phase 15, §18.8.4): an unknown part cannot be fixed by rewriting the reference alone — the agent must first grow the registry via search/import/authoring, then revalidate.",
+      "description": "A non-textual next step the agent can take to resolve the diagnostic —\ndistinct from a [`Patch`] in that it does not edit the source file's\nbytes. Applying one means calling the named MCP tool (or CLI\nequivalent) with the given arguments, not patching `board.synth`.\n\nIntroduced for `E-SYNTH-COMP-001` (Phase 15, §18.8.4): an unknown\npart cannot be fixed by rewriting the reference alone — the agent\nmust first grow the registry via search/import/authoring, then\nrevalidate.",
       "oneOf": [
         {
-          "description": "Search LCSC/EasyEDA for a part matching `query` via the `synth_search_registry_web` MCP tool / `synth part search` CLI.",
+          "description": "Search LCSC/EasyEDA for a part matching `query` via the\n`synth_search_registry_web` MCP tool / `synth part search` CLI.",
           "properties": {
             "kind": {
-              "enum": [
-                "search_registry_web"
-              ],
+              "const": "search_registry_web",
               "type": "string"
             },
             "query": {
@@ -514,12 +479,10 @@
           "type": "object"
         },
         {
-          "description": "Import a part into the Tier-2 registry via the `synth_import_part` MCP tool / `synth part import lcsc|kicad` CLI, once a search (or the user) has identified a source id for `part_id`.",
+          "description": "Import a part into the Tier-2 registry via the `synth_import_part`\nMCP tool / `synth part import lcsc|kicad` CLI, once a search (or\nthe user) has identified a source id for `part_id`.",
           "properties": {
             "kind": {
-              "enum": [
-                "import_part_stub"
-              ],
+              "const": "import_part_stub",
               "type": "string"
             },
             "part_id": {
@@ -533,12 +496,10 @@
           "type": "object"
         },
         {
-          "description": "Write a required-pins-relaxed TOML skeleton for `part_id` into the Tier-2 registry via `synth part stub` / `create_part_stub`, then fill it in from a datasheet and revalidate.",
+          "description": "Write a required-pins-relaxed TOML skeleton for `part_id` into\nthe Tier-2 registry via `synth part stub` / `create_part_stub`,\nthen fill it in from a datasheet and revalidate.",
           "properties": {
             "kind": {
-              "enum": [
-                "create_part_stub"
-              ],
+              "const": "create_part_stub",
               "type": "string"
             },
             "part_id": {
@@ -554,23 +515,24 @@
       ]
     }
   },
-  "description": "The top-level diagnostic record. Stable wire format; see [`crate::SCHEMA_VERSION`].",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The top-level diagnostic record. Stable wire format; see\n[`crate::SCHEMA_VERSION`].",
   "properties": {
     "candidates": {
-      "description": "Informational candidates (not edits — see `suggested_fixes` for edits).",
+      "description": "Informational candidates (not edits — see `suggested_fixes` for\nedits).",
       "items": {
-        "$ref": "#/definitions/Candidate"
+        "$ref": "#/$defs/Candidate"
       },
       "type": "array"
     },
     "code": {
-      "description": "Stable diagnostic code, e.g. `E-SYNTH-PARSE-001`. Codes are documented one-per-file under `docs/diagnostics/`.",
+      "description": "Stable diagnostic code, e.g. `E-SYNTH-PARSE-001`. Codes are\ndocumented one-per-file under `docs/diagnostics/`.",
       "type": "string"
     },
     "entities": {
-      "description": "Domain entities the diagnostic concerns (legacy flat list). Kept for backward compatibility; prefer primary_entity/peer_entities.",
+      "description": "Domain entities the diagnostic concerns (legacy flat list).\nKept for backward compatibility; prefer primary_entity/peer_entities.",
       "items": {
-        "$ref": "#/definitions/EntityRef"
+        "$ref": "#/$defs/EntityRef"
       },
       "type": "array"
     },
@@ -582,7 +544,7 @@
       ]
     },
     "explanation_url": {
-      "description": "URL to the documentation page for this diagnostic code. Convention: `synth.docs/diagnostics/<code>`.",
+      "description": "URL to the documentation page for this diagnostic code.\nConvention: `synth.docs/diagnostics/<code>`.",
       "type": [
         "string",
         "null"
@@ -598,16 +560,16 @@
     "location": {
       "anyOf": [
         {
-          "$ref": "#/definitions/Location"
+          "$ref": "#/$defs/Location"
         },
         {
           "type": "null"
         }
       ],
-      "description": "Source location the diagnostic is anchored to. Required for all non-internal diagnostics."
+      "description": "Source location the diagnostic is anchored to. Required for all\nnon-internal diagnostics."
     },
     "message": {
-      "description": "Optional longer human-readable message. May contain interpolated values; not stable across patch releases.",
+      "description": "Optional longer human-readable message. May contain interpolated\nvalues; not stable across patch releases.",
       "type": [
         "string",
         "null"
@@ -616,14 +578,14 @@
     "peer_entities": {
       "description": "Related entities for cross-reference (e.g., conflicting pins).",
       "items": {
-        "$ref": "#/definitions/EntityRef"
+        "$ref": "#/$defs/EntityRef"
       },
       "type": "array"
     },
     "primary_entity": {
       "anyOf": [
         {
-          "$ref": "#/definitions/EntityRef"
+          "$ref": "#/$defs/EntityRef"
         },
         {
           "type": "null"
@@ -632,11 +594,11 @@
       "description": "Primary entity the diagnostic is about (for click-to-navigate)."
     },
     "schema_version": {
-      "description": "Schema version this diagnostic conforms to. Always written by builders; consumers may pin to a major version.",
+      "description": "Schema version this diagnostic conforms to. Always written by\nbuilders; consumers may pin to a major version.",
       "type": "string"
     },
     "severity": {
-      "$ref": "#/definitions/Severity"
+      "$ref": "#/$defs/Severity"
     },
     "smt_constraint": {
       "description": "Optional SMT-LIB2 constraint payload for quantitative diagnostics.",
@@ -646,27 +608,27 @@
       ]
     },
     "suggested_actions": {
-      "description": "Non-textual next steps (tool calls, not source edits) — see [`SuggestedAction`].",
+      "description": "Non-textual next steps (tool calls, not source edits) — see\n[`SuggestedAction`].",
       "items": {
-        "$ref": "#/definitions/SuggestedAction"
+        "$ref": "#/$defs/SuggestedAction"
       },
       "type": "array"
     },
     "suggested_fixes": {
-      "description": "Machine-applicable patches, ordered by descending confidence. Always at least one entry for rules that have a known fix.",
+      "description": "Machine-applicable patches, ordered by descending confidence.\nAlways at least one entry for rules that have a known fix.",
       "items": {
-        "$ref": "#/definitions/Patch"
+        "$ref": "#/$defs/Patch"
       },
       "type": "array"
     },
     "title": {
-      "description": "Short human-readable title. Stable across patch releases of the emitting rule; do not parse.",
+      "description": "Short human-readable title. Stable across patch releases of the\nemitting rule; do not parse.",
       "type": "string"
     }
   },
   "required": [
-    "code",
     "schema_version",
+    "code",
     "severity",
     "title"
   ],
