@@ -62,6 +62,13 @@ impl ReferenceLib {
     }
 
     /// The seed catalog compiled into the binary.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any embedded file under `knowledge/reference` is not valid
+    /// UTF-8, fails to parse, or if the catalog is empty. These are build-time
+    /// invariants — the files are embedded with `include_dir!`, so a failure
+    /// means the crate was built from an inconsistent source tree.
     pub fn embedded() -> Self {
         static EMBEDDED: std::sync::OnceLock<ReferenceLib> = std::sync::OnceLock::new();
         EMBEDDED
@@ -73,10 +80,11 @@ impl ReferenceLib {
                     if !is_toml {
                         continue;
                     }
-                    let src = std::str::from_utf8(file.contents())
-                        .unwrap_or_else(|_| panic!("reference {:?} must be UTF-8", file.path()));
+                    let src = std::str::from_utf8(file.contents()).unwrap_or_else(|_| {
+                        panic!("reference {} must be UTF-8", file.path().display())
+                    });
                     let mut parsed = Self::from_toml_str(src).unwrap_or_else(|e| {
-                        panic!("reference {:?} must always parse: {e}", file.path())
+                        panic!("reference {} must always parse: {e}", file.path().display())
                     });
                     circuits.append(&mut parsed);
                 }

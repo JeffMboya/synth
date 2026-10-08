@@ -78,7 +78,7 @@ impl Connectivity {
                 "2V5", "GND", "VSS", "GND_A", "GND_D", "AGND", "DGND", "VBAT", "VBACKUP",
             ]
             .into_iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect(),
         }
     }
@@ -152,10 +152,7 @@ impl Connectivity {
 
     /// Count terminals on a net.
     pub fn terminal_count(&self, net_id: NetId) -> usize {
-        self.nets
-            .get(&net_id)
-            .map(|n| n.terminals.len())
-            .unwrap_or(0)
+        self.nets.get(&net_id).map_or(0, |n| n.terminals.len())
     }
 
     /// Merge global/power nets by name across boards (for hierarchical designs).

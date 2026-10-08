@@ -151,6 +151,13 @@ impl KnowledgeGraph {
 
     /// The seed knowledge compiled into the binary, so the checker
     /// and MCP tool work without a workspace checkout.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded `knowledge/circuits.toml` is missing, is not
+    /// valid UTF-8, or fails to parse. These are build-time invariants — the
+    /// file is embedded with `include_dir!`, so a failure means the crate was
+    /// built from an inconsistent source tree.
     pub fn embedded() -> Self {
         static EMBEDDED: std::sync::OnceLock<KnowledgeGraph> = std::sync::OnceLock::new();
         EMBEDDED
@@ -226,19 +233,19 @@ pub fn check_board(board: &Board, kg: &KnowledgeGraph) -> Vec<Violation> {
             Condition::Always => {} // catalog-only, skipped above
             Condition::SignalToIcWithoutRc => check_debounce(board, template, &targets, &mut out),
             Condition::SwitchToGndWithoutPullup => {
-                check_switch_pullup(board, template, &targets, &mut out)
+                check_switch_pullup(board, template, &targets, &mut out);
             }
             Condition::SeriesPathWithoutResistor => {
-                check_led_series(board, template, &targets, &mut out)
+                check_led_series(board, template, &targets, &mut out);
             }
             Condition::CoilWithoutFlybackDiode => {
-                check_flyback(board, template, &targets, &mut out)
+                check_flyback(board, template, &targets, &mut out);
             }
             Condition::IcWithoutDecoupling => {
-                check_ic_decoupling(board, template, &targets, &mut out)
+                check_ic_decoupling(board, template, &targets, &mut out);
             }
             Condition::PolarizedCapGroundOnPlus => {
-                check_polarized_caps(board, template, &targets, &mut out)
+                check_polarized_caps(board, template, &targets, &mut out);
             }
         }
     }
@@ -290,7 +297,7 @@ fn check_debounce(
                     peer_pin_name(board, peer, net),
                     net.name,
                 ),
-                suggested_fix: debounce_patch(board, sw, pin_idx, &sw_side, peer),
+                suggested_fix: debounce_patch(board, sw, pin_idx, sw_side, peer),
             });
             break; // one violation per switch
         }
@@ -326,9 +333,8 @@ fn check_switch_pullup(
         if has_two_pin_kind(board, &wiper_net, "resistor") {
             continue;
         }
-        let peer = match ic_input_peer(board, &wiper_net, sw.id) {
-            Some(p) => p,
-            None => continue,
+        let Some(peer) = ic_input_peer(board, &wiper_net, sw.id) else {
+            continue;
         };
         out.push(Violation {
             template_id: template.id.clone(),
@@ -361,8 +367,7 @@ fn check_led_series(
             board
                 .nets_containing(led.id, PinId(idx as u32))
                 .next()
-                .map(|(_, n)| has_two_pin_kind(board, n, "resistor"))
-                .unwrap_or(false)
+                .is_some_and(|(_, n)| has_two_pin_kind(board, n, "resistor"))
         });
         if limited {
             continue;
@@ -416,8 +421,7 @@ fn check_flyback(
                     board
                         .nets_containing(c.id, PinId(idx))
                         .next()
-                        .map(|(_, n)| n.id == net_a.id || n.id == net_b.id)
-                        .unwrap_or(false)
+                        .is_some_and(|(_, n)| n.id == net_a.id || n.id == net_b.id)
                 })
         });
         if flyback {
@@ -548,8 +552,7 @@ fn check_polarized_caps(
                 && board
                     .nets_containing(cap.id, PinId(idx as u32))
                     .next()
-                    .map(|(_, n)| !net_has_ground_endpoint(board, n))
-                    .unwrap_or(false)
+                    .is_some_and(|(_, n)| !net_has_ground_endpoint(board, n))
         });
         if !minus_driven {
             continue;
@@ -688,8 +691,7 @@ fn other_pin_net_is_ground(board: &Board, id: ComponentId, pin: PinId) -> bool {
         board
             .nets_containing(id, PinId(*idx as u32))
             .next()
-            .map(|(_, n)| net_has_ground_endpoint(board, n))
-            .unwrap_or(false)
+            .is_some_and(|(_, n)| net_has_ground_endpoint(board, n))
     })
 }
 
@@ -863,7 +865,7 @@ fn debounce_patch(
     board: &Board,
     sw: &Component,
     wiper_idx: usize,
-    reference: &SwitchReference,
+    reference: SwitchReference,
     peer: &Component,
 ) -> Option<Patch> {
     use std::fmt::Write as _;
