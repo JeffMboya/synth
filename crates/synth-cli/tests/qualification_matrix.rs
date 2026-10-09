@@ -40,6 +40,9 @@ struct BoardResult {
     declared_status: String,
     expected: String,
     actual: String,
+    /// The source/DRC verdict on its own. Under `--fab` this is what `expect`
+    /// is compared against, because `actual` also folds in manufacturing.
+    gate: String,
     source: String,
     drc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,6 +126,18 @@ fn stage_status(report: &serde_json::Value, stage: &str) -> String {
         .as_str()
         .unwrap_or("absent")
         .to_string()
+}
+
+/// The source/DRC verdict, which is what `synth check` reports on its own.
+///
+/// `synth check` computes its overall status as `source && drc && (!fab ||
+/// manufacturing)`, so under `--fab` the overall status answers a different
+/// question from the one `expect` asks. Both stages must pass here, and
+/// `unknown` is not a pass: a DRC that could not be performed has not cleared
+/// the board.
+fn gate_verdict(report: &serde_json::Value) -> String {
+    let passed = stage_status(report, "source") == "pass" && stage_status(report, "drc") == "pass";
+    if passed { "pass" } else { "fail" }.to_string()
 }
 
 fn source_codes(report: &serde_json::Value) -> Vec<String> {
@@ -240,6 +255,12 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
     });
 
     let actual = report["status"].as_str().unwrap_or("absent").to_string();
+    // `expect` describes the source/DRC gate; `expect_fab` describes the
+    // manufacturing stage. Comparing `expect` against the command's overall
+    // status would conflate them under `--fab`, where a board declaring
+    // `expect = "pass"` and `expect_fab = "fail"` would contradict itself and
+    // report a disagreement it had already declared.
+    let gate = gate_verdict(&report);
     let codes = source_codes(&report);
     let mut disagreements = Vec::new();
 
@@ -249,9 +270,9 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
     // result from a machine without KiCad is not a baseline. The observed value
     // is recorded either way; it is just not compared, because asserting a
     // guess is how a gate teaches people to ignore it.
-    if spec.expect != "unestablished" && actual != spec.expect {
+    if spec.expect != "unestablished" && gate != spec.expect {
         disagreements.push(format!(
-            "expected the release command to {}, it reported {actual}",
+            "expected the source/DRC gate to {}, it reported {gate}",
             spec.expect
         ));
     }
@@ -298,6 +319,7 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
         deterministic_artifacts: deterministic_artifacts(&report),
         agrees: disagreements.is_empty(),
         actual,
+        gate,
         disagreements,
     }
 }
@@ -363,6 +385,35 @@ fn reference_boards_match_their_declared_qualification() {
             board.id,
             board.declared_status
         );
+    }
+
+    // A green job means "nothing drifted", not "these boards can be built".
+    // Say so in the log, because the declared gaps are the whole reason the
+    // class claims are not yet qualified, and a check that reads as success
+    // while nine boards cannot produce a fab package is a check people learn
+    // to ignore.
+    if fab {
+        let blocked: Vec<&BoardResult> = results
+            .boards
+            .iter()
+            .filter(|b| b.manufacturing.as_deref().is_some_and(|m| m != "pass"))
+            .filter(|b| b.gate == "pass")
+            .collect();
+        if !blocked.is_empty() {
+            eprintln!(
+                "declared gap: {} electrically sound board(s) cannot produce a fab package:",
+                blocked.len()
+            );
+            for board in &blocked {
+                eprintln!(
+                    "  {} (class {}): manufacturing {}",
+                    board.id,
+                    board.class,
+                    board.manufacturing.as_deref().unwrap_or("absent")
+                );
+            }
+            eprintln!("see docs/qualification-handoff.md for what this blocks");
+        }
     }
 
     let drifted: Vec<&BoardResult> = results.boards.iter().filter(|b| !b.agrees).collect();
@@ -438,6 +489,22 @@ fn the_matrix_is_well_formed() {
                 "{}: expect_fab must be pass, fail, unknown or unestablished, found {fab}",
                 spec.id
             );
+            // The manufacturing stage only runs once the source/DRC gate is
+            // clean, so these two cannot be declared independently.
+            if spec.expect == "fail" {
+                assert_eq!(
+                    fab, "unknown",
+                    "{}: a board whose gate is expected to fail never reaches                      manufacturing, so expect_fab can only be unknown",
+                    spec.id
+                );
+            }
+            if fab == "pass" {
+                assert_eq!(
+                    spec.expect, "pass",
+                    "{}: manufacturing cannot pass unless the gate does",
+                    spec.id
+                );
+            }
         }
     }
 
