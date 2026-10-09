@@ -108,6 +108,15 @@ expect_fab = "unestablished"
 rationale = "Novel Class-A board: reverse-polarity P-FET, polyfuse, TVS, buck, soft-start load switch. #39 case 3. Source gate failed in CI on E-SYNTH-PIN-001 from tvs_array_5v's impossible pad 8; that part is fixed here, so CI must re-establish both stages. The router contract changed under #39: the board's design rules now reach the engine at all, and via-in-pad is judged against the pad's copper rather than a disc of its long side. No manufacturing baseline measured before that applies, so this run establishes one."
 
 [[board]]
+id = "a5_greenhouse_irrigation_controller"
+path = "qualification/boards/class-a/a5_greenhouse_irrigation_controller.synth"
+class = "A"
+status = "experimental"
+expect = "pass"
+expect_fab = "unestablished"
+rationale = "Produced from a prompt through the MCP server, covering #39 cases 1-3 in one product: protected 12V entry, buck, STM32G030 with crystal, SWD and debounced reset, a four-node I2C bus out to a JST probe, and a low-side solenoid driver. Validate reports 0 errors, ERC is clean and the knowledge graph finds no missing support circuit. KiCadRoutingTools 9399bfb routes all 24 nets with no open net, no via-in-pad and nothing below the board floor; the local verdict is review_required only because kicad-cli is absent, so CI establishes the manufacturing baseline."
+
+[[board]]
 id = "a4_negative_broken_mcu_board"
 path = "qualification/boards/class-a/a4_negative_broken_mcu_board.synth"
 class = "A"
