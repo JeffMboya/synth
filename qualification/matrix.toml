@@ -155,6 +155,15 @@ expect_source_codes = ["E-SYNTH-STACKUP-001", "E-SYNTH-USB-001", "E-SYNTH-POWER-
 rationale = "Novel Class-B negative: stackup contradicting the layer count, USB pair on plain GPIO, and buck feedback taken from the switch node. #38 negative case."
 
 [[board]]
+id = "b5_wifi_radio_peripheral"
+path = "qualification/boards/class-b/b5_wifi_radio_peripheral.synth"
+class = "B"
+status = "experimental"
+expect = "unestablished"
+expect_fab = "unestablished"
+rationale = "Novel Class-B board: ESP32-WROOM-32 radio with an antenna keepout and a 12 MHz reference in its own netclass. #35 case 3, the radio/clock-sensitive peripheral the corpus was missing. No baseline yet; the next CI run records what it observed."
+
+[[board]]
 id = "c1_dual_usb_compute"
 path = "qualification/boards/class-c/c1_dual_usb_compute.synth"
 class = "C"
