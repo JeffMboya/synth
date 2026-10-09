@@ -970,6 +970,13 @@ fn parse_footprint(node: &Node) -> Footprint {
     // (counter-clockwise on screen) is `x' = x cos + y sin`,
     // `y' = -x sin + y cos`. `synth_geometry::Rotation::rotate_offset` is the
     // quarter-turn twin of this.
+    //
+    // Rotating by +angle instead survives most of the corpus, because a
+    // symmetric two-pad passive at +90 and -90 produces the same *set* of
+    // positions and only swaps which pad is which, so its net still closes.
+    // An asymmetric part exposes it at once: on a 1x2 JST rotated 90, pad 2
+    // was read 5 mm from where its copper is, and the net read open against
+    // a board the engine had routed correctly.
     let cos = rotation_deg.to_radians().cos();
     let sin = rotation_deg.to_radians().sin();
 
@@ -1124,6 +1131,12 @@ fn collect_edge_cuts(node: &Node, out: &mut Vec<(Point, Point)>) {
 /// Written by hand rather than exported by Synth so the reader's tests do
 /// not depend on the exporter's own output being correct — a reader
 /// tested only against its own writer proves nothing.
+///
+/// Hand-writing has its own trap: U1's `B.Cu` segment used to end at
+/// (30, 21), the point the reader's own rotation arithmetic reported for
+/// pad 1, so the fixture certified the sign error it should have caught.
+/// The pad is at (30, 19). Coordinates here are worth checking against a
+/// board a router actually produced.
 pub const SAMPLE_BOARD: &str = r#"(kicad_pcb
   (version 20260206)
   (generator "synth-eda")
@@ -1154,7 +1167,7 @@ pub const SAMPLE_BOARD: &str = r#"(kicad_pcb
   (segment (start 10.825 20) (end 15 20) (width 0.25) (layer "F.Cu") (net 2))
   (segment (start 15 20) (end 15 18) (width 0.25) (layer "F.Cu") (net 2))
   (via (at 15 18) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 2))
-  (segment (start 15 18) (end 30 21) (width 0.25) (layer "B.Cu") (net 2))
+  (segment (start 15 18) (end 30 19) (width 0.25) (layer "B.Cu") (net 2))
   (gr_line (start 0 0) (end 40 0) (layer "Edge.Cuts") (width 0.1))
   (gr_line (start 0 30) (end 40 30) (layer "Edge.Cuts") (width 0.1))
 )
@@ -1318,8 +1331,8 @@ mod tests {
     #[test]
     fn wire_length_sums_every_segment() {
         let board = PcbBoard::parse(SAMPLE_BOARD).expect("sample parses");
-        // 4.175 mm + 2 mm + the diagonal (15, 18)-(30, 21).
-        let expected = 4.175 + 2.0 + 225.0f64.sqrt() * 0.0 + (15.0f64 * 15.0 + 3.0 * 3.0).sqrt();
+        // 4.175 mm + 2 mm + the diagonal (15, 18)-(30, 19).
+        let expected = 4.175 + 2.0 + (15.0f64 * 15.0 + 1.0).sqrt();
         assert!(
             (board.wire_length_mm() - expected).abs() < 0.001,
             "{}",
