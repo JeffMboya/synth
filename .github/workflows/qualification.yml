@@ -85,6 +85,12 @@ jobs:
       # KiCad installed, which is why it lives here and not in the main CI job.
       - name: Qualify the registry against the installed KiCad libraries
         if: always()
+        # Without these the check cannot read the libraries it is meant to
+        # check against, and most parts come back `unknown` rather than pass
+        # or fail. The apt packages install here.
+        env:
+          KICAD_FOOTPRINT_DIR: /usr/share/kicad/footprints
+          KICAD_SYMBOL_DIR: /usr/share/kicad/symbols
         run: |
           cargo run --release -p synth-cli -- registry qualify \
             --report target/qualification/registry.json --no-fail
