@@ -59,6 +59,136 @@ electrical_type = "input"
 capabilities = ["reset"]
 required = true
 
+# The rest of the LQFP-32's pads. Names and numbers come from the stock
+# symbol `MCU_ST_STM32G0:STM32G030K8Tx`, which extends
+# `STM32G030K_6-8_Tx`, cross-checked against the footprint's 32 pads.
+# Pads 19 and 21 are the K-package's NC pins.
+
+[[pins]]
+name = "pb9"
+number = "1"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pc14"
+number = "2"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pc15"
+number = "3"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "nrst_2"
+number = "6"
+electrical_type = "input"
+
+[[pins]]
+name = "pa0"
+number = "7"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa3_2"
+number = "10"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa4"
+number = "11"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa5"
+number = "12"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa6"
+number = "13"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa7"
+number = "14"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pb0"
+number = "15"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "nc_pa9"
+number = "19"
+electrical_type = "do_not_connect"
+
+[[pins]]
+name = "pc6"
+number = "20"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "nc_pa10"
+number = "21"
+electrical_type = "do_not_connect"
+
+[[pins]]
+name = "pa9_pa11"
+number = "22"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa10_pa12"
+number = "23"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa13"
+number = "24"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa14"
+number = "25"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pa15"
+number = "26"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pb3"
+number = "27"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pb4"
+number = "28"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pb5"
+number = "29"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pb6"
+number = "30"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pb7"
+number = "31"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "pb8"
+number = "32"
+electrical_type = "bidirectional"
+
 [[required_decoupling]]
 net = "vdd"
 value = "100nf"
