@@ -6,7 +6,9 @@ description = "WCH CH340G USB to UART bridge controller, SOP-16"
 mpn = "CH340G"
 lcsc_pn = "C14267"
 kicad_symbol = "Interface_USB:CH340C"
-kicad_footprint = "Package_SO:SOP-16_3.9x9.9mm_P1.27mm"
+# `Package_SO:SOP-16_3.9x9.9mm_P1.27mm` is in no KiCad library; the
+# footprint resolver was repairing the name to this one on every run.
+kicad_footprint = "Package_SO:STC_SOP-16_3.9x9.9mm_P1.27mm"
 
 [footprint_dimensions]
 width_mm = 5.0

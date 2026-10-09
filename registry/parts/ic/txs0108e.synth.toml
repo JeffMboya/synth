@@ -3,7 +3,9 @@ kind = "level_shifter"
 description = "TI TXS0108E 8-bit bidirectional voltage level translator"
 mpn = "TXS0108EPWR"
 lcsc_pn = "C19187"
-kicad_symbol = "Logic_LevelTranslator:TXS0108E"
+# `Logic_LevelTranslator:TXS0108E` is in no KiCad library. `TXS0108EPW` is
+# the TSSOP variant, which is the package this part's footprint names.
+kicad_symbol = "Logic_LevelTranslator:TXS0108EPW"
 kicad_footprint = "Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm"
 
 [footprint_dimensions]

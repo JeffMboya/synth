@@ -3,7 +3,9 @@ kind = "mcu"
 description = "Nordic nRF52840 ARM Cortex-M4F with BLE 5/Thread/Zigbee, aQFN-73 7x7mm"
 mpn = "NRF52840-QIAA-R"
 lcsc_pn = "C190794"
-kicad_symbol = "RF_Module:NRF52840-QIAA"
+# `RF_Module:NRF52840-QIAA` is in no KiCad library -- see #96. This is the
+# real symbol, and it is where the ball designators below come from.
+kicad_symbol = "MCU_Nordic:nRF52840"
 # Real KiCad stock footprint. The aQFN-73 uses *ball* designators
 # (A8, A10, AA24, ...), not the datasheet's linear 1..73 pin numbers, so
 # every pin below is named by ball. Verified against two independent sources:
