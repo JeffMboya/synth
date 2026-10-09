@@ -42,6 +42,32 @@ electrical_type = "bidirectional"
 capabilities = ["i2c_scl"]
 required = true
 
+# The rest of the SOIC-8's pads. Names and numbers come from the stock
+# symbol `Memory_EEPROM:24LC256`, which extends `24LC16`.
+# A0-A2 set the device address and WP is the write-protect input; both
+# have to be tied somewhere on a real board, but that is the board's
+# job, so neither is marked `required` here.
+
+[[pins]]
+name = "sda_2"
+number = "5"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "scl_2"
+number = "6"
+electrical_type = "input"
+
+[[pins]]
+name = "wp"
+number = "7"
+electrical_type = "input"
+
+[[pins]]
+name = "vcc"
+number = "8"
+electrical_type = "power_input"
+
 [[required_decoupling]]
 net = "vdd"
 value = "100nf"

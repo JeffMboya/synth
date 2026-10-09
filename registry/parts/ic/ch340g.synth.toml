@@ -95,6 +95,19 @@ number = "16"
 electrical_type = "power_input"
 required = true
 
+# Pads 7 and 8 are the datasheet's NC pins. They are copper, so the pin
+# map has to account for them even though nothing connects.
+
+[[pins]]
+name = "nc"
+number = "7"
+electrical_type = "do_not_connect"
+
+[[pins]]
+name = "nc_2"
+number = "8"
+electrical_type = "do_not_connect"
+
 [[required_decoupling]]
 net = "vcc"
 value = "100nf"
