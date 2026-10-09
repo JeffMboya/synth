@@ -3,8 +3,17 @@
 // A minimal RP2350 debug target: USB-C power into a 3V3 LDO, the MCU's own
 // crystal, a tactile reset on RUN, a 3-pin SWD header, QSPI boot flash, and
 // one status LED. Deliberately no USB data path — that belongs to Class B.
+//
+// Four layers, because two cannot be routed. The RP2350's QFN-60 has a
+// 0.4 mm pitch and leaves 0.2 mm between pads, while a via at JLCPCB's
+// standard floor needs 0.687 mm between centres: the drill that would fit
+// between two pins is 0.013 mm. Synth's escape analysis and
+// KiCadRoutingTools agree independently — "0/1 signals escaped ... the
+// smallest the fab ladder reaches is 0.56 mm" — and the analysis names 4
+// layers as the remedy. The Raspberry Pi Pico 2 is a four-layer board for
+// the same reason. This was declared `layers 2` and was unroutable.
 board "a1_rp2350_debug_target" {
-    layers 2
+    layers 4
     manufacturer "jlcpcb"
 
     group "POWER ENTRY" color "#c2410c" {
