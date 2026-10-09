@@ -1153,6 +1153,40 @@ mod tests {
         );
     }
 
+    /// The geometry that exposed the pad-rotation sign error: a 1x2 JST,
+    /// `JST_XH_S2B-XH-A-1_1x02_P2.50mm_Horizontal`, at (81.205, 37.93)
+    /// rotated 90°, whose pad 2 offset is `(at 2.5 0)`. KiCad's y axis
+    /// points down, so the pad's copper is at (81.205, 35.43) — which is
+    /// where KiCadRoutingTools routed it. Reading the rotation as +90 put
+    /// it at (81.205, 40.43), 5 mm away, and the net was reported open
+    /// against a board that was correctly routed.
+    ///
+    /// Pad 1 is at offset (0, 0), so it lands in the same place either way:
+    /// that is why the two pads behaved differently and why symmetric
+    /// two-pad passives never caught this.
+    #[test]
+    fn a_rotated_footprint_places_its_pads_in_the_y_down_sense() {
+        let text = r#"(kicad_pcb
+          (version 20260206)
+          (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
+          (net 0 "")
+          (net 19 "net_18")
+          (footprint "Connector_JST:JST_XH_S2B" (layer "F.Cu") (at 81.205 37.93 90)
+            (property "Reference" "J4" (at 0 0) (layer "F.SilkS"))
+            (pad "2" thru_hole oval (at 2.5 0) (size 1.7 2) (drill 1)
+              (layers "*.Cu") (net 19 "net_18")))
+          (gr_line (start 0 0) (end 94 0) (layer "Edge.Cuts") (width 0.1))
+        )"#;
+        let board = board(text);
+        let pad = board.pads().next().expect("the pad parses");
+        assert_eq!(
+            (pad.at.x_mm(), pad.at.y_mm()),
+            (81.205, 35.43),
+            "a +2.5 mm x offset on a footprint rotated 90 lands 2.5 mm *up* \
+             the board, where the router put its copper"
+        );
+    }
+
     /// A rotated footprint turns the pad's long axis, and the check has to
     /// turn with it: the point that is clear at 0° is on copper at 90°.
     #[test]
