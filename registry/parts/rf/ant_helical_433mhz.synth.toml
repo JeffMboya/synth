@@ -21,3 +21,11 @@ electrical_type = "rf"
 capabilities = ["rf_feed"]
 required = true
 
+# `RF_Antenna:Pulse_W3011` has two copper pads: the feed and the grounded
+# mounting pad. Only the feed was declared, so the second read as a pad no pin
+# owned. The symbol `Device:Antenna` is single-pin, which is why it had
+# nowhere to come from.
+[[pins]]
+name = "gnd"
+number = "2"
+electrical_type = "passive"
