@@ -1,7 +1,7 @@
 id = "stm32g030"
 kind = "mcu"
-description = "STMicro STM32G030F6 ARM Cortex-M0+ @ 64MHz, low-cost, TSSOP-20"
-mpn = "STM32G030C8T6"
+description = "STMicro STM32G030K8 ARM Cortex-M0+ @ 64MHz, low-cost, LQFP-32"
+mpn = "STM32G030K8T6"
 lcsc_pn = "C5165977"
 kicad_symbol = "MCU_ST_STM32G0:STM32G030K8Tx"
 kicad_footprint = "Package_QFP:LQFP-32_7x7mm_P0.8mm"
@@ -206,13 +206,13 @@ capabilities = ["gpio", "spi_mosi"]
 name = "pb6"
 number = "30"
 electrical_type = "bidirectional"
-capabilities = ["gpio"]
+capabilities = ["gpio", "i2c_scl"]
 
 [[pins]]
 name = "pb7"
 number = "31"
 electrical_type = "bidirectional"
-capabilities = ["gpio"]
+capabilities = ["gpio", "i2c_sda"]
 
 [[pins]]
 name = "pb8"
