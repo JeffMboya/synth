@@ -101,6 +101,7 @@ fn kicad_version() -> String {
 /// SHA-256 over the registry manifest, so a part edit that changes a board's
 /// result is attributable rather than mysterious.
 fn registry_manifest_sha256() -> String {
+    use std::fmt::Write as _;
     let output = Command::new(SYNTH)
         .arg("registry")
         .arg("manifest")
@@ -110,9 +111,11 @@ fn registry_manifest_sha256() -> String {
     if !output.status.success() {
         return "unavailable".to_string();
     }
-    let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
-    sha2::Digest::update(&mut hasher, &output.stdout);
-    format!("{:x}", sha2::Digest::finalize(hasher))
+    let mut out = String::with_capacity(64);
+    for byte in <sha2::Sha256 as sha2::Digest>::digest(&output.stdout) {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 fn stage_status(report: &serde_json::Value, stage: &str) -> String {
