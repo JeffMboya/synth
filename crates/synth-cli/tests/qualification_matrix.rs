@@ -66,6 +66,8 @@ struct Results {
     matrix_schema_version: String,
     kicad_version: String,
     registry_manifest_sha256: String,
+    /// Which engine laid the copper these results describe.
+    router: String,
     fab: bool,
     boards: Vec<BoardResult>,
 }
@@ -234,6 +236,14 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
     if fab {
         command.arg("--fab");
     }
+    // Which engine routes the board. `synth check` defaults to freerouting,
+    // which wants a JAR and a JVM; CI installs KiCadRoutingTools and selects
+    // it here. This is not a detail: without an engine the DRC stage cannot
+    // produce counts at all and reports `unknown`, which is not a pass, so
+    // every board's gate fails for a reason that is not about the board.
+    if let Some(router) = std::env::var_os("SYNTH_QUALIFY_ROUTER") {
+        command.arg("--router").arg(router);
+    }
     // A dense board's DRC runs a full place-and-route: the six-layer dual-USB
     // board takes about 50s on a release build, well past the 30s default, and
     // a stage that overruns reports `unknown` rather than what it found.
@@ -356,6 +366,8 @@ fn reference_boards_match_their_declared_qualification() {
         matrix_schema_version: matrix.schema_version.clone(),
         kicad_version: kicad_version(),
         registry_manifest_sha256: registry_manifest_sha256(),
+        router: std::env::var("SYNTH_QUALIFY_ROUTER")
+            .unwrap_or_else(|_| "freerouting (default)".to_string()),
         fab,
         boards,
     };

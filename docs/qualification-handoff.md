@@ -32,6 +32,32 @@ SYNTH_QUALIFY_FAB=1 cargo test --release -p synth-cli \
   --test qualification_matrix -- --ignored --nocapture
 ```
 
+### A router is not optional
+
+Synth does not route copper itself; it drives an external engine and then
+validates what the engine wrote. With no engine available `synth drc` refuses
+to route, emits no DRC counts, and the DRC stage reports `unknown` — which is
+not a pass. The gate then fails for every board, including the empty one, for
+a reason that has nothing to do with any design.
+
+`SYNTH_QUALIFY_ROUTER` selects the engine for the matrix, and `synth check`
+passes it down to the `drc` and `export-kicad` stages it runs. CI sets it to
+`kicad-routing-tools` and installs a pinned KiCadRoutingTools checkout;
+freerouting is the reference baseline to compare against rather than the
+engine the gate depends on. Left unset, `synth check` uses its own default,
+which is freerouting and wants a JAR and a JVM.
+
+```bash
+SYNTH_QUALIFY_ROUTER=kicad-routing-tools \
+KICAD_ROUTING_TOOLS_REPO=/path/to/KiCadRoutingTools \
+SYNTH_QUALIFY_FAB=1 cargo test --release -p synth-cli \
+  --test qualification_matrix -- --ignored --nocapture
+```
+
+`synth routers` reports which engines a machine has and why each one is or is
+not usable. The results file records which engine ran, so a result is
+attributable to the thing that laid the copper.
+
 Results land in `target/qualification/results.json`, and CI uploads them as an
 artifact on every run, passing or failing. The file records the KiCad version,
 a SHA-256 of the registry manifest, every stage status per board, the

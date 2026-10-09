@@ -74,6 +74,27 @@ jobs:
           cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
           cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
 
+      # Without an engine, `synth drc` refuses to route and emits no DRC
+      # counts, so the DRC stage reports `unknown` and every board's gate
+      # fails for a reason that is not about the board. See #95.
+      #
+      # KiCadRoutingTools is the engine; freerouting stays the reference
+      # baseline rather than the thing the gate depends on. Pinned to a tag,
+      # because "whatever main is today" is not a reproducible run.
+      # `build_router.py` fetches a prebuilt grid_router for the runner's OS
+      # and falls back to a local cargo build.
+      - name: Install KiCadRoutingTools
+        run: |
+          git clone --depth 1 --branch v0.23.0 \
+            https://github.com/drandyhaas/KiCadRoutingTools "$RUNNER_TEMP/krt"
+          python3 -m pip install --quiet -r "$RUNNER_TEMP/krt/requirements.txt"
+          python3 "$RUNNER_TEMP/krt/build_router.py"
+          echo "KICAD_ROUTING_TOOLS_REPO=$RUNNER_TEMP/krt" >> "$GITHUB_ENV"
+          echo "SYNTH_QUALIFY_ROUTER=kicad-routing-tools" >> "$GITHUB_ENV"
+
+      - name: Report which routers this runner has
+        run: cargo run --release -p synth-cli -- routers
+
       # A release build is not an optimization here. A debug DRC on a real
       # board takes roughly ten times as long and overruns the stage budget,
       # which reports `unknown` and blocks for no real reason.
@@ -137,6 +158,27 @@ jobs:
           mkdir -p "$HOME/.config/kicad/10.0"
           cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
           cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
+
+      # Without an engine, `synth drc` refuses to route and emits no DRC
+      # counts, so the DRC stage reports `unknown` and every board's gate
+      # fails for a reason that is not about the board. See #95.
+      #
+      # KiCadRoutingTools is the engine; freerouting stays the reference
+      # baseline rather than the thing the gate depends on. Pinned to a tag,
+      # because "whatever main is today" is not a reproducible run.
+      # `build_router.py` fetches a prebuilt grid_router for the runner's OS
+      # and falls back to a local cargo build.
+      - name: Install KiCadRoutingTools
+        run: |
+          git clone --depth 1 --branch v0.23.0 \
+            https://github.com/drandyhaas/KiCadRoutingTools "$RUNNER_TEMP/krt"
+          python3 -m pip install --quiet -r "$RUNNER_TEMP/krt/requirements.txt"
+          python3 "$RUNNER_TEMP/krt/build_router.py"
+          echo "KICAD_ROUTING_TOOLS_REPO=$RUNNER_TEMP/krt" >> "$GITHUB_ENV"
+          echo "SYNTH_QUALIFY_ROUTER=kicad-routing-tools" >> "$GITHUB_ENV"
+
+      - name: Report which routers this runner has
+        run: cargo run --release -p synth-cli -- routers
 
       - name: Run the matrix through the manufacturing stage
         env:
