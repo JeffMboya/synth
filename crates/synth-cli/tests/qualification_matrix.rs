@@ -190,16 +190,23 @@ fn diagnose_manufacturing(root: &Path, board: &Path) -> Vec<String> {
         .join("qualification")
         .join("diagnose")
         .join(board.file_stem().unwrap_or_default());
-    let output = Command::new(SYNTH)
+    let mut command = Command::new(SYNTH);
+    command
         .arg("export-kicad")
         .arg(board)
         .arg("--out")
         .arg(&out)
         .arg("--gerbers")
         .arg("--drill")
-        .arg("--validate-erc")
-        .current_dir(root)
-        .output();
+        .arg("--validate-erc");
+    // The same engine the stage used. Without this the re-run falls back to
+    // the default, fails for want of a router, and reports that instead of
+    // whatever actually went wrong — which is worse than reporting nothing,
+    // because it reads like a diagnosis.
+    if let Some(router) = std::env::var_os("SYNTH_QUALIFY_ROUTER") {
+        command.arg("--router").arg(router);
+    }
+    let output = command.current_dir(root).output();
     let Ok(output) = output else {
         return vec!["could not re-run export-kicad".to_string()];
     };
@@ -480,7 +487,10 @@ fn the_matrix_is_well_formed() {
             "{}: every board needs a rationale, so a later reader knows why it is in the corpus",
             spec.id
         );
-        if spec.expect == "fail" {
+        // Declared `unsupported` is what makes a board a negative test, not
+        // `expect = "fail"`. A positive board's gate can fail at DRC with the
+        // source stage clean, and then there are no source diagnostics to name.
+        if spec.status == "unsupported" {
             assert!(
                 !spec.expect_source_codes.is_empty(),
                 "{}: a negative test must name the diagnostics it expects, or it \
@@ -501,12 +511,14 @@ fn the_matrix_is_well_formed() {
                 "{}: expect_fab must be pass, fail, unknown or unestablished, found {fab}",
                 spec.id
             );
-            // The manufacturing stage only runs once the source/DRC gate is
-            // clean, so these two cannot be declared independently.
-            if spec.expect == "fail" {
+            // The manufacturing stage runs whenever the *source* stage passes,
+            // not when the whole gate does, so a board whose DRC fails still
+            // produces a manufacturing verdict. Only a board that fails at
+            // source never reaches it.
+            if spec.expect == "fail" && !spec.expect_source_codes.is_empty() {
                 assert_eq!(
                     fab, "unknown",
-                    "{}: a board whose gate is expected to fail never reaches                      manufacturing, so expect_fab can only be unknown",
+                    "{}: a board that fails the source gate never reaches manufacturing, so expect_fab can only be unknown",
                     spec.id
                 );
             }
