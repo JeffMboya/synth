@@ -26,14 +26,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Build the Linux binaries on Ubuntu 22.04 (glibc 2.35) so they run
+          # on current server distributions such as Debian Bookworm (glibc
+          # 2.36). A binary linked against a newer glibc fails to start on
+          # those bases with a "GLIBC_2.x not found" error.
           - {
-              os: ubuntu-latest,
+              os: ubuntu-22.04,
               target: x86_64-unknown-linux-gnu,
               label: linux-amd64,
               ext: "",
             }
           - {
-              os: ubuntu-latest,
+              os: ubuntu-22.04,
               target: aarch64-unknown-linux-gnu,
               label: linux-arm64,
               ext: "",
