@@ -73,6 +73,9 @@ use synth_place::Placement;
 
 pub use profile::{ManufacturerProfile, ProfileError};
 pub use rules::{replay, run_kicad_cli_drc, DrcCounts, NativeDrcOutcome, DRC_STAGE};
+/// Re-exported so a DRC caller can resolve and hand in a board's physical
+/// stack without depending on `synth-geometry` directly.
+pub use synth_geometry::StackupProfile;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuggestedOverride {
@@ -121,6 +124,12 @@ pub struct DrcReport {
     /// downstream consumers can verify they're comparing
     /// apples to apples.
     pub profile_name: String,
+    /// The board's physical stack the report was evaluated against, when the
+    /// caller supplied one ([`check_with_stackup`]). `None` from the plain
+    /// [`check`], whose output is therefore byte-identical to before stackup
+    /// awareness existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stackup: Option<StackupProfile>,
 }
 
 impl DrcReport {
@@ -143,6 +152,36 @@ pub fn check(
     routing: &Routing,
     profile: &ManufacturerProfile,
 ) -> DrcReport {
+    evaluate(board, placement, routing, profile, None)
+}
+
+/// [`check`], additionally recording the board's resolved physical stackup on
+/// the report.
+///
+/// The stackup does not change which violations fire yet — the impedance,
+/// crosstalk and ampacity rules that consume it land separately — but carrying
+/// it here is what lets those rules resolve a trace against the real
+/// dielectric geometry instead of a fixed default. Use
+/// [`StackupProfile::for_board`] to obtain the argument, so a board that
+/// declares no stackup still gets a standard profile rather than none.
+#[must_use]
+pub fn check_with_stackup(
+    board: &Board,
+    placement: &Placement,
+    routing: &Routing,
+    profile: &ManufacturerProfile,
+    stackup: &StackupProfile,
+) -> DrcReport {
+    evaluate(board, placement, routing, profile, Some(stackup.clone()))
+}
+
+fn evaluate(
+    board: &Board,
+    placement: &Placement,
+    routing: &Routing,
+    profile: &ManufacturerProfile,
+    stackup: Option<StackupProfile>,
+) -> DrcReport {
     let mut violations = Vec::new();
     violations.extend(rules::check_min_trace_width(routing, profile));
     violations.extend(rules::check_min_copper_clearance(routing, profile));
@@ -161,6 +200,7 @@ pub fn check(
     DrcReport {
         violations,
         profile_name: profile.name.clone(),
+        stackup,
     }
 }
 
@@ -263,6 +303,37 @@ mod tests {
         let a = check(&board, &placement, &routing, &profile);
         let b = check(&board, &placement, &routing, &profile);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn declared_stackup_resolves_and_a_declared_profile_preserves_violations() {
+        let board = load_board("../../fixtures/designs/stackup_4layer.synth");
+        let profile = StackupProfile::declared(&board).expect("declared stackup");
+        assert_eq!(profile.copper_count(), 4);
+        assert_eq!(profile.source, synth_geometry::StackupSource::Declared);
+
+        let placement = synth_place::place(&board).expect("place");
+        let routing = synth_route::route(&board, &placement);
+        let fab = ManufacturerProfile::jlc_standard();
+        let plain = check(&board, &placement, &routing, &fab);
+        let with_stackup = check_with_stackup(&board, &placement, &routing, &fab, &profile);
+        // Phase 1 threads the stackup through without changing which rules
+        // fire, so the two reports can only differ in the recorded stackup.
+        assert_eq!(plain.violations, with_stackup.violations);
+        assert!(plain.stackup.is_none());
+        assert_eq!(with_stackup.stackup.as_ref(), Some(&profile));
+    }
+
+    #[test]
+    fn a_board_without_a_stackup_substitutes_a_standard_profile() {
+        let board = load_board("../../examples/env_logger.synth");
+        assert!(
+            StackupProfile::declared(&board).is_none(),
+            "env_logger must not declare a stackup for this test to be meaningful"
+        );
+        let profile = StackupProfile::for_board(&board);
+        assert_eq!(profile.source, synth_geometry::StackupSource::Default);
+        assert_eq!(profile.copper_count(), board.layers as usize);
     }
 
     #[test]

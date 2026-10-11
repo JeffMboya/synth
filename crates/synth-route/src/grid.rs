@@ -163,9 +163,21 @@ pub struct Grid {
     pub npth_holes: Vec<(Point, i64)>,
     /// Exact board outline bounding box. Used for edge clearance checks.
     pub board_outline: Rect,
+    /// Resolved board stackup (declared, or a standard default). Carried so
+    /// impedance- and crosstalk-aware moves can be costed against the real
+    /// dielectric geometry. Not serialized: it is recomputed from the board on
+    /// every build.
+    #[serde(skip, default)]
+    pub stackup: Option<synth_geometry::StackupProfile>,
 }
 
 impl Grid {
+    /// The resolved board stackup this grid was built against.
+    #[must_use]
+    pub fn stackup(&self) -> Option<&synth_geometry::StackupProfile> {
+        self.stackup.as_ref()
+    }
+
     /// Returns the cell at `(layer, x, y)`, or `None` when
     /// out of bounds.
     #[must_use]
@@ -291,6 +303,7 @@ pub fn build_grid_with_clearance(board: &Board, placement: &Placement, clearance
         courtyards: Vec::new(),
         npth_holes: Vec::new(),
         board_outline: placement.board_outline,
+        stackup: Some(synth_geometry::StackupProfile::for_board(board)),
     };
 
     // Step (0): Edge clearance protection — stamp perimeter cells within

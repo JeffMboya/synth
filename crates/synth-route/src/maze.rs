@@ -2626,6 +2626,7 @@ mod tests {
                 Point::new(0, 0),
                 Point::new(w as i64 * 500_000, h as i64 * 500_000),
             ),
+            stackup: None,
         }
     }
 

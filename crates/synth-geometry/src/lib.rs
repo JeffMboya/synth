@@ -61,6 +61,7 @@
 )]
 
 pub mod sim_oracles;
+pub mod stackup;
 
 pub use sim_oracles::{
     calculate_microstrip_z0, calculate_stripline_z0, coupled_microstrip_zdiff_ohms,
@@ -68,6 +69,7 @@ pub use sim_oracles::{
     outer_microstrip_params, ComponentThermalEstimate, CoupledGeometry, MicrostripParams,
     SiImpedanceResult, UnreachableZ0,
 };
+pub use stackup::{CopperLayerGeometry, StackupProfile, StackupSource, TraceModel};
 
 use serde::{Deserialize, Serialize};
 

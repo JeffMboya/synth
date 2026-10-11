@@ -717,9 +717,16 @@ fn hints_are_all_soft(board: &Board) -> bool {
 /// can act on before a router has run.
 fn placement_score(board: &Board, placement: &synth_place::Placement) -> usize {
     let profile = synth_drc::ManufacturerProfile::jlc_standard();
-    synth_drc::check(board, placement, &synth_pcb::Routing::default(), &profile)
-        .violations
-        .len()
+    let stackup = synth_geometry::StackupProfile::for_board(board);
+    synth_drc::check_with_stackup(
+        board,
+        placement,
+        &synth_pcb::Routing::default(),
+        &profile,
+        &stackup,
+    )
+    .violations
+    .len()
 }
 
 /// Build the `.kicad_pro` `net_settings` block (schematic-quality
