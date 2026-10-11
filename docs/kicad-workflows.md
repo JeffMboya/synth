@@ -227,6 +227,22 @@ report every plane-backed net as open however correctly it was routed. Zones
 are refilled before DRC so clearances are checked against copper that actually
 exists.
 
+The delivered board has those same fills saved into it (the router's board,
+plus KiCad's `filled_polygon` copper and nothing else), so KiCad opens it showing
+the connectivity the gate validated rather than unrouted plane pads until you
+press B. The fills are computed by the installed `kicad-cli pcb drc
+--refill-zones --save-board` and stored in the file until someone refills; they
+were verified on KiCad 10.0.4 only. Synth accepts `kicad-cli` 8 and later, and
+`--save-board` there could not be checked against the KiCad 8 or 9 documentation
+from this environment, so a version that lacks it takes the failure path below.
+The stored fills grow the file by about 1.6x against the unfilled routed board
+(129 KiB against 80 KiB on the buck board with KiCad 10.0.4; it varies with the
+routing), and Gerber export from the delivered board now finds the pour copper
+in the file without a refill. A board is filled completely or not at all:
+if `kicad-cli` cannot fill every zone, the routed board is delivered unfilled and
+Synth prints a stderr warning. That failure is not recorded in `routing.json` or
+`release.json`.
+
 To compare two engines by hand, route each and run the same check over both:
 
 ```text

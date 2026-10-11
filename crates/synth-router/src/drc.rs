@@ -21,10 +21,10 @@ use serde::{Deserialize, Serialize};
 use crate::contract::RouteRequest;
 
 /// Budget for a DRC run. Zone refill on a dense board is not fast.
-const DRC_BUDGET: std::time::Duration = std::time::Duration::from_secs(600);
+pub(crate) const DRC_BUDGET: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Cap on the captured DRC output, in bytes.
-const DRC_OUTPUT_CAP: usize = 1024 * 1024;
+pub(crate) const DRC_OUTPUT_CAP: usize = 1024 * 1024;
 
 /// A machine-readable DRC finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,7 +202,7 @@ pub fn run_detailed(board_path: &Path, request: &RouteRequest) -> DrcReport {
     })
 }
 
-fn first_line(text: &str) -> String {
+pub(crate) fn first_line(text: &str) -> String {
     let line = text
         .lines()
         .find(|l| !l.trim().is_empty())

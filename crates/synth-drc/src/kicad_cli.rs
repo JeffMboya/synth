@@ -244,6 +244,10 @@ impl ScratchFile {
 impl Drop for ScratchFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        // kicad-cli writes a `.kicad_prl` project-local file beside any board.
+        if self.path.extension().is_some_and(|ext| ext == "kicad_pcb") {
+            let _ = std::fs::remove_file(self.path.with_extension("kicad_prl"));
+        }
     }
 }
 

@@ -55,6 +55,7 @@ pub mod pcb_read;
 pub mod process;
 pub mod result;
 pub mod validate;
+pub mod zone_fill;
 
 use std::path::{Path, PathBuf};
 
@@ -269,6 +270,16 @@ fn finalize(
     // a rejected candidate is left on disk as review material, and the
     // delivered path still holds the un-routed export.
     if state.is_fabrication_ready() {
+        // Deliver the zones filled so KiCad opens the board with the
+        // connectivity it was validated with. A refill that fails leaves
+        // the routed, unfilled board in place.
+        if let Err(detail) = zone_fill::refill_zones(&candidate.candidate_path) {
+            eprintln!(
+                "warning: zones were not filled in {}: {detail}; KiCad will show \
+                 plane-connected pads as unrouted until zones are filled (press B)",
+                request.board_path.display()
+            );
+        }
         if let Err(detail) = candidate.install(&request.board_path) {
             return RouteReport::failed(
                 request,
