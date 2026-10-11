@@ -1264,9 +1264,21 @@ impl Parser {
                         attrs.push(NetclassAttr::Clearance(v));
                     }
                 }
-                // `color` is parsed contextually (an identifier, not a
-                // reserved keyword) so existing designs that use the
-                // word as a name keep parsing.
+                TokenKind::KwImpedance => {
+                    self.bump();
+                    if let Some(v) = self.expect_value() {
+                        attrs.push(NetclassAttr::Impedance(v));
+                    }
+                }
+                // `color` and `current` are parsed contextually (identifiers,
+                // not reserved keywords) so existing designs that use the
+                // words as names keep parsing.
+                TokenKind::Ident(name) if name == "current" => {
+                    self.bump();
+                    if let Some(v) = self.expect_value() {
+                        attrs.push(NetclassAttr::Current(v));
+                    }
+                }
                 TokenKind::Ident(name) if name == "color" => {
                     self.bump();
                     if let Some(hex) = self.expect_string(
@@ -1281,7 +1293,7 @@ impl Parser {
                         self.peek().span,
                         "E-SYNTH-PARSE-019",
                         "unexpected attribute inside netclass",
-                        "`trace_width <value><unit>`, `clearance <value><unit>`, or `color \"#rrggbb\"`",
+                        "`trace_width <value><unit>`, `clearance <value><unit>`, `impedance <value><unit>`, `current <value><unit>`, or `color \"#rrggbb\"`",
                         self.describe_current(),
                         None,
                     );
@@ -3178,6 +3190,42 @@ mod tests {
         };
         assert_eq!(n.name, "PWR");
         assert_eq!(n.attrs.len(), 2);
+    }
+
+    #[test]
+    fn parse_netclass_impedance_and_current_attributes() {
+        let src = r#"board "b" {
+            netclass "RF" {
+                trace_width 0.3mm
+                impedance 50ohm
+                current 1.5A
+            }
+        }"#;
+        let tokens = lex(src);
+        let res = parse(tokens, "test.synth".into());
+        assert!(
+            res.diagnostics.is_empty(),
+            "Diagnostics should be empty: {:?}",
+            res.diagnostics
+        );
+        let ast = res.ast.unwrap();
+        let StatementAst::Netclass(n) = &ast.board.statements[0] else {
+            panic!("Expected netclass statement")
+        };
+        assert!(
+            n.attrs
+                .iter()
+                .any(|a| matches!(a, NetclassAttr::Impedance(v) if v.literal == "50")),
+            "impedance attr must parse: {:?}",
+            n.attrs
+        );
+        assert!(
+            n.attrs
+                .iter()
+                .any(|a| matches!(a, NetclassAttr::Current(v) if v.literal == "1.5")),
+            "current attr must parse: {:?}",
+            n.attrs
+        );
     }
 
     #[test]

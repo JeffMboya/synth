@@ -49,7 +49,7 @@ use crate::board::{
     Note, PinId, PlacementEdge, PlacementRegion, PlacementSide, SchematicOverflow, SchematicPaper,
     Stackup, StackupLayer, Variant,
 };
-use crate::units::{ConversionError, DielectricConstant, Impedance, Length, Voltage};
+use crate::units::{ConversionError, Current, DielectricConstant, Impedance, Length, Voltage};
 
 /// One `connect` statement after flattening: a source, one or more
 /// targets (one-to-many fanout), and the optional `as "NET"` /
@@ -533,6 +533,8 @@ impl<'a> LowerCtx<'a> {
         let mut trace_width: Option<Length> = None;
         let mut clearance: Option<Length> = None;
         let mut color: Option<[u8; 3]> = None;
+        let mut impedance: Option<Impedance> = None;
+        let mut current: Option<Current> = None;
         for attr in &n.attrs {
             match attr {
                 NetclassAttr::TraceWidth(v) => match Length::try_from(v) {
@@ -542,6 +544,14 @@ impl<'a> LowerCtx<'a> {
                 NetclassAttr::Clearance(v) => match Length::try_from(v) {
                     Ok(l) => clearance = Some(l),
                     Err(e) => self.emit_unit_error(&e, "netclass clearance"),
+                },
+                NetclassAttr::Impedance(v) => match Impedance::try_from(v) {
+                    Ok(i) => impedance = Some(i),
+                    Err(e) => self.emit_unit_error(&e, "netclass impedance"),
+                },
+                NetclassAttr::Current(v) => match Current::try_from(v) {
+                    Ok(c) => current = Some(c),
+                    Err(e) => self.emit_unit_error(&e, "netclass current"),
                 },
                 NetclassAttr::Color(hex) => match parse_hex_color(hex) {
                     Some(rgb) => color = Some(rgb),
@@ -573,6 +583,8 @@ impl<'a> LowerCtx<'a> {
             trace_width,
             clearance,
             color,
+            impedance,
+            current,
             source_span: n.span,
         }
     }

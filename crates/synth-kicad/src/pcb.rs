@@ -2099,6 +2099,8 @@ mod tests {
                 trace_width: Some(Length::from_mm(0.5)),
                 clearance: Some(Length::from_mm(0.2)),
                 color: None,
+                impedance: None,
+                current: None,
                 source_span: Span::new(0, 0),
             }],
             buses: vec![],

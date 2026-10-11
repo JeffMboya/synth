@@ -19,12 +19,33 @@
 
 use std::collections::BTreeMap;
 
-use synth_geometry::{nm_to_mm, Layer, StackupProfile};
-use synth_ir::{Board, Length, NetId};
+use synth_geometry::{mm_to_nm, nm_to_mm, Layer, StackupProfile};
+use synth_ir::{Board, Length, Net, NetId};
 use synth_pcb::Routing;
 
 use crate::profile::ManufacturerProfile;
 use crate::Violation;
+
+/// Assumed temperature rise (°C) for the IPC-2221 ampacity curve when a
+/// design does not name one.
+const AMPACITY_DELTA_T_C: f64 = 10.0;
+
+/// IPC-2221 external-layer ampacity: the width a trace needs to carry
+/// `current_ua` with a `delta_t_c` rise over `thickness_nm` copper.
+///
+/// `A = (I / (k·ΔT^0.44))^(1/0.725)` gives the cross-section in mil², divided
+/// by the copper thickness in mil to get the width. `k = 0.048` is the
+/// external-layer constant. The result is a conservative starting point, not
+/// a thermal simulation.
+fn required_width_nm(current_ua: i64, thickness_nm: i64, delta_t_c: f64) -> i64 {
+    #[allow(clippy::cast_precision_loss)]
+    let current_a = current_ua as f64 / 1_000_000.0;
+    let area_mil2 = (current_a / (0.048 * delta_t_c.powf(0.44))).powf(1.0 / 0.725);
+    #[allow(clippy::cast_precision_loss)]
+    let thickness_mil = (thickness_nm as f64 / 25_400.0).max(0.1);
+    let width_mil = area_mil2 / thickness_mil;
+    (width_mil * 25_400.0).round() as i64
+}
 
 /// Fractional deviation past which a routed impedance is a blocking error.
 ///
@@ -72,6 +93,10 @@ fn segments_for_net(routing: &Routing, net: NetId) -> Vec<synth_geometry::Point>
 ///
 /// A leg with no copper is skipped: an unrouted net is `E-SYNTH-ROUTE-001`'s
 /// concern, not this rule's.
+///
+/// Both a `diff_pair`'s `impedance` (differential, or single-ended when its
+/// two halves are the same net) and a `netclass`'s `impedance` (single-ended)
+/// feed this rule.
 #[must_use]
 pub fn check_controlled_impedance(
     board: &Board,
@@ -81,81 +106,180 @@ pub fn check_controlled_impedance(
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
     for (positive, negative, _, impedance) in board.impedance_legs() {
-        let target = impedance.to_ohms();
-        let Some((layer, width_nm)) = dominant_routing(routing, positive.id) else {
-            continue;
-        };
-        let is_pair = positive.id != negative.id;
-        if is_pair && dominant_routing(routing, negative.id).is_none() {
-            continue;
+        let partner = (positive.id != negative.id).then_some(negative);
+        if let Some(v) = impedance_violation(
+            board,
+            routing,
+            profile,
+            stackup,
+            positive,
+            partner,
+            impedance.to_ohms(),
+        ) {
+            violations.push(v);
         }
-
-        let actual = if is_pair {
-            let gap_nm = board
-                .declared_clearance(positive)
-                .map_or(profile.min_copper_clearance_nm, |l| l.0);
-            stackup.coupled_zdiff(layer, width_nm, gap_nm)
-        } else {
-            stackup.z0(layer, width_nm).map(|r| r.z0_ohms)
-        };
-        let Some(actual) = actual else {
+    }
+    for class in &board.netclasses {
+        let Some(impedance) = class.impedance else {
             continue;
         };
+        for net in member_nets(board, class) {
+            if let Some(v) = impedance_violation(
+                board,
+                routing,
+                profile,
+                stackup,
+                net,
+                None,
+                impedance.to_ohms(),
+            ) {
+                violations.push(v);
+            }
+        }
+    }
+    violations
+}
 
-        let deviation = (actual - target).abs() / target.max(1.0);
-        if deviation <= ERROR_DEVIATION {
+/// One controlled net's routed impedance check, or `None` when it is on
+/// target or cannot be estimated.
+fn impedance_violation(
+    board: &Board,
+    routing: &Routing,
+    profile: &ManufacturerProfile,
+    stackup: &StackupProfile,
+    positive: &Net,
+    partner: Option<&Net>,
+    target: f64,
+) -> Option<Violation> {
+    let (layer, width_nm) = dominant_routing(routing, positive.id)?;
+    if let Some(partner) = partner {
+        // A pair is only meaningfully checked once both halves carry copper.
+        dominant_routing(routing, partner.id)?;
+    }
+    let is_pair = partner.is_some();
+    let actual = if is_pair {
+        let gap_nm = board
+            .declared_clearance(positive)
+            .map_or(profile.min_copper_clearance_nm, |l| l.0);
+        stackup.coupled_zdiff(layer, width_nm, gap_nm)?
+    } else {
+        stackup.z0(layer, width_nm)?.z0_ohms
+    };
+    let deviation = (actual - target).abs() / target.max(1.0);
+    if deviation <= ERROR_DEVIATION {
+        return None;
+    }
+
+    let subject = partner.map_or_else(
+        || format!("net `{}`", positive.name),
+        |p| format!("pair `{}`/`{}`", positive.name, p.name),
+    );
+    let expected = if is_pair {
+        stackup
+            .coupled_for_z0(
+                layer,
+                target,
+                profile.min_trace_width_nm,
+                profile.min_copper_clearance_nm,
+            )
+            .ok()
+            .map(|g| format!("about {:.3} mm wide", g.width_mm))
+    } else {
+        stackup
+            .width_for_z0(layer, target, profile.min_trace_width_nm)
+            .ok()
+            .map(|w| format!("about {:.3} mm wide", w.to_mm()))
+    };
+    let mut nets = vec![positive.id];
+    nets.extend(partner.map(|p| p.id));
+    let pos_mm = routing
+        .segments
+        .iter()
+        .find(|s| s.net == positive.id)
+        .map(|s| (nm_to_mm(s.start.x_nm), nm_to_mm(s.start.y_nm)));
+    Some(Violation {
+        code: "E-SYNTH-DRC-012".to_string(),
+        message: format!(
+            "{subject} is routed {:.3} mm wide on {}; that gives {actual:.1} ohm, \
+             {:.0} percent off the {target:.1} ohm target{}",
+            nm_to_mm(width_nm),
+            layer.name(),
+            deviation * 100.0,
+            expected.map_or(String::new(), |e| format!(
+                " (the target needs {e} on this stackup)"
+            )),
+        ),
+        witness: segments_for_net(routing, positive.id),
+        nets,
+        components: Vec::new(),
+        pos_mm,
+        suggested_override: None,
+    })
+}
+
+/// Nets joined to `class` by a `class "…"` declaration.
+fn member_nets<'a>(
+    board: &'a Board,
+    class: &'a synth_ir::NetClass,
+) -> impl Iterator<Item = &'a Net> {
+    board
+        .nets
+        .iter()
+        .filter(move |n| n.netclass.as_deref() == Some(class.name.as_str()))
+}
+
+/// Ampacity check. Code: `E-SYNTH-DRC-015`.
+///
+/// For every `netclass` that declares a `current`, the routed width of each
+/// member net must reach the IPC-2221 width for that current over the layer's
+/// copper thickness (the board stackup's when one is available, else 1 oz).
+/// Only classes that declare a current are checked, so this never fires on a
+/// design that has not asked for it.
+#[must_use]
+pub fn check_ampacity(
+    board: &Board,
+    routing: &Routing,
+    stackup: Option<&StackupProfile>,
+) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    for class in &board.netclasses {
+        let Some(current) = class.current else {
             continue;
-        }
-
-        let subject = if is_pair {
-            format!("pair `{}`/`{}`", positive.name, negative.name)
-        } else {
-            format!("net `{}`", positive.name)
         };
-        let expected = if is_pair {
-            stackup
-                .coupled_for_z0(
-                    layer,
-                    target,
-                    profile.min_trace_width_nm,
-                    profile.min_copper_clearance_nm,
-                )
-                .ok()
-                .map(|g| format!("about {:.3} mm wide", g.width_mm))
-        } else {
-            stackup
-                .width_for_z0(layer, target, profile.min_trace_width_nm)
-                .ok()
-                .map(|w| format!("about {:.3} mm wide", w.to_mm()))
-        };
-        let mut nets = vec![positive.id];
-        if is_pair {
-            nets.push(negative.id);
-        }
-        violations.push(Violation {
-            code: "E-SYNTH-DRC-012".to_string(),
-            message: format!(
-                "{subject} is routed {:.3} mm wide on {}; that gives {actual:.1} ohm, \
-                 {:.0} percent off the {target:.1} ohm target{}",
-                nm_to_mm(width_nm),
-                layer.name(),
-                deviation * 100.0,
-                expected.map_or(String::new(), |e| format!(
-                    " (the target needs {e} on this stackup)"
-                )),
-            ),
-            witness: segments_for_net(routing, positive.id),
-            nets,
-            components: Vec::new(),
-            pos_mm: dominant_routing(routing, positive.id).and_then(|_| {
-                routing
+        for net in member_nets(board, class) {
+            let Some((layer, width_nm)) = dominant_routing(routing, net.id) else {
+                continue;
+            };
+            let thickness_nm = stackup
+                .and_then(|s| s.geometry(layer))
+                .map_or_else(|| mm_to_nm(0.035), |g| g.copper_thickness.0);
+            let required_nm = required_width_nm(current.0, thickness_nm, AMPACITY_DELTA_T_C);
+            if width_nm >= required_nm {
+                continue;
+            }
+            violations.push(Violation {
+                code: "E-SYNTH-DRC-015".to_string(),
+                message: format!(
+                    "net `{}` is routed {:.3} mm wide on {}; carrying {:.2} A needs \
+                     about {:.3} mm at a {} C rise",
+                    net.name,
+                    nm_to_mm(width_nm),
+                    layer.name(),
+                    current.to_amps(),
+                    nm_to_mm(required_nm),
+                    AMPACITY_DELTA_T_C,
+                ),
+                witness: segments_for_net(routing, net.id),
+                nets: vec![net.id],
+                components: Vec::new(),
+                pos_mm: routing
                     .segments
                     .iter()
-                    .find(|s| s.net == positive.id)
-                    .map(|s| (nm_to_mm(s.start.x_nm), nm_to_mm(s.start.y_nm)))
-            }),
-            suggested_override: None,
-        });
+                    .find(|s| s.net == net.id)
+                    .map(|s| (nm_to_mm(s.start.x_nm), nm_to_mm(s.start.y_nm))),
+                suggested_override: None,
+            });
+        }
     }
     violations
 }

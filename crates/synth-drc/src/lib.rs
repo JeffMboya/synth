@@ -208,6 +208,11 @@ fn evaluate(
         ));
     }
     violations.extend(signal_integrity::check_diff_pair_skew(board, routing));
+    violations.extend(signal_integrity::check_ampacity(
+        board,
+        routing,
+        stackup.as_ref(),
+    ));
     DrcReport {
         violations,
         profile_name: profile.name.clone(),
@@ -491,6 +496,92 @@ mod tests {
             super::signal_integrity::check_diff_pair_skew(&board, &routed(5_000_000, 5_400_000));
         assert_eq!(over.len(), 1, "{over:?}");
         assert_eq!(over[0].code, "E-SYNTH-DRC-014");
+    }
+
+    #[test]
+    fn an_undersized_trace_on_a_declared_current_blocks() {
+        let mut board = load_board("../../examples/env_logger.synth");
+        board.nets[0].netclass = Some("PWR".to_string());
+        board.netclasses.push(synth_ir::NetClass {
+            name: "PWR".to_string(),
+            trace_width: None,
+            clearance: None,
+            color: None,
+            impedance: None,
+            current: Some(synth_ir::Current(1_000_000)),
+            source_span: synth_diagnostics::Span::new(0, 0),
+        });
+        let net = board.nets[0].id;
+        let routed = |width_nm: i64| Routing {
+            segments: vec![straight(net, width_nm, 0, 5_000_000)],
+            ..Routing::default()
+        };
+
+        let thin = super::signal_integrity::check_ampacity(
+            &board,
+            &routed(synth_geometry::mm_to_nm(0.2)),
+            None,
+        );
+        assert_eq!(thin.len(), 1, "{thin:?}");
+        assert_eq!(thin[0].code, "E-SYNTH-DRC-015");
+        assert!(
+            super::signal_integrity::check_ampacity(
+                &board,
+                &routed(synth_geometry::mm_to_nm(1.0)),
+                None
+            )
+            .is_empty(),
+            "1 mm carries 1 A comfortably"
+        );
+    }
+
+    #[test]
+    fn a_single_ended_netclass_impedance_is_checked_against_the_route() {
+        let mut board = board_with_controlled_pair();
+        board.nets[0].netclass = Some("RF".to_string());
+        board.netclasses.push(synth_ir::NetClass {
+            name: "RF".to_string(),
+            trace_width: None,
+            clearance: None,
+            color: None,
+            impedance: Some(synth_ir::Impedance(50_000)),
+            current: None,
+            source_span: synth_diagnostics::Span::new(0, 0),
+        });
+        let stackup = StackupProfile::for_board(&board);
+        let net = board.nets[0].id;
+        let good_width = stackup
+            .width_for_z0(
+                synth_geometry::Layer::Top,
+                50.0,
+                synth_geometry::mm_to_nm(0.127),
+            )
+            .expect("reachable")
+            .0;
+        let routed = |width_nm: i64| Routing {
+            segments: vec![straight(net, width_nm, 0, 5_000_000)],
+            ..Routing::default()
+        };
+        let profile = ManufacturerProfile::jlc_standard();
+
+        assert!(
+            super::signal_integrity::check_controlled_impedance(
+                &board,
+                &routed(good_width),
+                &profile,
+                &stackup
+            )
+            .is_empty(),
+            "a routed width matching the class's 50 ohm target must pass"
+        );
+        let off = super::signal_integrity::check_controlled_impedance(
+            &board,
+            &routed(synth_geometry::mm_to_nm(0.05)),
+            &profile,
+            &stackup,
+        );
+        assert_eq!(off.len(), 1, "{off:?}");
+        assert_eq!(off[0].code, "E-SYNTH-DRC-012");
     }
 
     #[test]

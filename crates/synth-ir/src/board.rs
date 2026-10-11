@@ -11,7 +11,7 @@ use synth_diagnostics::Span;
 use synth_registry::Part;
 
 use crate::modules::{BusBundle, ModuleDesc};
-use crate::units::{DielectricConstant, Impedance, Length, Voltage};
+use crate::units::{Current, DielectricConstant, Impedance, Length, Voltage};
 
 /// Stable identifier for a component within a single board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -494,6 +494,14 @@ pub struct NetClass {
     /// falls back to the fixed palette / hashed hue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
+    /// Single-ended characteristic impedance target (`impedance 50ohm`),
+    /// checked against the routed geometry on the stackup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impedance: Option<Impedance>,
+    /// Current the class's nets carry (`current 1.5A`), checked against the
+    /// routed width via the IPC-2221 ampacity curve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<Current>,
     pub source_span: Span,
 }
 
