@@ -64,6 +64,7 @@ mod geometry;
 pub mod kicad_cli;
 mod profile;
 mod rules;
+mod signal_integrity;
 
 use serde::{Deserialize, Serialize};
 use synth_geometry::Point;
@@ -197,6 +198,16 @@ fn evaluate(
         board, placement, routing, profile,
     ));
     violations.extend(geometry::check_shorts(board, placement, routing));
+    // Routed signal integrity (E-SYNTH-DRC-012 / 014). The impedance rule
+    // needs a stackup and is skipped without one, preserving the documented
+    // "no stackup, impedance not verified" contract; the skew rule is
+    // geometry-only.
+    if let Some(stackup) = stackup.as_ref() {
+        violations.extend(signal_integrity::check_controlled_impedance(
+            board, routing, profile, stackup,
+        ));
+    }
+    violations.extend(signal_integrity::check_diff_pair_skew(board, routing));
     DrcReport {
         violations,
         profile_name: profile.name.clone(),
@@ -334,6 +345,152 @@ mod tests {
         let profile = StackupProfile::for_board(&board);
         assert_eq!(profile.source, synth_geometry::StackupSource::Default);
         assert_eq!(profile.copper_count(), board.layers as usize);
+    }
+
+    fn four_layer_stackup() -> synth_ir::Stackup {
+        use synth_ir::{DielectricConstant, Length, StackupLayer};
+        let span = synth_diagnostics::Span::new(0, 0);
+        let copper = |t: f64| StackupLayer::Copper {
+            thickness: Length::from_mm(t),
+            source_span: span,
+        };
+        let dielectric = |t: f64, er: f64| StackupLayer::Insulator {
+            thickness: Length::from_mm(t),
+            er: DielectricConstant((er * 1_000_000.0) as i64),
+            material: Some("FR4".to_string()),
+            source_span: span,
+        };
+        synth_ir::Stackup {
+            layers: vec![
+                copper(0.035),
+                dielectric(0.2104, 4.4),
+                copper(0.0152),
+                dielectric(1.065, 4.6),
+                copper(0.0152),
+                dielectric(0.2104, 4.4),
+                copper(0.035),
+            ],
+            source_span: span,
+        }
+    }
+
+    fn board_with_controlled_pair() -> Board {
+        let mut board = load_board("../../examples/placement_and_diff_pair.synth");
+        board.stackup = Some(four_layer_stackup());
+        board
+    }
+
+    fn straight(net: NetId, width_nm: i64, y_nm: i64, len_nm: i64) -> synth_pcb::Segment {
+        synth_pcb::Segment {
+            net,
+            layer: synth_geometry::Layer::Top,
+            start: synth_geometry::Point::new(0, y_nm),
+            end: synth_geometry::Point::new(len_nm, y_nm),
+            width_nm,
+        }
+    }
+
+    #[test]
+    fn a_routed_width_matching_the_target_passes_and_a_wrong_one_blocks() {
+        let board = board_with_controlled_pair();
+        let stackup = StackupProfile::for_board(&board);
+        let (positive, negative, _, _) = board.impedance_legs().next().expect("a controlled pair");
+
+        // The width the stackup demands for 90 ohm on the outer layer, with
+        // the manufacturer-minimum gap the rule falls back to.
+        let pair = stackup
+            .coupled_for_z0(
+                synth_geometry::Layer::Top,
+                90.0,
+                synth_geometry::mm_to_nm(0.127),
+                synth_geometry::mm_to_nm(0.127),
+            )
+            .expect("reachable target");
+        let good_width = synth_geometry::mm_to_nm(pair.width_mm);
+
+        let routed = |width_nm: i64| Routing {
+            segments: vec![
+                straight(positive.id, width_nm, 0, 4_000_000),
+                straight(positive.id, width_nm, 400_000, 4_000_000),
+                straight(negative.id, width_nm, 200_000, 4_000_000),
+                straight(negative.id, width_nm, 600_000, 4_000_000),
+            ],
+            ..Routing::default()
+        };
+        let profile = ManufacturerProfile::jlc_standard();
+
+        let clean = super::signal_integrity::check_controlled_impedance(
+            &board,
+            &routed(good_width),
+            &profile,
+            &stackup,
+        );
+        assert!(clean.is_empty(), "on-target width must pass: {clean:?}");
+
+        let wrong = super::signal_integrity::check_controlled_impedance(
+            &board,
+            &routed(good_width / 3),
+            &profile,
+            &stackup,
+        );
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+        assert_eq!(wrong[0].code, "E-SYNTH-DRC-012");
+    }
+
+    #[test]
+    fn impedance_is_not_checked_without_a_stackup() {
+        let mut board = board_with_controlled_pair();
+        board.stackup = None;
+        let (positive, negative, _, _) = board.impedance_legs().next().expect("a controlled pair");
+        let routing = Routing {
+            segments: vec![
+                straight(positive.id, 50_000, 0, 4_000_000),
+                straight(negative.id, 50_000, 200_000, 4_000_000),
+            ],
+            ..Routing::default()
+        };
+        // `check` is the documented "no stackup, not verified" path: it never
+        // runs the impedance rule, so a board that declares no stackup cannot
+        // be blocked by it.
+        let report = check(
+            &board,
+            &synth_place::place(&board).expect("place"),
+            &routing,
+            &ManufacturerProfile::jlc_standard(),
+        );
+        assert!(report.stackup.is_none());
+        assert!(
+            !report
+                .violations
+                .iter()
+                .any(|v| v.code == "E-SYNTH-DRC-012"),
+            "impedance must not be checked without a stackup"
+        );
+    }
+
+    #[test]
+    fn a_pair_over_its_declared_skew_blocks() {
+        let mut board = board_with_controlled_pair();
+        board.diff_pairs[0].max_skew = Some(synth_ir::Length::from_mm(0.15));
+        let (positive, negative, _, _) = board.impedance_legs().next().expect("a controlled pair");
+
+        let routed = |positive_len: i64, negative_len: i64| Routing {
+            segments: vec![
+                straight(positive.id, 127_000, 0, positive_len),
+                straight(negative.id, 127_000, 200_000, negative_len),
+            ],
+            ..Routing::default()
+        };
+
+        assert!(
+            super::signal_integrity::check_diff_pair_skew(&board, &routed(5_000_000, 5_100_000))
+                .is_empty(),
+            "0.1 mm skew is within the 0.15 mm budget"
+        );
+        let over =
+            super::signal_integrity::check_diff_pair_skew(&board, &routed(5_000_000, 5_400_000));
+        assert_eq!(over.len(), 1, "{over:?}");
+        assert_eq!(over[0].code, "E-SYNTH-DRC-014");
     }
 
     #[test]
