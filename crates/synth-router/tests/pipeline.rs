@@ -829,6 +829,53 @@ fn a_validated_board_is_delivered_with_its_zones_filled() {
 }
 
 #[test]
+fn a_board_with_only_some_zones_filled_is_refilled_in_full() {
+    let scratch = Scratch::new("zonefill_partial");
+    // zone-1 carries a stale fill from before the final routing; zone-2 has none.
+    let half_filled = routed_board_with_zone()
+        .replace(
+            "(polygon (pts (xy 1 1)",
+            "(filled_polygon (layer \"B.Cu\") (pts (xy 5 5) (xy 6 5) (xy 6 6)))\n    (polygon (pts (xy 1 1)",
+        )
+        .trim_end()
+        .trim_end_matches(')')
+        .to_string()
+        + "  (zone (net 1) (net_name \"SIG\") (layer \"B.Cu\") (uuid \"zone-2\")\n    (fill yes)\n    (polygon (pts (xy 1 1) (xy 9 1) (xy 9 9))))\n)\n";
+    assert!(
+        half_filled.contains("(xy 5 5)"),
+        "the stale fill was not injected"
+    );
+    let router = StubRouter::new(
+        "zonefill_partial_router",
+        Behaviour::Write(Box::leak(half_filled.into_boxed_str())),
+    );
+    let marker = install_kicad_stub(
+        &router,
+        r#"cat > "$BOARD" <<'SAVED_EOF'
+(kicad_pcb
+  (zone (uuid "zone-1")
+    (filled_polygon (layer "B.Cu") (pts (xy 1 1) (xy 29 1) (xy 29 29) (xy 1 29))))
+  (zone (uuid "zone-2")
+    (filled_polygon (layer "B.Cu") (pts (xy 2 2) (xy 8 2) (xy 8 8)))))
+SAVED_EOF"#,
+    );
+    let (jar, java) = stub_engine_files(&scratch);
+    let _env = router.activate(&jar, &java);
+
+    let report = synth_router::route(&request_for(&scratch, 120));
+    assert_eq!(report.state, RouteState::Routed, "{:?}", report.validation);
+    assert!(marker.exists(), "a half-filled board was not refilled");
+
+    let delivered = std::fs::read_to_string(scratch.file("demo.kicad_pcb")).expect("delivered");
+    assert_eq!(
+        delivered.matches("(filled_polygon").count(),
+        2,
+        "{delivered}"
+    );
+    assert!(!delivered.contains("(xy 5 5)"), "stale copper survived");
+}
+
+#[test]
 fn a_fill_that_fails_still_delivers_the_routed_board() {
     let scratch = Scratch::new("zonefill_fail");
     let with_zone = routed_board_with_zone();

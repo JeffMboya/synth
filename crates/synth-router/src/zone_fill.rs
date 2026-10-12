@@ -21,10 +21,11 @@ use crate::pcb_read::PcbBoard;
 
 /// Fill the pour zones of the board at `board_path`, in place.
 ///
-/// A board with no fill-enabled zone, or one that already carries fills, is
-/// left untouched. On any failure the board is also left untouched and the
-/// reason is returned: an unfilled board is a nuisance, a lost routed board
-/// is not.
+/// A board with no fill-enabled zone is left untouched. Any fills the board
+/// already carries are discarded and recomputed, since they may be partial
+/// or predate the final routing. On any failure the board is also left
+/// untouched and the reason is returned: an unfilled board is a nuisance, a
+/// lost routed board is not.
 ///
 /// # Errors
 /// Returns why the board could not be filled and was left as it was.
@@ -35,7 +36,7 @@ pub fn refill_zones(board_path: &Path) -> Result<(), String> {
     let pours = forms(&text, "zone", 1)
         .iter()
         .any(|range| pours_copper(&text[range.clone()]));
-    if !pours || text.contains("(filled_polygon") {
+    if !pours {
         return Ok(());
     }
     if let Some((_, detail)) =
@@ -93,13 +94,16 @@ fn install(board_path: &Path, contents: &str) -> Result<(), String> {
 }
 
 /// Copy each zone's `filled_polygon` forms from `saved` into the zone of
-/// `text` that has the same uuid, and add nothing else to `text`.
+/// `text` that has the same uuid, replacing any fills `text` already had and
+/// adding nothing else to it.
 ///
 /// All or nothing: every zone of `text` that pours copper must come back
 /// filled, and a save that fills fewer than that is an error. A half-filled board
 /// shows some planes connected and others not, which is harder to notice
 /// than an unfilled one.
 fn graft_fills(text: &str, saved: &str) -> Result<String, String> {
+    let text = strip_fills(text);
+    let text = text.as_str();
     let mut fills: HashMap<&str, Vec<&str>> = HashMap::new();
     for range in forms(saved, "zone", 1) {
         let zone = &saved[range];
@@ -155,6 +159,26 @@ fn graft_fills(text: &str, saved: &str) -> Result<String, String> {
     }
     out.push_str(&text[cursor..]);
     Ok(out)
+}
+
+/// `text` without the `filled_polygon` forms inside its zones, and without
+/// the whitespace that led up to each.
+fn strip_fills(text: &str) -> String {
+    let mut stale = Vec::new();
+    for zone in forms(text, "zone", 1) {
+        for polygon in forms(&text[zone.clone()], "filled_polygon", 1) {
+            stale.push(zone.start + polygon.start..zone.start + polygon.end);
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for range in stale {
+        let from = cursor.max(text[..range.start].trim_end().len());
+        out.push_str(&text[cursor..from]);
+        cursor = range.end;
+    }
+    out.push_str(&text[cursor..]);
+    out
 }
 
 /// Whether KiCad will give this zone a `filled_polygon`: an explicit
@@ -273,6 +297,23 @@ mod tests {
             stripped.replace_range(from..end, "");
         }
         assert_eq!(stripped, ROUTED);
+    }
+
+    #[test]
+    fn a_stale_fill_already_in_the_zone_is_replaced_not_kept_beside_the_new_one() {
+        let stale = ROUTED.replace(
+            "(fill yes)\n\t\t(polygon",
+            "(fill yes)\n\t\t(filled_polygon (layer \"F.Cu\") (pts (xy 7 7) (xy 8 7) (xy 8 8)))\n\t\t(polygon",
+        );
+        assert!(
+            stale.contains("(xy 7 7)"),
+            "the stale fill was not injected"
+        );
+        assert_eq!(strip_fills(&stale), ROUTED, "only the fill is stripped");
+        let merged = graft_fills(&stale, SAVED).expect("grafts");
+        assert_eq!(merged.matches("(filled_polygon").count(), 2, "{merged}");
+        assert!(!merged.contains("(xy 7 7)"), "stale copper survived");
+        assert!(merged.contains("(xy 1 1)"), "fresh copper missing");
     }
 
     #[test]
