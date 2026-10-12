@@ -564,6 +564,7 @@ mod tests {
                 TokenKind::KwCouple,
                 TokenKind::KwTraceWidth,
                 TokenKind::KwClearance,
+                TokenKind::KwMatchLength,
                 TokenKind::KwRadius,
                 TokenKind::KwValue,
                 TokenKind::KwTolerance,
