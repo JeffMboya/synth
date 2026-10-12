@@ -1237,7 +1237,14 @@ fn execute_router_capabilities(args: &Value) -> Result<Value, String> {
 fn route_design_externally(
     args: &Value,
     default_registry: Option<&Path>,
-) -> Result<(synth_router::RouteReport, PathBuf), String> {
+) -> Result<
+    (
+        synth_router::RouteReport,
+        PathBuf,
+        Vec<synth_drc::Violation>,
+    ),
+    String,
+> {
     route_design_externally_with(args, default_registry, None)
 }
 
@@ -1250,7 +1257,14 @@ fn route_design_externally_with(
     args: &Value,
     default_registry: Option<&Path>,
     prepared: Option<synth_router::RouteRequest>,
-) -> Result<(synth_router::RouteReport, PathBuf), String> {
+) -> Result<
+    (
+        synth_router::RouteReport,
+        PathBuf,
+        Vec<synth_drc::Violation>,
+    ),
+    String,
+> {
     let source = get_source_from_args(args)?;
     let file_name = args["file_path"].as_str().unwrap_or("board.synth");
     let engine = resolve_router(args)?;
@@ -1328,7 +1342,17 @@ fn route_design_externally_with(
     request.preserve_baseline().map_err(|f| f.to_string())?;
 
     let report = synth_router::route(&request);
-    Ok((report, res.out_dir))
+    // Read the delivered copper, not the input path: the router may deliver its
+    // board elsewhere, and reading the un-routed baseline would make these rules
+    // silently no-op. Fall back to the request path only when nothing was
+    // delivered (a failed route leaves the baseline there).
+    let delivered = report
+        .artifacts
+        .delivered
+        .clone()
+        .unwrap_or_else(|| request.board_path.clone());
+    let signal_integrity = routed_signal_integrity(&board, &delivered);
+    Ok((report, res.out_dir, signal_integrity))
 }
 
 fn sha256_of(path: &Path) -> String {
@@ -1385,6 +1409,20 @@ fn route_report_payload(report: &synth_router::RouteReport) -> Value {
     payload
 }
 
+/// Attach the routed signal/power-integrity findings to a route payload.
+///
+/// A blocking finding clears `drc_clean`, so a consumer reading only that flag
+/// cannot be told the board is clean when a rail is over its IR budget or a
+/// net exceeds its length.
+fn attach_signal_integrity(payload: &mut Value, findings: &[synth_drc::Violation]) {
+    let blocking = findings.iter().filter(|v| v.is_blocking()).count();
+    payload["signal_integrity"] = serde_json::json!(findings);
+    payload["signal_integrity_blocking"] = serde_json::json!(blocking);
+    if blocking > 0 {
+        payload["drc_clean"] = serde_json::json!(false);
+    }
+}
+
 /// Report the independent physical checks over an externally routed board.
 ///
 /// The verdict comes from re-reading the routed board — topology against
@@ -1392,15 +1430,15 @@ fn route_report_payload(report: &synth_router::RouteReport) -> Value {
 /// with zones refilled — so it cannot be satisfied by the router's own
 /// opinion of its work.
 fn execute_drc_report(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
-    let (report, _) = route_design_externally(args, default_registry)?;
-    let payload = route_report_payload(&report);
+    let (report, _, signal_integrity) = route_design_externally(args, default_registry)?;
+    let mut payload = route_report_payload(&report);
+    attach_signal_integrity(&mut payload, &signal_integrity);
 
     // A structurally poor floorplan never reaches the router at all, so
     // the placement gate keeps its own early return.
     let Some(validation) = &report.validation else {
         return Ok(payload);
     };
-    let mut payload = payload;
     payload["status"] = serde_json::json!(match report.state {
         synth_router::RouteState::Routed => "ok",
         synth_router::RouteState::RouterUnavailable => "router_unavailable",
@@ -1418,10 +1456,11 @@ fn execute_drc_report(args: &Value, default_registry: Option<&Path>) -> Result<V
 /// to decode: it means the engine is not installed here, and the payload
 /// says what to install.
 fn execute_route(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
-    let (report, out_dir) = route_design_externally(args, default_registry)?;
+    let (report, out_dir, signal_integrity) = route_design_externally(args, default_registry)?;
     log_routing_outcome(args, &report);
     let mut payload = route_report_payload(&report);
     payload["out_dir"] = serde_json::json!(out_dir);
+    attach_signal_integrity(&mut payload, &signal_integrity);
     Ok(payload)
 }
 
@@ -2788,7 +2827,13 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
 
     // Signal/power integrity on the routed copper: the rules kicad-cli cannot
     // see. Blocking findings stop a release export, exactly as in the CLI path.
-    let signal_integrity = routed_signal_integrity(&board, &res.pcb_path);
+    // Read the delivered board, not the input export path.
+    let delivered = routing
+        .artifacts
+        .delivered
+        .clone()
+        .unwrap_or_else(|| res.pcb_path.clone());
+    let signal_integrity = routed_signal_integrity(&board, &delivered);
     let si_blocking = signal_integrity
         .iter()
         .filter(|violation| violation.is_blocking())
@@ -3517,9 +3562,11 @@ fn execute_route_with_constraints(
         routed.policy.min_clearance_nm = routed.policy.min_clearance_nm.max(clearance);
     }
 
-    let (report, _) = route_design_externally_with(args, default_registry, Some(routed))?;
+    let (report, _, signal_integrity) =
+        route_design_externally_with(args, default_registry, Some(routed))?;
     log_routing_outcome(args, &report);
     let mut payload = route_report_payload(&report);
+    attach_signal_integrity(&mut payload, &signal_integrity);
     payload["diagnostics"] = serde_json::json!(diagnostics);
     payload["constraints"] = serde_json::json!({
         "min_track_width_nm": min_width_nm,
