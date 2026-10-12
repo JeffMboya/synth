@@ -93,9 +93,11 @@ is sourced beside the connectors instead of through the buck's input cap.
 - `U6.a0`, `a1`, `a2` to ground: address 0x50, clear of the HDC1080 (0x40)
   and the BH1750 (0x23).
 - `U6.wp` to ground: calibration and schedule stay writable in the field.
-- `U4.csb` to its own `vddio`: selects I2C rather than SPI.
-- `U4.sdo` to ground: address 0x40 rather than 0x41.
-- `U4.gnd2`: the Bosch part's second ground pad, tied.
+- U4 and U5 have no address straps and no interface-select pins: the
+  registry declares four pins each (vdd, gnd, sda, scl), so their addresses
+  are fixed at 0x40 and 0x23 and nothing needs tying. The real BH1750 has an
+  ADDR pin; the part does not model it, so this board cannot move it off
+  0x23.
 - `Y1.case_1`, `case_2`: the crystal can, grounded for shielding.
 - `U7.ct`: no soft-start capacitor; the probe load is a few milliamps and
   needs none. `U7.qod`: quick output discharge left open, since the filters
@@ -104,7 +106,14 @@ is sourced beside the connectors instead of through the buck's input cap.
   function set there is no header budget, and an unconnected GPIO is not a
   defect.
 
-## BOM
+## Notable parts
+
+This is not the bill of materials. It lists the actives and the connectors,
+the parts whose identity a reviewer has to agree with; the twenty-six
+resistors, capacitors and the inductor are generic and appear with their
+values in the `bom.csv` the export writes. #39 grades BOM completeness
+against that file, not against this table.
+
 
 | Ref | Part | Registry id | Note |
 | --- | --- | --- | --- |
@@ -124,8 +133,9 @@ is sourced beside the connectors instead of through the buck's input cap.
 | J2 | JST PH 4-pin | `jst_ph_4pin` | spare I2C port |
 | J3 | 1x4 header | `header_1x4` | SWD |
 
-Twenty of this board's parts carry no distributor identity, so this BOM
-cannot be ordered as it stands. That is #51, not an omission here.
+Twenty of this board's parts carry no distributor identity, so neither this
+table nor the generated `bom.csv` can be ordered as it stands. That is #51,
+not an omission here.
 
 ## Reproducibility
 
