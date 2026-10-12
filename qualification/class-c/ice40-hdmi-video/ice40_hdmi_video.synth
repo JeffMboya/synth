@@ -17,15 +17,29 @@
 //   case 4  multi-rail compute with keepout and DFM constraints
 //           -> 1.2 V core and 3.3 V I/O from one 5 V input, declared stackup
 //
-// STATED LIMITATION, and the one that matters: this board does not route.
-// Synth pours a plane for ground and for nothing else — `pcb.rs` says so,
-// deliberately, because competing same-priority rail zones can strand
-// islands. On this board that leaves the 3.3 V rail's thirty pads and the
-// 1.2 V core rail to be threaded as traces across a dense four-layer BGA
-// board, and KiCadRoutingTools cannot close them: 29 open nets, almost all
-// of them supply. A real four-layer FPGA board puts 3.3 V and 1.2 V on
-// inner planes. Until Synth can pour a rail, #40 case 4 — "multi-rail
-// compute board" — cannot be demonstrated, whatever the router does.
+// The rails are planes. `netclass { plane }` floods a zone for the class's
+// nets on the inner layers, so the 1.2 V core takes In1.Cu and the 3.3 V
+// I/O rail takes In2.Cu, with ground on the outer copper — the way a real
+// four-layer FPGA board is built. Each rail pad reaches its plane through
+// a via, which on this process means via-in-pad; see the escape arithmetic
+// below for why that is forced rather than chosen.
+//
+// Getting there took three fixes, none of which the routing gate reported:
+// every plane net was poured on every inner layer so two rails starved
+// each other (#128); a via's layer span was read as its two endpoints, so
+// a through via could never reach an inner-layer plane and every pad on a
+// rail read as stranded (#130); and the language reference never documents
+// `class "NAME"` on a `connect`, so a netclass with no members is inert
+// and reads as satisfied (#129).
+//
+// STATED LIMITATION: this board does not route completely. With the rails
+// as planes it closes 29 nets and leaves 12 open — the 5 V input, four of
+// the HDMI connector's own pins, a TMDS ball on the BGA, and a handful of
+// two-pad traces around the oscillator and the series resistors.
+// KiCadRoutingTools cannot thread those across a 121-ball grid on four
+// layers. The supply problem that dominated this board is gone; what is
+// left is signal routing a human would finish by hand, and #40 asks for
+// exactly that list.
 //
 // What the escape arithmetic says about case 1, which is worth recording
 // because it is a property of the process and not of the router: at
