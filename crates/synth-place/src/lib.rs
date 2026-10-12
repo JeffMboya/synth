@@ -853,7 +853,28 @@ pub fn place_with_tuning_and_sidecar<S: ::std::hash::BuildHasher>(
     rotation_overrides: &std::collections::HashMap<ComponentId, synth_geometry::Rotation, S>,
     sidecar_path: Option<&std::path::Path>,
 ) -> Result<Placement, PlaceError> {
-    let mut placement = place_with_tuning(board, extra_margin_mm, rotation_overrides)?;
+    place_with_tuning_and_sidecar_seeded(
+        board,
+        extra_margin_mm,
+        rotation_overrides,
+        sidecar_path,
+        0,
+    )
+}
+
+/// [`place_with_tuning_and_sidecar`] with a deterministic placement `seed`.
+///
+/// Used by the place→route→re-place loop to ask for a different legal
+/// arrangement of the same board (see [`place_with_tuning_seeded`]). Seed `0`
+/// is the canonical arrangement every other caller gets.
+pub fn place_with_tuning_and_sidecar_seeded<S: ::std::hash::BuildHasher>(
+    board: &Board,
+    extra_margin_mm: f64,
+    rotation_overrides: &std::collections::HashMap<ComponentId, synth_geometry::Rotation, S>,
+    sidecar_path: Option<&std::path::Path>,
+    seed: u64,
+) -> Result<Placement, PlaceError> {
+    let mut placement = place_with_tuning_seeded(board, extra_margin_mm, rotation_overrides, seed)?;
     if let Some(path) = sidecar_path {
         if path.exists() {
             if let Some(sidecar) = synth_layout::sidecar::SidecarLayout::load_from_file(path) {
@@ -931,6 +952,7 @@ pub fn place_with_dimensions(
         &courtyards_mm,
         &std::collections::HashMap::new(),
         false,
+        0,
     )?;
 
     // `place_with_outline` tightens automatic outlines after solving. For an
@@ -958,11 +980,26 @@ pub fn place_with_dimensions(
 }
 
 /// Closed-loop placement generator with support for iteration hints (rotation & margin tuning).
-#[allow(clippy::too_many_lines)]
 pub fn place_with_tuning<S: ::std::hash::BuildHasher>(
     board: &Board,
     extra_margin_mm: f64,
     rotation_overrides: &std::collections::HashMap<ComponentId, synth_geometry::Rotation, S>,
+) -> Result<Placement, PlaceError> {
+    place_with_tuning_seeded(board, extra_margin_mm, rotation_overrides, 0)
+}
+
+/// [`place_with_tuning`] with a deterministic `seed`.
+///
+/// The seed varies only the order among components of equal net degree, which
+/// changes the greedy first-fit packing without relaxing any hard constraint,
+/// so distinct seeds give distinct-but-legal arrangements. Seed `0` is the
+/// canonical order and is what every non-iterating caller uses.
+#[allow(clippy::too_many_lines)]
+pub fn place_with_tuning_seeded<S: ::std::hash::BuildHasher>(
+    board: &Board,
+    extra_margin_mm: f64,
+    rotation_overrides: &std::collections::HashMap<ComponentId, synth_geometry::Rotation, S>,
+    seed: u64,
 ) -> Result<Placement, PlaceError> {
     use synth_layout::pcb_courtyard_geometry_for_part;
 
@@ -1014,6 +1051,7 @@ pub fn place_with_tuning<S: ::std::hash::BuildHasher>(
             &courtyards_mm,
             rotation_overrides,
             true,
+            seed,
         ) {
             Ok(p) => return Ok(p),
             Err(e) => last_err = Some(e),
@@ -1089,12 +1127,27 @@ pub(crate) fn courtyard_rect_for_placement(
     )
 }
 
+/// Deterministic order key for a component under a placement `seed`.
+///
+/// A splitmix64-style avalanche of `(seed, component id)`. Only used to break
+/// ties between components of equal net degree, so it never overrides a
+/// meaningful ordering — only the arbitrary one among equals.
+fn seeded_order_key(seed: u64, id: u32) -> u64 {
+    let mut x = seed ^ u64::from(id).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
 fn place_with_outline<S: ::std::hash::BuildHasher>(
     board: &Board,
     board_outline: Rect,
     courtyards_mm: &[(ComponentId, (f64, f64), (f64, f64))],
     rotation_overrides: &std::collections::HashMap<ComponentId, synth_geometry::Rotation, S>,
     tighten_outline: bool,
+    seed: u64,
 ) -> Result<Placement, PlaceError> {
     use synth_geometry::nm_to_mm;
     let mut resolved_rotation_overrides: std::collections::HashMap<
@@ -1195,7 +1248,20 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
         }
         let da = net_degree.get(&a.0).copied().unwrap_or(0);
         let db = net_degree.get(&b.0).copied().unwrap_or(0);
-        db.cmp(&da).then(a.0.cmp(&b.0))
+        if db != da {
+            return db.cmp(&da);
+        }
+        // Equal net degree: the seed reorders only here, so seed 0 reproduces
+        // the canonical `ComponentId` order exactly and a non-zero seed gives
+        // a different but equally legal packing.
+        if seed != 0 {
+            let ka = seeded_order_key(seed, a.0);
+            let kb = seeded_order_key(seed, b.0);
+            if ka != kb {
+                return ka.cmp(&kb);
+            }
+        }
+        a.0.cmp(&b.0)
     });
 
     let has_hint = |id: ComponentId| -> bool {
