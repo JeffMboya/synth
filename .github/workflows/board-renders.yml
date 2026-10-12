@@ -1,0 +1,92 @@
+name: Board Renders
+
+# Pictures of the boards, from the same KiCad that qualifies them. A review
+# that has to take "it routes" on faith is not a review, and the images are
+# the only artifact a non-engineer can read.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "qualification/**"
+      - "registry/**"
+      - "scripts/render_boards.sh"
+      - ".github/workflows/board-renders.yml"
+
+  workflow_dispatch:
+    inputs:
+      boards:
+        description: "Board files to plot, space separated. Empty plots every positive qualification board."
+        required: false
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 3
+  CARGO_HTTP_TIMEOUT: 60
+
+concurrency:
+  group: board-renders-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  renders:
+    name: Plot schematics and boards
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: qualification
+
+      # Same install as the qualification matrix: the plots have to come from
+      # the libraries the board was checked against, or the picture is of a
+      # different board.
+      - name: Install kicad-cli and the stock symbol/footprint libraries
+        run: |
+          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            kicad kicad-symbols kicad-footprints librsvg2-bin
+          kicad-cli version
+          mkdir -p "$HOME/.config/kicad/10.0"
+          cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
+          cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
+
+      # Without a router there is no copper, and the board image would be a
+      # picture of the placement. Pinned to the tag the matrix uses.
+      - name: Install KiCadRoutingTools
+        run: |
+          git clone --depth 1 --branch v0.23.0 \
+            https://github.com/drandyhaas/KiCadRoutingTools "$RUNNER_TEMP/krt"
+          python3 -m pip install --quiet -r "$RUNNER_TEMP/krt/requirements.txt"
+          python3 "$RUNNER_TEMP/krt/build_router.py"
+          echo "KICAD_ROUTING_TOOLS_REPO=$RUNNER_TEMP/krt" >> "$GITHUB_ENV"
+
+      - name: Build the compiler
+        run: cargo build --release -p synth-cli
+
+      - name: Plot every board
+        env:
+          BOARDS: ${{ inputs.boards }}
+        run: scripts/render_boards.sh $BOARDS
+
+      - name: Upload the renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: board-renders
+          path: |
+            target/renders/**/*.png
+            target/renders/**/*.svg
+            target/renders/**/export.log
+            target/renders/kicad-cli.txt
+          if-no-files-found: warn
