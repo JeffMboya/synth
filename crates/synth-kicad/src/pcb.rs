@@ -252,10 +252,14 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
 
     // Declared planes (`netclass "PWR" { plane }`): flood a zone for each
     // member net on the dedicated power layers, so a rail gets a low-impedance
-    // path of its own. Opt-in: no plane is emitted for a class that does not
+    // path of its own. The plane sits on the inner layers, away from ground, so
+    // each of the net's own pads gets a stitching via: without one the plane
+    // exists but connects nothing, because the pads are on the outer copper and
+    // the plane is not. Opt-in: no plane is emitted for a class that does not
     // ask, and none at all on a board with no inner layer to put it on.
+    let mut plane_via_index = 0usize;
     for class in &board.netclasses {
-        if !class.plane {
+        if !class.plane || power_layers.is_empty() {
             continue;
         }
         for net in board
@@ -277,6 +281,16 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
                     &zone_key,
                     POWER_ZONE_PRIORITY,
                 ));
+            }
+            for point in plane_pad_centres(board, placement, net) {
+                children.push(build_plane_via(
+                    point.x_nm,
+                    point.y_nm,
+                    pcb_net,
+                    project,
+                    plane_via_index,
+                ));
+                plane_via_index += 1;
             }
         }
     }
@@ -328,6 +342,76 @@ fn build_via(
 }
 
 /// Emit a through via that electrically joins the generated ground planes.
+/// Board-space centres of the pads `net` connects, one per pad.
+///
+/// A declared power plane is on the inner layers while its pads are on the
+/// outer copper, so each pad needs a via through the plane. This resolves a
+/// pad's board position the same way the exporter places the footprint: the
+/// pad's local offset, rotated by the placement and translated by the
+/// footprint origin.
+#[allow(clippy::similar_names)] // dx_nm/dy_nm are the natural names for an axis pair
+fn plane_pad_centres(
+    board: &Board,
+    placement: &Placement,
+    net: &synth_ir::Net,
+) -> Vec<synth_geometry::Point> {
+    let mut out = Vec::new();
+    for endpoint in &net.endpoints {
+        let Some(component) = board.component(endpoint.component) else {
+            continue;
+        };
+        let Some(part) = component.part.as_ref() else {
+            continue;
+        };
+        let Some(placed) = placement
+            .components
+            .iter()
+            .find(|placed| placed.id == component.id)
+        else {
+            continue;
+        };
+        let Some(pin) = part.pins.get(endpoint.pin.0 as usize) else {
+            continue;
+        };
+        let Some(pads) = synth_layout::kicad_footprint_loader::synth_part_pads(part) else {
+            continue;
+        };
+        let origin = synth_place::footprint_origin(Some(part), placed);
+        for pad in pads
+            .iter()
+            .filter(|pad| !pad.is_npth && pad.number == pin.number.0)
+        {
+            let (dx_nm, dy_nm) = placed
+                .rotation
+                .rotate_offset(mm_to_nm(pad.center_mm.0), mm_to_nm(pad.center_mm.1));
+            out.push(synth_geometry::Point::new(
+                origin.x_nm + dx_nm,
+                origin.y_nm + dy_nm,
+            ));
+        }
+    }
+    out
+}
+
+/// A through via at a power pad, joining the outer pad to the inner power
+/// plane. The drill sits in the pad (via-in-pad), so the connection is direct
+/// and deterministic; a declared power plane is opt-in, and a process that
+/// cannot fill and cap via-in-pad should not declare one.
+fn build_plane_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usize) -> Sexp {
+    let via_uuid = derive_entity_uuid(project, "plane-via", &idx.to_string());
+    Sexp::list(
+        "via",
+        vec![
+            Sexp::list("at", vec![num(nm_to_mm(x_nm)), num(nm_to_mm(y_nm))]),
+            Sexp::list("size", vec![num(0.6)]),
+            Sexp::list("drill", vec![num(0.3)]),
+            Sexp::list("layers", vec![Sexp::str("F.Cu"), Sexp::str("B.Cu")]),
+            Sexp::list("net", vec![Sexp::atom(pcb_net.to_string())]),
+            str_pair("uuid", via_uuid.to_string()),
+        ],
+    )
+}
+
 fn build_ground_stitch_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usize) -> Sexp {
     let via_uuid = derive_entity_uuid(project, "ground-stitch-via", &idx.to_string());
     Sexp::list(

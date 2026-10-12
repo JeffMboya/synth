@@ -304,3 +304,27 @@ fn ground_plane_connects_its_pads_after_refill() {
     );
     let _ = fs::remove_dir_all(&result.out_dir);
 }
+
+/// A declared power plane sits on the inner layers while its pads are on the
+/// outer copper; its stitching vias must join the two, so after a refill the
+/// power net has nothing unconnected. Guarded on `kicad-cli`.
+#[test]
+fn power_plane_connects_its_pads_after_refill() {
+    let result = export_board(PLANE_PRIORITY_SOURCE, "power-fill");
+    let outcome = synth_drc::run_kicad_cli_drc(&result.pcb_path);
+    if outcome.evidence.reason.is_some() {
+        eprintln!(
+            "kicad-cli unavailable; skipping power plane fill test: {}",
+            outcome.evidence.summary_line()
+        );
+        let _ = fs::remove_dir_all(&result.out_dir);
+        return;
+    }
+    assert_eq!(
+        outcome.counts.unconnected,
+        0,
+        "a power plane's stitching vias must connect its pads: {}",
+        outcome.evidence.summary_line()
+    );
+    let _ = fs::remove_dir_all(&result.out_dir);
+}
