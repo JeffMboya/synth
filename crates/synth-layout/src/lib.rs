@@ -1626,7 +1626,7 @@ fn settle_sheet_size(board: &Board, layout: &mut Layout) {
 /// current component positions, overwriting `net_labels`, `wires`
 /// and `junctions` in place.
 ///
-/// Factored out of [`layout`] so [`apply_op`] can re-run just this
+/// Factored out of [`layout`] so [`crate::ops::apply_op`] can re-run just this
 /// step after a Stage E mutation (§7.8.8) changes where a component
 /// sits, without re-running cluster recognition or placement
 /// (Stages A/B) — connectivity (`board`) is never touched here, only

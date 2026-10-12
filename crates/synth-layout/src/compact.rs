@@ -313,7 +313,8 @@ fn bounds_of_placements(board: &Board, placements: &[ComponentPlacement]) -> (f6
 /// The room a component actually needs on the sheet, in each axis.
 ///
 ///
-/// This must be the *text-inclusive* extent, not [`body_size`]. The placer
+/// This must be the *text-inclusive* extent, not [`crate::body_size_for_part`].
+/// The placer
 /// sizes its columns from these same helpers
 /// ([`crate::component_text_inclusive_half_width`] and
 /// [`crate::text_inclusive_half_height`]) because a part's Reference/Value
