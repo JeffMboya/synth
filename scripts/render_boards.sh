@@ -2,7 +2,9 @@
 # Plot a schematic and a board image for every qualification PCB, so a review
 # can look at what Synth produced instead of reading a hash.
 #
-# Needs `kicad-cli` (KiCad 10) for the plots and `rsvg-convert` for the PNGs.
+# Needs `kicad-cli` (KiCad 10) for the plots. The PNGs are rasterized by the
+# repository's own pinned renderer, so the picture does not depend on
+# whichever librsvg the machine happens to have.
 # Copper needs a router: set `KICAD_ROUTING_TOOLS_REPO`. A board that does not
 # route is still plotted, from the un-routed baseline Synth preserves beside
 # the export, and the image is named `pcb-unrouted` so nobody mistakes it for
@@ -35,9 +37,11 @@ failed=()
   "$KICAD_CLI" sch export svg --help
 } > "$OUT/kicad-cli.txt" 2>&1
 
+SVG2PNG=${SVG2PNG:-target/release/examples/svg2png}
+[ -x "$SVG2PNG" ] || cargo build --release -p synth-render --example svg2png
+
 svg_to_png() { # svg png
-  rsvg-convert --width "$WIDTH" --keep-aspect-ratio --background-color white \
-    --output "$2" "$1"
+  "$SVG2PNG" "$1" "$2" "$WIDTH"
 }
 
 for board in "${boards[@]}"; do
@@ -84,7 +88,11 @@ for board in "${boards[@]}"; do
   if [ -f "$pcb" ]; then
     # One combined sheet, cropped to the board, with the layers a reviewer
     # reads: copper both sides, silkscreen, the outline and the drills.
+    # `--mode-single` is what makes --output a file rather than a directory
+    # of one SVG per layer, and `--check-zones` refills the pours so the
+    # picture shows the copper the board actually ships with.
     if "$KICAD_CLI" pcb export svg --output "$work/$id.$pcb_label.svg" \
+        --mode-single --check-zones \
         --layers "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts" \
         --page-size-mode 2 --exclude-drawing-sheet "$pcb" >> "$log" 2>&1; then
       svg_to_png "$work/$id.$pcb_label.svg" "$work/$id.$pcb_label.png" >> "$log" 2>&1
@@ -95,7 +103,8 @@ for board in "${boards[@]}"; do
     # The 3D view is the one picture a non-engineer reads. Component bodies
     # need `kicad-packages3d`; without it this is still the real board.
     render=("$KICAD_CLI" pcb render --output "$work/$id.$pcb_label-3d.png"
-            --quality basic --side top --width "$WIDTH" --height "$HEIGHT" "$pcb")
+            --quality basic --side top --background opaque
+            --width "$WIDTH" --height "$HEIGHT" "$pcb")
     if command -v xvfb-run > /dev/null 2>&1; then
       xvfb-run -a "${render[@]}" >> "$log" 2>&1 || failed+=("$id $pcb_label-3d")
     else
