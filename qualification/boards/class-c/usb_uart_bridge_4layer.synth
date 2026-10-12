@@ -8,7 +8,7 @@
 //
 // STATED LIMITATION: no length-matching or skew syntax exists, so the pair's
 // intra-pair skew budget is not declared.
-board "c2_usb_uart_bridge_4layer" {
+board "usb_uart_bridge_4layer" {
     layers 4
     manufacturer "jlcpcb"
     revision "A"

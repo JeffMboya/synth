@@ -9,7 +9,7 @@
 //   2. USB D+/D- routed to plain GPIO     -> E-SYNTH-USB-001
 //   3. USB-C with no CC pull-downs        -> E-SYNTH-USB-002
 //   4. Buck feedback taken from the switch node, not the output
-board "b4_negative_unsafe_mixed_signal" {
+board "negative_unsafe_mixed_signal" {
     layers 4
     manufacturer "jlcpcb"
 

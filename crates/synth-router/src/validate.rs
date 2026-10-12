@@ -1117,7 +1117,7 @@ mod tests {
         );
     }
 
-    /// The geometry that failed `a3_protected_power_entry`: U1 pad 2 of a
+    /// The geometry that failed `protected_power_entry`: U1 pad 2 of a
     /// `SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.3mm` at (23.975, 29.5183),
     /// 1.95 × 0.6 mm, and the via KiCadRoutingTools placed at
     /// (24.0, 28.95) — 0.268 mm below the pad's edge, against the 0.1 mm

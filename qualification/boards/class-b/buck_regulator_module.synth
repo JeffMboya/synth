@@ -5,7 +5,7 @@
 // kept small, the feedback divider taken from the output capacitor rather
 // than the inductor, pi filtering on both sides, and a discrete power-good
 // comparator since the MP2307 has no PG pin.
-board "b1_buck_regulator_module" {
+board "buck_regulator_module" {
     layers 4
     manufacturer "jlcpcb"
 
