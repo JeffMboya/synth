@@ -42,7 +42,7 @@ fn workspace_root() -> PathBuf {
         .unwrap()
 }
 
-fn export_pcb(source: &str, label: &str) -> String {
+fn export_board(source: &str, label: &str) -> synth_kicad::ExportResult {
     let registry = synth_registry::load_dir(&workspace_root().join("registry").join("parts"))
         .expect("seed registry must load");
     let parsed = synth_parser::parse(source, "split_gnd.synth");
@@ -56,9 +56,13 @@ fn export_pcb(source: &str, label: &str) -> String {
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&out);
-    let result = synth_kicad::export(&board, &out).expect("export");
+    synth_kicad::export(&board, &out).expect("export")
+}
+
+fn export_pcb(source: &str, label: &str) -> String {
+    let result = export_board(source, label);
     let text = fs::read_to_string(&result.pcb_path).expect(".kicad_pcb written");
-    let _ = fs::remove_dir_all(&out);
+    let _ = fs::remove_dir_all(&result.out_dir);
     text
 }
 
@@ -155,4 +159,148 @@ fn a_class_without_the_plane_attribute_floods_no_zone() {
         !pcb.contains("net_name \"VBUS\""),
         "a class that does not declare a plane must not flood one: {pcb}"
     );
+}
+
+/// Six decoupling capacitors between a ground net (auto plane) and a declared
+/// power plane. Ground keeps the outer layers and the power plane takes the
+/// inner ones, so the two never compete for a layer.
+const PLANE_PRIORITY_SOURCE: &str = r#"board "plane_priority" {
+  layers 4
+  netclass "PWR" {
+    plane
+  }
+  component C1: capacitor "c_generic_0603" value "100nF"
+  component C2: capacitor "c_generic_0603" value "100nF"
+  component C3: capacitor "c_generic_0603" value "100nF"
+  component C4: capacitor "c_generic_0603" value "100nF"
+  component C5: capacitor "c_generic_0603" value "100nF"
+  component C6: capacitor "c_generic_0603" value "100nF"
+  connect C1.p1 -> C2.p1 as "GND"
+  connect C2.p1 -> C3.p1
+  connect C3.p1 -> C4.p1
+  connect C4.p1 -> C5.p1
+  connect C5.p1 -> C6.p1
+  connect C1.p2 -> C2.p2 as "VBUS" class "PWR"
+  connect C2.p2 -> C3.p2
+  connect C3.p2 -> C4.p2
+  connect C4.p2 -> C5.p2
+  connect C5.p2 -> C6.p2
+}
+"#;
+
+/// The `(priority N)` of the zone whose `net_name` is `net`, or `None`.
+fn zone_priority(pcb: &str, net: &str) -> Option<i64> {
+    let needle = format!("net_name \"{net}\"");
+    for chunk in pcb.split("(zone") {
+        if !chunk.contains(&needle) {
+            continue;
+        }
+        let start = chunk.find("(priority ")? + "(priority ".len();
+        let end = chunk[start..].find(')')? + start;
+        return chunk[start..end].trim().parse().ok();
+    }
+    None
+}
+
+#[test]
+fn ground_planes_outrank_declared_power_planes() {
+    let pcb = export_pcb(PLANE_PRIORITY_SOURCE, "priorities");
+    let ground = zone_priority(&pcb, "GND").expect("ground plane must carry a priority");
+    let power = zone_priority(&pcb, "VBUS").expect("power plane must carry a priority");
+    assert!(
+        ground > power,
+        "ground priority {ground} must exceed power priority {power} so the fill order is \
+         deterministic and neither net is left with islands"
+    );
+}
+
+/// The layers a net's zones are on, in emission order.
+fn zone_layers<'a>(pcb: &'a str, net: &str) -> Vec<&'a str> {
+    let needle = format!("net_name \"{net}\"");
+    let mut out = Vec::new();
+    for chunk in pcb.split("(zone") {
+        if !chunk.contains(&needle) {
+            continue;
+        }
+        if let Some(start) = chunk.find("(layer \"") {
+            let s = start + "(layer \"".len();
+            if let Some(end) = chunk[s..].find('"') {
+                out.push(&chunk[s..s + end]);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn declared_power_planes_use_the_inner_layers() {
+    let pcb = export_pcb(PLANE_PRIORITY_SOURCE, "layers");
+    let ground = zone_layers(&pcb, "GND");
+    let power = zone_layers(&pcb, "VBUS");
+    assert!(
+        ground.contains(&"F.Cu") && ground.contains(&"B.Cu"),
+        "ground must keep the outer layers: {ground:?}"
+    );
+    assert!(
+        !ground.iter().any(|layer| layer.starts_with("In")),
+        "ground must give up the inner layers when a power plane is declared, else the two \
+         compete on one layer and one starves: {ground:?}"
+    );
+    assert!(
+        power.contains(&"In1.Cu") && power.contains(&"In2.Cu"),
+        "a declared power plane must use the inner layers: {power:?}"
+    );
+    assert!(
+        !power
+            .iter()
+            .any(|layer| *layer == "F.Cu" || *layer == "B.Cu"),
+        "a power plane must not compete with ground on the outer layers: {power:?}"
+    );
+}
+
+/// Every pad on one ground net, so the only copper needed to connect them is
+/// the ground plane.
+const GROUND_FILL_SOURCE: &str = r#"board "ground_fill" {
+  layers 4
+  component C1: capacitor "c_generic_0603" value "100nF"
+  component C2: capacitor "c_generic_0603" value "100nF"
+  component C3: capacitor "c_generic_0603" value "100nF"
+  component C4: capacitor "c_generic_0603" value "100nF"
+  component C5: capacitor "c_generic_0603" value "100nF"
+  component C6: capacitor "c_generic_0603" value "100nF"
+  connect C1.p1 -> C2.p1 as "GND"
+  connect C2.p1 -> C3.p1
+  connect C3.p1 -> C4.p1
+  connect C4.p1 -> C5.p1
+  connect C5.p1 -> C6.p1
+  connect C1.p2 -> C2.p2 as "GND"
+  connect C2.p2 -> C3.p2
+  connect C3.p2 -> C4.p2
+  connect C4.p2 -> C5.p2
+  connect C5.p2 -> C6.p2
+}
+"#;
+
+/// With zones refilled, the ground plane must connect its pads: an un-routed
+/// board whose only copper is the plane has no unconnected item when the plane
+/// fills. Guarded on `kicad-cli`.
+#[test]
+fn ground_plane_connects_its_pads_after_refill() {
+    let result = export_board(GROUND_FILL_SOURCE, "ground-fill");
+    let outcome = synth_drc::run_kicad_cli_drc(&result.pcb_path);
+    if outcome.evidence.reason.is_some() {
+        eprintln!(
+            "kicad-cli unavailable; skipping plane fill test: {}",
+            outcome.evidence.summary_line()
+        );
+        let _ = fs::remove_dir_all(&result.out_dir);
+        return;
+    }
+    assert_eq!(
+        outcome.counts.unconnected,
+        0,
+        "the ground plane must connect its pads: {}",
+        outcome.evidence.summary_line()
+    );
+    let _ = fs::remove_dir_all(&result.out_dir);
 }
