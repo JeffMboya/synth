@@ -4,7 +4,7 @@
 // A field sensor node: JST-fed 5 V into a low-noise 3V3 LDO, an STM32G030
 // reading two I2C devices (environmental sensor and a config EEPROM), with a
 // 4-pin JST break-out for the host UART. One I2C bus, one set of pull-ups.
-board "a2_i2c_sensor_node" {
+board "i2c_sensor_node" {
     layers 2
     manufacturer "jlcpcb"
 

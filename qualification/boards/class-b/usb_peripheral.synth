@@ -5,7 +5,7 @@
 // the data pair before anything else, a declared 90 ohm differential pair
 // into the RP2350's native USB pins, and a keepout around the connector so
 // the placer cannot crowd the pair.
-board "b3_usb_peripheral" {
+board "usb_peripheral" {
     layers 4
     manufacturer "jlcpcb"
     revision "A"

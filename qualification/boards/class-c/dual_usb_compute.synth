@@ -10,7 +10,7 @@
 // STATED LIMITATION: SynthSpec has no length-matching or skew syntax, so the
 // intra-pair skew and inter-pair length budgets #40 asks about cannot be
 // declared here. Impedance is the only pair constraint the language carries.
-board "c1_dual_usb_compute" {
+board "dual_usb_compute" {
     layers 6
     manufacturer "jlcpcb"
     revision "A"

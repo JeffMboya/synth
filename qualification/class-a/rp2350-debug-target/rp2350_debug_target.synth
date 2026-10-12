@@ -12,7 +12,7 @@
 // smallest the fab ladder reaches is 0.56 mm" — and the analysis names 4
 // layers as the remedy. The Raspberry Pi Pico 2 is a four-layer board for
 // the same reason. This was declared `layers 2` and was unroutable.
-board "a1_rp2350_debug_target" {
+board "rp2350_debug_target" {
     layers 4
     manufacturer "jlcpcb"
 

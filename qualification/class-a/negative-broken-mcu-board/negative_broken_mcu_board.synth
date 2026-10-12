@@ -10,7 +10,7 @@
 //   2. U1.nrst never connected         -> E-SYNTH-CONNECT-001
 //   3. C1 declared twice               -> E-SYNTH-NAME-001
 //   4. R1 generic passive with no value -> E-SYNTH-VALUE-001
-board "a4_negative_broken_mcu_board" {
+board "negative_broken_mcu_board" {
     layers 2
     manufacturer "jlcpcb"
 

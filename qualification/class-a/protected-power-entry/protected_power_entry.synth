@@ -5,7 +5,7 @@
 // P-FET, resettable over-current, TVS clamp, a buck down to 5 V, a soft-start
 // load switch, and a 3V3 rail for logic. No MCU — this board exists to be
 // reviewed as a power stage.
-board "a3_protected_power_entry" {
+board "protected_power_entry" {
     layers 2
     manufacturer "jlcpcb"
 

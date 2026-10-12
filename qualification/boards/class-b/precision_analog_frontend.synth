@@ -5,7 +5,7 @@
 // filtering, a buffered reference, and an SPI ADC read by an MCU. The analog
 // section is kept in its own keepout with its own netclass, and AGND is
 // declared as a separate net joined to DGND at one point.
-board "b2_precision_analog_frontend" {
+board "precision_analog_frontend" {
     layers 4
     manufacturer "jlcpcb"
 

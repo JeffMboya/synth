@@ -6,7 +6,7 @@
 // placer has to respect it. The CH340G's 12 MHz crystal is the clock-sensitive
 // net: it sits in its own netclass with wider clearance, and its load caps are
 // pinned to the crystal rather than left to the placer.
-board "b5_wifi_radio_peripheral" {
+board "wifi_radio_peripheral" {
     layers 4
     manufacturer "jlcpcb"
     revision "A"
