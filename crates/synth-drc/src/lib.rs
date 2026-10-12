@@ -533,6 +533,7 @@ mod tests {
             color: None,
             impedance: None,
             current: Some(synth_ir::Current(1_000_000)),
+            match_length: None,
             plane: false,
             source_span: synth_diagnostics::Span::new(0, 0),
         });
@@ -571,6 +572,7 @@ mod tests {
             color: None,
             impedance: Some(synth_ir::Impedance(50_000)),
             current: None,
+            match_length: None,
             plane: false,
             source_span: synth_diagnostics::Span::new(0, 0),
         });
