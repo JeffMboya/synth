@@ -686,6 +686,7 @@ impl PcbBoard {
             collect_edge_cuts(graphic, &mut board.edge_cuts);
         }
 
+        board.expand_via_layer_spans();
         board.reconcile_name_only_nets();
 
         Ok(board)
@@ -702,6 +703,43 @@ impl PcbBoard {
     /// A board that *does* have a table keeps its own numbering, which is
     /// what makes it comparable with its baseline; renumbering it would
     /// report every pad as renetted.
+    /// Expand each via's layer pair into the copper it actually passes through.
+    ///
+    /// KiCad writes a via's layers as its two endpoints — `(layers "F.Cu"
+    /// "B.Cu")` for a through via — and the via spans every copper layer
+    /// between them. Read literally, the pair says the via touches the outer
+    /// copper and nothing else, so a plane on an inner layer is never reached
+    /// and every pad that depends on the via reads as stranded.
+    ///
+    /// This stayed invisible while only ground was poured, because a ground
+    /// plane sits on the outer copper and is therefore named in the pair. A
+    /// rail poured on `In1.Cu` is not.
+    fn expand_via_layer_spans(&mut self) {
+        let copper: Vec<&str> = self
+            .layers
+            .iter()
+            .map(String::as_str)
+            .filter(|layer| crate::validate::entry_is_copper(layer))
+            .collect();
+        if copper.len() < 3 {
+            // Two-layer board: the endpoints already are the whole stack.
+            return;
+        }
+        for via in &mut self.vias {
+            if via.layers.len() != 2 {
+                continue;
+            }
+            let (Some(start), Some(end)) = (
+                copper.iter().position(|l| *l == via.layers[0]),
+                copper.iter().position(|l| *l == via.layers[1]),
+            ) else {
+                continue;
+            };
+            let (lo, hi) = (start.min(end), start.max(end));
+            via.layers = copper[lo..=hi].iter().map(|l| (*l).to_string()).collect();
+        }
+    }
+
     fn reconcile_name_only_nets(&mut self) {
         if !self.nets.is_empty() && self.nets.len() > 1 {
             return;

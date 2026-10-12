@@ -873,7 +873,7 @@ fn items_touch(board: &PcbBoard, a: &Item, b: &Item, pads: &BTreeMap<String, &Pa
 /// non-copper — because it does not literally end in `.Cu` — silently put
 /// every through-hole pad on no layer at all, so no track could ever touch
 /// one and each THT net read as unroutable no matter what the router drew.
-fn entry_is_copper(entry: &str) -> bool {
+pub(crate) fn entry_is_copper(entry: &str) -> bool {
     entry.ends_with(".Cu") || entry.ends_with(".CuIn") || entry == "*.Cu"
 }
 
@@ -1093,6 +1093,50 @@ mod tests {
         assert_eq!(report.open_nets, 0, "{:?}", report.open);
         assert_eq!(report.connected_nets, 1, "net 2 must be connected");
         assert!(report.open.is_empty());
+    }
+
+    /// A rail poured on an inner layer, reached from a pad on the outer copper
+    /// through a via. KiCad writes that via as `(layers "F.Cu" "B.Cu")` — its
+    /// two endpoints — and it passes through `In1.Cu` on the way. Reading the
+    /// pair literally left the plane untouched and the pad stranded.
+    #[test]
+    fn a_through_via_reaches_a_plane_on_an_inner_layer() {
+        let text = r#"(kicad_pcb
+  (version 20260206)
+  (generator "synth-eda")
+  (layers
+    (0 "F.Cu" signal)
+    (1 "In1.Cu" signal)
+    (2 "In2.Cu" signal)
+    (31 "B.Cu" signal)
+  )
+  (net 0 "")
+  (net 1 "VDD")
+  (footprint "Capacitor_SMD:C_0603"
+    (layer "F.Cu")
+    (at 10 10)
+    (property "Reference" "C1" (at 0 0) (layer "F.SilkS"))
+    (pad "1" smd rect (at 0 0) (size 0.9 0.95) (layers "F.Cu") (net 1 "VDD"))
+  )
+  (footprint "Capacitor_SMD:C_0603"
+    (layer "F.Cu")
+    (at 30 30)
+    (property "Reference" "C2" (at 0 0) (layer "F.SilkS"))
+    (pad "1" smd rect (at 0 0) (size 0.9 0.95) (layers "F.Cu") (net 1 "VDD"))
+  )
+  (via (at 10 10) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))
+  (via (at 30 30) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))
+  (zone
+    (net 1)
+    (layer "In1.Cu")
+    (fill yes)
+    (polygon (pts (xy 0 0) (xy 40 0) (xy 40 40) (xy 0 40)))
+    (filled_polygon (layer "In1.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 40) (xy 0 40)))
+  )
+)"#;
+        let report = check_connectivity(&board(text), &FabricationPolicy::default());
+        assert_eq!(report.open_nets, 0, "{:?}", report.open);
+        assert_eq!(report.connected_nets, 1);
     }
 
     #[test]
