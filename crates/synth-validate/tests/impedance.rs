@@ -242,3 +242,52 @@ fn a_pair_that_may_use_inner_layers_is_labelled_not_verified_once() {
         .unwrap()
         .contains("not verified"));
 }
+
+/// Single-ended controlled impedance declared on a netclass, which has no
+/// `diff_pair` to carry the target.
+const SINGLE_ENDED_OFF_TARGET: &str = r#"board "single_ended" {
+  layers 2
+
+  netclass "RF" {
+    trace_width 0.12mm
+    impedance 50ohm
+  }
+
+  component U1: antenna "ant_chip_2g4"
+  component R1: resistor "r_generic_0603" value "10k"
+
+  connect U1.feed -> R1.p1 as "RF_IN" class "RF"
+
+  keepout antenna {
+    radius 10mm
+  }
+
+  stackup {
+    copper 0.035mm
+    insulator 0.2104mm er 4.4
+    copper 0.035mm
+  }
+}
+"#;
+
+#[test]
+fn a_single_ended_netclass_width_off_target_is_flagged() {
+    let diags = diagnostics_of(SINGLE_ENDED_OFF_TARGET, "single_ended.synth");
+    let flagged = with_code(&diags, "E-SYNTH-IMPEDANCE-001");
+    assert_eq!(flagged.len(), 1, "{diags:?}");
+    let expected = flagged[0].expected.as_deref().unwrap();
+    assert!(
+        expected.contains("net `RF_IN` in netclass `RF`"),
+        "{expected}"
+    );
+}
+
+#[test]
+fn a_single_ended_netclass_without_a_width_is_not_flagged() {
+    let src = SINGLE_ENDED_OFF_TARGET.replace("    trace_width 0.12mm\n", "");
+    let diags = diagnostics_of(&src, "single_ended_derived.synth");
+    assert!(
+        diags.iter().all(|d| !d.code.contains("IMPEDANCE-001")),
+        "{diags:?}"
+    );
+}

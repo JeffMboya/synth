@@ -5,7 +5,7 @@ use synth_geometry::{
     calculate_microstrip_z0, coupled_microstrip_zdiff_ohms, derive_coupled_microstrip,
     derive_microstrip_width_mm, outer_microstrip_params, MicrostripParams, UnreachableZ0,
 };
-use synth_ir::{Board, DiffPair, Length, Net};
+use synth_ir::{Board, Length, Net};
 
 use crate::{ErcCategory, ErcRule};
 
@@ -18,19 +18,16 @@ const WARNING_DEVIATION: f64 = 0.10;
 struct Controlled<'a> {
     net: &'a Net,
     partner: Option<&'a Net>,
-    dp: &'a DiffPair,
+    /// Where the target was written: the `diff_pair` or the `netclass`.
+    span: synth_diagnostics::Span,
+    /// Human description used in the diagnostics, e.g. "pair `a`/`b`" or
+    /// "net `x` in netclass `RF`".
+    subject: String,
     target_ohms: f64,
     outer: Option<MicrostripParams>,
 }
 
 impl Controlled<'_> {
-    fn subject(&self) -> String {
-        match self.partner {
-            Some(partner) => format!("pair `{}`/`{}`", self.net.name, partner.name),
-            None => format!("net `{}`", self.net.name),
-        }
-    }
-
     fn derive(&self, outer: &MicrostripParams) -> Result<(), UnreachableZ0> {
         match self.partner {
             Some(_) => derive_coupled_microstrip(
@@ -63,17 +60,46 @@ fn impedance_at(outer: &MicrostripParams, width_mm: f64, gap_mm: Option<f64>) ->
     }
 }
 
-fn controlled(board: &Board) -> impl Iterator<Item = Controlled<'_>> {
+/// Every controlled-impedance target on the board: a `diff_pair`'s
+/// differential `impedance`, and a `netclass`'s single-ended `impedance` on
+/// each of its member nets.
+fn controlled(board: &Board) -> Vec<Controlled<'_>> {
     let outer = board.stackup.as_ref().and_then(outer_microstrip_params);
-    board
-        .impedance_legs()
-        .map(move |(net, neg, dp, impedance)| Controlled {
+    let mut out = Vec::new();
+    for (net, neg, dp, impedance) in board.impedance_legs() {
+        let partner = (neg.id != net.id).then_some(neg);
+        out.push(Controlled {
             net,
-            partner: (neg.id != net.id).then_some(neg),
-            dp,
+            partner,
+            span: dp.source_span,
+            subject: match partner {
+                Some(partner) => format!("pair `{}`/`{}`", net.name, partner.name),
+                None => format!("net `{}`", net.name),
+            },
             target_ohms: impedance.to_ohms(),
             outer: outer.clone(),
-        })
+        });
+    }
+    for class in &board.netclasses {
+        let Some(impedance) = class.impedance else {
+            continue;
+        };
+        for net in board
+            .nets
+            .iter()
+            .filter(|n| n.netclass.as_deref() == Some(class.name.as_str()))
+        {
+            out.push(Controlled {
+                net,
+                partner: None,
+                span: class.source_span,
+                subject: format!("net `{}` in netclass `{}`", net.name, class.name),
+                target_ohms: impedance.to_ohms(),
+                outer: outer.clone(),
+            });
+        }
+    }
+    out
 }
 
 fn diagnostic(
@@ -89,7 +115,7 @@ fn diagnostic(
         ESTIMATE
     };
     DiagnosticBuilder::new(code, severity, format!("{title}{estimate}"))
-        .location(Location::from_span(file.to_string(), c.dp.source_span))
+        .location(Location::from_span(file.to_string(), c.span))
         .explanation_url(format!("synth.docs/diagnostics/{code}"))
 }
 
@@ -122,6 +148,7 @@ impl ErcRule for DeclaredWidthRule {
 
     fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
         controlled(board)
+            .into_iter()
             .filter_map(|c| {
                 let legs: Vec<_> = std::iter::once(c.net).chain(c.partner).collect();
                 let declared: Vec<_> = legs.iter().map(|leg| c.declared(board, leg)).collect();
@@ -139,8 +166,7 @@ impl ErcRule for DeclaredWidthRule {
                         )
                         .expected(format!(
                             "both legs of {} in one class giving about {:.1} ohm",
-                            c.subject(),
-                            c.target_ohms
+                            c.subject, c.target_ohms
                         ))
                         .found(
                             legs.iter()
@@ -174,8 +200,7 @@ impl ErcRule for DeclaredWidthRule {
                     )
                     .expected(format!(
                         "a geometry giving about {:.1} ohm on {}",
-                        c.target_ohms,
-                        c.subject()
+                        c.target_ohms, c.subject
                     ))
                     .found(format!(
                         "{} gives {z0:.1} ohm ({:.0} percent off)",
@@ -202,6 +227,7 @@ impl ErcRule for UnreachableTargetRule {
 
     fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
         controlled(board)
+            .into_iter()
             .filter_map(|c| {
                 let range = c.derive(c.outer.as_ref()?).err()?;
                 Some(
@@ -217,7 +243,7 @@ impl ErcRule for UnreachableTargetRule {
                          this stackup)",
                         range.lowest_ohms, range.highest_ohms
                     ))
-                    .found(format!("{:.1} ohm on {}", c.target_ohms, c.subject()))
+                    .found(format!("{:.1} ohm on {}", c.target_ohms, c.subject))
                     .build(),
                 )
             })
@@ -241,6 +267,7 @@ impl ErcRule for InnerLayerNotVerifiedRule {
             return Vec::new();
         }
         controlled(board)
+            .into_iter()
             .filter(|c| c.outer.is_some())
             .map(|c| {
                 diagnostic(
@@ -254,7 +281,7 @@ impl ErcRule for InnerLayerNotVerifiedRule {
                 .found(format!(
                     "{} may be routed on an inner copper layer, where impedance is not \
                      verified; only outer-layer microstrip is derived and checked",
-                    c.subject()
+                    c.subject
                 ))
                 .build()
             })

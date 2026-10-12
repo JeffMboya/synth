@@ -220,6 +220,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "layout_file_path": { "type": "string", "description": "Optional agent or human PCB placement sidecar (<design>.placement.layout.toml; board millimetres); exact component positions and rotations are applied to placement and routing. Omit for auto-placement." },
                     "schematic_layout_file_path": { "type": "string", "description": "Optional schematic layout sidecar (<design>.schematic.layout.toml; sheet millimetres); component positions on the exported sheet. Omit for auto-layout. Distinct from layout_file_path: the two files hold the same schema but different coordinate spaces, so passing one where the other is expected silently misplaces parts." },
                     "allow_incomplete": { "type": "boolean", "description": "Export a clearly labelled draft even when routing is incomplete or DRC has violations. Defaults to false; never use this output for fabrication." },
+                    "place_route_iterate": { "type": "boolean", "description": "Choose the placement by routing each candidate and keeping the one that routes best, instead of the export path's route-free estimate. Opt-in: costs one extra route per candidate, and falls back to the normal choice when there is one candidate or the engine is unavailable." },
                     "router": { "type": "string", "description": "External engine: \"kicad-routing-tools\" (default, external checkout) or \"freerouting\" (managed)" },
                     "freerouting_jar": { "type": "string", "description": "Path to the FreeRouting JAR" },
                     "freerouting_java": { "type": "string", "description": "Java executable for FreeRouting" },
@@ -2525,6 +2526,59 @@ fn execute_review_schematic(
     }))
 }
 
+/// Route each candidate placement and return the one that routes best.
+///
+/// `None` means "keep the export's own choice": there is one candidate, or the
+/// engine is unavailable, so the opt-in flag never turns a valid export into a
+/// failure. Mirrors the CLI's `--place-route-iterate`.
+fn select_placement_by_route(
+    board: &synth_ir::Board,
+    sidecars: &synth_kicad::Sidecars,
+    args: &Value,
+    engine: synth_router::RouterEngine,
+) -> Result<Option<synth_place::Placement>, String> {
+    /// Lower-is-better route-quality key (`RouteReport::layout_cost`).
+    type Cost = (u8, usize, usize, usize, u64);
+
+    let candidates = synth_kicad::placement_candidates(board, sidecars)
+        .map_err(|e| format!("could not enumerate placement candidates: {e}"))?;
+    if candidates.len() < 2 {
+        return Ok(None);
+    }
+    let mut best: Option<(Cost, synth_place::Placement)> = None;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let scratch = std::env::temp_dir().join(format!(
+            "synth-mcp-place-route-{}-{index}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let res = synth_kicad::export_with_placement(board, &scratch, sidecars, candidate)
+            .map_err(|e| format!("candidate export failed: {e}"))?;
+        let mut request = routing_request(args, engine);
+        request.board_path.clone_from(&res.pcb_path);
+        request.out_dir.clone_from(&res.out_dir);
+        request.stem = synth_router::sanitize_stem(&board.name);
+        request.use_profile_floor(
+            &board
+                .manufacturer
+                .clone()
+                .unwrap_or_else(|| "jlc-standard".to_string()),
+        );
+        request.input_hash = sha256_of(&res.pcb_path);
+        request.preserve_baseline().map_err(|f| f.to_string())?;
+        let report = synth_router::route(&request);
+        let _ = std::fs::remove_dir_all(&scratch);
+        if report.state == synth_router::RouteState::RouterUnavailable {
+            return Ok(None);
+        }
+        let cost = report.layout_cost();
+        if best.as_ref().is_none_or(|(previous, _)| cost < *previous) {
+            best = Some((cost, candidate.clone()));
+        }
+    }
+    Ok(best.map(|(_, placement)| placement))
+}
+
 fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
     // Long by design: one linear arg-parse + compile + export
     // pipeline per tool keeps the MCP surface reviewable in one
@@ -2572,17 +2626,29 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
     let schematic_sidecar =
         resolve_schematic_sidecar_with(args, file_name, "schematic_layout_file_path");
 
-    let res = synth_kicad::export_with_sidecars(
-        &board,
-        &out_dir,
-        &synth_kicad::Sidecars {
-            schematic: schematic_sidecar.clone(),
-            placement: placement_sidecar.clone(),
-        },
-    )
+    let sidecars = synth_kicad::Sidecars {
+        schematic: schematic_sidecar.clone(),
+        placement: placement_sidecar.clone(),
+    };
+    let engine = resolve_router(args)?;
+
+    // Opt-in place→route→re-place: route the candidate placements and keep the
+    // one that routes best, then install it for the real export. Falls back to
+    // the normal choice when there is one candidate or the engine is down.
+    let chosen = if args["place_route_iterate"].as_bool().unwrap_or(false) {
+        select_placement_by_route(&board, &sidecars, args, engine)?
+    } else {
+        None
+    };
+
+    let res = match &chosen {
+        Some(placement) => {
+            synth_kicad::export_with_placement(&board, &out_dir, &sidecars, placement)
+        }
+        None => synth_kicad::export_with_sidecars(&board, &out_dir, &sidecars),
+    }
     .map_err(|e| format!("Export failed: {e}"))?;
 
-    let engine = resolve_router(args)?;
     let mut request = routing_request(args, engine);
     request.board_path.clone_from(&res.pcb_path);
     request.out_dir.clone_from(&res.out_dir);
