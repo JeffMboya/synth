@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use synth_geometry::{mm_to_nm, nm_to_mm, Layer, StackupProfile};
+use synth_geometry::{mm_to_nm, nm_to_mm, Layer, Point, StackupProfile};
 use synth_ir::{Board, Length, Net, NetId};
 use synth_pcb::{Routing, Segment};
 
@@ -441,4 +441,100 @@ pub fn check_edge_coupling(routing: &Routing, stackup: &StackupProfile) -> Vec<V
             },
         )
         .collect()
+}
+
+/// Return-path via check. Code: `W-SYNTH-DRC-016` — a **warning**.
+///
+/// A via that takes a signal to another layer needs a ground return via close
+/// by: return current follows the signal's reference plane, and when the signal
+/// changes layers that plane is interrupted, so the return has to jump too. A
+/// signal via with no ground via within the stackup's thickest dielectric is a
+/// discontinuity a fast edge radiates from.
+///
+/// Advisory because the current path is only inferred from geometry and whether
+/// a discontinuity matters depends on the edge rate. Needs a declared stackup
+/// (the distance is a property of the dielectric), like the other
+/// signal-integrity rules; skipped without one.
+#[must_use]
+pub fn check_return_path_vias(
+    board: &Board,
+    routing: &Routing,
+    stackup: &StackupProfile,
+) -> Vec<Violation> {
+    let domains = synth_ir::infer_power_domains(board);
+    // Topology first, then the name/pin heuristic the exporter uses for plane
+    // detection: the registry types ground pins `power_input`, not
+    // `ground_reference`, so the domain map alone misses most grounds.
+    let is_ground = |net_id: NetId| {
+        board.net(net_id).is_some_and(|net| {
+            domains
+                .get(net_id)
+                .is_some_and(synth_ir::PowerDomainKind::is_ground)
+                || net_name_or_pin_is_ground(board, net)
+        })
+    };
+    if !board.nets.iter().any(|net| is_ground(net.id)) {
+        // No ground net at all: the discontinuity is the missing plane, which
+        // is the design's, not this via's.
+        return Vec::new();
+    }
+    let ground_vias: Vec<Point> = routing
+        .vias
+        .iter()
+        .filter(|via| is_ground(via.net))
+        .map(|via| via.at)
+        .collect();
+    let radius_nm = stackup
+        .layers
+        .iter()
+        .map(|layer| layer.dielectric_height.0)
+        .max()
+        .unwrap_or_else(|| mm_to_nm(1.6));
+    let mut out = Vec::new();
+    for via in &routing.vias {
+        if is_ground(via.net) {
+            continue;
+        }
+        let has_return = ground_vias.iter().any(|ground| {
+            (ground.x_nm - via.at.x_nm).abs() <= radius_nm
+                && (ground.y_nm - via.at.y_nm).abs() <= radius_nm
+        });
+        if !has_return {
+            out.push(Violation {
+                code: "W-SYNTH-DRC-016".to_string(),
+                message: format!(
+                    "net {} changes layers at ({:.2}, {:.2}) mm with no ground return via within \
+                     {:.2} mm, so the return current has to jump reference planes",
+                    via.net.0,
+                    nm_to_mm(via.at.x_nm),
+                    nm_to_mm(via.at.y_nm),
+                    nm_to_mm(radius_nm),
+                ),
+                witness: vec![via.at],
+                nets: vec![via.net],
+                components: Vec::new(),
+                pos_mm: Some((nm_to_mm(via.at.x_nm), nm_to_mm(via.at.y_nm))),
+                suggested_override: None,
+            });
+        }
+    }
+    out
+}
+
+/// Whether a net is ground by name (`gnd`, `vss`, `0v`) or by the name of a
+/// connected pin. Mirrors the exporter's plane-net classifier, so a return via
+/// is judged against the same ground the planes are built from.
+pub(crate) fn net_name_or_pin_is_ground(board: &Board, net: &Net) -> bool {
+    fn named(text: &str) -> bool {
+        let text = text.to_ascii_lowercase();
+        text.contains("gnd") || text.contains("vss") || text == "0v"
+    }
+    named(&net.name)
+        || net.endpoints.iter().any(|endpoint| {
+            board
+                .component(endpoint.component)
+                .and_then(|component| component.part.as_ref())
+                .and_then(|part| part.pins.get(endpoint.pin.0 as usize))
+                .is_some_and(|pin| named(&pin.name))
+        })
 }
