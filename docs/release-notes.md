@@ -20,6 +20,7 @@
   | `W-SYNTH-DRC-016` | signal via with no ground return via |
 
   `W-` codes are advisory and never block a release; the DRC report now carries a severity dimension (`is_blocking`, warning-aware `is_clean`).
+- Independent validation now reads a zone's **poured** copper (`filled_polygon`), not only its outline, and records `plane_splits`: signal tracks whose adjacent plane layer pours copper but does not cover the track, so it has no return path under it. Advisory.
 - `E-SYNTH-STACKUP-004/005` and `E-SYNTH-IMPEDANCE-001/002` now cover a netclass's single-ended impedance too.
 
 ### Planes
