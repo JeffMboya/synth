@@ -94,6 +94,13 @@ engine — KiCadRoutingTools by default, FreeRouting on request — and then che
 the result independently of what the engine reported about itself. The
 un-routed export is preserved as `<name>.synth.kicad_pcb` for review.
 
+Placement normally picks the best of a few candidates by a route-free estimate.
+`synth export-kicad --place-route-iterate` instead routes each candidate and
+keeps the one that routes best, judged by the independent checks rather than by
+either engine's report. It is opt-in (one extra route per candidate) and falls
+back to the normal choice when there is only one candidate or the engine is
+unavailable.
+
 ```text
 synth export-kicad board.synth --out output/board
 ```
