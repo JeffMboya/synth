@@ -643,6 +643,11 @@ pub struct NetclassStmt {
 pub enum NetclassAttr {
     TraceWidth(ValueWithUnit),
     Clearance(ValueWithUnit),
+    /// Tolerance within which every net in the class must be the same
+    /// routed length (`match_length 0.5mm`). A length-sensitive bus is
+    /// matched net-to-net, which `diff_pair`'s `max_skew` cannot express:
+    /// that one bounds the two halves of a single pair.
+    MatchLength(ValueWithUnit),
     /// Explicit hue for the class (`color "#c2410c"`), applied to the
     /// schematic `net_settings` colour. Six-digit `#rrggbb` (the
     /// leading `#` optional).

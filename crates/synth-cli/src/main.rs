@@ -4436,6 +4436,27 @@ fn build_route_request(
     request.kicad_routing_tools.fab_tier = options.fab_tier.as_str().to_string();
     request.kicad_routing_tools.same_net_pad_clearance_mm = options.same_net_pad_clearance;
     request.policy.allow_via_in_pad = options.allow_via_in_pad;
+    // Net-to-net length tolerances, carried by IR net name because that is
+    // what the exported board records. A class that declares `match_length`
+    // but holds fewer than two nets is dropped here rather than measured.
+    request.length_groups = board
+        .netclasses
+        .iter()
+        .filter_map(|nc| {
+            let tolerance = nc.match_length?;
+            let nets: Vec<String> = board
+                .nets
+                .iter()
+                .filter(|net| net.netclass.as_deref() == Some(nc.name.as_str()))
+                .map(|net| net.name.clone())
+                .collect();
+            (nets.len() >= 2).then(|| synth_router::LengthGroup {
+                class: nc.name.clone(),
+                tolerance_nm: tolerance.to_nm(),
+                nets,
+            })
+        })
+        .collect();
     request.use_profile_floor(
         &board
             .manufacturer

@@ -238,6 +238,22 @@ impl Default for KiCadRoutingToolsOptions {
     }
 }
 
+/// One netclass's net-to-net length tolerance, carried by IR net name.
+///
+/// Net names are the ones written into the exported board, so matching by
+/// them needs none of the KiCad-side name derivation the project file's
+/// class assignments go through.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LengthGroup {
+    /// Netclass that declared `match_length`.
+    pub class: String,
+    /// Tolerance in nanometres: the permitted spread between the longest
+    /// and shortest net in the group.
+    pub tolerance_nm: i64,
+    /// IR names of the nets in the class.
+    pub nets: Vec<String>,
+}
+
 /// Fabrication policy decisions that are not derivable from the board.
 ///
 /// Via-in-pad is the one that matters: it is manufacturable on some
@@ -335,6 +351,11 @@ pub struct RouteRequest {
     pub kicad_routing_tools: KiCadRoutingToolsOptions,
     /// Fabrication policy applied during independent validation.
     pub policy: FabricationPolicy,
+    /// Net-to-net length tolerances declared by `match_length`, checked
+    /// against the routed copper. Empty means nothing was declared, which
+    /// is not the same as everything matching.
+    #[serde(default)]
+    pub length_groups: Vec<LengthGroup>,
     /// Name of the manufacturing profile the board was exported against,
     /// recorded in provenance.
     pub profile_name: String,
@@ -501,6 +522,7 @@ impl RouteRequest {
             limits: RouterLimits::default(),
             freerouting: FreeroutingOptions::default(),
             kicad_routing_tools: KiCadRoutingToolsOptions::default(),
+            length_groups: Vec::new(),
             policy: FabricationPolicy::default(),
             profile_name: "unspecified".to_string(),
             input_hash: String::new(),

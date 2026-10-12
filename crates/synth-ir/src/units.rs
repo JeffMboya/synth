@@ -177,6 +177,15 @@ impl Length {
         self.0 as f64 / NM_PER_MM as f64
     }
 
+    /// The canonical internal value, in nanometres.
+    ///
+    /// Exact where `to_mm` is lossy: a tolerance compared against integer
+    /// copper geometry should not make a round trip through `f64`.
+    #[must_use]
+    pub const fn to_nm(self) -> i64 {
+        self.0
+    }
+
     fn try_from_value(v: &ValueWithUnit) -> Result<Self, ConversionError> {
         let scale = match v.unit {
             Unit::Mm => NM_PER_MM,

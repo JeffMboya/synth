@@ -490,6 +490,11 @@ pub struct NetClass {
     pub name: String,
     pub trace_width: Option<Length>,
     pub clearance: Option<Length>,
+    /// Tolerance within which every net in this class must be the same
+    /// routed length. `None` means lengths are unconstrained, which is
+    /// not the same as matched to zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_length: Option<Length>,
     /// Explicit schematic hue (`color "#c2410c"`), as RGB. `None`
     /// falls back to the fixed palette / hashed hue.
     #[serde(default, skip_serializing_if = "Option::is_none")]

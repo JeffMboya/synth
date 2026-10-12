@@ -61,15 +61,16 @@ use std::path::{Path, PathBuf};
 
 pub use capability::{discover, RouterCapability};
 pub use contract::{
-    FabricationPolicy, FreeroutingOptions, KiCadRoutingToolsOptions, KrtEscalation, RouteRequest,
-    RouterEngine, RouterLimits,
+    FabricationPolicy, FreeroutingOptions, KiCadRoutingToolsOptions, KrtEscalation, LengthGroup,
+    RouteRequest, RouterEngine, RouterLimits,
 };
 pub use failure::{RouterFailure, RouterFailureReason, RouterStage};
 pub use result::{
     PortfolioRank, RouteReport, RouteState, RouteStatistics, RouterProvenance, ValidationSummary,
 };
 pub use validate::{
-    validate_candidate, ConnectivityReport, FabricationVerdict, OpenConnection, TopologyReport,
+    check_length_matching, validate_candidate, ConnectivityReport, FabricationVerdict,
+    LengthMismatch, OpenConnection, TopologyReport,
 };
 
 /// Schema version stamped into every [`RouteReport`] this crate writes.

@@ -118,6 +118,21 @@ pub struct OpenConnection {
     pub pad_count: usize,
 }
 
+/// One netclass whose nets came back at different routed lengths.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LengthMismatch {
+    /// Netclass that declared `match_length`.
+    pub class: String,
+    /// Declared tolerance, in nanometres.
+    pub tolerance_nm: i64,
+    /// Measured spread between the longest and shortest net, in nanometres.
+    pub spread_nm: i64,
+    /// Shortest net and its length in nanometres.
+    pub shortest: (String, i64),
+    /// Longest net and its length in nanometres.
+    pub longest: (String, i64),
+}
+
 /// Connectivity re-derived from copper.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConnectivityReport {
@@ -136,6 +151,10 @@ pub struct ConnectivityReport {
     pub undersized_vias: Vec<String>,
     /// Tracks thinner than the policy allows.
     pub undersized_tracks: Vec<String>,
+    /// Netclasses whose nets are not the same routed length, within the
+    /// tolerance `match_length` declared.
+    #[serde(default)]
+    pub length_mismatches: Vec<LengthMismatch>,
 }
 
 impl ConnectivityReport {
@@ -147,6 +166,7 @@ impl ConnectivityReport {
             && self.via_in_pad.is_empty()
             && self.undersized_vias.is_empty()
             && self.undersized_tracks.is_empty()
+            && self.length_mismatches.is_empty()
     }
 
     /// [`Self::blocking_reasons`], except that a via inside a pad is not a
@@ -184,6 +204,20 @@ impl ConnectivityReport {
         for track in &self.undersized_tracks {
             reasons.push(format!(
                 "track {track} is below the fabrication minimum width"
+            ));
+        }
+        for m in &self.length_mismatches {
+            let mm = |nm: i64| nm as f64 / crate::pcb_read::NM_PER_MM;
+            reasons.push(format!(
+                "netclass {} is matched to {:.3} mm but its nets span {:.3} mm: \
+                 {} is {:.3} mm, {} is {:.3} mm",
+                m.class,
+                mm(m.tolerance_nm),
+                mm(m.spread_nm),
+                m.shortest.0,
+                mm(m.shortest.1),
+                m.longest.0,
+                mm(m.longest.1),
             ));
         }
         reasons
@@ -292,6 +326,7 @@ pub fn validate_candidate(
 
     verdict.topology = compare_topology(&baseline, &routed);
     verdict.connectivity = check_connectivity(&routed, &request.policy);
+    verdict.connectivity.length_mismatches = check_length_matching(&routed, &request.length_groups);
     // A pad with no net is only the router's fault if it *had* one in the
     // baseline. A design that leaves a pin unassigned has nothing for a
     // router to have dropped, and counting it would fail every export of such
@@ -432,6 +467,64 @@ enum Item {
     Pad(String),
     Segment(usize),
     Via(usize),
+}
+
+/// Measure each `match_length` class against the copper that came back.
+///
+/// Length is summed per net from the segments carrying it, which is the
+/// same geometry the connectivity pass walks. Vias add height, not planar
+/// length, so they are not counted: a tolerance of a few tenths of a
+/// millimetre is about trace routing, and board thickness is common to
+/// every net in a class anyway.
+///
+/// A net with no copper is skipped rather than measured as zero. It is
+/// already an open net, and reporting it as the shortest member of its
+/// class would bury that under a length complaint.
+#[must_use]
+pub fn check_length_matching(
+    board: &PcbBoard,
+    groups: &[crate::contract::LengthGroup],
+) -> Vec<LengthMismatch> {
+    let mut out = Vec::new();
+    // Net code -> name, so segment nets resolve to the IR names the groups
+    // are written in.
+    let mut lengths: BTreeMap<String, i64> = BTreeMap::new();
+    for segment in &board.segments {
+        let Some(code) = segment.net else {
+            continue;
+        };
+        let Some(name) = board.nets.get(&code) else {
+            continue;
+        };
+        *lengths.entry(name.clone()).or_insert(0) += crate::pcb_read::segment_length_nm(segment);
+    }
+
+    for group in groups {
+        let mut measured: Vec<(&String, i64)> = group
+            .nets
+            .iter()
+            .filter_map(|net| lengths.get(net).map(|len| (net, *len)))
+            .collect();
+        // One net cannot be mismatched against itself.
+        if measured.len() < 2 {
+            continue;
+        }
+        measured.sort_by_key(|(_, len)| *len);
+        let (shortest, min) = measured[0];
+        let (longest, max) = measured[measured.len() - 1];
+        let spread = max - min;
+        if spread > group.tolerance_nm {
+            out.push(LengthMismatch {
+                class: group.class.clone(),
+                tolerance_nm: group.tolerance_nm,
+                spread_nm: spread,
+                shortest: (shortest.clone(), min),
+                longest: (longest.clone(), max),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.class.cmp(&b.class));
+    out
 }
 
 /// Re-derive connectivity from copper geometry.
@@ -1207,6 +1300,46 @@ mod tests {
             "a +2.5 mm x offset on a footprint rotated 90 lands 2.5 mm *up* \
              the board, where the router put its copper"
         );
+    }
+
+    /// `match_length` is only worth declaring if something measures it.
+    #[test]
+    fn a_class_whose_nets_differ_in_length_is_reported() {
+        // Two nets in one class: 10 mm of copper against 12 mm.
+        let text = r#"(kicad_pcb
+          (version 20260206)
+          (layers (0 "F.Cu" signal) (44 "Edge.Cuts" user))
+          (net 0 "")
+          (net 1 "tmds0")
+          (net 2 "tmds1")
+          (segment (start 0 0) (end 10 0) (width 0.2) (layer "F.Cu") (net 1))
+          (segment (start 0 5) (end 12 5) (width 0.2) (layer "F.Cu") (net 2))
+          (gr_line (start 0 0) (end 40 0) (layer "Edge.Cuts") (width 0.1))
+        )"#;
+        let group = crate::contract::LengthGroup {
+            class: "TMDS".to_string(),
+            tolerance_nm: mm_to_nm(0.5),
+            nets: vec!["tmds0".to_string(), "tmds1".to_string()],
+        };
+        let found = check_length_matching(&board(text), std::slice::from_ref(&group));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].spread_nm, mm_to_nm(2.0));
+        assert_eq!(found[0].shortest.0, "tmds0");
+        assert_eq!(found[0].longest.0, "tmds1");
+
+        // Inside a tolerance that admits the spread, nothing is reported.
+        let loose = crate::contract::LengthGroup {
+            tolerance_nm: mm_to_nm(2.0),
+            ..group.clone()
+        };
+        assert!(check_length_matching(&board(text), &[loose]).is_empty());
+
+        // A class with one measurable net cannot be mismatched.
+        let lonely = crate::contract::LengthGroup {
+            nets: vec!["tmds0".to_string()],
+            ..group
+        };
+        assert!(check_length_matching(&board(text), &[lonely]).is_empty());
     }
 
     /// A rotated footprint turns the pad's long axis, and the check has to

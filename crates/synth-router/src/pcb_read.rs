@@ -821,7 +821,8 @@ impl PcbBoard {
     }
 }
 
-fn segment_length_nm(segment: &Segment) -> i64 {
+/// Planar length of one copper segment, in nanometres.
+pub(crate) fn segment_length_nm(segment: &Segment) -> i64 {
     let dx = segment.end.x_nm - segment.start.x_nm;
     let dy = segment.end.y_nm - segment.start.y_nm;
     // Integer square root of a sum of squares, via Newton's method on the
