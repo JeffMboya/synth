@@ -2629,6 +2629,67 @@ fn evaluate_candidate_mcp(
     )))
 }
 
+/// Signal/power-integrity rules run on the routed board, read back from disk.
+fn routed_signal_integrity(board: &synth_ir::Board, pcb_path: &Path) -> Vec<synth_drc::Violation> {
+    let Ok(text) = std::fs::read_to_string(pcb_path) else {
+        return Vec::new();
+    };
+    let Ok(routed) = synth_router::pcb_read::PcbBoard::parse(&text) else {
+        return Vec::new();
+    };
+    let net_of = |code: Option<u32>| -> Option<synth_ir::NetId> {
+        let name = routed.nets.get(&code?)?;
+        board
+            .nets
+            .iter()
+            .find(|net| net.name == *name)
+            .map(|net| net.id)
+    };
+    let layer = |name: &str| match name {
+        "B.Cu" => synth_geometry::Layer::Bottom,
+        "In1.Cu" => synth_geometry::Layer::Inner1,
+        "In2.Cu" => synth_geometry::Layer::Inner2,
+        "In3.Cu" => synth_geometry::Layer::Inner3,
+        "In4.Cu" => synth_geometry::Layer::Inner4,
+        _ => synth_geometry::Layer::Top,
+    };
+    let segments = routed
+        .segments
+        .iter()
+        .filter_map(|segment| {
+            Some(synth_pcb::Segment {
+                net: net_of(segment.net)?,
+                layer: layer(&segment.layer),
+                start: synth_geometry::Point::new(segment.start.x_nm, segment.start.y_nm),
+                end: synth_geometry::Point::new(segment.end.x_nm, segment.end.y_nm),
+                width_nm: segment.width_nm,
+            })
+        })
+        .collect();
+    let vias = routed
+        .vias
+        .iter()
+        .filter_map(|via| {
+            Some(synth_pcb::Via {
+                net: net_of(via.net)?,
+                at: synth_geometry::Point::new(via.at.x_nm, via.at.y_nm),
+                drill_nm: via.drill_nm,
+                pad_diameter_nm: via.size_nm,
+            })
+        })
+        .collect();
+    let routing = synth_pcb::Routing {
+        segments,
+        vias,
+        ..synth_pcb::Routing::default()
+    };
+    let profile = synth_drc::ManufacturerProfile::from_name(
+        board.manufacturer.as_deref().unwrap_or("jlc-standard"),
+    );
+    let stackup = synth_geometry::StackupProfile::for_board(board);
+    synth_drc::check_signal_integrity(board, &routing, &profile, Some(&stackup))
+}
+
 fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
     // Long by design: one linear arg-parse + compile + export
     // pipeline per tool keeps the MCP surface reviewable in one
@@ -2725,6 +2786,23 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
         return Ok(payload);
     }
 
+    // Signal/power integrity on the routed copper: the rules kicad-cli cannot
+    // see. Blocking findings stop a release export, exactly as in the CLI path.
+    let signal_integrity = routed_signal_integrity(&board, &res.pcb_path);
+    let si_blocking = signal_integrity
+        .iter()
+        .filter(|violation| violation.is_blocking())
+        .count();
+    if si_blocking > 0 && !allow_incomplete {
+        let mut payload = route_report_payload(&routing);
+        payload["signal_integrity"] = serde_json::json!(signal_integrity);
+        payload["hint"] = serde_json::Value::String(format!(
+            "The routed board has {si_blocking} blocking signal/power-integrity finding(s). \
+             Fix the routing, or set allow_incomplete=true for an explicitly labelled draft."
+        ));
+        return Ok(payload);
+    }
+
     // Aesthetic schematic ERC over the same layout the exporter used:
     // surfaced to the agent so it can repair readability regressions
     // in the same closed loop as electrical ERC findings. Per-sheet
@@ -2748,8 +2826,10 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
 
     let mut result = serde_json::json!({
         "status": if route_complete { "success" } else { "draft_incomplete" },
-        "release_ready": route_complete,
+        "release_ready": route_complete && si_blocking == 0,
         "route_complete": route_complete,
+        "signal_integrity": signal_integrity,
+        "signal_integrity_blocking": si_blocking,
         "routing": routing,
         "warning": if route_complete { serde_json::Value::Null } else { serde_json::json!("DRAFT ONLY: the board is not fabrication-ready. Review the routing run record and manually complete the PCB before any fabrication use.") },
         "capability_tier": "engineer-review-required",
