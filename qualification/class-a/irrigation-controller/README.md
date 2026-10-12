@@ -117,13 +117,14 @@ One bus, 4k7 pull-ups (R5/R6) to 3V3, no other pull-ups on the board.
 
 | Address | Device | Function |
 | --- | --- | --- |
-| 0x23 | U5 BH1750FVI | Ambient light |
+| 0x29 | U5 APDS-9301 | Ambient light, ADR_SEL tied low |
 | 0x40 | U4 HDC1080 | Air temperature and humidity |
 | 0x50 | U6 24LC256 | Schedule and calibration, WP tied low |
 
-Addresses are fixed: neither sensor part declares an address strap, and the
-EEPROM's A0–A2 are tied low. The real BH1750 has an ADDR pin that the
-registry part does not model, so 0x23 cannot be moved on this board.
+The EEPROM's A0–A2 are tied low and the APDS-9301's ADR_SEL is tied low,
+both in the source. ADR_SEL also reaches 0x39 floating and 0x49 high, so that
+address is a decision rather than a default. The HDC1080 has no strap: 0x40 is
+fixed in silicon.
 
 ## Outputs
 
@@ -157,7 +158,7 @@ and the board routed at the defaults. True of every board in this corpus.
 | U2 | MP2307 | `mp2307_buck` |
 | U7 | TPS22918 | `tps22918_loadswitch` |
 | U4 | HDC1080DMBR | `hdc1080_humidity` |
-| U5 | BH1750FVI | `bh1750_lux` |
+| U5 | APDS-9301 | `apds9301_lux` |
 | U6 | 24LC256-I/SN | `24lc256_eeprom` |
 | Y1 | 8 MHz crystal | `xtal_8mhz` |
 | Q1 | Si2301 | `p_mosfet_si2301` |

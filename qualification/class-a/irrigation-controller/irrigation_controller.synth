@@ -215,7 +215,7 @@ board "irrigation_controller" {
 
     group "I2C SENSORS" color "#047857" {
       component U4: sensor    "hdc1080_humidity" value "HDC1080"
-      component U5: sensor    "bh1750_lux"       value "BH1750FVI"
+      component U5: sensor    "apds9301_lux"     value "APDS-9301"
       component U6: memory    "24lc256_eeprom"   value "24LC256"
       component R5: resistor  "r_generic_0603"   value "4k7"
       component R6: resistor  "r_generic_0603"   value "4k7"
@@ -247,6 +247,10 @@ board "irrigation_controller" {
     connect J1.p2 -> U4.gnd
     connect L1.p2 -> U5.vdd
     connect J1.p2 -> U5.gnd
+    // ADR_SEL is an input, not a strap that defaults: low puts the sensor at
+    // 0x29, floating at 0x39, high at 0x49. Tied low, so the address is a
+    // decision in the source and not whatever the pin picks up.
+    connect J1.p2 -> U5.adr_sel
     connect L1.p2 -> U6.vdd
     connect J1.p2 -> U6.gnd
 
@@ -258,7 +262,7 @@ board "irrigation_controller" {
     connect J1.p2  -> C14.p2
 
     // The EEPROM's address straps and write protect. A0-A2 low puts it at
-    // 0x50, clear of the HDC1080 (0x40) and the BH1750 (0x23); WP low keeps
+    // 0x50, clear of the HDC1080 (0x40) and the APDS-9301 (0x29); WP low keeps
     // it writable so calibration can be stored in the field.
     connect J1.p2 -> U6.a0
     connect J1.p2 -> U6.a1
