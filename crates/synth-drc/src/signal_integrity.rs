@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use synth_geometry::{mm_to_nm, nm_to_mm, Layer, StackupProfile};
 use synth_ir::{Board, Length, Net, NetId};
-use synth_pcb::Routing;
+use synth_pcb::{Routing, Segment};
 
 use crate::profile::ManufacturerProfile;
 use crate::Violation;
@@ -330,4 +330,115 @@ pub fn check_diff_pair_skew(board: &Board, routing: &Routing) -> Vec<Violation> 
         });
     }
     violations
+}
+
+/// How many dielectric heights of parallel run two traces must share before
+/// edge coupling is flagged.
+const COUPLING_RUN_MULTIPLE: i64 = 10;
+
+/// The strongest coupled run between one pair of nets:
+/// `(overlap_nm, edge_gap_nm, segment_a, segment_b, layer)`.
+type CoupledRun = (i64, i64, Segment, Segment, Layer);
+
+fn min_max(a: i64, b: i64) -> (i64, i64) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Edge (crosstalk) coupling between two axis-aligned segments that run
+/// parallel, or `None` if they are not parallel, not close enough to couple,
+/// or do not overlap. Returns `(edge_gap_nm, overlap_nm)`.
+///
+/// Traces the maze router emits are Manhattan, so the parallel test is done on
+/// the axis-aligned cases; two perpendicular traces are handled by the
+/// clearance rule, not here.
+fn parallel_run(a: &Segment, b: &Segment, coupling_nm: i64) -> Option<(i64, i64)> {
+    if a.layer != b.layer {
+        return None;
+    }
+    let both_horizontal = a.start.y_nm == a.end.y_nm && b.start.y_nm == b.end.y_nm;
+    let both_vertical = a.start.x_nm == a.end.x_nm && b.start.x_nm == b.end.x_nm;
+    let (gap, overlap) = if both_horizontal {
+        let gap = (a.start.y_nm - b.start.y_nm).abs() - (a.width_nm + b.width_nm) / 2;
+        let (a_lo, a_hi) = min_max(a.start.x_nm, a.end.x_nm);
+        let (b_lo, b_hi) = min_max(b.start.x_nm, b.end.x_nm);
+        (gap, a_hi.min(b_hi) - a_lo.max(b_lo))
+    } else if both_vertical {
+        let gap = (a.start.x_nm - b.start.x_nm).abs() - (a.width_nm + b.width_nm) / 2;
+        let (a_lo, a_hi) = min_max(a.start.y_nm, a.end.y_nm);
+        let (b_lo, b_hi) = min_max(b.start.y_nm, b.end.y_nm);
+        (gap, a_hi.min(b_hi) - a_lo.max(b_lo))
+    } else {
+        return None;
+    };
+    (gap >= 0 && gap <= coupling_nm && overlap > 0).then_some((gap, overlap))
+}
+
+/// Edge-coupling (crosstalk) check. Code: `W-SYNTH-DRC-013` — a **warning**.
+///
+/// Two foreign nets whose traces run parallel on the same layer, closer than
+/// one dielectric height (`StackupProfile`), for more than
+/// [`COUPLING_RUN_MULTIPLE`] dielectric heights are flagged as a coupling
+/// risk. The mutual inductance and capacitance of a long close run couple more
+/// energy than a short one, so run length gates the warning.
+///
+/// Advisory because how much coupling is acceptable depends on the signalling
+/// scheme and cannot be judged from geometry alone. At most one warning is
+/// emitted per net pair, for its worst run, so a dense board does not flood.
+#[must_use]
+pub fn check_edge_coupling(routing: &Routing, stackup: &StackupProfile) -> Vec<Violation> {
+    // Per net pair (ordered), the strongest coupled run.
+    let mut worst: BTreeMap<(NetId, NetId), CoupledRun> = BTreeMap::new();
+    for i in 0..routing.segments.len() {
+        for j in (i + 1)..routing.segments.len() {
+            let a = &routing.segments[i];
+            let b = &routing.segments[j];
+            if a.net == b.net {
+                continue;
+            }
+            let Some(height_nm) = stackup.geometry(a.layer).map(|g| g.dielectric_height.0) else {
+                continue;
+            };
+            let Some((gap, overlap)) = parallel_run(a, b, height_nm) else {
+                continue;
+            };
+            if overlap < COUPLING_RUN_MULTIPLE * height_nm {
+                continue;
+            }
+            let key = if a.net.0 <= b.net.0 {
+                (a.net, b.net)
+            } else {
+                (b.net, a.net)
+            };
+            let entry = worst.entry(key).or_insert((overlap, gap, *a, *b, a.layer));
+            if overlap > entry.0 {
+                *entry = (overlap, gap, *a, *b, a.layer);
+            }
+        }
+    }
+    worst
+        .into_iter()
+        .map(
+            |((first, second), (overlap, gap, a, _b, layer))| Violation {
+                code: "W-SYNTH-DRC-013".to_string(),
+                message: format!(
+                    "nets {} and {} run parallel for {:.1} mm on {} {:.3} mm apart, within a \
+                 dielectric height; risk of crosstalk",
+                    first.0,
+                    second.0,
+                    nm_to_mm(overlap),
+                    layer.name(),
+                    nm_to_mm(gap),
+                ),
+                witness: vec![a.start, a.end],
+                nets: vec![first, second],
+                components: Vec::new(),
+                pos_mm: Some((nm_to_mm(a.start.x_nm), nm_to_mm(a.start.y_nm))),
+                suggested_override: None,
+            },
+        )
+        .collect()
 }

@@ -133,11 +133,34 @@ pub struct DrcReport {
     pub stackup: Option<StackupProfile>,
 }
 
+impl Violation {
+    /// True when this violation blocks a release.
+    ///
+    /// A [`Violation`] carries no severity field; the project's stable
+    /// convention is that an `E-` code is an error and a `W-` code is a
+    /// warning, so severity is read from the code. Advisory rules (edge
+    /// coupling, say) emit `W-SYNTH-DRC-*` and never gate.
+    #[must_use]
+    pub fn is_blocking(&self) -> bool {
+        self.code.starts_with("E-")
+    }
+}
+
 impl DrcReport {
-    /// True when no violations were found.
+    /// True when no *blocking* violations were found.
+    ///
+    /// Warning-severity violations (`W-SYNTH-DRC-*`) are advisory and do not
+    /// make a report unclean; callers that want the full list read
+    /// [`DrcReport::violations`].
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.violations.is_empty()
+        self.violations.iter().all(|v| !v.is_blocking())
+    }
+
+    /// Count of blocking violations.
+    #[must_use]
+    pub fn blocking_count(&self) -> usize {
+        self.violations.iter().filter(|v| v.is_blocking()).count()
     }
 }
 
@@ -206,6 +229,7 @@ fn evaluate(
         violations.extend(signal_integrity::check_controlled_impedance(
             board, routing, profile, stackup,
         ));
+        violations.extend(signal_integrity::check_edge_coupling(routing, stackup));
     }
     violations.extend(signal_integrity::check_diff_pair_skew(board, routing));
     violations.extend(signal_integrity::check_ampacity(
@@ -582,6 +606,41 @@ mod tests {
         );
         assert_eq!(off.len(), 1, "{off:?}");
         assert_eq!(off[0].code, "E-SYNTH-DRC-012");
+    }
+
+    #[test]
+    fn a_long_close_parallel_run_warns_but_does_not_block() {
+        let stackup = StackupProfile::default_for_layers(4);
+        let near = Routing {
+            segments: vec![
+                straight(NetId(1), 50_000, 0, 5_000_000),
+                straight(NetId(2), 50_000, 200_000, 5_000_000),
+            ],
+            ..Routing::default()
+        };
+        let warnings = super::signal_integrity::check_edge_coupling(&near, &stackup);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, "W-SYNTH-DRC-013");
+        assert!(!warnings[0].is_blocking());
+
+        // A warning-only report is clean for the release gate.
+        let report = DrcReport {
+            violations: warnings,
+            profile_name: "test".to_string(),
+            stackup: None,
+        };
+        assert!(report.is_clean());
+        assert_eq!(report.blocking_count(), 0);
+
+        // Far enough apart to be outside a dielectric height: no warning.
+        let far = Routing {
+            segments: vec![
+                straight(NetId(1), 50_000, 0, 5_000_000),
+                straight(NetId(2), 50_000, 1_000_000, 5_000_000),
+            ],
+            ..Routing::default()
+        };
+        assert!(super::signal_integrity::check_edge_coupling(&far, &stackup).is_empty());
     }
 
     #[test]
