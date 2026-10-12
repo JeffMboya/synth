@@ -814,9 +814,9 @@ fn execute_language_reference(_args: &Value) -> Value {
                     "example": "component U1: mcu \"stm32h743\" { placement_hint { region: top_left priority: hard } }"
                 },
                 {
-                    "form": "connect <REFDES>.<pin> -> <REFDES>.<pin>",
-                    "description": "Wires two component pins onto the same net. Pin names come from the part's registry entry. Repeat `connect` lines that share an endpoint to fan a net out to more than two pins.",
-                    "example": "connect U1.vout -> C3.p1"
+                    "form": "connect <REFDES>.<pin> -> <REFDES>.<pin> [class \"<netclass>\"]",
+                    "description": "Wires two component pins onto the same net. Pin names come from the part's registry entry. Repeat `connect` lines that share an endpoint to fan a net out to more than two pins. `class` joins the net to a declared netclass: a `netclass` block assigns no nets by itself, so without this the class is inert and its width, clearance and tolerance apply to nothing.",
+                    "example": "connect U1.vout -> C3.p1 class \"PWR\""
                 },
                 {
                     "form": "diff_pair <NET_P> <NET_N> { impedance <value><unit> }",
@@ -854,12 +854,12 @@ fn execute_language_reference(_args: &Value) -> Value {
                     "example": "net \"I2C_SCL\" { U1.scl U2.pb6 }"
                 },
                 {
-                    "form": "netclass \"<name>\" { [trace_width <value><unit>] [clearance <value><unit>] [color \"#rrggbb\"] }",
-                    "description": "Routing and colour class. Nets are auto-classified (Power, Ground, I2C, SPI, UART, USB, Clock, Reset) and coloured from a fixed palette; a declared class joined with `class \"<name>\"` overrides both. `color` sets the schematic wire/label hue and the PCB net colour.",
-                    "example": "netclass \"PWR\" { trace_width 0.4mm clearance 0.25mm color \"#d55e00\" }"
+                    "form": "netclass \"<name>\" { [trace_width <value><unit>] [clearance <value><unit>] [impedance <value><unit>] [match_length <value><unit>] [current <value><unit>] [plane] [color \"#rrggbb\"] }",
+                    "description": "Routing and colour class. Nets are auto-classified (Power, Ground, I2C, SPI, UART, USB, Clock, Reset) and coloured from a fixed palette; a declared class joined with `class \"<name>\"` on a `connect`, `net` or `power` statement overrides both. A class with no net joined to it is inert. `match_length` bounds the class's nets against each other, which is what a length-sensitive bus needs; `max_skew` on a `diff_pair` bounds one pair's two halves instead. `plane` floods a copper zone for each member net on the inner layers, so a rail is carried as a plane rather than threaded as traces; it needs a board with inner layers, and each member pad reaches the plane through a via. `color` sets the schematic wire/label hue and the PCB net colour.",
+                    "example": "netclass \"IO\" { trace_width 0.4mm clearance 0.2mm plane }"
                 },
                 {
-                    "form": "connect <REFDES>.<pin> -> <REFDES>.<pin> as \"<NET_NAME>\"",
+                    "form": "connect <REFDES>.<pin> -> <REFDES>.<pin> as \"<NET_NAME>\" [class \"<netclass>\"]",
                     "description": "Same as plain `connect`, but joins the named net instead of an auto-named one. This is the usual way to put a connection on a declared `power` rail or a semantic signal name.",
                     "example": "connect U1.vout -> U2.vdd as \"+3V3\""
                 },
