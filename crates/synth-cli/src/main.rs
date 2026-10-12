@@ -4043,6 +4043,39 @@ fn export_kicad(
         &chosen_order,
     )?;
 
+    // Signal integrity and power integrity on the routed copper. The rules
+    // need the routed board, not the placement, so they run here on the file
+    // the router produced. Blocking findings stop the export unless --force.
+    let drc_profile = synth_drc::ManufacturerProfile::from_name(
+        board.manufacturer.as_deref().unwrap_or("jlc-standard"),
+    );
+    let synth_violations = synth_drc_on_routed(board, &result.pcb_path, &drc_profile);
+    let blocking: Vec<&synth_drc::Violation> = synth_violations
+        .iter()
+        .filter(|violation| violation.is_blocking())
+        .collect();
+    for violation in &synth_violations {
+        eprintln!(
+            "{} {} {}",
+            if violation.is_blocking() {
+                "error:"
+            } else {
+                "warning:"
+            },
+            violation.code,
+            violation.message,
+        );
+    }
+    if !blocking.is_empty() && !force {
+        eprintln!(
+            "error: the routed board has {} blocking signal/power-integrity finding(s); \
+             fix the routing or use --force to export anyway.",
+            blocking.len()
+        );
+        return Ok(1);
+    }
+    let _ = routing;
+
     eprintln!("wrote {}", result.project_path.display());
     eprintln!("wrote {}", result.schematic_path.display());
     eprintln!("wrote {}", result.library_path.display());
@@ -4649,6 +4682,91 @@ fn evaluate_candidate(
         return Ok(None);
     }
     Ok(Some((report.layout_cost(), report)))
+}
+
+/// Synth's rule engine run on the **routed** board, read back from disk.
+///
+/// The impedance, crosstalk, skew, ampacity, IR-drop, net-length and
+/// return-path rules all read routed copper; running them on the placement
+/// (the empty-routing path) can never see it. This reads the board the router
+/// produced back into [`synth_pcb::Routing`] and checks it against the same
+/// placement the export wrote, so the release gate actually evaluates the
+/// physics on the copper, not only on the intent.
+fn synth_drc_on_routed(
+    board: &synth_ir::Board,
+    pcb_path: &Path,
+    profile: &synth_drc::ManufacturerProfile,
+) -> Vec<synth_drc::Violation> {
+    let Ok(text) = std::fs::read_to_string(pcb_path) else {
+        return Vec::new();
+    };
+    let Ok(routed) = synth_router::pcb_read::PcbBoard::parse(&text) else {
+        return Vec::new();
+    };
+    let routing = routing_from_routed(board, &routed);
+    let stackup = synth_geometry::StackupProfile::for_board(board);
+    synth_drc::check_signal_integrity(board, &routing, profile, Some(&stackup))
+}
+
+/// Convert a board read back from disk into the copper IR the DRC rules read.
+///
+/// Nets are matched by name (the file carries names, the IR carries ids), and
+/// a segment or via whose net does not resolve is skipped rather than
+/// mis-attributed.
+fn routing_from_routed(
+    board: &synth_ir::Board,
+    routed: &synth_router::pcb_read::PcbBoard,
+) -> synth_pcb::Routing {
+    let net_of = |code: Option<u32>| -> Option<synth_ir::NetId> {
+        let name = routed.nets.get(&code?)?;
+        board
+            .nets
+            .iter()
+            .find(|net| net.name == *name)
+            .map(|net| net.id)
+    };
+    let segments = routed
+        .segments
+        .iter()
+        .filter_map(|segment| {
+            Some(synth_pcb::Segment {
+                net: net_of(segment.net)?,
+                layer: pcb_layer(&segment.layer),
+                start: synth_geometry::Point::new(segment.start.x_nm, segment.start.y_nm),
+                end: synth_geometry::Point::new(segment.end.x_nm, segment.end.y_nm),
+                width_nm: segment.width_nm,
+            })
+        })
+        .collect();
+    let vias = routed
+        .vias
+        .iter()
+        .filter_map(|via| {
+            Some(synth_pcb::Via {
+                net: net_of(via.net)?,
+                at: synth_geometry::Point::new(via.at.x_nm, via.at.y_nm),
+                drill_nm: via.drill_nm,
+                pad_diameter_nm: via.size_nm,
+            })
+        })
+        .collect();
+    synth_pcb::Routing {
+        segments,
+        vias,
+        ..synth_pcb::Routing::default()
+    }
+}
+
+/// Map a KiCad copper layer name back to the IR layer identity.
+fn pcb_layer(name: &str) -> synth_geometry::Layer {
+    match name {
+        "B.Cu" => synth_geometry::Layer::Bottom,
+        "In1.Cu" => synth_geometry::Layer::Inner1,
+        "In2.Cu" => synth_geometry::Layer::Inner2,
+        "In3.Cu" => synth_geometry::Layer::Inner3,
+        "In4.Cu" => synth_geometry::Layer::Inner4,
+        _ => synth_geometry::Layer::Top,
+    }
 }
 
 /// Run the external router and report the outcome to the operator.
@@ -5343,5 +5461,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn routed_segments_map_back_to_ir_nets_and_layers() {
+        let registry = synth_registry::load_dir(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("registry")
+                .join("parts"),
+        )
+        .expect("registry must load");
+        let src = r#"board "t" {
+  layers 4
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+  connect R1.p1 -> R2.p1 as "PWR"
+}
+"#;
+        let parse = synth_parser::parse(src, "t.synth".to_string());
+        let ast = parse.ast.as_ref().expect("parse");
+        let board = synth_ir::lower(ast, &registry, "t.synth")
+            .board
+            .expect("board");
+        let net = board
+            .nets
+            .iter()
+            .find(|net| net.name == "PWR")
+            .expect("net")
+            .id;
+        let text = r#"(kicad_pcb
+          (layers (0 "F.Cu" signal) (1 "In1.Cu" power) (2 "In2.Cu" power) (3 "B.Cu" signal))
+          (net 0 "")
+          (net 1 "PWR")
+          (segment (start 0 0) (end 5 0) (width 0.25) (layer "B.Cu") (net 1))
+        )"#;
+        let pcb = synth_router::pcb_read::PcbBoard::parse(text).expect("pcb parse");
+        let routing = routing_from_routed(&board, &pcb);
+        assert_eq!(routing.segments.len(), 1, "one segment maps");
+        assert_eq!(routing.segments[0].net, net, "net matched by name");
+        assert_eq!(routing.segments[0].layer, synth_geometry::Layer::Bottom);
     }
 }

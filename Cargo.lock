@@ -2244,6 +2244,7 @@ dependencies = [
  "synth-ast",
  "synth-diagnostics",
  "synth-drc",
+ "synth-geometry",
  "synth-ir",
  "synth-kicad",
  "synth-layout",

@@ -202,6 +202,45 @@ pub fn check_with_stackup(
     evaluate(board, placement, routing, profile, Some(stackup.clone()))
 }
 
+/// The routed signal/power-integrity rules: the ones `kicad-cli` DRC cannot
+/// see. Impedance, crosstalk, differential skew, ampacity, return path, IR drop
+/// and net length all read the copper the router produced.
+///
+/// Geometric clearance (min width, copper clearance, shorts, copper-to-edge)
+/// is deliberately **not** here: the route validation runs `kicad-cli pcb drc`
+/// on the same board, so repeating it would double-gate the same finding. This
+/// is the set to run on a routed board whose clearance kicad-cli has already
+/// judged.
+#[must_use]
+pub fn check_signal_integrity(
+    board: &Board,
+    routing: &Routing,
+    profile: &ManufacturerProfile,
+    stackup: Option<&StackupProfile>,
+) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    if let Some(stackup) = stackup {
+        violations.extend(signal_integrity::check_controlled_impedance(
+            board, routing, profile, stackup,
+        ));
+        violations.extend(signal_integrity::check_edge_coupling(
+            routing, profile, stackup,
+        ));
+        violations.extend(signal_integrity::check_return_path_vias(
+            board, routing, stackup,
+        ));
+        violations.extend(signal_integrity::check_ir_drop(
+            board, routing, profile, stackup,
+        ));
+    }
+    violations.extend(signal_integrity::check_diff_pair_skew(board, routing));
+    violations.extend(signal_integrity::check_ampacity(
+        board, routing, profile, stackup,
+    ));
+    violations.extend(signal_integrity::check_net_length(board, routing));
+    violations
+}
+
 fn evaluate(
     board: &Board,
     placement: &Placement,
