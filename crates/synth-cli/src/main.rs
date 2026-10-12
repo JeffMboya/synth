@@ -3436,12 +3436,17 @@ fn dump_route(
     best_of: bool,
     pretty: bool,
 ) -> anyhow::Result<u8> {
-    let report = route_design(input, registry_dir, engine, options, best_of)?;
+    let (report, signal_integrity) = route_design(input, registry_dir, engine, options, best_of)?;
     print_route_report(&report);
+    let si_blocking = print_signal_integrity(&signal_integrity);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let value = serde_json::to_value(&report)?;
+    let mut value = serde_json::to_value(&report)?;
+    value["signal_integrity"] = serde_json::json!(signal_integrity);
+    if si_blocking > 0 {
+        value["drc_clean"] = serde_json::json!(false);
+    }
     if pretty {
         serde_json::to_writer_pretty(&mut out, &value)?;
     } else {
@@ -3449,11 +3454,33 @@ fn dump_route(
     }
     writeln!(&mut out)?;
 
-    Ok(if report.is_fabrication_ready() {
+    Ok(if report.is_fabrication_ready() && si_blocking == 0 {
         EXIT_SUCCESS
     } else {
         EXIT_VALIDATION_ERRORS
     })
+}
+
+/// Print the routed signal/power-integrity findings, one per line, and return
+/// the number that block a release.
+fn print_signal_integrity(violations: &[synth_drc::Violation]) -> usize {
+    let mut blocking = 0;
+    for violation in violations {
+        if violation.is_blocking() {
+            blocking += 1;
+        }
+        eprintln!(
+            "{} {} {}",
+            if violation.is_blocking() {
+                "error:"
+            } else {
+                "warning:"
+            },
+            violation.code,
+            violation.message
+        );
+    }
+    blocking
 }
 
 /// Compile, place, export, and route a design through the external router.
@@ -3467,7 +3494,7 @@ fn route_design(
     engine: ExternalRouter,
     options: &RouterOptions,
     best_of: bool,
-) -> anyhow::Result<synth_router::RouteReport> {
+) -> anyhow::Result<(synth_router::RouteReport, Vec<synth_drc::Violation>)> {
     let (source, file) = read_source(input)?;
     let parse = synth_parser::parse(&source, file.clone());
     write_diagnostics_to_stderr(&parse.diagnostics)?;
@@ -3503,7 +3530,21 @@ fn route_design(
     let sidecars = synth_kicad::Sidecars::resolve_for(input);
     let result = synth_kicad::export_with_sidecars(board, &out_dir, &sidecars)
         .map_err(|e| anyhow::anyhow!("kicad export failed: {e}"))?;
-    route_externally(board, &result, input, engine, options, best_of, &[])
+    let report = route_externally(board, &result, input, engine, options, best_of, &[])?;
+
+    // Signal/power-integrity on the delivered copper, so `synth route` and
+    // `synth drc` see the same findings the export gate does instead of only
+    // the geometry kicad-cli judges.
+    let profile = synth_drc::ManufacturerProfile::from_name(
+        board.manufacturer.as_deref().unwrap_or("jlc-standard"),
+    );
+    let delivered = report
+        .artifacts
+        .delivered
+        .clone()
+        .unwrap_or_else(|| result.pcb_path.clone());
+    let signal_integrity = synth_drc_on_routed(board, &delivered, &profile);
+    Ok((report, signal_integrity))
 }
 
 /// Report the physical state of a design after routing it externally.
@@ -3517,12 +3558,17 @@ fn dump_drc(
     options: &RouterOptions,
     pretty: bool,
 ) -> anyhow::Result<u8> {
-    let report = route_design(input, registry_dir, engine, options, false)?;
+    let (report, signal_integrity) = route_design(input, registry_dir, engine, options, false)?;
     print_route_report(&report);
+    let si_blocking = print_signal_integrity(&signal_integrity);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let value = serde_json::to_value(&report)?;
+    let mut value = serde_json::to_value(&report)?;
+    value["signal_integrity"] = serde_json::json!(signal_integrity);
+    if si_blocking > 0 {
+        value["drc_clean"] = serde_json::json!(false);
+    }
     if pretty {
         serde_json::to_writer_pretty(&mut out, &value)?;
     } else {
@@ -3530,7 +3576,7 @@ fn dump_drc(
     }
     writeln!(&mut out)?;
 
-    Ok(if report.is_fabrication_ready() {
+    Ok(if report.is_fabrication_ready() && si_blocking == 0 {
         EXIT_SUCCESS
     } else {
         EXIT_VALIDATION_ERRORS
@@ -4049,32 +4095,23 @@ fn export_kicad(
     let drc_profile = synth_drc::ManufacturerProfile::from_name(
         board.manufacturer.as_deref().unwrap_or("jlc-standard"),
     );
-    let synth_violations = synth_drc_on_routed(board, &result.pcb_path, &drc_profile);
-    let blocking: Vec<&synth_drc::Violation> = synth_violations
-        .iter()
-        .filter(|violation| violation.is_blocking())
-        .collect();
-    for violation in &synth_violations {
+    // Read the delivered copper, not the baseline path: the router may deliver
+    // its board elsewhere, and reading the un-routed baseline would make these
+    // rules silently no-op.
+    let delivered = routing
+        .artifacts
+        .delivered
+        .clone()
+        .unwrap_or_else(|| result.pcb_path.clone());
+    let synth_violations = synth_drc_on_routed(board, &delivered, &drc_profile);
+    let blocking = print_signal_integrity(&synth_violations);
+    if blocking > 0 && !force {
         eprintln!(
-            "{} {} {}",
-            if violation.is_blocking() {
-                "error:"
-            } else {
-                "warning:"
-            },
-            violation.code,
-            violation.message,
-        );
-    }
-    if !blocking.is_empty() && !force {
-        eprintln!(
-            "error: the routed board has {} blocking signal/power-integrity finding(s); \
-             fix the routing or use --force to export anyway.",
-            blocking.len()
+            "error: the routed board has {blocking} blocking signal/power-integrity finding(s); \
+             fix the routing or use --force to export anyway."
         );
         return Ok(1);
     }
-    let _ = routing;
 
     eprintln!("wrote {}", result.project_path.display());
     eprintln!("wrote {}", result.schematic_path.display());
