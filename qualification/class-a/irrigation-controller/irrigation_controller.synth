@@ -7,6 +7,17 @@
 // pull-ups; an EEPROM for calibration; a low-side MOSFET driving a solenoid
 // valve; and two status LEDs."
 //
+// The prompt is kept verbatim because it is the record of what was asked.
+// The board is named for what it is: nothing here is specific to a
+// greenhouse rather than a polytunnel, a nursery, a field or a garden, and
+// the one word the hardware does earn is "controller" — soil moisture in,
+// flow confirmed out, rather than a timer with a MOSFET.
+//
+// The prompt also asked for one valve and an I2C soil sensor. There is no
+// I2C soil sensor in the registry, so the probes are analogue on switched
+// excitation, and the valve became two because one probe reading cannot
+// schedule two beds.
+//
 // One product that covers three of #39's four test cases at once, rather than
 // three fixtures that each cover one:
 //
@@ -26,7 +37,7 @@
 // topology: the valve runs from the protected 12 V rail and only its return
 // is switched, so the MCU never sees 12 V.
 
-board "greenhouse_irrigation" {
+board "irrigation_controller" {
     layers 2
     manufacturer "jlcpcb"
     revision "A"
@@ -382,9 +393,9 @@ board "greenhouse_irrigation" {
     connect Q2.g   -> R11.p1
     connect J1.p2  -> R11.p2
 
-    // Zone 2, the same circuit on its own pin. Two zones is what a
-    // greenhouse actually has, and it is why the probes are per-zone too:
-    // one reading cannot schedule two beds.
+    // Zone 2, the same circuit on its own pin. Irrigation is zoned in
+    // practice, and that is why the probes are per-zone too: one reading
+    // cannot schedule two beds.
     connect Q1.d   -> J5.p1
     connect J5.p2  -> Q3.d
     connect Q1.d   -> D6.cathode

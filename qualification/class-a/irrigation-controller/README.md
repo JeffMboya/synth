@@ -1,4 +1,4 @@
-# Greenhouse irrigation controller (SYN-39)
+# Irrigation controller (SYN-39)
 
 Status: design, placement and copper. Routed clean by KiCadRoutingTools
 9399bfb — 0 open nets, no via-in-pad, nothing below the board floor — but
@@ -7,12 +7,18 @@ and not `routed`. Not fabricated, not tested on hardware. Do not call it
 proven. What is unchecked is listed at the bottom.
 
 Produced from a prompt through the Synth MCP server. The prompt is the header
-comment of `greenhouse_irrigation.synth`.
+comment of `irrigation_controller.synth`.
 
 ## What it is
 
 A two-zone irrigation controller: it measures soil, decides, opens a valve,
 and checks that water moved.
+
+Named for what it is rather than where it goes. The prompt in the source asked
+for a greenhouse controller and is kept verbatim as the record of what was
+asked, but nothing on the board distinguishes a greenhouse from a polytunnel,
+a nursery, a field or a garden. "Controller" is the word the hardware earns:
+soil moisture in, flow confirmed out.
 
 - 12 V in on a JST XH 2-pin (J1), the horticultural solenoid standard.
 - Protection in series: F1 polyfuse, Q1 P-FET against reverse polarity,
@@ -30,9 +36,9 @@ and checks that water moved.
   BH1750 (lux, 0x23), U6 24LC256 for schedule and calibration (0x50), plus
   J2 as a spare I2C port. R5/R6 (4k7) are the only pull-ups.
 - D4 green on the 3V3 rail; D5 on PA6 means irrigating.
-- Source: `greenhouse_irrigation.synth`. Sidecars:
-  `greenhouse_irrigation.placement.layout.toml` (board mm),
-  `greenhouse_irrigation.schematic.layout.toml` (sheet mm).
+- Source: `irrigation_controller.synth`. Sidecars:
+  `irrigation_controller.placement.layout.toml` (board mm),
+  `irrigation_controller.schematic.layout.toml` (sheet mm).
 
 ## Why the probe excitation is switched
 

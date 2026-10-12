@@ -108,8 +108,8 @@ expect_fab = "unestablished"
 rationale = "Novel Class-A board: reverse-polarity P-FET, polyfuse, TVS, buck, soft-start load switch. #39 case 3. Source gate failed in CI on E-SYNTH-PIN-001 from tvs_array_5v's impossible pad 8; that part is fixed here, so CI must re-establish both stages. The router contract changed under #39: the board's design rules now reach the engine at all, and via-in-pad is judged against the pad's copper rather than a disc of its long side. No manufacturing baseline measured before that applies, so this run establishes one."
 
 [[board]]
-id = "greenhouse_irrigation"
-path = "qualification/class-a/greenhouse-irrigation/greenhouse_irrigation.synth"
+id = "irrigation_controller"
+path = "qualification/class-a/irrigation-controller/irrigation_controller.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
