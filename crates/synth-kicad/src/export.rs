@@ -233,7 +233,7 @@ pub fn placement_candidates(
     board: &Board,
     sidecars: &Sidecars,
 ) -> Result<Vec<synth_place::Placement>, ExportError> {
-    place_candidates_with_margins(board, sidecars.placement_path(), &[0.5, 2.5])
+    place_candidates_with_margins(board, sidecars.placement_path(), &[0.5, 2.5], &[1, 2])
         .map_err(|source| ExportError::Placement { source })
 }
 
@@ -676,23 +676,24 @@ fn place_candidates(
     board: &Board,
     sidecar: Option<&Path>,
 ) -> Result<Vec<synth_place::Placement>, synth_place::PlaceError> {
-    place_candidates_with_margins(board, sidecar, &[])
+    place_candidates_with_margins(board, sidecar, &[], &[])
 }
 
-/// Generate candidates, additionally placing once per entry in `extra_margins`.
+/// Generate candidates, additionally placing once per entry in `extra_margins`
+/// and once per non-zero entry in `extra_seeds`.
 ///
-/// The placer is deterministic and takes no seed, so the only way to get a
-/// *different* legal arrangement is to change its inputs. Courtyard/density
-/// margin is the one knob that reliably does: a tighter margin packs parts
-/// closer (shorter copper, more congestion) and a looser one spreads them
-/// (longer copper, clearer channels). The base set the export chooses among
-/// leaves this at the default; the place→route→re-place loop sweeps it to get
-/// candidates worth routing. Duplicate arrangements are removed, first
-/// occurrence kept, so the result stays deterministic.
+/// The base set the export chooses among leaves both at their defaults; the
+/// place→route→re-place loop varies them to get genuinely different
+/// arrangements to route. Density margin changes how tightly parts pack; a
+/// seed changes the order among equal-degree components, which changes the
+/// greedy first-fit packing without relaxing any constraint. Duplicate
+/// arrangements are removed, first occurrence kept, so the result stays
+/// deterministic.
 fn place_candidates_with_margins(
     board: &Board,
     sidecar: Option<&Path>,
     extra_margins: &[f64],
+    extra_seeds: &[u64],
 ) -> Result<Vec<synth_place::Placement>, synth_place::PlaceError> {
     // Match synth-place::place() and the MCP gates. Starting the export
     // with a different courtyard margin can select a different legal
@@ -731,6 +732,21 @@ fn place_candidates_with_margins(
         if let Ok(candidate) =
             synth_place::place_with_tuning_and_sidecar(board, extra, &rotation_overrides, sidecar)
         {
+            candidates.push(candidate);
+        }
+    }
+
+    for &seed in extra_seeds {
+        if seed == 0 {
+            continue;
+        }
+        if let Ok(candidate) = synth_place::place_with_tuning_and_sidecar_seeded(
+            board,
+            margin,
+            &rotation_overrides,
+            sidecar,
+            seed,
+        ) {
             candidates.push(candidate);
         }
     }

@@ -533,6 +533,7 @@ mod tests {
             color: None,
             impedance: None,
             current: Some(synth_ir::Current(1_000_000)),
+            plane: false,
             source_span: synth_diagnostics::Span::new(0, 0),
         });
         let net = board.nets[0].id;
@@ -570,6 +571,7 @@ mod tests {
             color: None,
             impedance: Some(synth_ir::Impedance(50_000)),
             current: None,
+            plane: false,
             source_span: synth_diagnostics::Span::new(0, 0),
         });
         let stackup = StackupProfile::for_board(&board);

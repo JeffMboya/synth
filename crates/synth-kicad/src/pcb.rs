@@ -156,9 +156,10 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
 
     // Ground Plane Copper Flood Zone: Inject continuous GND copper zones on F.Cu, B.Cu, and inner layers
     // Ground plane: use the same topology classifier as netclasses so opaque
-    // generated names such as `net_2` do not prevent plane creation. Rails
-    // remain routed traces for now; putting multiple same-priority rail and
-    // ground zones on the same layers can create isolated islands.
+    // generated names such as `net_2` do not prevent plane creation. Every
+    // zone carries an explicit priority (see `GROUND_ZONE_PRIORITY`), so a
+    // rail plane declared through a `netclass` never ties with a ground plane
+    // and leaves either net with isolated islands.
     let power_domains = synth_ir::infer_power_domains(board);
     let plane_nets: Vec<(u32, &str)> = board
         .nets
@@ -190,7 +191,21 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
         })
         .collect();
 
-    let gnd_layers = ground_plane_layers(board.layers);
+    // Ground and a declared power plane cannot both be a full-board flood on
+    // one layer: KiCad fills the higher-priority zone across the whole layer
+    // and starves the other. So on a board with inner layers the two are put on
+    // disjoint layers — ground on the outer copper, power on the inner — and
+    // each gets a plane of its own. Without a declared power plane, ground
+    // keeps every layer exactly as before. On a board with no inner layers a
+    // declared power plane has nowhere to go and is not emitted.
+    let has_power_plane = board.netclasses.iter().any(|class| class.plane);
+    let (gnd_layers, power_layers): (Vec<&'static str>, Vec<&'static str>) =
+        if has_power_plane && board.layers >= 4 {
+            (vec!["F.Cu", "B.Cu"], inner_plane_layers(board.layers))
+        } else {
+            (ground_plane_layers(board.layers), Vec::new())
+        };
+
     for (plane_index, (pcb_net, net_name)) in plane_nets.iter().enumerate() {
         for layer in &gnd_layers {
             // The first plane keeps the layer-only key so single-ground uuids stay unchanged.
@@ -199,8 +214,14 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
             } else {
                 format!("{net_name}/{layer}")
             };
-            children.push(build_gnd_zone(
-                placement, layer, *pcb_net, net_name, project, &zone_key,
+            children.push(build_zone(
+                placement,
+                layer,
+                *pcb_net,
+                net_name,
+                project,
+                &zone_key,
+                GROUND_ZONE_PRIORITY,
             ));
         }
         // A zone on each copper layer is only a plane, not an electrical
@@ -228,6 +249,52 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
             }
         }
     }
+
+    // Declared planes (`netclass "PWR" { plane }`): flood a zone for each
+    // member net on the dedicated power layers, so a rail gets a low-impedance
+    // path of its own. The plane sits on the inner layers, away from ground, so
+    // each of the net's own pads gets a stitching via: without one the plane
+    // exists but connects nothing, because the pads are on the outer copper and
+    // the plane is not. Opt-in: no plane is emitted for a class that does not
+    // ask, and none at all on a board with no inner layer to put it on.
+    let mut plane_via_index = 0usize;
+    for class in &board.netclasses {
+        if !class.plane || power_layers.is_empty() {
+            continue;
+        }
+        for net in board
+            .nets
+            .iter()
+            .filter(|net| net.netclass.as_deref() == Some(class.name.as_str()))
+        {
+            let Some(pcb_net) = net_id_lookup.get(&net.id).copied() else {
+                continue;
+            };
+            for layer in &power_layers {
+                let zone_key = format!("plane/{}/{layer}", net.name);
+                children.push(build_zone(
+                    placement,
+                    layer,
+                    pcb_net,
+                    net.name.as_str(),
+                    project,
+                    &zone_key,
+                    POWER_ZONE_PRIORITY,
+                ));
+            }
+            for point in plane_pad_centres(board, placement, net) {
+                children.push(build_plane_via(
+                    point.x_nm,
+                    point.y_nm,
+                    pcb_net,
+                    project,
+                    plane_via_index,
+                ));
+                plane_via_index += 1;
+            }
+        }
+    }
+
     Sexp::list("kicad_pcb", children)
 }
 
@@ -236,6 +303,16 @@ fn ground_plane_layers(layer_count: u32) -> Vec<&'static str> {
         4 => vec!["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
         6 => vec!["F.Cu", "In1.Cu", "In2.Cu", "In3.Cu", "In4.Cu", "B.Cu"],
         _ => vec!["F.Cu", "B.Cu"],
+    }
+}
+
+/// The inner layers a declared power plane floods: the layers ground gives up
+/// when a power plane is declared. Empty for a board with no inner layer.
+fn inner_plane_layers(layer_count: u32) -> Vec<&'static str> {
+    match layer_count {
+        6 => vec!["In1.Cu", "In2.Cu", "In3.Cu", "In4.Cu"],
+        4 => vec!["In1.Cu", "In2.Cu"],
+        _ => Vec::new(),
     }
 }
 
@@ -265,6 +342,76 @@ fn build_via(
 }
 
 /// Emit a through via that electrically joins the generated ground planes.
+/// Board-space centres of the pads `net` connects, one per pad.
+///
+/// A declared power plane is on the inner layers while its pads are on the
+/// outer copper, so each pad needs a via through the plane. This resolves a
+/// pad's board position the same way the exporter places the footprint: the
+/// pad's local offset, rotated by the placement and translated by the
+/// footprint origin.
+#[allow(clippy::similar_names)] // dx_nm/dy_nm are the natural names for an axis pair
+fn plane_pad_centres(
+    board: &Board,
+    placement: &Placement,
+    net: &synth_ir::Net,
+) -> Vec<synth_geometry::Point> {
+    let mut out = Vec::new();
+    for endpoint in &net.endpoints {
+        let Some(component) = board.component(endpoint.component) else {
+            continue;
+        };
+        let Some(part) = component.part.as_ref() else {
+            continue;
+        };
+        let Some(placed) = placement
+            .components
+            .iter()
+            .find(|placed| placed.id == component.id)
+        else {
+            continue;
+        };
+        let Some(pin) = part.pins.get(endpoint.pin.0 as usize) else {
+            continue;
+        };
+        let Some(pads) = synth_layout::kicad_footprint_loader::synth_part_pads(part) else {
+            continue;
+        };
+        let origin = synth_place::footprint_origin(Some(part), placed);
+        for pad in pads
+            .iter()
+            .filter(|pad| !pad.is_npth && pad.number == pin.number.0)
+        {
+            let (dx_nm, dy_nm) = placed
+                .rotation
+                .rotate_offset(mm_to_nm(pad.center_mm.0), mm_to_nm(pad.center_mm.1));
+            out.push(synth_geometry::Point::new(
+                origin.x_nm + dx_nm,
+                origin.y_nm + dy_nm,
+            ));
+        }
+    }
+    out
+}
+
+/// A through via at a power pad, joining the outer pad to the inner power
+/// plane. The drill sits in the pad (via-in-pad), so the connection is direct
+/// and deterministic; a declared power plane is opt-in, and a process that
+/// cannot fill and cap via-in-pad should not declare one.
+fn build_plane_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usize) -> Sexp {
+    let via_uuid = derive_entity_uuid(project, "plane-via", &idx.to_string());
+    Sexp::list(
+        "via",
+        vec![
+            Sexp::list("at", vec![num(nm_to_mm(x_nm)), num(nm_to_mm(y_nm))]),
+            Sexp::list("size", vec![num(0.6)]),
+            Sexp::list("drill", vec![num(0.3)]),
+            Sexp::list("layers", vec![Sexp::str("F.Cu"), Sexp::str("B.Cu")]),
+            Sexp::list("net", vec![Sexp::atom(pcb_net.to_string())]),
+            str_pair("uuid", via_uuid.to_string()),
+        ],
+    )
+}
+
 fn build_ground_stitch_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usize) -> Sexp {
     let via_uuid = derive_entity_uuid(project, "ground-stitch-via", &idx.to_string());
     Sexp::list(
@@ -280,14 +427,29 @@ fn build_ground_stitch_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, i
     )
 }
 
-/// Emit a `(zone ...)` S-expression for a continuous ground plane copper flood.
-fn build_gnd_zone(
+/// Priority of the generated ground planes.
+///
+/// Above the declared power planes so that, where a rail plane and a ground
+/// plane share a layer, KiCad fills the ground first and carves the rail around
+/// it. Two zones at the same priority can be filled in an order that leaves
+/// either net with isolated islands, so the ordering is made explicit.
+const GROUND_ZONE_PRIORITY: u8 = 1;
+
+/// Priority of a declared power plane (`netclass "PWR" { plane }`).
+const POWER_ZONE_PRIORITY: u8 = 0;
+
+/// Emit a `(zone ...)` S-expression for a full-board copper flood on one layer.
+///
+/// Used for both the automatic ground planes and the opt-in power planes; the
+/// only difference between them is the `priority`.
+fn build_zone(
     placement: &Placement,
     layer_name: &str,
     net_id: u32,
     net_name: &str,
     project: &Uuid,
     zone_key: &str,
+    priority: u8,
 ) -> Sexp {
     let r = placement.board_outline;
     // Keep the zone just inside Edge.Cuts.  A polygon whose vertices lie
@@ -316,6 +478,7 @@ fn build_gnd_zone(
             str_pair("net_name", net_name),
             Sexp::list("layer", vec![Sexp::str(layer_name)]),
             str_pair("uuid", zone_uuid.to_string()),
+            Sexp::list("priority", vec![Sexp::atom(priority.to_string())]),
             Sexp::list("hatch", vec![Sexp::atom("edge"), num(0.5)]),
             Sexp::list(
                 "connect_pads",
@@ -2101,6 +2264,7 @@ mod tests {
                 color: None,
                 impedance: None,
                 current: None,
+                plane: false,
                 source_span: Span::new(0, 0),
             }],
             buses: vec![],
