@@ -151,8 +151,12 @@ board "greenhouse_irrigation" {
       component SW1: switch   "spst_tactile"   value "RESET" {
         placement_hint { near: R4 priority: soft }
       }
-      component R3: resistor  "r_generic_0603" value "10k"
-      component R4: resistor  "r_generic_0603" value "100"
+      component R3: resistor  "r_generic_0603" value "10k" {
+        placement_hint { near: U3 priority: soft }
+      }
+      component R4: resistor  "r_generic_0603" value "100" {
+        placement_hint { near: R3 priority: soft }
+      }
       component C11: capacitor "c_generic_0603" value "100nF"
       component J3: connector "header_1x4"     value "SWD"
       notes "" {
@@ -207,7 +211,7 @@ board "greenhouse_irrigation" {
       component C12: capacitor "c_generic_0603"  value "100nF"
       component C13: capacitor "c_generic_0603"  value "100nF"
       component C14: capacitor "c_generic_0603"  value "100nF"
-      component J2: connector "jst_ph_4pin"      value "SOIL I2C" {
+      component J2: connector "jst_ph_4pin"      value "AUX I2C" {
         placement_hint { region: bottom_edge edge: bottom priority: soft }
       }
       notes "" {
@@ -256,6 +260,84 @@ board "greenhouse_irrigation" {
     connect U3.pb6 -> J2.p3
     connect J1.p2 -> J2.p4
 
+    // A soil probe is the one input that makes this an irrigation controller
+    // rather than a timer, and it is also the part with a failure mode of its
+    // own: a probe held at a constant DC bias electrolyses and corrodes, and
+    // its reading drifts as it does. So the probes are not powered from the
+    // rail. U7 gates their excitation, the MCU raises it only for the
+    // milliseconds it takes to read, and the probe spends the rest of the
+    // cycle unbiased.
+    group "SOIL PROBES" color "#4d7c0f" {
+      component U7: regulator "tps22918_loadswitch" value "TPS22918"
+      component C17: capacitor "c_generic_0603"     value "100nF"
+      component C18: capacitor "c_generic_0603"     value "1uF"
+      component R14: resistor "r_generic_0603"      value "10k"
+      component R15: resistor "r_generic_0603"      value "10k"
+      component C19: capacitor "c_generic_0603"     value "100nF"
+      component C20: capacitor "c_generic_0603"     value "100nF"
+      component J6: connector "jst_ph_3pin"         value "PROBE Z1" {
+        placement_hint { region: bottom_edge edge: bottom priority: soft }
+      }
+      component J7: connector "jst_ph_3pin"         value "PROBE Z2" {
+        placement_hint { region: bottom_edge edge: bottom priority: soft }
+      }
+      notes "" {
+        "U7 switches 3V3 to both probes from PB0, so neither is biased"
+        "between readings. R14/C19 and R15/C20 are the anti-alias filters on"
+        "the two returns: 10k with 100nF rolls off at 160 Hz, far below the"
+        "sampling rate and far above the rate soil moisture changes."
+      }
+    }
+
+    connect L1.p2   -> U7.vin
+    connect J1.p2   -> U7.gnd
+    connect U3.pb0  -> U7.on
+    connect U7.vin  -> C17.p1
+    connect J1.p2   -> C17.p2
+    connect U7.vout -> C18.p1
+    connect J1.p2   -> C18.p2
+
+    // Zone 1 probe: switched excitation, filtered return, ground.
+    connect U7.vout -> J6.p1
+    connect J6.p2   -> R14.p1
+    connect R14.p2  -> U3.pa1
+    connect U3.pa1  -> C19.p1
+    connect J1.p2   -> C19.p2
+    connect J1.p2   -> J6.p3
+
+    // Zone 2 probe, on the same excitation rail.
+    connect U7.vout -> J7.p1
+    connect J7.p2   -> R15.p1
+    connect R15.p2  -> U3.pa2
+    connect U3.pa2  -> C20.p1
+    connect J1.p2   -> C20.p2
+    connect J1.p2   -> J7.p3
+
+    // A flow meter closes the loop: it is how the controller learns that
+    // opening a valve actually moved water, rather than assuming it. Hall
+    // sensors of this kind have an open-collector output, so the line needs
+    // a pull-up before the MCU can read it.
+    group "FLOW METER" color "#0e7490" {
+      component J8: connector "jst_ph_3pin" value "FLOW" {
+        placement_hint { region: bottom_edge edge: bottom priority: soft }
+      }
+      component R16: resistor "r_generic_0603" value "10k"
+      component C21: capacitor "c_generic_0603" value "100nF"
+      notes "" {
+        "R16 pulls the open-collector pulse line up to 3V3. C21 debounces the"
+        "edge; a dry spin and a blocked line are told apart in firmware by"
+        "pulse rate, not by hardware."
+      }
+    }
+
+    connect L1.p2  -> J8.p1
+    connect J1.p2  -> J8.p3
+    connect J8.p2  -> U3.pa3
+    connect U3.pa3 -> R16.p1
+    connect L1.p2  -> R16.p2
+    connect U3.pa3 -> C21.p1
+    connect J1.p2  -> C21.p2
+
     group "VALVE DRIVE" color "#b91c1c" {
       component Q2: transistor "n_mosfet_irlml6244" value "IRLML6244" {
         placement_hint { near: J4 priority: hard }
@@ -265,7 +347,18 @@ board "greenhouse_irrigation" {
       }
       component R10: resistor  "r_generic_0603"     value "100"
       component R11: resistor  "r_generic_0603"     value "100k"
-      component J4: connector  "jst_xh_2pin"        value "VALVE 12V" {
+      component J4: connector  "jst_xh_2pin"        value "VALVE Z1" {
+        placement_hint { region: right_edge edge: right priority: soft }
+      }
+      component Q3: transistor "n_mosfet_irlml6244" value "IRLML6244" {
+        placement_hint { near: J5 priority: hard }
+      }
+      component D6: diode      "d_schottky"         value "1N5819" {
+        placement_hint { near: Q3 priority: hard }
+      }
+      component R12: resistor  "r_generic_0603"     value "100"
+      component R13: resistor  "r_generic_0603"     value "100k"
+      component J5: connector  "jst_xh_2pin"        value "VALVE Z2" {
         placement_hint { region: right_edge edge: right priority: soft }
       }
       notes "" {
@@ -289,6 +382,19 @@ board "greenhouse_irrigation" {
     connect Q2.g   -> R11.p1
     connect J1.p2  -> R11.p2
 
+    // Zone 2, the same circuit on its own pin. Two zones is what a
+    // greenhouse actually has, and it is why the probes are per-zone too:
+    // one reading cannot schedule two beds.
+    connect Q1.d   -> J5.p1
+    connect J5.p2  -> Q3.d
+    connect Q1.d   -> D6.cathode
+    connect Q3.d   -> D6.anode
+    connect J1.p2  -> Q3.s
+    connect U3.pa5 -> R12.p1
+    connect R12.p2 -> Q3.g
+    connect Q3.g   -> R13.p1
+    connect J1.p2  -> R13.p2
+
     group "STATUS" color "#a16207" {
       component D4: led      "led_green_0603" value "PWR"
       component D5: led      "led_red_0603"   value "VALVE"
@@ -296,8 +402,8 @@ board "greenhouse_irrigation" {
       component R8: resistor "r_generic_0603" value "1k"
       notes "" {
         "D4 sits on the 3V3 rail, so it reports the buck is up without any"
-        "firmware running. D5 is driven from PA5, beside the valve gate on"
-        "PA4, so the indicator and the load are commanded from one port."
+        "firmware running. D5 is on PA6 and means irrigating: either zone"
+        "open. The two valve gates are PA4 and PA5."
       }
     }
 
@@ -305,7 +411,7 @@ board "greenhouse_irrigation" {
     connect R7.p2   -> D4.anode
     connect J1.p2   -> D4.cathode
 
-    connect U3.pa5  -> R8.p1
+    connect U3.pa6  -> R8.p1
     connect R8.p2   -> D5.anode
     connect J1.p2   -> D5.cathode
 

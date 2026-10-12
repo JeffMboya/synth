@@ -114,7 +114,7 @@ class = "A"
 status = "experimental"
 expect = "pass"
 expect_fab = "unestablished"
-rationale = "Produced from a prompt through the MCP server, covering #39 cases 1-3 in one product: protected 12V entry, buck, STM32G030 with crystal, SWD and debounced reset, a four-node I2C bus out to a JST probe, and a low-side solenoid driver. Validate reports 0 errors, ERC is clean and the knowledge graph finds no missing support circuit. KiCadRoutingTools 9399bfb routes all 24 nets with no open net, no via-in-pad and nothing below the board floor; the local verdict is review_required only because kicad-cli is absent, so CI establishes the manufacturing baseline."
+rationale = "Produced from a prompt through the MCP server, covering #39 cases 1-3 in one product: protected 12V entry with reverse-polarity P-FET, polyfuse and TVS; a buck to 3V3; an STM32G030 with crystal, SWD and debounced reset; ambient temp/humidity/lux and a calibration EEPROM on one I2C bus; two soil-probe channels on switched excitation so the probes are not held at DC bias; a flow meter that confirms water moved; and two low-side solenoid drivers with their flyback paths. Validate reports 0 errors and the knowledge graph no missing support circuit. KiCadRoutingTools 9399bfb routes it with no open net, no via-in-pad and nothing below the board floor; the local verdict is review_required only because kicad-cli is absent, so CI establishes the manufacturing baseline."
 
 [[board]]
 id = "negative_broken_mcu_board"
