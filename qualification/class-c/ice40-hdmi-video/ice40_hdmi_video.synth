@@ -80,14 +80,21 @@ board "ice40_hdmi_video" {
       match_length 0.25mm
     }
 
+    // `plane` floods a zone for the class's nets on the inner layers, which
+    // is how a four-layer FPGA board carries its rails: the 1.2 V core and
+    // the 3.3 V I/O rail are planes, not traces threaded between 121 balls.
+    // The class is inert until a net joins it, so the rail's first connect
+    // carries `class "CORE"` / `class "IO"`.
     netclass "CORE" {
       trace_width 0.6mm
       clearance 0.25mm
+      plane
     }
 
     netclass "IO" {
       trace_width 0.4mm
       clearance 0.2mm
+      plane
     }
 
     group "USB-C POWER IN" color "#c2410c" {
@@ -204,7 +211,7 @@ board "ice40_hdmi_video" {
     }
 
     // Core rail: every VCC ball and both PLL supplies.
-    connect L1.p2 -> U1.vcc
+    connect L1.p2 -> U1.vcc class "CORE"
     connect L1.p2 -> U1.vcc_2
     connect L1.p2 -> U1.vcc_3
     connect L1.p2 -> U1.vcc_4
@@ -213,7 +220,7 @@ board "ice40_hdmi_video" {
 
     // I/O rail: all four banks, the SPI supply, and the programming rails.
     // VPP_2V5 and VPP_FAST want 2.5-3.3 V, not the 1.2 V core.
-    connect U3.vout -> U1.vccio_0
+    connect U3.vout -> U1.vccio_0 class "IO"
     connect U3.vout -> U1.vccio_1
     connect U3.vout -> U1.vccio_2
     connect U3.vout -> U1.vccio_3
