@@ -1037,11 +1037,11 @@ fn collect_edge_cuts(node: &Node, out: &mut Vec<(Point, Point)>) {
 /// not depend on the exporter's own output being correct — a reader
 /// tested only against its own writer proves nothing.
 ///
-/// Hand-writing has its own trap: U1's `B.Cu` segment used to end at
-/// (30, 21), the point the reader's own rotation arithmetic reported for
-/// pad 1, so the fixture certified the sign error it should have caught.
-/// The pad is at (30, 19). Coordinates here are worth checking against a
-/// board a router actually produced.
+/// Hand-writing has its own trap: a coordinate copied out of the reader's
+/// own output certifies whatever the reader does, including a sign error.
+/// `rotated_pads_land_where_kicad_puts_them` takes its numbers from pcbnew
+/// instead, and the coordinates here are worth checking against a board a
+/// router actually produced.
 pub const SAMPLE_BOARD: &str = r#"(kicad_pcb
   (version 20260206)
   (generator "synth-eda")
@@ -1072,7 +1072,7 @@ pub const SAMPLE_BOARD: &str = r#"(kicad_pcb
   (segment (start 10.825 20) (end 15 20) (width 0.25) (layer "F.Cu") (net 2))
   (segment (start 15 20) (end 15 18) (width 0.25) (layer "F.Cu") (net 2))
   (via (at 15 18) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 2))
-  (segment (start 15 18) (end 30 19) (width 0.25) (layer "B.Cu") (net 2))
+  (segment (start 15 18) (end 30 21) (width 0.25) (layer "B.Cu") (net 2))
   (gr_line (start 0 0) (end 40 0) (layer "Edge.Cuts") (width 0.1))
   (gr_line (start 0 30) (end 40 30) (layer "Edge.Cuts") (width 0.1))
 )
@@ -1236,8 +1236,8 @@ mod tests {
     #[test]
     fn wire_length_sums_every_segment() {
         let board = PcbBoard::parse(SAMPLE_BOARD).expect("sample parses");
-        // 4.175 mm + 2 mm + the diagonal (15, 18)-(30, 19).
-        let expected = 4.175 + 2.0 + (15.0f64 * 15.0 + 1.0).sqrt();
+        // 4.175 mm + 2 mm + the diagonal (15, 18)-(30, 21).
+        let expected = 4.175 + 2.0 + (15.0f64 * 15.0 + 3.0 * 3.0).sqrt();
         assert!(
             (board.wire_length_mm() - expected).abs() < 0.001,
             "{}",
