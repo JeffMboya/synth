@@ -281,7 +281,9 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
     if !power_layers.is_empty() {
         for (rail_index, (pcb_net, net)) in plane_nets_by_class.iter().enumerate() {
             let (pcb_net, net) = (*pcb_net, *net);
-            let share = power_layers.len().div_ceil(plane_nets_by_class.len().max(1));
+            let share = power_layers
+                .len()
+                .div_ceil(plane_nets_by_class.len().max(1));
             let first = (rail_index * share) % power_layers.len();
             let layers: Vec<&&'static str> = power_layers
                 .iter()
