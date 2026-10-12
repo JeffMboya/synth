@@ -230,6 +230,9 @@ fn evaluate(
             board, routing, profile, stackup,
         ));
         violations.extend(signal_integrity::check_edge_coupling(routing, stackup));
+        violations.extend(signal_integrity::check_return_path_vias(
+            board, routing, stackup,
+        ));
     }
     violations.extend(signal_integrity::check_diff_pair_skew(board, routing));
     violations.extend(signal_integrity::check_ampacity(
@@ -706,6 +709,51 @@ mod tests {
             report.violations.is_empty(),
             "env_logger must pass Synth DRC with 0 violations, found: {:?}",
             report.violations
+        );
+    }
+
+    #[test]
+    fn a_signal_via_needs_a_nearby_ground_return_via() {
+        let mut board = load_board("../../examples/env_logger.synth");
+        board.stackup = Some(four_layer_stackup());
+        let stackup = StackupProfile::for_board(&board);
+        let ground = board
+            .nets
+            .iter()
+            .find(|net| super::signal_integrity::net_name_or_pin_is_ground(&board, net))
+            .expect("env_logger must have a ground net")
+            .id;
+        let signal = board
+            .nets
+            .iter()
+            .find(|net| !super::signal_integrity::net_name_or_pin_is_ground(&board, net))
+            .expect("env_logger must have a signal net")
+            .id;
+
+        let via = |net: NetId, x: i64, y: i64| synth_pcb::Via {
+            net,
+            at: synth_geometry::Point::new(x, y),
+            drill_nm: 300_000,
+            pad_diameter_nm: 600_000,
+        };
+
+        // A signal via with no ground via anywhere near it.
+        let lonely = Routing {
+            vias: vec![via(signal, 0, 0)],
+            ..Routing::default()
+        };
+        let flagged = super::signal_integrity::check_return_path_vias(&board, &lonely, &stackup);
+        assert_eq!(flagged.len(), 1, "{flagged:?}");
+        assert_eq!(flagged[0].code, "W-SYNTH-DRC-016");
+        assert!(!flagged[0].is_blocking());
+
+        // A ground return via within the stackup's thickest dielectric.
+        let returned = Routing {
+            vias: vec![via(signal, 0, 0), via(ground, 500_000, 0)],
+            ..Routing::default()
+        };
+        assert!(
+            super::signal_integrity::check_return_path_vias(&board, &returned, &stackup).is_empty()
         );
     }
 }
