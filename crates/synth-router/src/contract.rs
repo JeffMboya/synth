@@ -323,6 +323,40 @@ impl FabricationPolicy {
 }
 
 impl RouteRequest {
+    /// Take the `match_length` groups from the board being routed.
+    ///
+    /// Lives here rather than in a caller because there are three callers —
+    /// the CLI and both MCP routing entry points — and a tolerance that
+    /// reaches only one of them is a constraint the other two silently do
+    /// not check. An empty `length_groups` makes `check_length_matching`
+    /// iterate nothing and report nothing, which reads exactly like a pass.
+    ///
+    /// A class holding fewer than two nets is dropped: one net cannot be
+    /// mismatched against itself. Note that a `netclass` block alone puts
+    /// no net in the class — nets join one through `class "NAME"` on a
+    /// `net`, `power` or `connect` statement — so a declared tolerance with
+    /// no assigned nets is also dropped here.
+    pub fn use_board_length_groups(&mut self, board: &synth_ir::Board) {
+        self.length_groups = board
+            .netclasses
+            .iter()
+            .filter_map(|nc| {
+                let tolerance = nc.match_length?;
+                let nets: Vec<String> = board
+                    .nets
+                    .iter()
+                    .filter(|net| net.netclass.as_deref() == Some(nc.name.as_str()))
+                    .map(|net| net.name.clone())
+                    .collect();
+                (nets.len() >= 2).then(|| LengthGroup {
+                    class: nc.name.clone(),
+                    tolerance_nm: tolerance.to_nm(),
+                    nets,
+                })
+            })
+            .collect();
+    }
+
     /// Adopt the fabrication floor a manufacturer profile imposes.
     ///
     /// Keeps whatever via-in-pad decision was already made: that is a process

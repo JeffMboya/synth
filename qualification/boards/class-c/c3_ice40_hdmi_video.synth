@@ -69,6 +69,11 @@ board "c3_ice40_hdmi_video" {
     // The four TMDS lanes travel together and must arrive together. The
     // tolerance is net-to-net: `max_skew` on each pair bounds its own two
     // halves, this bounds the lanes against each other.
+    // Declaring a netclass puts no net in it: a net joins one through
+    // `class "NAME"` on its `connect`, `net` or `power` statement. Without
+    // that the width, the clearance and the tolerance below apply to
+    // nothing — the class is inert and reads as satisfied. The eight lane
+    // connects carry `class "TMDS"` for that reason.
     netclass "TMDS" {
       trace_width 0.2mm
       clearance 0.2mm
@@ -338,24 +343,24 @@ board "c3_ice40_hdmi_video" {
     // the connector, so the pair constraint is declared on the connector
     // side where the controlled-impedance run actually is.
     connect U1.iot_225 -> R8.p1
-    connect R8.p2      -> J2.d2_p
+    connect R8.p2      -> J2.d2_p class "TMDS"
     connect U1.iot_222 -> R9.p1
-    connect R9.p2      -> J2.d2_n
+    connect R9.p2      -> J2.d2_n class "TMDS"
 
     connect U1.iot_223 -> R10.p1
-    connect R10.p2     -> J2.d1_p
+    connect R10.p2     -> J2.d1_p class "TMDS"
     connect U1.iot_211 -> R11.p1
-    connect R11.p2     -> J2.d1_n
+    connect R11.p2     -> J2.d1_n class "TMDS"
 
     connect U1.iot_207 -> R12.p1
-    connect R12.p2     -> J2.d0_p
+    connect R12.p2     -> J2.d0_p class "TMDS"
     connect U1.iot_206 -> R13.p1
-    connect R13.p2     -> J2.d0_n
+    connect R13.p2     -> J2.d0_n class "TMDS"
 
     connect U1.iot_192 -> R14.p1
-    connect R14.p2     -> J2.ck_p
+    connect R14.p2     -> J2.ck_p class "TMDS"
     connect U1.iot_190 -> R15.p1
-    connect R15.p2     -> J2.ck_n
+    connect R15.p2     -> J2.ck_n class "TMDS"
 
     diff_pair R8_p2 R9_p2 {
       impedance 100ohm

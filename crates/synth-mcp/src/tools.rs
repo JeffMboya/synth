@@ -1325,6 +1325,7 @@ fn route_design_externally_with(
             .clone()
             .unwrap_or_else(|| "jlc-standard".to_string()),
     );
+    request.use_board_length_groups(&board);
     request.input_hash = sha256_of(&res.pcb_path);
     request.preserve_baseline().map_err(|f| f.to_string())?;
 
@@ -2659,6 +2660,7 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
             .clone()
             .unwrap_or_else(|| "jlc-standard".to_string()),
     );
+    request.use_board_length_groups(&board);
     request.input_hash = sha256_of(&res.pcb_path);
     request.preserve_baseline().map_err(|f| f.to_string())?;
     let routing = synth_router::route(&request);
