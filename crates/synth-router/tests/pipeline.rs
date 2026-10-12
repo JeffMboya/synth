@@ -323,6 +323,8 @@ impl EngineEnv {
         for (key, value) in [
             ("SYNTH_FREEROUTING_JAR", Some(jar.to_path_buf())),
             ("SYNTH_FREEROUTING_JAVA", Some(java.to_path_buf())),
+            // Cleared so a developer's own kicad-cli cannot bypass the stub.
+            ("KICAD_CLI", None),
         ] {
             let saved = std::env::var_os(key);
             match value {
@@ -745,6 +747,162 @@ fn a_run_can_be_retried_after_a_failure_and_succeed() {
 
     assert_board(&scratch.file("demo.kicad_pcb"), ROUTED_BOARD);
     assert_board(&scratch.file("demo.synth.kicad_pcb"), PARTIAL_BOARD);
+}
+
+/// The routed board with a ground pour that the router left unfilled.
+fn routed_board_with_zone() -> &'static str {
+    static BOARD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BOARD.get_or_init(build_routed_board_with_zone)
+}
+
+fn build_routed_board_with_zone() -> String {
+    let zone = r#"  (zone (net 1) (net_name "SIG") (layer "B.Cu") (uuid "zone-1")
+    (fill yes (thermal_gap 0.2) (thermal_bridge_width 0.25))
+    (polygon (pts (xy 1 1) (xy 29 1) (xy 29 29) (xy 1 29))))
+"#;
+    let body = ROUTED_BOARD.trim_end().trim_end_matches(')');
+    format!("{body}{zone})\n")
+}
+
+/// A `kicad-cli` that reports a clean DRC and, when asked to save the board,
+/// saves one whose zone is filled -- or fails, or is never expected to be
+/// asked. Installed beside the stub engine so it shadows any real KiCad for
+/// the one test that holds the environment lock.
+fn install_kicad_stub(router: &StubRouter, save: &str) -> PathBuf {
+    let marker = router.command.with_file_name("saved-a-board");
+    let script = format!(
+        r#"#!/bin/sh
+[ "$1" = version ] && {{ echo 10.0.0; exit 0; }}
+OUT=""; SAVE=0; BOARD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output) OUT="$2"; shift 2 ;;
+    --save-board) SAVE=1; shift ;;
+    --format) shift 2 ;;
+    --*) shift ;;
+    *) BOARD="$1"; shift ;;
+  esac
+done
+printf '{{"violations": [], "unconnected_items": []}}' > "$OUT"
+if [ "$SAVE" = 1 ]; then
+  touch "{marker}"
+  {save}
+fi
+exit 0
+"#,
+        marker = marker.display()
+    );
+    let path = router.command.with_file_name("kicad-cli");
+    std::fs::write(&path, script).expect("write kicad stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    marker
+}
+
+const FILLED_SAVE: &str = r#"cat > "$BOARD" <<'SAVED_EOF'
+(kicad_pcb (zone (uuid "zone-1")
+  (filled_polygon (layer "B.Cu") (pts (xy 1 1) (xy 29 1) (xy 29 29) (xy 1 29)))))
+SAVED_EOF"#;
+
+#[test]
+fn a_validated_board_is_delivered_with_its_zones_filled() {
+    let scratch = Scratch::new("zonefill");
+    let with_zone = routed_board_with_zone();
+    let router = StubRouter::new("zonefill_router", Behaviour::Write(with_zone));
+    let marker = install_kicad_stub(&router, FILLED_SAVE);
+    let (jar, java) = stub_engine_files(&scratch);
+    let _env = router.activate(&jar, &java);
+
+    let report = synth_router::route(&request_for(&scratch, 120));
+    assert_eq!(report.state, RouteState::Routed, "{:?}", report.validation);
+    assert!(marker.exists(), "the zones were never filled");
+
+    let delivered = std::fs::read_to_string(scratch.file("demo.kicad_pcb")).expect("delivered");
+    assert_eq!(delivered.matches("(filled_polygon").count(), 1);
+    // Only the fill is added: the router's net table and copper are as written.
+    assert!(delivered.contains(r#"(net 1 "SIG")"#));
+    assert!(delivered.contains("(segment (start 9.175 20)"));
+    assert_board(&scratch.file("demo.synth.kicad_pcb"), PARTIAL_BOARD);
+}
+
+#[test]
+fn a_board_with_only_some_zones_filled_is_refilled_in_full() {
+    let scratch = Scratch::new("zonefill_partial");
+    // zone-1 carries a stale fill from before the final routing; zone-2 has none.
+    let half_filled = routed_board_with_zone()
+        .replace(
+            "(polygon (pts (xy 1 1)",
+            "(filled_polygon (layer \"B.Cu\") (pts (xy 5 5) (xy 6 5) (xy 6 6)))\n    (polygon (pts (xy 1 1)",
+        )
+        .trim_end()
+        .trim_end_matches(')')
+        .to_string()
+        + "  (zone (net 1) (net_name \"SIG\") (layer \"B.Cu\") (uuid \"zone-2\")\n    (fill yes)\n    (polygon (pts (xy 1 1) (xy 9 1) (xy 9 9))))\n)\n";
+    assert!(
+        half_filled.contains("(xy 5 5)"),
+        "the stale fill was not injected"
+    );
+    let router = StubRouter::new(
+        "zonefill_partial_router",
+        Behaviour::Write(Box::leak(half_filled.into_boxed_str())),
+    );
+    let marker = install_kicad_stub(
+        &router,
+        r#"cat > "$BOARD" <<'SAVED_EOF'
+(kicad_pcb
+  (zone (uuid "zone-1")
+    (filled_polygon (layer "B.Cu") (pts (xy 1 1) (xy 29 1) (xy 29 29) (xy 1 29))))
+  (zone (uuid "zone-2")
+    (filled_polygon (layer "B.Cu") (pts (xy 2 2) (xy 8 2) (xy 8 8)))))
+SAVED_EOF"#,
+    );
+    let (jar, java) = stub_engine_files(&scratch);
+    let _env = router.activate(&jar, &java);
+
+    let report = synth_router::route(&request_for(&scratch, 120));
+    assert_eq!(report.state, RouteState::Routed, "{:?}", report.validation);
+    assert!(marker.exists(), "a half-filled board was not refilled");
+
+    let delivered = std::fs::read_to_string(scratch.file("demo.kicad_pcb")).expect("delivered");
+    assert_eq!(
+        delivered.matches("(filled_polygon").count(),
+        2,
+        "{delivered}"
+    );
+    assert!(!delivered.contains("(xy 5 5)"), "stale copper survived");
+}
+
+#[test]
+fn a_fill_that_fails_still_delivers_the_routed_board() {
+    let scratch = Scratch::new("zonefill_fail");
+    let with_zone = routed_board_with_zone();
+    let router = StubRouter::new("zonefill_fail_router", Behaviour::Write(with_zone));
+    let marker = install_kicad_stub(&router, "exit 1");
+    let (jar, java) = stub_engine_files(&scratch);
+    let _env = router.activate(&jar, &java);
+
+    let report = synth_router::route(&request_for(&scratch, 120));
+    assert_eq!(report.state, RouteState::Routed, "{:?}", report.validation);
+    assert!(marker.exists());
+    assert_board(&scratch.file("demo.kicad_pcb"), with_zone);
+}
+
+#[test]
+fn a_garbage_save_is_rejected_and_leaves_no_staged_file() {
+    let scratch = Scratch::new("zonefill_garbage");
+    let with_zone = routed_board_with_zone();
+    let router = StubRouter::new("zonefill_garbage_router", Behaviour::Write(with_zone));
+    let marker = install_kicad_stub(&router, "echo '(not a board' > \"$BOARD\"");
+    let (jar, java) = stub_engine_files(&scratch);
+    let _env = router.activate(&jar, &java);
+
+    let report = synth_router::route(&request_for(&scratch, 120));
+    assert_eq!(report.state, RouteState::Routed, "{:?}", report.validation);
+    assert!(marker.exists());
+    assert_board(&scratch.file("demo.kicad_pcb"), with_zone);
 }
 
 /// Assert that `path` holds `expected`.
