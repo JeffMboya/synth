@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::capability::{which, KRT_ENTRYPOINT};
+use crate::capability::KRT_ENTRYPOINT;
 use crate::contract::{KiCadRoutingToolsOptions, RouteRequest, RouterEngine};
 use crate::failure::{RouterFailure, RouterFailureReason, RouterStage};
 use crate::freerouting::Candidate;
@@ -339,21 +339,14 @@ pub fn route(request: &RouteRequest) -> Result<Candidate, RouterFailure> {
     Ok(candidate)
 }
 
+/// Both resolvers are shared with capability discovery so the path an engine
+/// is *reported* available at is the path it actually runs from.
 fn resolve_repo() -> Option<PathBuf> {
-    let configured = std::env::var_os("KICAD_ROUTING_TOOLS_REPO")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())?;
-    configured.is_dir().then_some(configured)
+    crate::capability::resolve_krt_repo()
 }
 
 fn resolve_python() -> Option<PathBuf> {
-    if let Some(configured) = std::env::var_os("SYNTH_KRT_PYTHON")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-    {
-        return configured.is_file().then_some(configured);
-    }
-    which("python3").or_else(|| which("python"))
+    crate::capability::resolve_python()
 }
 
 fn read_report(path: &Path) -> Option<KrtReport> {

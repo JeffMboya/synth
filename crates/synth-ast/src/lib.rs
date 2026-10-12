@@ -647,6 +647,13 @@ pub enum NetclassAttr {
     /// schematic `net_settings` colour. Six-digit `#rrggbb` (the
     /// leading `#` optional).
     Color(String),
+    /// Single-ended characteristic impedance target for the class's nets
+    /// (`impedance 50ohm`). Distinct from a `diff_pair`'s differential
+    /// impedance: this sizes one trace against its reference plane.
+    Impedance(ValueWithUnit),
+    /// Current the class's nets carry (`current 1.5A`), used to check routed
+    /// width against the IPC-2221 ampacity curve.
+    Current(ValueWithUnit),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

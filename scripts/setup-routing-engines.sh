@@ -3,11 +3,11 @@
 # Install the external routing engines Synth drives.
 #
 # Synth does not generate copper itself: `synth export-kicad` / `synth route`
-# hand the un-routed board to FreeRouting (the default) or KiCadRoutingTools
+# hand the un-routed board to KiCadRoutingTools (the default) or FreeRouting
 # and then validate what comes back. Neither engine is vendored, so a fresh
 # checkout has to fetch them. This script does that, idempotently, without
-# root: it downloads the pinned FreeRouting JAR and sets up a
-# KiCadRoutingTools checkout with a Python that can import KiCad's `pcbnew`.
+# root: it sets up a KiCadRoutingTools checkout with a Python that can import
+# KiCad's `pcbnew`, and downloads the pinned FreeRouting JAR.
 #
 # It prints the environment Synth needs at the end; nothing is written to your
 # shell profile.

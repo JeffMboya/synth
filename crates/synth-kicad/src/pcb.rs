@@ -691,10 +691,11 @@ struct DerivedGeometry {
 }
 
 fn derived_controlled_geometry(board: &Board) -> Vec<(synth_ir::NetId, DerivedGeometry)> {
-    let Some(outer) = board
-        .stackup
-        .as_ref()
-        .and_then(synth_geometry::outer_microstrip_params)
+    // Declared stackup only: deriving controlled geometry from a substituted
+    // default would silently change the exported board for a design that
+    // declares none. `StackupProfile::declared` keeps that contract explicit.
+    let Some(outer) = synth_geometry::StackupProfile::declared(board)
+        .and_then(|profile| profile.outer_microstrip_params())
     else {
         return Vec::new();
     };
@@ -2098,6 +2099,8 @@ mod tests {
                 trace_width: Some(Length::from_mm(0.5)),
                 clearance: Some(Length::from_mm(0.2)),
                 color: None,
+                impedance: None,
+                current: None,
                 source_span: Span::new(0, 0),
             }],
             buses: vec![],

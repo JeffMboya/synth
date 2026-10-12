@@ -136,6 +136,29 @@ fn each_controlled_impedance_pair_gets_its_own_diagnostic() {
 }
 
 #[test]
+fn a_netclass_impedance_without_a_stackup_is_warned_not_verified() {
+    let src = "board \"t\" {
+  layers 2
+  component R1: resistor \"r_generic_0603\" value \"10k\"
+  component R2: resistor \"r_generic_0603\" value \"10k\"
+  connect R1.p1 -> R2.p1
+  netclass \"RF\" { impedance 50ohm }
+}
+";
+    let found = with_code(src, NOT_VERIFIED);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].found.as_deref().unwrap().contains("netclass `RF`"),
+        "{}",
+        found[0].found.as_deref().unwrap()
+    );
+    assert!(with_code(src, NO_PLANE).is_empty());
+
+    let one_layer = src.replace("layers 2", "layers 1");
+    assert_eq!(with_code(&one_layer, NO_PLANE).len(), 1);
+}
+
+#[test]
 fn pair_without_an_impedance_target_is_untouched() {
     for layers in [1, 2] {
         let src = board(layers, "", "diff_pair r1_p1 r1_p2");

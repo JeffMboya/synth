@@ -2,9 +2,9 @@
 
 //! The FreeRouting adapter.
 //!
-//! FreeRouting is the default routing path: the JAR and, where present,
-//! the Java runtime are managed by the project, and the board is routed
-//! through a Specctra round trip.
+//! FreeRouting is the managed alternative to KiCadRoutingTools: the JAR and,
+//! where present, the Java runtime are managed by the project, and the board
+//! is routed through a Specctra round trip.
 //!
 //! Three details carry most of the weight:
 //!

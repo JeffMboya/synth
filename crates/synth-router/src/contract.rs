@@ -25,9 +25,10 @@ use crate::failure::RouterFailure;
 #[serde(rename_all = "kebab-case")]
 pub enum RouterEngine {
     /// FreeRouting, driven through the managed JAR + Java runtime.
-    #[default]
     Freerouting,
-    /// KiCadRoutingTools, driven from an external checkout.
+    /// KiCadRoutingTools, driven from an external checkout. The default
+    /// engine: it is the one `scripts/setup-routing-engines.sh` installs.
+    #[default]
     #[serde(rename = "kicad-routing-tools", alias = "kicadroutingtools")]
     KiCadRoutingTools,
 }
@@ -70,9 +71,12 @@ impl RouterEngine {
     }
 
     /// All engines, in the order capability discovery should report them.
+    ///
+    /// The default engine leads, so a caller reading the first entry gets the
+    /// engine an unconfigured run would use.
     #[must_use]
     pub fn all() -> [Self; 2] {
-        [Self::Freerouting, Self::KiCadRoutingTools]
+        [Self::KiCadRoutingTools, Self::Freerouting]
     }
 }
 
@@ -516,8 +520,11 @@ mod tests {
     }
 
     #[test]
-    fn freerouting_is_the_default_engine() {
-        assert_eq!(RouterEngine::default(), RouterEngine::Freerouting);
+    fn kicad_routing_tools_is_the_default_engine() {
+        assert_eq!(RouterEngine::default(), RouterEngine::KiCadRoutingTools);
+        // Discovery leads with the default, so the first entry an operator
+        // sees is the engine an unconfigured run would use.
+        assert_eq!(RouterEngine::all()[0], RouterEngine::default());
     }
 
     #[test]

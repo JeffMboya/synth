@@ -64,6 +64,7 @@ mod geometry;
 pub mod kicad_cli;
 mod profile;
 mod rules;
+mod signal_integrity;
 
 use serde::{Deserialize, Serialize};
 use synth_geometry::Point;
@@ -73,6 +74,9 @@ use synth_place::Placement;
 
 pub use profile::{ManufacturerProfile, ProfileError};
 pub use rules::{replay, run_kicad_cli_drc, DrcCounts, NativeDrcOutcome, DRC_STAGE};
+/// Re-exported so a DRC caller can resolve and hand in a board's physical
+/// stack without depending on `synth-geometry` directly.
+pub use synth_geometry::StackupProfile;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuggestedOverride {
@@ -121,13 +125,42 @@ pub struct DrcReport {
     /// downstream consumers can verify they're comparing
     /// apples to apples.
     pub profile_name: String,
+    /// The board's physical stack the report was evaluated against, when the
+    /// caller supplied one ([`check_with_stackup`]). `None` from the plain
+    /// [`check`], whose output is therefore byte-identical to before stackup
+    /// awareness existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stackup: Option<StackupProfile>,
+}
+
+impl Violation {
+    /// True when this violation blocks a release.
+    ///
+    /// A [`Violation`] carries no severity field; the project's stable
+    /// convention is that an `E-` code is an error and a `W-` code is a
+    /// warning, so severity is read from the code. Advisory rules (edge
+    /// coupling, say) emit `W-SYNTH-DRC-*` and never gate.
+    #[must_use]
+    pub fn is_blocking(&self) -> bool {
+        self.code.starts_with("E-")
+    }
 }
 
 impl DrcReport {
-    /// True when no violations were found.
+    /// True when no *blocking* violations were found.
+    ///
+    /// Warning-severity violations (`W-SYNTH-DRC-*`) are advisory and do not
+    /// make a report unclean; callers that want the full list read
+    /// [`DrcReport::violations`].
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.violations.is_empty()
+        self.violations.iter().all(|v| !v.is_blocking())
+    }
+
+    /// Count of blocking violations.
+    #[must_use]
+    pub fn blocking_count(&self) -> usize {
+        self.violations.iter().filter(|v| v.is_blocking()).count()
     }
 }
 
@@ -142,6 +175,36 @@ pub fn check(
     placement: &Placement,
     routing: &Routing,
     profile: &ManufacturerProfile,
+) -> DrcReport {
+    evaluate(board, placement, routing, profile, None)
+}
+
+/// [`check`], additionally recording the board's resolved physical stackup on
+/// the report.
+///
+/// The stackup does not change which violations fire yet — the impedance,
+/// crosstalk and ampacity rules that consume it land separately — but carrying
+/// it here is what lets those rules resolve a trace against the real
+/// dielectric geometry instead of a fixed default. Use
+/// [`StackupProfile::for_board`] to obtain the argument, so a board that
+/// declares no stackup still gets a standard profile rather than none.
+#[must_use]
+pub fn check_with_stackup(
+    board: &Board,
+    placement: &Placement,
+    routing: &Routing,
+    profile: &ManufacturerProfile,
+    stackup: &StackupProfile,
+) -> DrcReport {
+    evaluate(board, placement, routing, profile, Some(stackup.clone()))
+}
+
+fn evaluate(
+    board: &Board,
+    placement: &Placement,
+    routing: &Routing,
+    profile: &ManufacturerProfile,
+    stackup: Option<StackupProfile>,
 ) -> DrcReport {
     let mut violations = Vec::new();
     violations.extend(rules::check_min_trace_width(routing, profile));
@@ -158,9 +221,26 @@ pub fn check(
         board, placement, routing, profile,
     ));
     violations.extend(geometry::check_shorts(board, placement, routing));
+    // Routed signal integrity (E-SYNTH-DRC-012 / 014). The impedance rule
+    // needs a stackup and is skipped without one, preserving the documented
+    // "no stackup, impedance not verified" contract; the skew rule is
+    // geometry-only.
+    if let Some(stackup) = stackup.as_ref() {
+        violations.extend(signal_integrity::check_controlled_impedance(
+            board, routing, profile, stackup,
+        ));
+        violations.extend(signal_integrity::check_edge_coupling(routing, stackup));
+    }
+    violations.extend(signal_integrity::check_diff_pair_skew(board, routing));
+    violations.extend(signal_integrity::check_ampacity(
+        board,
+        routing,
+        stackup.as_ref(),
+    ));
     DrcReport {
         violations,
         profile_name: profile.name.clone(),
+        stackup,
     }
 }
 
@@ -263,6 +343,304 @@ mod tests {
         let a = check(&board, &placement, &routing, &profile);
         let b = check(&board, &placement, &routing, &profile);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn declared_stackup_resolves_and_a_declared_profile_preserves_violations() {
+        let board = load_board("../../fixtures/designs/stackup_4layer.synth");
+        let profile = StackupProfile::declared(&board).expect("declared stackup");
+        assert_eq!(profile.copper_count(), 4);
+        assert_eq!(profile.source, synth_geometry::StackupSource::Declared);
+
+        let placement = synth_place::place(&board).expect("place");
+        let routing = synth_route::route(&board, &placement);
+        let fab = ManufacturerProfile::jlc_standard();
+        let plain = check(&board, &placement, &routing, &fab);
+        let with_stackup = check_with_stackup(&board, &placement, &routing, &fab, &profile);
+        // Phase 1 threads the stackup through without changing which rules
+        // fire, so the two reports can only differ in the recorded stackup.
+        assert_eq!(plain.violations, with_stackup.violations);
+        assert!(plain.stackup.is_none());
+        assert_eq!(with_stackup.stackup.as_ref(), Some(&profile));
+    }
+
+    #[test]
+    fn a_board_without_a_stackup_substitutes_a_standard_profile() {
+        let board = load_board("../../examples/env_logger.synth");
+        assert!(
+            StackupProfile::declared(&board).is_none(),
+            "env_logger must not declare a stackup for this test to be meaningful"
+        );
+        let profile = StackupProfile::for_board(&board);
+        assert_eq!(profile.source, synth_geometry::StackupSource::Default);
+        assert_eq!(profile.copper_count(), board.layers as usize);
+    }
+
+    fn four_layer_stackup() -> synth_ir::Stackup {
+        use synth_ir::{DielectricConstant, Length, StackupLayer};
+        let span = synth_diagnostics::Span::new(0, 0);
+        let copper = |t: f64| StackupLayer::Copper {
+            thickness: Length::from_mm(t),
+            source_span: span,
+        };
+        let dielectric = |t: f64, er: f64| StackupLayer::Insulator {
+            thickness: Length::from_mm(t),
+            er: DielectricConstant((er * 1_000_000.0) as i64),
+            material: Some("FR4".to_string()),
+            source_span: span,
+        };
+        synth_ir::Stackup {
+            layers: vec![
+                copper(0.035),
+                dielectric(0.2104, 4.4),
+                copper(0.0152),
+                dielectric(1.065, 4.6),
+                copper(0.0152),
+                dielectric(0.2104, 4.4),
+                copper(0.035),
+            ],
+            source_span: span,
+        }
+    }
+
+    fn board_with_controlled_pair() -> Board {
+        let mut board = load_board("../../examples/placement_and_diff_pair.synth");
+        board.stackup = Some(four_layer_stackup());
+        board
+    }
+
+    fn straight(net: NetId, width_nm: i64, y_nm: i64, len_nm: i64) -> synth_pcb::Segment {
+        synth_pcb::Segment {
+            net,
+            layer: synth_geometry::Layer::Top,
+            start: synth_geometry::Point::new(0, y_nm),
+            end: synth_geometry::Point::new(len_nm, y_nm),
+            width_nm,
+        }
+    }
+
+    #[test]
+    fn a_routed_width_matching_the_target_passes_and_a_wrong_one_blocks() {
+        let board = board_with_controlled_pair();
+        let stackup = StackupProfile::for_board(&board);
+        let (positive, negative, _, _) = board.impedance_legs().next().expect("a controlled pair");
+
+        // The width the stackup demands for 90 ohm on the outer layer, with
+        // the manufacturer-minimum gap the rule falls back to.
+        let pair = stackup
+            .coupled_for_z0(
+                synth_geometry::Layer::Top,
+                90.0,
+                synth_geometry::mm_to_nm(0.127),
+                synth_geometry::mm_to_nm(0.127),
+            )
+            .expect("reachable target");
+        let good_width = synth_geometry::mm_to_nm(pair.width_mm);
+
+        let routed = |width_nm: i64| Routing {
+            segments: vec![
+                straight(positive.id, width_nm, 0, 4_000_000),
+                straight(positive.id, width_nm, 400_000, 4_000_000),
+                straight(negative.id, width_nm, 200_000, 4_000_000),
+                straight(negative.id, width_nm, 600_000, 4_000_000),
+            ],
+            ..Routing::default()
+        };
+        let profile = ManufacturerProfile::jlc_standard();
+
+        let clean = super::signal_integrity::check_controlled_impedance(
+            &board,
+            &routed(good_width),
+            &profile,
+            &stackup,
+        );
+        assert!(clean.is_empty(), "on-target width must pass: {clean:?}");
+
+        let wrong = super::signal_integrity::check_controlled_impedance(
+            &board,
+            &routed(good_width / 3),
+            &profile,
+            &stackup,
+        );
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+        assert_eq!(wrong[0].code, "E-SYNTH-DRC-012");
+    }
+
+    #[test]
+    fn impedance_is_not_checked_without_a_stackup() {
+        let mut board = board_with_controlled_pair();
+        board.stackup = None;
+        let (positive, negative, _, _) = board.impedance_legs().next().expect("a controlled pair");
+        let routing = Routing {
+            segments: vec![
+                straight(positive.id, 50_000, 0, 4_000_000),
+                straight(negative.id, 50_000, 200_000, 4_000_000),
+            ],
+            ..Routing::default()
+        };
+        // `check` is the documented "no stackup, not verified" path: it never
+        // runs the impedance rule, so a board that declares no stackup cannot
+        // be blocked by it.
+        let report = check(
+            &board,
+            &synth_place::place(&board).expect("place"),
+            &routing,
+            &ManufacturerProfile::jlc_standard(),
+        );
+        assert!(report.stackup.is_none());
+        assert!(
+            !report
+                .violations
+                .iter()
+                .any(|v| v.code == "E-SYNTH-DRC-012"),
+            "impedance must not be checked without a stackup"
+        );
+    }
+
+    #[test]
+    fn a_pair_over_its_declared_skew_blocks() {
+        let mut board = board_with_controlled_pair();
+        board.diff_pairs[0].max_skew = Some(synth_ir::Length::from_mm(0.15));
+        let (positive, negative, _, _) = board.impedance_legs().next().expect("a controlled pair");
+
+        let routed = |positive_len: i64, negative_len: i64| Routing {
+            segments: vec![
+                straight(positive.id, 127_000, 0, positive_len),
+                straight(negative.id, 127_000, 200_000, negative_len),
+            ],
+            ..Routing::default()
+        };
+
+        assert!(
+            super::signal_integrity::check_diff_pair_skew(&board, &routed(5_000_000, 5_100_000))
+                .is_empty(),
+            "0.1 mm skew is within the 0.15 mm budget"
+        );
+        let over =
+            super::signal_integrity::check_diff_pair_skew(&board, &routed(5_000_000, 5_400_000));
+        assert_eq!(over.len(), 1, "{over:?}");
+        assert_eq!(over[0].code, "E-SYNTH-DRC-014");
+    }
+
+    #[test]
+    fn an_undersized_trace_on_a_declared_current_blocks() {
+        let mut board = load_board("../../examples/env_logger.synth");
+        board.nets[0].netclass = Some("PWR".to_string());
+        board.netclasses.push(synth_ir::NetClass {
+            name: "PWR".to_string(),
+            trace_width: None,
+            clearance: None,
+            color: None,
+            impedance: None,
+            current: Some(synth_ir::Current(1_000_000)),
+            source_span: synth_diagnostics::Span::new(0, 0),
+        });
+        let net = board.nets[0].id;
+        let routed = |width_nm: i64| Routing {
+            segments: vec![straight(net, width_nm, 0, 5_000_000)],
+            ..Routing::default()
+        };
+
+        let thin = super::signal_integrity::check_ampacity(
+            &board,
+            &routed(synth_geometry::mm_to_nm(0.2)),
+            None,
+        );
+        assert_eq!(thin.len(), 1, "{thin:?}");
+        assert_eq!(thin[0].code, "E-SYNTH-DRC-015");
+        assert!(
+            super::signal_integrity::check_ampacity(
+                &board,
+                &routed(synth_geometry::mm_to_nm(1.0)),
+                None
+            )
+            .is_empty(),
+            "1 mm carries 1 A comfortably"
+        );
+    }
+
+    #[test]
+    fn a_single_ended_netclass_impedance_is_checked_against_the_route() {
+        let mut board = board_with_controlled_pair();
+        board.nets[0].netclass = Some("RF".to_string());
+        board.netclasses.push(synth_ir::NetClass {
+            name: "RF".to_string(),
+            trace_width: None,
+            clearance: None,
+            color: None,
+            impedance: Some(synth_ir::Impedance(50_000)),
+            current: None,
+            source_span: synth_diagnostics::Span::new(0, 0),
+        });
+        let stackup = StackupProfile::for_board(&board);
+        let net = board.nets[0].id;
+        let good_width = stackup
+            .width_for_z0(
+                synth_geometry::Layer::Top,
+                50.0,
+                synth_geometry::mm_to_nm(0.127),
+            )
+            .expect("reachable")
+            .0;
+        let routed = |width_nm: i64| Routing {
+            segments: vec![straight(net, width_nm, 0, 5_000_000)],
+            ..Routing::default()
+        };
+        let profile = ManufacturerProfile::jlc_standard();
+
+        assert!(
+            super::signal_integrity::check_controlled_impedance(
+                &board,
+                &routed(good_width),
+                &profile,
+                &stackup
+            )
+            .is_empty(),
+            "a routed width matching the class's 50 ohm target must pass"
+        );
+        let off = super::signal_integrity::check_controlled_impedance(
+            &board,
+            &routed(synth_geometry::mm_to_nm(0.05)),
+            &profile,
+            &stackup,
+        );
+        assert_eq!(off.len(), 1, "{off:?}");
+        assert_eq!(off[0].code, "E-SYNTH-DRC-012");
+    }
+
+    #[test]
+    fn a_long_close_parallel_run_warns_but_does_not_block() {
+        let stackup = StackupProfile::default_for_layers(4);
+        let near = Routing {
+            segments: vec![
+                straight(NetId(1), 50_000, 0, 5_000_000),
+                straight(NetId(2), 50_000, 200_000, 5_000_000),
+            ],
+            ..Routing::default()
+        };
+        let warnings = super::signal_integrity::check_edge_coupling(&near, &stackup);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, "W-SYNTH-DRC-013");
+        assert!(!warnings[0].is_blocking());
+
+        // A warning-only report is clean for the release gate.
+        let report = DrcReport {
+            violations: warnings,
+            profile_name: "test".to_string(),
+            stackup: None,
+        };
+        assert!(report.is_clean());
+        assert_eq!(report.blocking_count(), 0);
+
+        // Far enough apart to be outside a dielectric height: no warning.
+        let far = Routing {
+            segments: vec![
+                straight(NetId(1), 50_000, 0, 5_000_000),
+                straight(NetId(2), 50_000, 1_000_000, 5_000_000),
+            ],
+            ..Routing::default()
+        };
+        assert!(super::signal_integrity::check_edge_coupling(&far, &stackup).is_empty());
     }
 
     #[test]

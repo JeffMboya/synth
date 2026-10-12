@@ -330,6 +330,13 @@ impl Impedance {
     }
 }
 
+impl Current {
+    #[allow(clippy::cast_precision_loss)]
+    pub fn to_amps(self) -> f64 {
+        self.0 as f64 / UA_PER_A as f64
+    }
+}
+
 impl TryFrom<&ValueWithUnit> for Impedance {
     type Error = ConversionError;
     fn try_from(v: &ValueWithUnit) -> Result<Self, Self::Error> {

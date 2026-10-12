@@ -82,10 +82,9 @@ def parse_args(argv):
 NET_TABLE = re.compile(r'^\s*\(net (\d+) "([^"]*)"')
 FOOTPRINT_OPEN = re.compile(r"^\s*\(footprint\b")
 AT_LINE = re.compile(r"^\s*\(at (-?[0-9.]+) (-?[0-9.]+)(?: (-?[0-9.]+))?")
-PAD_WITH_NET = re.compile(
-    r'^\s*\(pad "([^"]+)"\s+smd\b.*?\(at (-?[0-9.]+) (-?[0-9.]+)\)'
-    r'.*?\(net (\d+) "'
-)
+PAD_START = re.compile(r'^\s*\(pad\s+"([^"]+)"')
+AT_ON_LINE = re.compile(r"\(at (-?[0-9.]+) (-?[0-9.]+)")
+NET_ON_LINE = re.compile(r'\(net (\d+)\s+"')
 
 
 def route(baseline_text):
@@ -95,6 +94,10 @@ def route(baseline_text):
     Pad `(at ...)` is relative to its footprint, so each offset is rotated by
     the footprint's angle and translated by the footprint origin; skipping
     either step puts the segment beside the pad instead of on it.
+
+    The exporter pretty-prints a pad across several lines — `(pad "1" ...` on
+    one, `(at ...)` and `(net ...)` on later ones — so a pad is parsed as a
+    little state machine rather than off a single line.
     """
     net_names = {}
     origin = None
@@ -103,47 +106,69 @@ def route(baseline_text):
     seen = {}
     segments = []
     net_code = 0
+    pad = None  # {"x": float|None, "y": float|None} while inside a pad block
+
+    def place(code, local_x, local_y):
+        nonlocal net_code
+        if origin is None or local_x is None or code == 0:
+            return
+        net_code = code
+        # KiCad angles are counter-clockwise on screen while y runs down the
+        # page, so a positive angle turns local x toward negative y.
+        radians = math.radians(angle_deg)
+        x = origin[0] + local_x * math.cos(radians) + local_y * math.sin(radians)
+        y = origin[1] - local_x * math.sin(radians) + local_y * math.cos(radians)
+        key = net_names.get(str(code), str(code))
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] == 1:
+            first_pad[key] = (x, y)
+        else:
+            segments.append((first_pad[key], (x, y), code))
 
     for line in baseline_text.splitlines():
+        # Pad handling comes first: a pad's own `(net N "…")` line starts like
+        # a top-level net declaration, so the pad state machine must claim it
+        # before the net table does.
+        if PAD_START.match(line):
+            pad = {"x": None, "y": None}
+            match = AT_ON_LINE.search(line)
+            if match:
+                pad["x"], pad["y"] = float(match.group(1)), float(match.group(2))
+            match = NET_ON_LINE.search(line)
+            if match:
+                place(int(match.group(1)), pad["x"], pad["y"])
+                pad = None
+            continue
+
+        if pad is not None:
+            if pad["x"] is None:
+                match = AT_ON_LINE.search(line)
+                if match:
+                    pad["x"], pad["y"] = float(match.group(1)), float(match.group(2))
+                    continue
+            match = NET_ON_LINE.search(line)
+            if match:
+                place(int(match.group(1)), pad["x"], pad["y"])
+                pad = None
+            continue
+
         match = NET_TABLE.match(line)
         if match:
             net_names[match.group(1)] = match.group(2)
             continue
 
         if FOOTPRINT_OPEN.match(line):
-            origin, angle_deg = None, 0.0
+            origin, angle_deg, pad = None, 0.0, None
             continue
 
-        # The footprint origin follows its library name, which sits on its own
-        # line, so this is read as state rather than parsed off one line.
-        match = AT_LINE.match(line)
-        if match and origin is None and not line.lstrip().startswith("(pad"):
-            origin = (float(match.group(1)), float(match.group(2)))
-            angle_deg = float(match.group(3)) if match.group(3) else 0.0
-            continue
-
-        match = PAD_WITH_NET.search(line)
-        if not match or origin is None:
-            continue
-        code = int(match.group(4))
-        if code == 0:
-            continue
-        net_code = code
-        local_x = float(match.group(2))
-        local_y = float(match.group(3))
-        # KiCad angles are counter-clockwise on screen while y runs down the
-        # page, so a positive angle turns local x toward negative y.
-        radians = math.radians(angle_deg)
-        x = origin[0] + local_x * math.cos(radians) + local_y * math.sin(radians)
-        y = origin[1] - local_x * math.sin(radians) + local_y * math.cos(radians)
-
-        key = net_names.get(str(code), str(code))
-        seen[key] = seen.get(key, 0) + 1
-        if seen[key] == 1:
-            first_pad[key] = (x, y)
-        else:
-            start = first_pad[key]
-            segments.append((start, (x, y), code))
+        # The footprint origin is the first `(at ...)` in the footprint block
+        # that is not inside a pad; property effects carry their own `(at ...)`
+        # but follow the origin.
+        if origin is None and line.lstrip().startswith("(at"):
+            match = AT_LINE.match(line)
+            if match:
+                origin = (float(match.group(1)), float(match.group(2)))
+                angle_deg = float(match.group(3)) if match.group(3) else 0.0
 
     return segments, net_code
 

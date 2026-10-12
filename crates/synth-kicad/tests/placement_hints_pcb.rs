@@ -473,3 +473,48 @@ fn hard_edge_hinted_jst_is_flush_with_copper_clear_in_the_exported_pcb() {
         );
     }
 }
+
+/// A component-rich, hint-free board: enough parts that the placer's density
+/// margin changes the arrangement, so the candidate set is genuinely more than
+/// one.
+fn crowded_source() -> String {
+    use std::fmt::Write as _;
+    let mut src =
+        String::from("board \"candidates\" {\n  layers 2\n  component U1: mcu \"rp2350\"\n");
+    for index in 1..=16 {
+        let _ = writeln!(
+            src,
+            "  component C{index}: capacitor \"c_generic_0603\" value \"100nF\""
+        );
+    }
+    src.push_str("}\n");
+    src
+}
+
+#[test]
+fn the_iteration_candidate_set_offers_distinct_placements() {
+    let board = lower_source(&crowded_source(), "candidates.synth");
+    let sidecars = synth_kicad::Sidecars::default();
+    let candidates =
+        synth_kicad::placement_candidates(&board, &sidecars).expect("candidates must build");
+    assert!(
+        candidates.len() >= 2,
+        "a crowded hint-free board must yield more than one distinct candidate, got {}",
+        candidates.len()
+    );
+
+    // Two distinct candidates must export two distinct placements: the whole
+    // point of injecting a choice is that it reaches the board.
+    let a = tempdir("candidates-a");
+    let b = tempdir("candidates-b");
+    let first = synth_kicad::export_with_placement(&board, &a, &sidecars, &candidates[0])
+        .expect("export candidate 0");
+    let second = synth_kicad::export_with_placement(&board, &b, &sidecars, &candidates[1])
+        .expect("export candidate 1");
+    let first_pcb = fs::read_to_string(&first.pcb_path).expect("read candidate 0 pcb");
+    let second_pcb = fs::read_to_string(&second.pcb_path).expect("read candidate 1 pcb");
+    assert_ne!(
+        first_pcb, second_pcb,
+        "distinct candidates must export distinct placements"
+    );
+}
