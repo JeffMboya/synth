@@ -64,9 +64,9 @@ impl OutlineHull {
         }
     }
 
-    /// Add a placed component to the outline hull.
-    /// Inflate an already-computed courtyard rect by `CLEARANCE_GAP_NM` and
-    /// record it as an obstacle.
+    /// Add a placed component to the outline hull: inflate its
+    /// already-computed courtyard rect by `gap` (the macro or passive
+    /// clearance gap) and record it as an obstacle.
     ///
     /// Takes the rect rather than a centre and half-extents because a placement
     /// anchor is footprint-relative: for a DIP or a long header the courtyard

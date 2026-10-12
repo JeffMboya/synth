@@ -471,8 +471,7 @@ Run the automatic placer first and read the outline it produces; use a
 placement sidecar only to fix specific parts. A sidecar entry fixes that part's
 position (it moves only to clear a collision, and `priority = "hard"` entries
 win over soft ones), so the placer's spacing choices do not apply to it;
-pinning every part bypasses the placer and tends to leave the board larger
-than needed.
+pinning every part bypasses the placer.
 
 ---
 

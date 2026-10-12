@@ -17,7 +17,8 @@ fn load_board(path: &str) -> synth_ir::Board {
 }
 
 /// `ref_usb_cdc` was 54.6 x 53.0 mm (2895 mm2) with a 3.0 mm gap between
-/// courtyards and 1663 mm2 with 2.0 mm. The bound sits between the two.
+/// courtyards, and 39.5 x 40.8 mm (1612 mm2) with a 1.5 mm gap around
+/// passives (3.0 mm stays around macros). The bound sits between the two.
 #[test]
 fn usb_cdc_outline_stays_compact() {
     let board = load_board("../../fixtures/kicad-reference/ref_usb_cdc.synth");
