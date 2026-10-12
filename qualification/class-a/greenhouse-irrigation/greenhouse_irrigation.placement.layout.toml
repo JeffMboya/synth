@@ -1,0 +1,344 @@
+schema_version = 2
+forced_net_labels = []
+fit_sheet = false
+
+# Board millimetres, captured from the placement this design routes clean
+# with. J1 and the protection chain on the left edge, J4 and the valve FET
+# with its flyback diode on the right, the soil probe on the bottom edge,
+# the MCU in the middle where the I2C bus and the SWD pair fan out from.
+#
+# Pinned hard so the board renders and routes the same on every checkout.
+# These are the converged values: pinning the first placement moved F1 and
+# the four connectors by 1 to 4 mm, because edge legalisation runs after the
+# override and a hard priority does not stop it. Re-pinning from that output
+# is a fixed point — the placer now reproduces these coordinates exactly,
+# and two runs agree on all 47 components.
+
+[components.C1]
+x = 47.8017
+y = 25.9439
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C2]
+x = 57.5663
+y = 25.8921
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C3]
+x = 6.23
+y = 8.635
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C4]
+x = 34.98
+y = 33.45
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C5]
+x = 58.1491
+y = 45.7492
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C6]
+x = 63.4898
+y = 52.1365
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C7]
+x = 32.2756
+y = 51.9223
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C8]
+x = 66.071
+y = 18.1268
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C9]
+x = 47.8075
+y = 47.37
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C10]
+x = 48.4075
+y = 19.42
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C11]
+x = 17.2311
+y = 58.2233
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C12]
+x = 71.9082
+y = 62.1413
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C13]
+x = 39.8505
+y = 47.0836
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C14]
+x = 25.0357
+y = 61.8984
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C15]
+x = 58.2263
+y = 32.4434
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.C16]
+x = 87.005
+y = 44.96
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.D1]
+x = 24.7975
+y = 11.73
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.D2]
+x = 36.755
+y = 25.08
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.D3]
+x = 85.655
+y = 28.13
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.D4]
+x = 72.055
+y = 11.73
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.D5]
+x = 17.555
+y = 66.23
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.F1]
+x = 8.4012
+y = 22.83
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.J1]
+x = 13.355
+y = 42.18
+rotation = 90
+source = "agent"
+priority = "hard"
+
+[components.J2]
+x = 42.205
+y = 68.93
+rotation = 90
+source = "agent"
+priority = "hard"
+
+[components.J3]
+x = 6.575
+y = 29.44
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.J4]
+x = 79.355
+y = 39.18
+rotation = 90
+source = "agent"
+priority = "hard"
+
+[components.L1]
+x = 13.03
+y = 15.815
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.Q1]
+x = 25.735
+y = 19.18
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.Q2]
+x = 77.735
+y = 29.18
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R1]
+x = 16.1225
+y = 5.48
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R2]
+x = 31.0925
+y = 39.7675
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R3]
+x = 24.81
+y = 55.86
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R4]
+x = 17.2233
+y = 49.45
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R5]
+x = 60.846
+y = 39.652
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R6]
+x = 61.006
+y = 58.498
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R7]
+x = 71.2675
+y = 5.73
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R8]
+x = 36.1763
+y = 58.0325
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R9]
+x = 31.3675
+y = 45.9342
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R10]
+x = 76.7913
+y = 19.0325
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.R11]
+x = 84.7069
+y = 16.1313
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.SW1]
+x = 36.855
+y = 8.88
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.U2]
+x = 25.505
+y = 25.18
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.U3]
+x = 46.985
+y = 36.66
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.U4]
+x = 69.305
+y = 24.98
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.U5]
+x = 69.305
+y = 38.28
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.U6]
+x = 73.505
+y = 54.18
+rotation = 0
+source = "agent"
+priority = "hard"
+
+[components.Y1]
+x = 25.905
+y = 31.23
+rotation = 0
+source = "agent"
+priority = "hard"
