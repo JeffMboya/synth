@@ -40,5 +40,5 @@ board "ref_ldo_sensor" {
   connect U1.vout -> U2.vddio
   connect U2.vddio -> U2.csb
   connect U1.gnd -> U2.sdo
-  connect U1.gnd -> U2.gnd_2
+  connect U1.gnd -> U2.gnd2
 }
