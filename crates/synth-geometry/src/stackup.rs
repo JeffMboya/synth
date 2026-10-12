@@ -14,7 +14,8 @@
 //! - **Every copper layer, not just the outer one.** A declared stackup has
 //!   inner copper too, and an inner layer is a *stripline* (dielectric on
 //!   both sides) where an outer layer is a *microstrip* (dielectric below or
-//!   above). The two use different closed forms. [`outer_microstrip_params`]
+//!   above). The two use different closed forms.
+//!   [`outer_microstrip_params`](crate::sim_oracles::outer_microstrip_params)
 //!   only ever described the top layer; a [`StackupProfile`] describes all of
 //!   them.
 //! - **A default when none is declared.** Most boards declare no `stackup`.
