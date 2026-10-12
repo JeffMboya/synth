@@ -4,7 +4,7 @@
 //! rules that depend on one.
 
 use synth_diagnostics::{Diagnostic, DiagnosticBuilder, Location, Severity};
-use synth_ir::{Board, DiffPair, StackupLayer};
+use synth_ir::{Board, StackupLayer};
 
 use crate::{ErcCategory, ErcRule};
 
@@ -184,13 +184,42 @@ impl ErcRule for StackupNonPositiveRule {
 // Controlled impedance — a `diff_pair` with an `impedance` target (RF-003 idiom included)
 // -----------------------------------------------------------------------------
 
-fn controlled_pairs(board: &Board) -> impl Iterator<Item = (&DiffPair, String)> {
-    board.diff_pairs.iter().filter_map(|dp| {
-        #[allow(clippy::cast_precision_loss)]
-        let ohms = dp.impedance?.0 as f64 / 1000.0;
-        let target = format!("{ohms} ohm target of `{}`/`{}`", dp.positive, dp.negative);
-        Some((dp, target))
-    })
+/// One declared controlled-impedance target and where it was written.
+struct ControlledTarget {
+    span: synth_diagnostics::Span,
+    description: String,
+}
+
+/// Every controlled-impedance target on the board: a `diff_pair`'s
+/// differential `impedance`, and a `netclass`'s single-ended `impedance`.
+fn controlled_targets(board: &Board) -> Vec<ControlledTarget> {
+    let mut out = Vec::new();
+    for dp in &board.diff_pairs {
+        if let Some(impedance) = dp.impedance {
+            out.push(ControlledTarget {
+                span: dp.source_span,
+                description: format!(
+                    "{} ohm target of `{}`/`{}`",
+                    impedance.to_ohms(),
+                    dp.positive,
+                    dp.negative
+                ),
+            });
+        }
+    }
+    for class in &board.netclasses {
+        if let Some(impedance) = class.impedance {
+            out.push(ControlledTarget {
+                span: class.source_span,
+                description: format!(
+                    "{} ohm target of netclass `{}`",
+                    impedance.to_ohms(),
+                    class.name
+                ),
+            });
+        }
+    }
+    out
 }
 
 // -----------------------------------------------------------------------------
@@ -212,17 +241,19 @@ impl ErcRule for ImpedanceReferencePlaneRule {
         if board.layers != 1 {
             return Vec::new();
         }
-        controlled_pairs(board)
-            .map(|(dp, target)| {
+        controlled_targets(board)
+            .into_iter()
+            .map(|target| {
                 error(
                     self.code(),
                     "controlled impedance has no reference plane",
                     file,
-                    dp.source_span,
+                    target.span,
                 )
                 .expected("a ground reference plane adjacent to the signal layer")
                 .found(format!(
-                    "a one-layer board has no reference plane, so the {target} means nothing"
+                    "a one-layer board has no reference plane, so the {} means nothing",
+                    target.description
                 ))
                 .build()
             })
@@ -249,17 +280,21 @@ impl ErcRule for ImpedanceNotVerifiedRule {
         if board.stackup.is_some() || board.layers == 1 {
             return Vec::new();
         }
-        controlled_pairs(board)
-            .map(|(dp, target)| {
+        controlled_targets(board)
+            .into_iter()
+            .map(|target| {
                 diagnostic(
                     Severity::Warning,
                     self.code(),
                     "controlled impedance not verified: no stackup declared",
                     file,
-                    dp.source_span,
+                    target.span,
                 )
                 .expected("a `stackup` block to check the impedance target against")
-                .found(format!("no stackup, so the {target} is not verified"))
+                .found(format!(
+                    "no stackup, so the {} is not verified",
+                    target.description
+                ))
                 .build()
             })
             .collect()
