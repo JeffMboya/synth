@@ -20,7 +20,7 @@ this file is the specification.
 | Process | JLCPCB standard (0.127 mm track/clearance, 0.3 mm drill) |
 | Components | 49 |
 | Source | `ice40_hdmi_video.synth` |
-| Sidecars | `ice40_hdmi_video.placement.layout.toml` (47 of 49 pinned, see *Reproducibility*) |
+| Sidecars | `ice40_hdmi_video.placement.layout.toml` (all 49 pinned) |
 
 ## Stackup
 
@@ -191,14 +191,17 @@ bill of materials; this table is the actives and omits 39 generic passives.
 
 ## Reproducibility
 
-Two consecutive placement runs agree on all 49 components.
+The sidecar pins all 49 components, and three consecutive exports produce a
+byte-identical board.
 
-The sidecar pins 47 of them. J1 and J2 are deliberately absent: edge
-legalisation nudges a pinned edge connector by the same offset on every run —
-J1 by −0.56 mm, J2 by +0.725 mm, unchanged between rounds — so pinning them
-walks them off the edge instead of settling (#133). Left to the placer they are
-deterministic for a given input, which is why the board reproduces even though
-the sidecar does not describe all of it.
+Two of those coordinates describe the request rather than the result. Edge
+legalisation runs after a `hard` override and moves J1 by −0.56 mm in y and J2
+by +0.725 mm in x — the same step every run, whatever they are pinned to
+(#133). Because the offset is constant the board stays deterministic, which is
+what rerun stability needs; what it costs is that the sidecar is not a literal
+description of where those two connectors end up. A true fixed point, where the
+pinned value is reproduced verbatim, is not reachable for them while the offset
+is non-zero.
 
 Routing is deterministic for a given board name: the name seeds the entity
 uuids, so renaming changes the order the router works in. Compare connectivity,

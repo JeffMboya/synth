@@ -2,10 +2,11 @@ schema_version = 2
 forced_net_labels = []
 fit_sheet = false
 
-# J1 and J2 are deliberately absent. Edge legalisation nudges a pinned
-# edge connector by the same offset on every run (#133), so pinning them
-# walks them off the edge instead of settling. Left to the placer they are
-# deterministic for a given input; the other 47 reproduce exactly.
+# All 49 components are pinned and the exported board is byte-identical across
+# runs. Two entries are not reproduced verbatim: edge legalisation runs after a
+# hard override and moves J1 by -0.56 mm in y and J2 by +0.725 mm in x, the same
+# step every time (#133). The offset is constant, so the board is deterministic;
+# it just means these two coordinates describe the request, not the result.
 
 [components.C1]
 x = 38.6999
@@ -200,6 +201,24 @@ dy = 0.0
 x = 34.5
 y = 44.5
 rotation = 0
+source = "agent"
+priority = "hard"
+dx = 0.0
+dy = 0.0
+
+[components.J1]
+x = 19.07
+y = 8.9
+rotation = 180
+source = "agent"
+priority = "hard"
+dx = 0.0
+dy = 0.0
+
+[components.J2]
+x = 80.3637
+y = 38.475
+rotation = 90
 source = "agent"
 priority = "hard"
 dx = 0.0
