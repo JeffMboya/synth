@@ -1,0 +1,12 @@
+schema_version = 2
+forced_net_labels = []
+fit_sheet = false
+
+[components.J2]
+x = 79.63875
+y = 38.475
+rotation = 90
+source = "agent"
+priority = "hard"
+dx = 0.0
+dy = 0.0
