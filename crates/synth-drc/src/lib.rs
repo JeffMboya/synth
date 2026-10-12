@@ -60,6 +60,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::cast_possible_wrap, clippy::similar_names)]
 
+mod emc;
 mod geometry;
 pub mod kicad_cli;
 mod profile;
@@ -238,6 +239,8 @@ pub fn check_signal_integrity(
         board, routing, profile, stackup,
     ));
     violations.extend(signal_integrity::check_net_length(board, routing));
+    violations.extend(signal_integrity::check_group_skew(board, routing));
+    violations.extend(signal_integrity::check_via_current(board, routing));
     violations
 }
 
@@ -263,6 +266,7 @@ fn evaluate(
         board, placement, routing, profile,
     ));
     violations.extend(geometry::check_shorts(board, placement, routing));
+    violations.extend(emc::check_emc_placement(board, placement));
     // Routed signal integrity (E-SYNTH-DRC-012 / 014). The impedance rule
     // needs a stackup and is skipped without one, preserving the documented
     // "no stackup, impedance not verified" contract; the skew rule is
@@ -283,6 +287,8 @@ fn evaluate(
     }
     violations.extend(signal_integrity::check_diff_pair_skew(board, routing));
     violations.extend(signal_integrity::check_net_length(board, routing));
+    violations.extend(signal_integrity::check_group_skew(board, routing));
+    violations.extend(signal_integrity::check_via_current(board, routing));
     violations.extend(signal_integrity::check_ampacity(
         board,
         routing,
@@ -587,6 +593,7 @@ mod tests {
             current: Some(synth_ir::Current(1_000_000)),
             plane: false,
             max_length: None,
+            max_skew: None,
             source_span: synth_diagnostics::Span::new(0, 0),
         });
         let net = board.nets[0].id;
@@ -629,6 +636,7 @@ mod tests {
             current: None,
             plane: false,
             max_length: None,
+            max_skew: None,
             source_span: synth_diagnostics::Span::new(0, 0),
         });
         let stackup = StackupProfile::for_board(&board);
@@ -834,6 +842,7 @@ mod tests {
             current: Some(synth_ir::Current(1_000_000)),
             plane: false,
             max_length: None,
+            max_skew: None,
             source_span: synth_diagnostics::Span::new(0, 0),
         });
         let stackup = StackupProfile::for_board(&board);
@@ -902,6 +911,7 @@ mod tests {
             current: None,
             plane: false,
             max_length: Some(synth_ir::Length::from_mm(10.0)),
+            max_skew: None,
             source_span: synth_diagnostics::Span::new(0, 0),
         });
         let net = board.nets[0].id;
@@ -917,5 +927,83 @@ mod tests {
             ..Routing::default()
         };
         assert!(super::signal_integrity::check_net_length(&board, &short).is_empty());
+    }
+
+    fn bus_class(name: &str) -> synth_ir::NetClass {
+        synth_ir::NetClass {
+            name: name.to_string(),
+            trace_width: None,
+            clearance: None,
+            color: None,
+            impedance: None,
+            current: None,
+            plane: false,
+            max_length: None,
+            max_skew: Some(synth_ir::Length::from_mm(1.0)),
+            source_span: synth_diagnostics::Span::new(0, 0),
+        }
+    }
+
+    #[test]
+    fn a_matched_bus_with_too_much_skew_is_flagged() {
+        let mut board = load_board("../../examples/env_logger.synth");
+        board.netclasses.push(bus_class("BUS"));
+        board.nets[0].netclass = Some("BUS".to_string());
+        board.nets[1].netclass = Some("BUS".to_string());
+        let routing = Routing {
+            segments: vec![
+                straight(board.nets[0].id, 127_000, 0, 10_000_000),
+                straight(board.nets[1].id, 127_000, 1_000_000, 20_000_000),
+            ],
+            ..Routing::default()
+        };
+        let flagged = super::signal_integrity::check_group_skew(&board, &routing);
+        assert_eq!(flagged.len(), 1, "{flagged:?}");
+        assert_eq!(flagged[0].code, "E-SYNTH-DRC-019");
+        let matched = Routing {
+            segments: vec![
+                straight(board.nets[0].id, 127_000, 0, 10_000_000),
+                straight(board.nets[1].id, 127_000, 1_000_000, 10_500_000),
+            ],
+            ..Routing::default()
+        };
+        assert!(super::signal_integrity::check_group_skew(&board, &matched).is_empty());
+    }
+
+    #[test]
+    fn too_much_current_per_via_is_flagged() {
+        let mut board = load_board("../../examples/env_logger.synth");
+        board.nets[0].netclass = Some("PWR".to_string());
+        board.netclasses.push(synth_ir::NetClass {
+            name: "PWR".to_string(),
+            trace_width: None,
+            clearance: None,
+            color: None,
+            impedance: None,
+            current: Some(synth_ir::Current(3_000_000)),
+            plane: false,
+            max_length: None,
+            max_skew: None,
+            source_span: synth_diagnostics::Span::new(0, 0),
+        });
+        let net = board.nets[0].id;
+        let via = |x: i64| synth_pcb::Via {
+            net,
+            at: synth_geometry::Point::new(x, 0),
+            drill_nm: 300_000,
+            pad_diameter_nm: 600_000,
+        };
+        let one = Routing {
+            vias: vec![via(0)],
+            ..Routing::default()
+        };
+        let flagged = super::signal_integrity::check_via_current(&board, &one);
+        assert_eq!(flagged.len(), 1, "{flagged:?}");
+        assert_eq!(flagged[0].code, "W-SYNTH-DRC-020");
+        let two = Routing {
+            vias: vec![via(0), via(1_000_000)],
+            ..Routing::default()
+        };
+        assert!(super::signal_integrity::check_via_current(&board, &two).is_empty());
     }
 }

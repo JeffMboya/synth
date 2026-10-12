@@ -537,6 +537,7 @@ impl<'a> LowerCtx<'a> {
         let mut current: Option<Current> = None;
         let mut plane = false;
         let mut max_length: Option<Length> = None;
+        let mut max_skew: Option<Length> = None;
         for attr in &n.attrs {
             match attr {
                 NetclassAttr::TraceWidth(v) => match Length::try_from(v) {
@@ -559,6 +560,10 @@ impl<'a> LowerCtx<'a> {
                 NetclassAttr::MaxLength(v) => match Length::try_from(v) {
                     Ok(l) => max_length = Some(l),
                     Err(e) => self.emit_unit_error(&e, "netclass max_length"),
+                },
+                NetclassAttr::MaxSkew(v) => match Length::try_from(v) {
+                    Ok(l) => max_skew = Some(l),
+                    Err(e) => self.emit_unit_error(&e, "netclass max_skew"),
                 },
                 NetclassAttr::Color(hex) => match parse_hex_color(hex) {
                     Some(rgb) => color = Some(rgb),
@@ -594,6 +599,7 @@ impl<'a> LowerCtx<'a> {
             current,
             plane,
             max_length,
+            max_skew,
             source_span: n.span,
         }
     }

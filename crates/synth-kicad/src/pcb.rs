@@ -2769,6 +2769,7 @@ mod tests {
                 current: None,
                 plane: false,
                 max_length: None,
+                max_skew: None,
                 source_span: Span::new(0, 0),
             }],
             buses: vec![],
