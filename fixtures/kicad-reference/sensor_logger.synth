@@ -90,5 +90,5 @@ board "sensor_logger" {
   connect U3.vout -> U2.vddio
   connect U2.vddio -> U2.csb
   connect U3.gnd -> U2.sdo
-  connect U3.gnd -> U2.gnd_2
+  connect U3.gnd -> U2.gnd2
 }

@@ -120,11 +120,16 @@ board "wifi_radio_peripheral" {
       }
     }
 
-    connect U2.r232 -> Y1.p1
-    connect Y1.p2   -> C7.p1
-    connect J1.gnd  -> C7.p2
-    connect Y1.p1   -> C8.p1
-    connect J1.gnd  -> C8.p2
+    // The crystal belongs across XI and XO. It used to land on R232, the
+    // CH340G's mode-select input, because the registry part named the
+    // CH340C — a variant with an internal oscillator and so no XI/XO to
+    // connect to. #90 corrected the part; this follows it.
+    connect U2.xi  -> Y1.p1
+    connect U2.xo  -> Y1.p2
+    connect Y1.p1  -> C7.p1
+    connect J1.gnd -> C7.p2
+    connect Y1.p2  -> C8.p1
+    connect J1.gnd -> C8.p2
 
     group "ESP32-WROOM-32" color "#b8860b" {
       component U3: mcu       "esp32_wroom_32"
