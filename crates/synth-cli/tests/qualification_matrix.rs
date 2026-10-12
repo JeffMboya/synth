@@ -11,7 +11,21 @@ const SYNTH: &str = env!("CARGO_BIN_EXE_synth");
 #[derive(Debug, Deserialize)]
 struct Matrix {
     schema_version: String,
+    #[serde(rename = "matrix", default)]
+    meta: MatrixMeta,
     board: Vec<BoardSpec>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MatrixMeta {
+    /// The `kicad-cli` version the `expect` column was established on.
+    ///
+    /// A DRC verdict is KiCad's, not Synth's, and CI installs whatever the
+    /// PPA currently ships. A point release can move a board from pass to
+    /// fail with nothing in this repository having changed, so a run on a
+    /// different version says so instead of leaving the reader to guess.
+    #[serde(default)]
+    kicad_baseline: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +59,13 @@ struct BoardResult {
     gate: String,
     source: String,
     drc: String,
+    /// KiCad's own counts for the board the DRC verdict was decided on, and
+    /// the reasons it was not fabrication-ready. A `drc` of `fail` on its own
+    /// says a board drifted; these say what moved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drc_counts: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    drc_blocking_reasons: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     manufacturing: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -65,6 +86,9 @@ struct Results {
     schema_version: String,
     matrix_schema_version: String,
     kicad_version: String,
+    /// The version the `expect` column was established on, from the matrix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kicad_baseline: Option<String>,
     registry_manifest_sha256: String,
     /// Which engine laid the copper these results describe.
     router: String,
@@ -154,6 +178,24 @@ fn source_codes(report: &serde_json::Value) -> Vec<String> {
             codes.sort();
             codes.dedup();
             codes
+        })
+        .unwrap_or_default()
+}
+
+/// KiCad's DRC counts, as the DRC stage recorded them.
+fn drc_counts(report: &serde_json::Value) -> Option<serde_json::Value> {
+    let counts = &report["stages"]["drc"]["result"]["validation"]["kicad_drc"];
+    (!counts.is_null()).then(|| counts.clone())
+}
+
+/// Why the DRC stage would not call the board fabrication-ready.
+fn drc_blocking_reasons(report: &serde_json::Value) -> Vec<String> {
+    report["stages"]["drc"]["result"]["validation"]["blocking_reasons"]
+        .as_array()
+        .map(|r| {
+            r.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
         })
         .unwrap_or_default()
 }
@@ -327,6 +369,8 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
         expected: spec.expect.clone(),
         source: stage_status(&report, "source"),
         drc: stage_status(&report, "drc"),
+        drc_counts: drc_counts(&report),
+        drc_blocking_reasons: drc_blocking_reasons(&report),
         manufacturing_reason: report["stages"]["manufacturing"]["reason"]
             .as_str()
             .map(str::to_string),
@@ -338,6 +382,21 @@ fn run_board(spec: &BoardSpec, fab: bool) -> BoardResult {
         actual,
         gate,
         disagreements,
+    }
+}
+
+/// A DRC verdict belongs to the installed KiCad. When the runner's version is
+/// not the one the `expect` column was established on, say so with the drift:
+/// "three boards lost DRC" and "KiCad moved under us" are different findings,
+/// and the reader cannot tell them apart from the board list.
+fn environment_note(installed: &str, meta: &MatrixMeta) -> String {
+    match meta.kicad_baseline.as_deref() {
+        Some(baseline) if !installed.starts_with(baseline) => format!(
+            "\nnote: these results come from KiCad {installed}; the matrix baseline \
+             is {baseline}. A DRC verdict is KiCad's, so rule out the upgrade \
+             before reading a board below as a regression."
+        ),
+        _ => String::new(),
     }
 }
 
@@ -368,10 +427,12 @@ fn reference_boards_match_their_declared_qualification() {
         .map(|spec| run_board(spec, fab))
         .collect();
 
+    let installed_kicad = kicad_version();
     let results = Results {
         schema_version: "synth.qualification.results.v1".to_string(),
         matrix_schema_version: matrix.schema_version.clone(),
-        kicad_version: kicad_version(),
+        kicad_version: installed_kicad.clone(),
+        kicad_baseline: matrix.meta.kicad_baseline.clone(),
         registry_manifest_sha256: registry_manifest_sha256(),
         router: std::env::var("SYNTH_QUALIFY_ROUTER")
             .unwrap_or_else(|_| "freerouting (default)".to_string()),
@@ -435,12 +496,14 @@ fn reference_boards_match_their_declared_qualification() {
         }
     }
 
+    let environment_note = environment_note(&installed_kicad, &matrix.meta);
+
     let drifted: Vec<&BoardResult> = results.boards.iter().filter(|b| !b.agrees).collect();
     assert!(
         drifted.is_empty(),
         "the qualification matrix no longer matches reality. Every line below is \
          either a regression or a launch claim that grew without being declared; \
-         update qualification/matrix.toml only once you know which.\n{}\nFull results: {}",
+         update qualification/matrix.toml only once you know which.\n{}{}\nFull results: {}",
         drifted
             .iter()
             .map(|b| format!(
@@ -452,6 +515,7 @@ fn reference_boards_match_their_declared_qualification() {
             ))
             .collect::<Vec<_>>()
             .join("\n"),
+        environment_note,
         out_path.display()
     );
 }

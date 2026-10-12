@@ -3,6 +3,11 @@ schema_version = "synth.qualification.v1"
 [matrix]
 release_command = "synth check <board> --json"
 fab_command = "synth check <board> --fab --json"
+# The kicad-cli version the `expect` column was established on. CI installs
+# whatever the PPA ships, and 10.0.7 moved env_logger, rp2350_debug_target and
+# dual_usb_compute from DRC pass to fail, and usb_peripheral the other way,
+# with no board or compiler change. A run on another version says so.
+kicad_baseline = "10.0.6"
 
 [[board]]
 id = "hello"
