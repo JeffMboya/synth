@@ -4,10 +4,11 @@ schema_version = "synth.qualification.v1"
 release_command = "synth check <board> --json"
 fab_command = "synth check <board> --fab --json"
 # The kicad-cli version the `expect` column was established on. CI installs
-# whatever the PPA ships, and 10.0.7 moved env_logger, rp2350_debug_target and
-# dual_usb_compute from DRC pass to fail, and usb_peripheral the other way,
-# with no board or compiler change. A run on another version says so.
-kicad_baseline = "10.0.6"
+# whatever the PPA ships, so a point release can move a verdict with nothing in
+# this repository having changed; a run on another version says so. The column
+# was re-established on 10.0.7 together with the connectivity fixes, which
+# changed three verdicts on their own.
+kicad_baseline = "10.0.7"
 
 [[board]]
 id = "hello"
@@ -90,9 +91,9 @@ id = "rp2350_debug_target"
 path = "qualification/class-a/rp2350-debug-target/rp2350_debug_target.synth"
 class = "A"
 status = "experimental"
-expect = "pass"
+expect = "fail"
 expect_fab = "unestablished"
-rationale = "Novel Class-A board: RP2350 with SWD header, crystal, reset, boot flash and status LED. #39 case 1. Manufacturing fails on E-SYNTH-QUAL-000: a part's pin map disagrees with its KiCad footprint. Manufacturing was E-SYNTH-QUAL-000 on xtal_8mhz, whose second terminal was a case-ground pad. Fixed, so no baseline applies. A router is installed as of #95, so the DRC stage can run for the first time; nothing has observed what these report with copper on the board. The router contract changed under #39: the board's design rules now reach the engine at all, and via-in-pad is judged against the pad's copper rather than a disc of its long side. No manufacturing baseline measured before that applies, so this run establishes one."
+rationale = "Novel Class-A board: RP2350 with SWD header, crystal, reset, boot flash and status LED. #39 case 1. Manufacturing fails on E-SYNTH-QUAL-000: a part's pin map disagrees with its KiCad footprint. Manufacturing was E-SYNTH-QUAL-000 on xtal_8mhz, whose second terminal was a case-ground pad. Fixed, so no baseline applies. A router is installed as of #95, so the DRC stage can run for the first time; nothing has observed what these report with copper on the board. The router contract changed under #39: the board's design rules now reach the engine at all, and via-in-pad is judged against the pad's copper rather than a disc of its long side. No manufacturing baseline measured before that applies, so this run establishes one. Measured on KiCad 10.0.7 with the connectivity fixes in place: the DRC stage fails with 1 unconnected pad and six open nets, led by `net_0` where C1.1 reaches 2 of 6 pads. The router cannot close a 0.4 mm QFN-60 on two layers; that is a routing limit, not a drift, so the expectation now says fail."
 
 [[board]]
 id = "i2c_sensor_node"
@@ -154,9 +155,9 @@ id = "usb_peripheral"
 path = "qualification/boards/class-b/usb_peripheral.synth"
 class = "B"
 status = "experimental"
-expect = "fail"
+expect = "pass"
 expect_fab = "unestablished"
-rationale = "Novel Class-B board: USB-C with CC pull-downs, ESD clamps at the connector, a declared 90 ohm pair into native USB pins. #38 case 3. Manufacturing fails on KiCad DRC: 37 unconnected pads, so the router did not complete every net. A router is installed as of #95, so the DRC stage can run for the first time; nothing has observed what these report with copper on the board. First routed run: DRC reported fail. 43 unconnected pads on a 0.4 mm QFN-60 over 2 layers — see #98. The router contract changed under #39: the board's design rules now reach the engine at all, and via-in-pad is judged against the pad's copper rather than a disc of its long side. No manufacturing baseline measured before that applies, so this run establishes one."
+rationale = "Novel Class-B board: USB-C with CC pull-downs, ESD clamps at the connector, a declared 90 ohm pair into native USB pins. #38 case 3. Manufacturing fails on KiCad DRC: 37 unconnected pads, so the router did not complete every net. A router is installed as of #95, so the DRC stage can run for the first time; nothing has observed what these report with copper on the board. First routed run: DRC reported fail. 43 unconnected pads on a 0.4 mm QFN-60 over 2 layers — see #98. The router contract changed under #39: the board's design rules now reach the engine at all, and via-in-pad is judged against the pad's copper rather than a disc of its long side. No manufacturing baseline measured before that applies, so this run establishes one. Measured on KiCad 10.0.7 with the connectivity fixes in place: 0 errors and 0 unconnected pads, so the gate passes. The 43 unconnected pads recorded above were read against a connectivity pass that keyed pads by number and treated collinear tracks as touching; the board itself did not change."
 
 [[board]]
 id = "negative_unsafe_mixed_signal"
@@ -182,9 +183,9 @@ id = "dual_usb_compute"
 path = "qualification/boards/class-c/dual_usb_compute.synth"
 class = "C"
 status = "experimental"
-expect = "pass"
+expect = "fail"
 expect_fab = "unestablished"
-rationale = "Novel Class-C board: six-layer stackup, two independent 90 ohm USB pairs, QSPI at speed, 61-pin MCU and a 20-pin header. #40 constraint surface, minus the length/skew budgets the language cannot express. Manufacturing fails on E-SYNTH-EXPORT-001: esp32_c3_mini has no real .kicad_mod footprint. A router is installed as of #95, so the DRC stage can run for the first time; nothing has observed what these report with copper on the board. The router contract changed under #39: the board's design rules now reach the engine at all, and via-in-pad is judged against the pad's copper rather than a disc of its long side. No manufacturing baseline measured before that applies, so this run establishes one."
+rationale = "Novel Class-C board: six-layer stackup, two independent 90 ohm USB pairs, QSPI at speed, 61-pin MCU and a 20-pin header. #40 constraint surface, minus the length/skew budgets the language cannot express. Manufacturing fails on E-SYNTH-EXPORT-001: esp32_c3_mini has no real .kicad_mod footprint. A router is installed as of #95, so the DRC stage can run for the first time; nothing has observed what these report with copper on the board. The router contract changed under #39: the board's design rules now reach the engine at all, and via-in-pad is judged against the pad's copper rather than a disc of its long side. No manufacturing baseline measured before that applies, so this run establishes one. Measured on KiCad 10.0.7 with the connectivity fixes in place: 3 errors and 3 unconnected pads, with `net_1` open at U1.3. Six layers do not rescue two 90 ohm pairs and QSPI around a 61-pin part; the expectation now says fail."
 
 [[board]]
 id = "usb_uart_bridge_4layer"
