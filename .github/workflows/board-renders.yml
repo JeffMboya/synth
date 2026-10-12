@@ -89,4 +89,9 @@ jobs:
             target/renders/**/*.svg
             target/renders/**/export.log
             target/renders/kicad-cli.txt
+            target/renders/**/project/*.kicad_pcb
+            target/renders/**/project/*.kicad_sch
+            target/renders/**/project/*.kicad_pro
+            target/renders/**/project/*.routing.json
+            target/renders/**/project/bom.csv
           if-no-files-found: warn
