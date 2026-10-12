@@ -45,10 +45,10 @@
 // a transmitter such as the TFP410; the registry has no such part yet.
 //
 // Four layers is not a preference. The 0.8 mm ball grid needs an inner
-// plane pair for the escape: a1_rp2350_debug_target proved what happens
+// plane pair for the escape: rp2350_debug_target proved what happens
 // when a fine-pitch part is asked to escape on two.
 
-board "c3_ice40_hdmi_video" {
+board "ice40_hdmi_video" {
     layers 4
     manufacturer "jlcpcb"
     revision "A"
