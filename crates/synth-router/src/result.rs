@@ -488,6 +488,31 @@ impl RouteReport {
         }
     }
 
+    /// Ordering key for choosing among candidate **placements** of one design.
+    ///
+    /// Lower is better, so a best-of picks the minimum. The state leads so an
+    /// unrouted candidate never wins on copper count; then open nets; then
+    /// blocking validation findings; then total copper (segments + vias) as a
+    /// congestion proxy; finally wire length. All terms are integers except the
+    /// length, which is quantised to micrometres so the key is a total order.
+    #[must_use]
+    #[allow(clippy::cast_sign_loss)] // `max(0.0)` guarantees a non-negative value
+    pub fn layout_cost(&self) -> (u8, usize, usize, usize, u64) {
+        let state = match self.state {
+            RouteState::Routed => 0,
+            RouteState::ReviewRequired => 1,
+            RouteState::ValidationFailed => 2,
+            RouteState::RouterUnavailable => 3,
+        };
+        let blocking = self
+            .validation
+            .as_ref()
+            .map_or(usize::MAX, ValidationSummary::blocking_count);
+        let copper = self.statistics.segments + self.statistics.vias;
+        let wire_um = (self.statistics.wire_length_mm.max(0.0) * 1000.0) as u64;
+        (state, self.statistics.open_nets, blocking, copper, wire_um)
+    }
+
     /// One-line summary for stderr.
     #[must_use]
     pub fn summary(&self) -> String {
@@ -763,5 +788,41 @@ mod portfolio_tests {
             crashed.portfolio_rank() > unavailable.portfolio_rank(),
             "a run that started must outrank one that could not"
         );
+    }
+
+    fn candidate_report(state: RouteState, open_nets: usize, segments: usize) -> RouteReport {
+        RouteReport {
+            schema_version: String::new(),
+            state,
+            engine: RouterEngine::KiCadRoutingTools,
+            capability: None,
+            provenance: RouterProvenance::default(),
+            statistics: RouteStatistics {
+                open_nets,
+                segments,
+                vias: 4,
+                wire_length_mm: 100.0,
+                ..RouteStatistics::default()
+            },
+            artifacts: RouteArtifacts::default(),
+            validation: None,
+            failure: None,
+            escape: Vec::new(),
+            recommended_routing_order: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn layout_cost_leads_with_state_then_open_nets_then_copper() {
+        let routed = candidate_report(RouteState::Routed, 0, 100);
+        let review = candidate_report(RouteState::ReviewRequired, 0, 50);
+        // A routed board with open nets still ranks ahead of a review-only
+        // board: the state leads, so a candidate that finished wins.
+        let routed_open = candidate_report(RouteState::Routed, 2, 100);
+        assert!(routed.layout_cost() < routed_open.layout_cost());
+        assert!(routed_open.layout_cost() < review.layout_cost());
+        // Fewer segments is better, all else equal.
+        let leaner = candidate_report(RouteState::Routed, 0, 90);
+        assert!(leaner.layout_cost() < routed.layout_cost());
     }
 }

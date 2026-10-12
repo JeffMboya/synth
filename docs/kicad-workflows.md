@@ -289,7 +289,7 @@ synth export-kicad board.synth --out output/board
 Select FreeRouting on request:
 
 ```text
-synth export-kicad board.synth --out output/board --router freerouting
+synth export-kicad board.synth --out output/board --router free-routing
 ```
 
 Synth runs KRT in conservative production-review mode by default: it uses
