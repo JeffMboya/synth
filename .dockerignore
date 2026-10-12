@@ -1,9 +1,15 @@
-# Docker images consume the externally built CLI and registry only.
-# Keep host build artifacts and the rest of the source tree out of the context.
+# Docker images build the CLI in a compatible Debian builder. Keep host build
+# artifacts out of the context while allowing the source and registry through.
 **
-!target/
-!target/release/
-!target/release/synth
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!rustfmt.toml
+!deny.toml
+!crates/
+!crates/**
+!examples/
+!examples/**
 !registry/
 !registry/**
 
