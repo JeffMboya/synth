@@ -502,6 +502,10 @@ pub struct NetClass {
     /// routed width via the IPC-2221 ampacity curve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current: Option<Current>,
+    /// Give the class's nets a copper plane (`plane`): the exporter floods a
+    /// zone for each member net on the plane layers too, not only for ground.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plane: bool,
     pub source_span: Span,
 }
 

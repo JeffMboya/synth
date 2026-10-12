@@ -228,6 +228,39 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
             }
         }
     }
+
+    // Declared planes (`netclass "PWR" { plane }`): flood a zone for each
+    // member net on the plane layers too, so a rail gets the same low-impedance
+    // path the ground nets get automatically. Ground and rail zones share the
+    // layers; KiCad clears them by their clearance, so a declared plane fills
+    // what the ground plane leaves rather than shorting to it. Opt-in: no
+    // plane is emitted for a class that does not ask.
+    for class in &board.netclasses {
+        if !class.plane {
+            continue;
+        }
+        for net in board
+            .nets
+            .iter()
+            .filter(|net| net.netclass.as_deref() == Some(class.name.as_str()))
+        {
+            let Some(pcb_net) = net_id_lookup.get(&net.id).copied() else {
+                continue;
+            };
+            for layer in &gnd_layers {
+                let zone_key = format!("plane/{}/{layer}", net.name);
+                children.push(build_gnd_zone(
+                    placement,
+                    layer,
+                    pcb_net,
+                    net.name.as_str(),
+                    project,
+                    &zone_key,
+                ));
+            }
+        }
+    }
+
     Sexp::list("kicad_pcb", children)
 }
 
@@ -2101,6 +2134,7 @@ mod tests {
                 color: None,
                 impedance: None,
                 current: None,
+                plane: false,
                 source_span: Span::new(0, 0),
             }],
             buses: vec![],

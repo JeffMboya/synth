@@ -112,3 +112,47 @@ fn a_lone_ground_net_is_still_named_gnd() {
     assert!(declared.contains(&"GND"), "{declared:?}");
     assert!(!declared.contains(&"AGND"), "{declared:?}");
 }
+
+/// A rail declared as a plane: `netclass "PWR" { plane }` floods a zone for
+/// each member net, not just for ground.
+const PLANE_SOURCE: &str = r#"board "rail_plane" {
+  layers 4
+  netclass "PWR" {
+    plane
+  }
+  component C1: capacitor "c_generic_0603" value "100nF"
+  component C2: capacitor "c_generic_0603" value "100nF"
+  connect C1.p1 -> C2.p1 as "VBUS" class "PWR"
+}
+"#;
+
+/// The same board with no `plane` attribute: the class still routes, but no
+/// zone is flooded for it.
+const NO_PLANE_SOURCE: &str = r#"board "rail_no_plane" {
+  layers 4
+  netclass "PWR" {
+    trace_width 0.5mm
+  }
+  component C1: capacitor "c_generic_0603" value "100nF"
+  component C2: capacitor "c_generic_0603" value "100nF"
+  connect C1.p1 -> C2.p1 as "VBUS" class "PWR"
+}
+"#;
+
+#[test]
+fn a_declared_plane_floods_a_zone_for_its_net() {
+    let pcb = export_pcb(PLANE_SOURCE, "rail-plane");
+    assert!(
+        pcb.contains("net_name \"VBUS\""),
+        "the declared plane must flood a VBUS zone: {pcb}"
+    );
+}
+
+#[test]
+fn a_class_without_the_plane_attribute_floods_no_zone() {
+    let pcb = export_pcb(NO_PLANE_SOURCE, "rail-no-plane");
+    assert!(
+        !pcb.contains("net_name \"VBUS\""),
+        "a class that does not declare a plane must not flood one: {pcb}"
+    );
+}

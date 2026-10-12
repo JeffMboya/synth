@@ -654,6 +654,11 @@ pub enum NetclassAttr {
     /// Current the class's nets carry (`current 1.5A`), used to check routed
     /// width against the IPC-2221 ampacity curve.
     Current(ValueWithUnit),
+    /// Give the class's nets a copper plane (`plane`): a full-board zone on
+    /// each plane layer, so a rail has a low-impedance path instead of only
+    /// routed traces. Opt-in, because on a two-layer board a plane competes
+    /// with signal routing.
+    Plane,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

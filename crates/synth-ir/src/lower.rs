@@ -535,6 +535,7 @@ impl<'a> LowerCtx<'a> {
         let mut color: Option<[u8; 3]> = None;
         let mut impedance: Option<Impedance> = None;
         let mut current: Option<Current> = None;
+        let mut plane = false;
         for attr in &n.attrs {
             match attr {
                 NetclassAttr::TraceWidth(v) => match Length::try_from(v) {
@@ -553,6 +554,7 @@ impl<'a> LowerCtx<'a> {
                     Ok(c) => current = Some(c),
                     Err(e) => self.emit_unit_error(&e, "netclass current"),
                 },
+                NetclassAttr::Plane => plane = true,
                 NetclassAttr::Color(hex) => match parse_hex_color(hex) {
                     Some(rgb) => color = Some(rgb),
                     None => self.diagnostics.push(
@@ -585,6 +587,7 @@ impl<'a> LowerCtx<'a> {
             color,
             impedance,
             current,
+            plane,
             source_span: n.span,
         }
     }
