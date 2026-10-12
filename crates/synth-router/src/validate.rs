@@ -896,7 +896,14 @@ fn segments_intersect(a0: Point, a1: Point, b0: Point, b1: Point) -> bool {
     let d3 = cross(b0, b1, a0);
     let d4 = cross(b0, b1, a1);
 
-    let opposite = |x: i64, y: i64| (x <= 0 && y >= 0) || (x >= 0 && y <= 0);
+    // Strictly opposite, not `<=`/`>=`: a proper crossing has each segment's
+    // endpoints on genuinely opposite sides of the other. Admitting zero here
+    // made every pair of COLLINEAR segments intersect — all four cross
+    // products are zero, and `0 <= 0 && 0 >= 0` holds — so two pieces of track
+    // on the same line read as touching however far apart they lay, and a net
+    // with a missing span in the middle was reported connected. The collinear
+    // case belongs to the `on_span` test below, which checks the gap.
+    let opposite = |x: i64, y: i64| (x < 0 && y > 0) || (x > 0 && y < 0);
     if opposite(d1, d2) && opposite(d3, d4) {
         return true;
     }
@@ -1077,6 +1084,43 @@ mod tests {
         let report = check_connectivity(&board(text), &FabricationPolicy::default());
         assert_eq!(report.open_nets, 0, "{:?}", report.open);
         assert_eq!(report.connected_nets, 1);
+    }
+
+    /// Two pieces of track on the same line, with a six-millimetre gap
+    /// between them. They do not touch, and a net that depends on them is
+    /// open. Every cross product of a collinear pair is zero, so an
+    /// intersection test that accepts zero as "opposite sides" joins them and
+    /// reports the board connected — a gate failing in the direction that
+    /// ships a broken board.
+    #[test]
+    fn collinear_tracks_with_a_gap_between_them_do_not_touch() {
+        let text = r#"(kicad_pcb
+  (version 20260206)
+  (generator "synth-eda")
+  (layers
+    (0 "F.Cu" signal)
+  )
+  (net 0 "")
+  (net 1 "VOUT")
+  (footprint "Capacitor_SMD:C_0603"
+    (layer "F.Cu")
+    (at 10 20)
+    (property "Reference" "C1" (at 0 0) (layer "F.SilkS"))
+    (pad "1" smd rect (at 0 0) (size 0.9 0.95) (layers "F.Cu") (net 1 "VOUT"))
+  )
+  (footprint "Capacitor_SMD:C_0603"
+    (layer "F.Cu")
+    (at 30 20)
+    (property "Reference" "C2" (at 0 0) (layer "F.SilkS"))
+    (pad "1" smd rect (at 0 0) (size 0.9 0.95) (layers "F.Cu") (net 1 "VOUT"))
+  )
+  (segment (start 10 20) (end 17 20) (width 0.25) (layer "F.Cu") (net 1))
+  (segment (start 23 20) (end 30 20) (width 0.25) (layer "F.Cu") (net 1))
+)"#;
+        let report = check_connectivity(&board(text), &FabricationPolicy::default());
+        assert_eq!(report.open_nets, 1, "the gap must be reported");
+        assert_eq!(report.connected_nets, 0);
+        assert_eq!(report.open[0].pad_count, 2);
     }
 
     #[test]
