@@ -20,7 +20,7 @@ this file is the specification.
 | Process | JLCPCB standard (0.127 mm track/clearance, 0.3 mm drill) |
 | Components | 49 |
 | Source | `ice40_hdmi_video.synth` |
-| Sidecars | `ice40_hdmi_video.placement.layout.toml` |
+| Sidecars | `ice40_hdmi_video.placement.layout.toml` (47 of 49 pinned, see *Reproducibility*) |
 
 ## Stackup
 
@@ -190,6 +190,15 @@ bill of materials; this table is the actives and omits 39 generic passives.
 | Multi-rail compute, thermal, keepout, DFM | **Partly.** Both rails route as inner-layer planes; thermal and sequencing are not modelled. |
 
 ## Reproducibility
+
+Two consecutive placement runs agree on all 49 components.
+
+The sidecar pins 47 of them. J1 and J2 are deliberately absent: edge
+legalisation nudges a pinned edge connector by the same offset on every run —
+J1 by −0.56 mm, J2 by +0.725 mm, unchanged between rounds — so pinning them
+walks them off the edge instead of settling (#133). Left to the placer they are
+deterministic for a given input, which is why the board reproduces even though
+the sidecar does not describe all of it.
 
 Routing is deterministic for a given board name: the name seeds the entity
 uuids, so renaming changes the order the router works in. Compare connectivity,
