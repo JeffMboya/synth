@@ -90,6 +90,9 @@ fn without_router_environment() -> EngineEnvRestorer {
 struct EngineEnvRestorer {
     _lock: MutexGuard<'static, ()>,
     saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    /// Empty data/home tree that hides a real KiCadRoutingTools install from
+    /// the conventional-location fallback while the guard is held.
+    empty_data: PathBuf,
 }
 
 impl EngineEnvRestorer {
@@ -105,7 +108,23 @@ impl EngineEnvRestorer {
             saved.push((key, std::env::var_os(key)));
             std::env::remove_var(key);
         }
-        Self { _lock: lock, saved }
+        // The resolver falls back to `$XDG_DATA_HOME|$HOME/.local/share/synth/
+        // kicad-routing-tools`; point both at an empty tree so a checkout that
+        // happens to be installed on the machine running the tests does not
+        // turn an "unavailable" expectation into a real run.
+        let empty_data =
+            std::env::temp_dir().join(format!("synth_router_empty_data_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&empty_data);
+        let _ = std::fs::create_dir_all(&empty_data);
+        for key in ["XDG_DATA_HOME", "HOME"] {
+            saved.push((key, std::env::var_os(key)));
+            std::env::set_var(key, &empty_data);
+        }
+        Self {
+            _lock: lock,
+            saved,
+            empty_data,
+        }
     }
 }
 
@@ -117,6 +136,7 @@ impl Drop for EngineEnvRestorer {
                 None => std::env::remove_var(key),
             }
         }
+        let _ = std::fs::remove_dir_all(&self.empty_data);
     }
 }
 
@@ -964,17 +984,12 @@ fn sha256_of(path: &Path) -> String {
 fn kicad_routing_tools_reports_a_capability_error_when_no_checkout_is_configured() {
     // The optional engine must fail with a capability error naming what to
     // install — never fall back to FreeRouting, and never report a pass.
-    let previous = std::env::var_os("KICAD_ROUTING_TOOLS_REPO");
-    std::env::remove_var("KICAD_ROUTING_TOOLS_REPO");
+    let _restorer = without_router_environment();
 
     let scratch = Scratch::new("krt_absent");
     let board = scratch.write("demo.kicad_pcb", PARTIAL_BOARD);
     let request = RouteRequest::new(&board, &scratch.path, RouterEngine::KiCadRoutingTools);
     let report = synth_router::route(&request);
-
-    if let Some(value) = previous {
-        std::env::set_var("KICAD_ROUTING_TOOLS_REPO", value);
-    }
 
     assert_eq!(report.state, RouteState::RouterUnavailable);
     assert_eq!(
@@ -1024,7 +1039,7 @@ fn every_engine_reports_its_availability_without_being_run() {
     let scratch = Scratch::new("discovery");
     let capabilities = synth_router::capability::discover_all_in_out_dir(&scratch.path);
     assert_eq!(capabilities.len(), RouterEngine::all().len());
-    assert_eq!(capabilities[0].engine, RouterEngine::Freerouting);
+    assert_eq!(capabilities[0].engine, RouterEngine::default());
     for capability in &capabilities {
         assert_eq!(capability.available, capability.failure.is_none());
         if !capability.available {

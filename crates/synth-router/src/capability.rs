@@ -343,26 +343,72 @@ fn krt_capability(_request: &RouteRequest) -> RouterCapability {
     )
 }
 
-/// Resolve the KRT checkout from the environment.
+/// Resolve the KRT checkout.
 ///
-/// Only the environment variable is consulted here. The CLI flag is
-/// threaded through the request in the caller that owns it, so the flag
-/// takes precedence by arriving as an already-resolved path.
-fn resolve_krt_repo() -> Option<PathBuf> {
-    let configured = std::env::var_os("KICAD_ROUTING_TOOLS_REPO")
+/// An explicit `KICAD_ROUTING_TOOLS_REPO` always wins. Otherwise fall back to
+/// the location `scripts/setup-routing-engines.sh` installs to, so a machine
+/// that ran the setup script uses KiCadRoutingTools without exporting any
+/// environment. The CLI flag is threaded through the request by the caller
+/// that owns it, so the flag takes precedence by arriving as an already
+/// resolved path.
+pub(crate) fn resolve_krt_repo() -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("KICAD_ROUTING_TOOLS_REPO")
         .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())?;
-    configured.is_dir().then_some(configured)
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        return configured.is_dir().then_some(configured);
+    }
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
+        })?;
+    let conventional = data.join("synth").join("kicad-routing-tools");
+    conventional.is_dir().then_some(conventional)
 }
 
-fn resolve_python() -> Option<PathBuf> {
+/// Resolve a Python interpreter that KiCadRoutingTools can run under.
+///
+/// KRT's `route.py` imports KiCad's `pcbnew`, which the first `python3` on
+/// `PATH` usually cannot (a version-manager shim, an unprovisioned system
+/// interpreter). Prefer the checkout's own venv, then a system interpreter
+/// that actually imports `pcbnew`.
+///
+/// Only **absolute**, well-known interpreters are executed to test the import;
+/// a `PATH` entry is never run, so discovery has no side effect on whatever
+/// `python3` a caller happens to have first on their path. The final fallback
+/// returns a `PATH` interpreter without executing it, so a machine with no
+/// pcbnew-capable Python still reports "available" here and fails later with
+/// KRT's own, clearer message.
+pub(crate) fn resolve_python() -> Option<PathBuf> {
     if let Some(configured) = std::env::var_os("SYNTH_KRT_PYTHON")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
     {
         return configured.is_file().then_some(configured);
     }
+    let mut absolute: Vec<PathBuf> = Vec::new();
+    if let Some(repo) = resolve_krt_repo() {
+        absolute.push(repo.join(".venv").join("bin").join("python"));
+    }
+    absolute.push(PathBuf::from("/usr/bin/python3"));
+    absolute.push(PathBuf::from("/usr/local/bin/python3"));
+    for candidate in &absolute {
+        if candidate.is_file() && imports_pcbnew(candidate) {
+            return Some(candidate.clone());
+        }
+    }
     which("python3").or_else(|| which("python"))
+}
+
+/// Whether `python` can `import pcbnew`.
+fn imports_pcbnew(python: &Path) -> bool {
+    std::process::Command::new(python)
+        .args(["-c", "import pcbnew"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// The checkout's commit, from `git rev-parse --short HEAD`.
@@ -474,20 +520,42 @@ mod tests {
 
     #[test]
     fn an_unconfigured_krt_checkout_reports_checkout_missing() {
-        // Guarded on the environment: the variable may legitimately be set.
-        if std::env::var_os("KICAD_ROUTING_TOOLS_REPO").is_none() {
-            let request = RouteRequest::new(
-                Path::new("/tmp/board.kicad_pcb"),
-                Path::new("/tmp"),
-                RouterEngine::KiCadRoutingTools,
-            );
-            let capability = discover(&request);
-            assert!(!capability.available);
-            assert_eq!(
-                capability.failure().expect("failure").reason,
-                RouterFailureReason::CheckoutMissing
-            );
+        // Discovery falls back to the conventional install dir when the env
+        // var is unset, so point both XDG_DATA_HOME and HOME at an empty
+        // scratch tree to make "no checkout anywhere" true regardless of what
+        // is installed on the machine running the tests.
+        let data = std::env::temp_dir().join(format!("synth-krt-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&data).expect("scratch");
+        let previous_repo = std::env::var_os("KICAD_ROUTING_TOOLS_REPO");
+        let previous_xdg = std::env::var_os("XDG_DATA_HOME");
+        let previous_home = std::env::var_os("HOME");
+        std::env::remove_var("KICAD_ROUTING_TOOLS_REPO");
+        std::env::set_var("XDG_DATA_HOME", &data);
+        std::env::set_var("HOME", &data);
+
+        let request = RouteRequest::new(
+            Path::new("/tmp/board.kicad_pcb"),
+            Path::new("/tmp"),
+            RouterEngine::KiCadRoutingTools,
+        );
+        let capability = discover(&request);
+        assert!(!capability.available);
+        assert_eq!(
+            capability.failure().expect("failure").reason,
+            RouterFailureReason::CheckoutMissing
+        );
+
+        for (name, value) in [
+            ("KICAD_ROUTING_TOOLS_REPO", previous_repo),
+            ("XDG_DATA_HOME", previous_xdg),
+            ("HOME", previous_home),
+        ] {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
         }
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]
@@ -524,7 +592,7 @@ mod tests {
     fn discovery_reports_every_engine_rather_than_only_the_selected_one() {
         let all = discover_all_in_out_dir(Path::new("/tmp"));
         assert_eq!(all.len(), RouterEngine::all().len());
-        assert_eq!(all[0].engine, RouterEngine::Freerouting);
+        assert_eq!(all[0].engine, RouterEngine::default());
     }
 
     #[test]

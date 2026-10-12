@@ -159,7 +159,7 @@ enum Command {
         /// managed default; `kicad-routing-tools` requires an installed
         /// checkout. A missing engine is a capability error, never a
         /// silent fallback.
-        #[arg(long, value_enum, default_value_t = ExternalRouter::FreeRouting)]
+        #[arg(long, value_enum, default_value_t = ExternalRouter::KicadRoutingTools)]
         router: ExternalRouter,
         /// FreeRouting JAR. Defaults to tools/freerouting/freerouting-2.4.1.jar.
         #[arg(long, value_name = "JAR")]
@@ -307,7 +307,7 @@ enum Command {
 
         /// External router to use. FreeRouting is the managed default;
         /// `kicad-routing-tools` requires an installed checkout.
-        #[arg(long, value_enum, default_value_t = ExternalRouter::FreeRouting)]
+        #[arg(long, value_enum, default_value_t = ExternalRouter::KicadRoutingTools)]
         router: ExternalRouter,
         /// FreeRouting JAR. Defaults to tools/freerouting/freerouting-2.4.1.jar.
         #[arg(long, value_name = "JAR")]
@@ -366,7 +366,7 @@ enum Command {
 
         /// External router to use. FreeRouting is the managed default;
         /// `kicad-routing-tools` requires an installed checkout.
-        #[arg(long, value_enum, default_value_t = ExternalRouter::FreeRouting)]
+        #[arg(long, value_enum, default_value_t = ExternalRouter::KicadRoutingTools)]
         router: ExternalRouter,
         /// FreeRouting JAR. Defaults to tools/freerouting/freerouting-2.4.1.jar.
         #[arg(long, value_name = "JAR")]
@@ -1313,7 +1313,7 @@ fn capability_descriptor() -> serde_json::Value {
                 "notes": "No fabricator presets are shipped; every value is declared by the design. A diff_pair impedance derives its net class trace width (and, for a true pair, its gap) from the first copper and insulator layers."
             },
             "routing_constraints": {
-                "netclass": ["trace_width", "clearance", "color"],
+                "netclass": ["trace_width", "clearance", "color", "impedance", "current"],
                 "diff_pair": ["impedance", "max_skew", "couple"],
                 "keepout": ["radius"],
                 "component": ["placement_hint"]
@@ -3830,7 +3830,7 @@ fn export_kicad(
         // actionable instead of "unexpected argument".
         anyhow::bail!(
             "--autoroute was removed: Synth no longer routes copper itself. Every export \\
-             now runs --router <engine> (default: freerouting) and validates the result \\
+             now runs --router <engine> (default: kicad-routing-tools) and validates the result \\
              independently. Drop the flag, or pass --router kicad-routing-tools to select \\
              an external checkout."
         );

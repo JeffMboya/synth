@@ -72,6 +72,15 @@ pub fn install(out_dir: &Path) -> StubRouter {
     }
     std::fs::write(&java, b"stub java").expect("write stub java");
 
+    // KiCadRoutingTools is the default engine, so give it a checkout to be
+    // available at. The stub interpreter runs in place of both engines'
+    // helpers, so an empty `py_router/route.py` is enough to pass the
+    // entrypoint check; `SYNTH_KRT_PYTHON` points the adapter at the stub.
+    let krt_repo = out_dir.join("krt-stub-repo");
+    std::fs::create_dir_all(krt_repo.join("py_router")).expect("krt checkout dir");
+    std::fs::write(krt_repo.join("py_router").join("route.py"), b"# stub\n")
+        .expect("write krt entrypoint");
+
     let previous_path = std::env::var_os("PATH");
     let joined = match &previous_path {
         Some(existing) => {
@@ -90,6 +99,11 @@ pub fn install(out_dir: &Path) -> StubRouter {
     for (key, value) in [
         ("SYNTH_FREEROUTING_JAR", jar.into_os_string()),
         ("SYNTH_FREEROUTING_JAVA", java.into_os_string()),
+        // Keep the KiCadRoutingTools checkout the run path resolves equal to
+        // the one capability discovery reports, so the default engine is the
+        // stub whichever surface is asked.
+        ("KICAD_ROUTING_TOOLS_REPO", krt_repo.into_os_string()),
+        ("SYNTH_KRT_PYTHON", interpreter.clone().into_os_string()),
     ] {
         let saved = std::env::var_os(key);
         std::env::set_var(key, value);
