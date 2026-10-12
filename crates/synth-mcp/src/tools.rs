@@ -436,7 +436,6 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "layout_file_path": { "type": "string", "description": "Optional path to the PCB placement sidecar (<design>.placement.layout.toml; board millimetres). Do not point this at the schematic sidecar — its coordinates are sheet millimetres." },
                     "allow_placement_warnings": { "type": "boolean", "description": "Allow routing despite visual-review findings; use only for deliberate manual/debug routing (default false)" },
                     "profile":          { "type": "string", "description": "Optional manufacturer DRC profile ('jlcpcb_standard' or path to toml)" },
-                    "routing_order":    { "type": "array", "items": { "type": "string" }, "description": "Optional net order from routing feedback; preserved with the requested width/clearance profile." },
                     "log_routing_outcomes": { "type": "string", "description": "Optional directory to append a Dataset 6 routing outcome record to; a later run on the same board reads it back as retry advice" },
                     "registry_path":    { "type": "string", "description": "Optional custom component registry path" },
                     "workspace_root":   { "type": "string", "description": "Optional workspace root path" },

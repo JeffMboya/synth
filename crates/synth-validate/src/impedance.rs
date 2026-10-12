@@ -14,6 +14,8 @@ const ESTIMATE_PAIR: &str =
     " (an estimate from a closed-form coupled-pair approximation; does not replace expert analysis)";
 const ERROR_DEVIATION: f64 = 0.20;
 const WARNING_DEVIATION: f64 = 0.10;
+/// Reference trace width for the stackup impedance envelope (`W-SYNTH-SI-001`).
+const SI_REFERENCE_WIDTH_MM: f64 = 0.2;
 
 struct Controlled<'a> {
     net: &'a Net,
@@ -233,17 +235,16 @@ impl ErcRule for StackupImpedanceEnvelopeRule {
     }
 
     fn check(&self, board: &Board, file: &str) -> Vec<Diagnostic> {
-        // A reference width in the middle of the usual range, so the envelope
-        // reflects the stackup rather than a particular design's geometry.
-        const REFERENCE_WIDTH_MM: f64 = 0.2;
         let Some(stackup) = board.stackup.as_ref() else {
             return Vec::new();
         };
         let Some(outer) = outer_microstrip_params(stackup) else {
             return Vec::new();
         };
+        // A reference width in the middle of the usual range, so the envelope
+        // reflects the stackup rather than a particular design's geometry.
         let result = calculate_microstrip_z0(&MicrostripParams {
-            width_mm: REFERENCE_WIDTH_MM,
+            width_mm: SI_REFERENCE_WIDTH_MM,
             ..outer
         });
         if (30.0..=100.0).contains(&result.z0_ohms) {

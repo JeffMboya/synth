@@ -179,7 +179,7 @@ pub fn build_pcb(
     // rail plane declared through a `netclass` never ties with a ground plane
     // and leaves either net with isolated islands.
     let power_domains = synth_ir::infer_power_domains(board);
-    let plane_nets: Vec<(u32, &str)> = board
+    let plane_nets: Vec<(u32, &str, synth_ir::NetId)> = board
         .nets
         .iter()
         .filter(|net| net.endpoints.len() >= 3)
@@ -205,7 +205,7 @@ pub fn build_pcb(
             net_id_lookup
                 .get(&net.id)
                 .copied()
-                .map(|pcb_net| (pcb_net, net.name.as_str()))
+                .map(|pcb_net| (pcb_net, net.name.as_str(), net.id))
         })
         .collect();
 
@@ -224,7 +224,7 @@ pub fn build_pcb(
             (ground_plane_layers(board.layers), Vec::new())
         };
 
-    for (plane_index, (pcb_net, net_name)) in plane_nets.iter().enumerate() {
+    for (plane_index, (pcb_net, net_name, net_id)) in plane_nets.iter().enumerate() {
         for layer in &gnd_layers {
             // The first plane keeps the layer-only key so single-ground uuids stay unchanged.
             let zone_key = if plane_index == 0 {
@@ -240,6 +240,7 @@ pub fn build_pcb(
                 project,
                 &zone_key,
                 ground_zone_priority(plane_index, plane_nets.len()),
+                ground_zone_region(board, placement, *net_id, plane_nets.len()),
             ));
         }
         // A zone on each copper layer is only a plane, not an electrical
@@ -310,6 +311,7 @@ pub fn build_pcb(
                     project,
                     &zone_key,
                     POWER_ZONE_PRIORITY,
+                    None,
                 ));
             }
             for (pad, origin, layer) in plane_pad_targets(board, placement, net) {
@@ -646,6 +648,54 @@ fn ground_zone_priority(index: usize, count: usize) -> u8 {
         .max(1)
 }
 
+/// Margin added around a split ground's pad bounding box, in millimetres.
+const POUR_REGION_MARGIN_MM: f64 = 8.0;
+
+/// The sub-region a ground pour covers.
+///
+/// A single ground floods the whole board. Split grounds each cover the
+/// bounding box of their own pads plus a margin, so two pours on one layer sit
+/// over their own parts instead of overlapping everywhere. `None` means the
+/// whole board.
+fn ground_zone_region(
+    board: &Board,
+    placement: &Placement,
+    net_id: synth_ir::NetId,
+    ground_count: usize,
+) -> Option<synth_geometry::Rect> {
+    if ground_count < 2 {
+        return None;
+    }
+    let net = board.net(net_id)?;
+    let centres: Vec<synth_geometry::Point> = plane_pad_targets(board, placement, net)
+        .into_iter()
+        .map(|(centre, _, _)| centre)
+        .collect();
+    if centres.len() < 2 {
+        return None;
+    }
+    let margin = mm_to_nm(POUR_REGION_MARGIN_MM);
+    let (mut min_x, mut min_y) = (i64::MAX, i64::MAX);
+    let (mut max_x, mut max_y) = (i64::MIN, i64::MIN);
+    for point in &centres {
+        min_x = min_x.min(point.x_nm);
+        max_x = max_x.max(point.x_nm);
+        min_y = min_y.min(point.y_nm);
+        max_y = max_y.max(point.y_nm);
+    }
+    let outline = placement.board_outline;
+    Some(synth_geometry::Rect::new(
+        synth_geometry::Point::new(
+            (min_x - margin).max(outline.min.x_nm),
+            (min_y - margin).max(outline.min.y_nm),
+        ),
+        synth_geometry::Point::new(
+            (max_x + margin).min(outline.max.x_nm),
+            (max_y + margin).min(outline.max.y_nm),
+        ),
+    ))
+}
+
 /// Priority of a declared power plane (`netclass "PWR" { plane }`).
 const POWER_ZONE_PRIORITY: u8 = 0;
 
@@ -655,10 +705,12 @@ const PLANE_VIA_OFFSET_NM: i64 = 1_000_000; // 1 mm
 /// Width of the pad-to-via fanout stub, in nanometres.
 const PLANE_STUB_WIDTH_NM: i64 = 250_000; // 0.25 mm
 
-/// Emit a `(zone ...)` S-expression for a full-board copper flood on one layer.
+/// Emit a `(zone ...)` S-expression for a copper flood on one layer.
 ///
-/// Used for both the automatic ground planes and the opt-in power planes; the
-/// only difference between them is the `priority`.
+/// Used for both the automatic ground planes and the opt-in power planes.
+/// `region` restricts the pour to a sub-rectangle — a split ground floods only
+/// over its own parts — and defaults to the whole board.
+#[allow(clippy::too_many_arguments)] // a zone is a wide record; its fields are read in order
 fn build_zone(
     placement: &Placement,
     layer_name: &str,
@@ -667,8 +719,9 @@ fn build_zone(
     project: &Uuid,
     zone_key: &str,
     priority: u8,
+    region: Option<synth_geometry::Rect>,
 ) -> Sexp {
-    let r = placement.board_outline;
+    let r = region.unwrap_or(placement.board_outline);
     // Keep the zone just inside Edge.Cuts.  A polygon whose vertices lie
     // exactly on the board boundary can be entirely removed by KiCad's edge
     // clearance during refill, leaving every ground pad reported as
