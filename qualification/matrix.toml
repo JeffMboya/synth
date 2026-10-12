@@ -82,7 +82,7 @@ rationale = "Negative test. Most complex reference board; stands in for the Clas
 
 [[board]]
 id = "a1_rp2350_debug_target"
-path = "qualification/boards/class-a/a1_rp2350_debug_target.synth"
+path = "qualification/class-a/rp2350-debug-target/a1_rp2350_debug_target.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
@@ -91,7 +91,7 @@ rationale = "Novel Class-A board: RP2350 with SWD header, crystal, reset, boot f
 
 [[board]]
 id = "a2_i2c_sensor_node"
-path = "qualification/boards/class-a/a2_i2c_sensor_node.synth"
+path = "qualification/class-a/i2c-sensor-node/a2_i2c_sensor_node.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
@@ -100,7 +100,7 @@ rationale = "Novel Class-A board: regulated I2C sensor node with pull-ups, EEPRO
 
 [[board]]
 id = "a3_protected_power_entry"
-path = "qualification/boards/class-a/a3_protected_power_entry.synth"
+path = "qualification/class-a/protected-power-entry/a3_protected_power_entry.synth"
 class = "A"
 status = "experimental"
 expect = "pass"
@@ -109,7 +109,7 @@ rationale = "Novel Class-A board: reverse-polarity P-FET, polyfuse, TVS, buck, s
 
 [[board]]
 id = "a4_negative_broken_mcu_board"
-path = "qualification/boards/class-a/a4_negative_broken_mcu_board.synth"
+path = "qualification/class-a/negative-broken-mcu-board/a4_negative_broken_mcu_board.synth"
 class = "A"
 status = "unsupported"
 expect = "fail"
