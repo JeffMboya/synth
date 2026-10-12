@@ -17,8 +17,30 @@ use synth_ir::{Board, ComponentId, NetId};
 
 use crate::{hpwl_total, intersects_keepout, ComponentPlacement, PadOffsetLookup, PlaceError};
 
-/// Clearance gap between component courtyards in nanometres (3.0 mm).
+/// Clearance gap kept around a placed macro (IC, connector, regulator) in
+/// nanometres (3.0 mm): room for the fan-out of its pads. Dropping this to
+/// 2.9 mm or below left `iot_sensor_board` with 17 unrouted nets instead of at
+/// most 9 under the built-in router, so it stays.
 const CLEARANCE_GAP_NM: i64 = 3_000_000;
+
+/// Clearance gap kept around a placed passive in nanometres (1.5 mm).
+///
+/// Passive-to-passive spacing was 3.0 mm, which left wide empty bands (a
+/// buck-converter board came out 57 x 55 mm). Measured over the reference
+/// fixtures, the examples and that buck with FreeRouting and
+/// `kicad-cli pcb drc`: at 1.5 mm no board gained a DRC error or an unrouted
+/// pad/track, outlines shrank by up to 45% (`ref_usb_cdc` 2895 -> 1612 mm2),
+/// and 1.0 mm and below added unconnected copper-pour fragments on more boards.
+const PASSIVE_CLEARANCE_GAP_NM: i64 = 1_500_000;
+
+/// Gap to keep around the already-placed component `id`.
+fn gap_around(id: ComponentId, passives: &[ComponentId]) -> i64 {
+    if passives.contains(&id) {
+        PASSIVE_CLEARANCE_GAP_NM
+    } else {
+        CLEARANCE_GAP_NM
+    }
+}
 
 /// Grid pitch for boundary probing in nanometres (0.5 mm).
 const PROBE_PITCH_NM: i64 = 500_000;
@@ -42,24 +64,18 @@ impl OutlineHull {
         }
     }
 
-    /// Add a placed component to the outline hull.
-    /// Inflate an already-computed courtyard rect by `CLEARANCE_GAP_NM` and
-    /// record it as an obstacle.
+    /// Add a placed component to the outline hull: inflate its
+    /// already-computed courtyard rect by `gap` (the macro or passive
+    /// clearance gap) and record it as an obstacle.
     ///
     /// Takes the rect rather than a centre and half-extents because a placement
     /// anchor is footprint-relative: for a DIP or a long header the courtyard
     /// centre sits millimetres away from the anchor, so inflating an
     /// anchor-centred box builds a hull that does not actually cover the part.
-    pub fn add_center(&mut self, courtyard: Rect) {
+    pub fn add_center(&mut self, courtyard: Rect, gap: i64) {
         self.placed_rects.push(Rect::new(
-            Point::new(
-                courtyard.min.x_nm - CLEARANCE_GAP_NM,
-                courtyard.min.y_nm - CLEARANCE_GAP_NM,
-            ),
-            Point::new(
-                courtyard.max.x_nm + CLEARANCE_GAP_NM,
-                courtyard.max.y_nm + CLEARANCE_GAP_NM,
-            ),
+            Point::new(courtyard.min.x_nm - gap, courtyard.min.y_nm - gap),
+            Point::new(courtyard.max.x_nm + gap, courtyard.max.y_nm + gap),
         ));
     }
 
@@ -130,7 +146,7 @@ pub(crate) fn pack_passives_along_outline(
         let (w_mm, h_mm) = courtyard_lookup[&p.id];
         let offset = courtyard_offset_lookup.get(&p.id).copied();
         let rect = crate::courtyard_rect_for_placement(p, w_mm, h_mm, offset, 0);
-        hull.add_center(rect);
+        hull.add_center(rect, CLEARANCE_GAP_NM);
     }
 
     // 2. Sort passives by area descending (largest passives first)
@@ -192,6 +208,7 @@ pub(crate) fn pack_passives_along_outline(
                 }
                 if intersects_placed(
                     cand_rect,
+                    passives,
                     placements,
                     courtyard_lookup,
                     courtyard_offset_lookup,
@@ -252,13 +269,16 @@ pub(crate) fn pack_passives_along_outline(
                 layer: synth_geometry::Layer::Top,
             };
             placements.push(placement);
-            hull.add_center(crate::courtyard_rect_for_placement(
-                &placement,
-                w_mm,
-                h_mm,
-                Some(passive_offset),
-                0,
-            ));
+            hull.add_center(
+                crate::courtyard_rect_for_placement(
+                    &placement,
+                    w_mm,
+                    h_mm,
+                    Some(passive_offset),
+                    0,
+                ),
+                PASSIVE_CLEARANCE_GAP_NM,
+            );
             update_net_pad_positions(board, placements, pad_offsets, &mut net_pad_positions);
         } else if let Some(fallback_pt) = find_nearest_legal_slot(
             comp_id,
@@ -269,6 +289,7 @@ pub(crate) fn pack_passives_along_outline(
             passive_offset,
             usable,
             placements,
+            passives,
             courtyard_lookup,
             courtyard_offset_lookup,
         ) {
@@ -279,13 +300,10 @@ pub(crate) fn pack_passives_along_outline(
                 layer: synth_geometry::Layer::Top,
             };
             placements.push(fallback);
-            hull.add_center(crate::courtyard_rect_for_placement(
-                &fallback,
-                w_mm,
-                h_mm,
-                Some(passive_offset),
-                0,
-            ));
+            hull.add_center(
+                crate::courtyard_rect_for_placement(&fallback, w_mm, h_mm, Some(passive_offset), 0),
+                PASSIVE_CLEARANCE_GAP_NM,
+            );
             update_net_pad_positions(board, placements, pad_offsets, &mut net_pad_positions);
         } else {
             let refdes = board
@@ -311,6 +329,7 @@ fn find_nearest_legal_slot(
     passive_offset: (f64, f64),
     usable: Rect,
     placements: &[ComponentPlacement],
+    passives: &[ComponentId],
     courtyard_lookup: &HashMap<ComponentId, (f64, f64)>,
     courtyard_offset_lookup: &HashMap<ComponentId, (f64, f64)>,
 ) -> Option<Point> {
@@ -357,6 +376,7 @@ fn find_nearest_legal_slot(
                 && usable.contains(cand_rect.max)
                 && !intersects_placed(
                     cand_rect,
+                    passives,
                     placements,
                     courtyard_lookup,
                     courtyard_offset_lookup,
@@ -479,11 +499,11 @@ fn update_net_pad_positions(
 
 fn intersects_placed(
     rect: Rect,
+    passives: &[ComponentId],
     placements: &[ComponentPlacement],
     courtyard_lookup: &HashMap<ComponentId, (f64, f64)>,
     courtyard_offset_lookup: &HashMap<ComponentId, (f64, f64)>,
 ) -> bool {
-    let pad_buffer_nm: i64 = 3_000_000; // 3.0mm pad clearance buffer to prevent SMD pad THT pin overlaps
     for p in placements {
         let (w_mm, h_mm) = courtyard_lookup[&p.id];
         let p_rect = crate::courtyard_rect_for_placement(
@@ -491,7 +511,7 @@ fn intersects_placed(
             w_mm,
             h_mm,
             courtyard_offset_lookup.get(&p.id).copied(),
-            pad_buffer_nm,
+            gap_around(p.id, passives),
         );
         if rect.intersects(&p_rect) {
             return true;
