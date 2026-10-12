@@ -257,20 +257,40 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
     // exists but connects nothing, because the pads are on the outer copper and
     // the plane is not. Opt-in: no plane is emitted for a class that does not
     // ask, and none at all on a board with no inner layer to put it on.
+    //
+    // One rail per layer. Pouring every plane net on every power layer puts
+    // two rails at the same priority on the same copper, which is the
+    // starvation described above with ground swapped out for a second rail:
+    // on a four-layer board with a core and an I/O rail it left the I/O rail's
+    // thirty pads stranded. Rails are dealt round-robin across the layers, so
+    // they share one only when there are more rails than layers to give them.
+    let plane_nets_by_class: Vec<(u32, &synth_ir::Net)> = board
+        .netclasses
+        .iter()
+        .filter(|class| class.plane)
+        .flat_map(|class| {
+            board
+                .nets
+                .iter()
+                .filter(move |net| net.netclass.as_deref() == Some(class.name.as_str()))
+        })
+        .filter_map(|net| net_id_lookup.get(&net.id).copied().map(|id| (id, net)))
+        .collect();
+
     let mut plane_via_index = 0usize;
-    for class in &board.netclasses {
-        if !class.plane || power_layers.is_empty() {
-            continue;
-        }
-        for net in board
-            .nets
-            .iter()
-            .filter(|net| net.netclass.as_deref() == Some(class.name.as_str()))
-        {
-            let Some(pcb_net) = net_id_lookup.get(&net.id).copied() else {
-                continue;
-            };
-            for layer in &power_layers {
+    if !power_layers.is_empty() {
+        for (rail_index, (pcb_net, net)) in plane_nets_by_class.iter().enumerate() {
+            let (pcb_net, net) = (*pcb_net, *net);
+            let share = power_layers.len().div_ceil(plane_nets_by_class.len().max(1));
+            let first = (rail_index * share) % power_layers.len();
+            let layers: Vec<&&'static str> = power_layers
+                .iter()
+                .cycle()
+                .skip(first)
+                .take(share.max(1))
+                .collect();
+            for layer in layers {
+                let layer = *layer;
                 let zone_key = format!("plane/{}/{layer}", net.name);
                 children.push(build_zone(
                     placement,
