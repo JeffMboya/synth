@@ -5,8 +5,9 @@ configuration flash, a 25 MHz oscillator, and 1.2 V and 3.3 V rails carried as
 inner-layer planes from a single 5 V USB-C input.
 
 **Status: not fabricated, not powered, not fully routed.** KiCadRoutingTools
-9399bfb closes 29 nets and leaves 12 open; `kicad-cli` DRC reports 65 errors and
-14 unconnected pads. Both supply rails route as planes. See *Limitations*.
+caad45c closes 31 nets and leaves 10 open; `kicad-cli` DRC reports 63 errors and
+13 unconnected pads. Both supply rails route as planes. One of the eight TMDS
+lanes carries copper end to end. See *Limitations*.
 
 Design rationale is in the source comments next to the circuits it explains;
 this file is the specification.
@@ -139,12 +140,20 @@ balls 0.8 mm apart it sits 0.400 mm from each ball centre and needs 0.582 mm to
 clear the pad copper. Dog-bone escape is therefore impossible on this tier, and
 via-in-pad is the required technique rather than a shortcut.
 
-That 0.56 mm via is now declared rather than assumed. Until `via_diameter`
-existed the exporter wrote 0.6 mm into every net class on every board, so the
-arithmetic above described a via the board was not actually routed with. The
-TMDS class names the tier's smallest legal via, and `E-SYNTH-PROCESS-003`
-checks it against the profile's drill and annular floors instead of trusting
-it.
+That 0.56 mm via is now declared rather than assumed, and finding out why the
+declaration had no effect turned up something worse. Until `via_diameter`
+existed the exporter hardcoded via geometry twice: 0.6/0.3 into the board's
+`net_class` block, which KiCad 7 and later ignore, and 0.6/**0.4** into the
+project file, which is what KiCad and the router actually read. A 0.4 mm drill
+inside a 0.6 mm pad is a 0.10 mm annular ring against this tier's 0.13 mm
+floor, so every net class Synth had ever written asked for a via the declared
+process would not plate. The measured run bears it out: 91 of the control
+board's vias came back at 0.6/0.4 before the fix and none after it, with
+connectivity unchanged.
+
+The TMDS class now names the tier's smallest legal via, and
+`E-SYNTH-PROCESS-003` checks it against the profile's drill and annular floors
+instead of trusting it.
 
 The board therefore declares `requires via_in_pad` and names a tier that offers
 it. That is not a waiver. The requirement is checked against the process: the
@@ -154,18 +163,32 @@ via-in-pad cannot build it. The two tiers carry identical geometric floors —
 filling a via buys the capability, not a finer drill — so nothing about the
 escape geometry changes with the declaration.
 
-What does change is what the router is told. Before #136 the engine was given
-no permission and the 40 via-in-pad findings were blocking; now the declaration
-grants it, and KRT encodes the permission as a clearance sentinel, so the copper
-it returns may differ from the run this file last measured.
+What changes with the declaration is what the router is told, and it was
+measured rather than assumed. Both runs below used KiCad 10.0.6,
+KiCadRoutingTools caad45c with `grid_router` 0.23.0, the same pinned placement,
+and sources differing only in the tier name, the `requires` line and the via
+attributes:
 
-The routed numbers below are that earlier run, and nothing re-measures them
-yet. The declared 0.56 mm via is a second reason they are stale: it is 0.04 mm
-smaller than the 0.6 mm the exporter used to write, which can only help an
-escape on a 0.8 mm grid, but no run here has measured by how much. The release routability gate covers `sensor_logger`, `env_logger` and
-`secure_tracker`, not this board, and the qualification matrix that would is
-not on this branch (#45). Treat every routed figure here as pre-declaration
-until a run against the filled-via tier replaces it.
+| | nets closed | open | blocking | of those, via-in-pad | DRC err / unconn / warn |
+| --- | --- | --- | --- | --- | --- |
+| without the declaration | 30 | 11 | 52 | 39 | 63 / 14 / 40 |
+| with it | 31 | 10 | 11 | 0 | 63 / 13 / 32 |
+
+The declaration closes one more net, clears all 39 via-in-pad blockers, and
+drops an unconnected pad and eight warnings. It costs nothing connected: one
+TMDS lane reaches both ends either way. What the seven unrouted lanes lose is
+copper that never connected them.
+
+Nothing in CI re-measures this. The release routability gate covers
+`sensor_logger`, `env_logger` and `secure_tracker`, and the qualification
+matrix that would cover this board is not on this branch (#45). These figures
+come from a local run; `scripts/setup-routing-engines.sh` sets up the engines,
+and the router needs a Python that can import KiCad's `pcbnew`.
+
+The declared 0.56 mm via has not been observed changing routed copper. The
+class that declares it is the one that barely routes, so there are no TMDS vias
+to size, and the 110 vias placed are the 0.6 mm default. The declaration is
+correct and not yet load-bearing.
 
 ## Notable parts
 
@@ -187,17 +210,24 @@ bill of materials; this table is the actives and omits 39 generic passives.
 
 ## Limitations
 
-- **The board does not route completely.** 29 nets closed, 12 open: the 5 V
-  input, four HDMI connector pins, one TMDS ball on the BGA, and two-pad traces
-  around the oscillator and the series resistors. That is signal routing a human
-  would finish by hand, and #40 asks for exactly that list.
-- **The TMDS lanes are not length matched.** The class declares
-  `match_length 0.25mm`; the routed copper spreads 18.38 mm, from `net_25` at
-  0.93 mm to `net_23` at 19.31 mm. The check is real — it measures the emitted
-  segments and reports the shortest and longest member — but the number is not
-  yet a verdict on the layout: `net_25` is one of the twelve open nets, so its
-  0.93 mm is a stub rather than a lane. Length matching cannot be judged until
-  the lanes route.
+- **The board does not route completely.** 31 nets closed, 10 open: the 5 V
+  input, four HDMI connector pins, and two-pad traces around the series
+  resistors. That is signal routing a human would finish by hand, and #40 asks
+  for exactly that list.
+- **Seven of the eight TMDS lanes do not route.** Only `net_23` reaches both
+  ends. The other seven are open in every run measured, before and after the
+  via-in-pad declaration, so the video bus is the board's largest single gap.
+  Nothing escapes the BGA on purpose yet: KiCadRoutingTools ships a fanout
+  engine with an under-pad method for arrays this dense, and Synth does not
+  invoke it (#137).
+- **Length matching cannot be judged yet, and the check is silent rather than
+  satisfied.** The class declares `match_length 0.25mm`. Before the via-in-pad
+  declaration the seven unrouted lanes carried non-connecting stubs, and the
+  check measured those: a 19.083 mm spread from `net_25` at 0.925 mm to
+  `net_23` at 20.008 mm — a complaint about stub lengths, not lane lengths.
+  With the declaration the stubs are gone, one lane carries copper, and a class
+  with one measurable member is skipped: a net cannot be mismatched against
+  itself. Read the silence as "not yet measurable", never as "matched".
 - `kicad-cli pcb drc` reports 65 errors and 14 unconnected pads on the routed
   copper. No fabrication artifacts are produced.
 - **Impedance is not verified on the inner layers.** Only outer-layer microstrip
