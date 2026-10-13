@@ -120,6 +120,11 @@ a `connect`, which is the spelling the language reference did not document until
 Four pairs, each `impedance 100ohm`, `max_skew 0.1mm`, `couple tight`, declared
 on the connector side of the 270 Ω series resistors where the controlled run is.
 
+`max_skew` is checked, not merely recorded: `E-SYNTH-DRC-014` sums each half of
+the pair from the emitted segments and fails one whose halves differ by more
+than the budget, whatever the router reported about its own matching. `couple`
+is not checked — nothing keeps the two halves of a pair together.
+
 The iCE40 has no dedicated TMDS transmitter, so the pairs are driven as
 pseudo-differential LVCMOS33 from one bank with series termination, which is how
 the open-source iCE40 HDMI designs do it. That is good for 640×480 and not for
@@ -162,6 +167,13 @@ bill of materials; this table is the actives and omits 39 generic passives.
   input, four HDMI connector pins, one TMDS ball on the BGA, and two-pad traces
   around the oscillator and the series resistors. That is signal routing a human
   would finish by hand, and #40 asks for exactly that list.
+- **The TMDS lanes are not length matched.** The class declares
+  `match_length 0.25mm`; the routed copper spreads 18.38 mm, from `net_25` at
+  0.93 mm to `net_23` at 19.31 mm. The check is real — it measures the emitted
+  segments and reports the shortest and longest member — but the number is not
+  yet a verdict on the layout: `net_25` is one of the twelve open nets, so its
+  0.93 mm is a stub rather than a lane. Length matching cannot be judged until
+  the lanes route.
 - `kicad-cli pcb drc` reports 65 errors and 14 unconnected pads on the routed
   copper. No fabrication artifacts are produced.
 - **Impedance is not verified on the inner layers.** Only outer-layer microstrip
@@ -186,7 +198,7 @@ bill of materials; this table is the actives and omits 39 generic passives.
 | --- | --- |
 | BGA / fine-pitch escape, via and fanout rules | **Partly.** 121 balls on 0.8 mm; escape needs via-in-pad, which the board source cannot declare — only a CLI flag can. |
 | DDR or equivalent length-sensitive interface | **No.** No DRAM part exists, and `match_length` is one tolerance per class, so per-byte-group budgets are not expressible. |
-| PCIe / USB 3.x / HDMI-class differential | **Yes.** Four TMDS pairs at 100 Ω with a declared skew budget and a length-matched class. |
+| PCIe / USB 3.x / HDMI-class differential | **Declared and checked, not met.** Four TMDS pairs at 100 Ω with a skew budget, and a length-matched class the routed copper fails — see *Limitations*. |
 | Multi-rail compute, thermal, keepout, DFM | **Partly.** Both rails route as inner-layer planes; thermal and sequencing are not modelled. |
 
 ## Reproducibility
