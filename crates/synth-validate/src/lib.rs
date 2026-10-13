@@ -173,6 +173,7 @@ fn all_rules(config: &ErcConfig) -> Vec<Box<dyn ErcRule>> {
         Box::new(deep_erc::FloatingCmosInputRule),
         Box::new(deep_erc::OpenDrainPullupRule::new(config)),
         Box::new(deep_erc::ConnectorProtectionRule::new(config)),
+        Box::new(deep_erc::Rs485TerminationRule),
         Box::new(deep_erc::LedCurrentRule::new(config)),
         Box::new(deep_erc::CaseOnlyNetCollisionRule),
         Box::new(deep_erc::SingleUseLabelRule),
