@@ -814,6 +814,11 @@ fn execute_language_reference(_args: &Value) -> Value {
                     "example": "component R1: resistor \"r_generic_0603\" value \"10k\""
                 },
                 {
+                    "form": "component <REFDES>: <kind> \"<part_id>\" { escape { [method <channel|underpad>] [layers \"<layer>\", …] [off] } }",
+                    "description": "How this package's pins leave it. A dense grid array — three pad rows and three columns, at or below 1.3 mm pitch — is escaped before routing whether or not it says so, because a fine-pitch array left to a general router comes back with a stub on every lane. This block overrides that: `method` picks the engine (`underpad` drops a via inside each pad, the only method a fully populated array leaves open; `channel` routes out between the pads), `layers` limits which copper the escape may use, and `off` leaves the package to the general router. `off` wins over a method on the same package. The escape via is sized from the declared manufacturer's floor, not from this block.",
+                    "example": "component U1: fpga \"ice40hx4k_bg121\" { escape { method underpad layers \"In1.Cu\", \"In2.Cu\" } }"
+                },
+                {
                     "form": "component <REFDES>: <kind> \"<part_id>\" { placement_hint { region: <region> edge: <edge> near: <REFDES> side: <side> priority: <hard|soft> } }",
                     "description": "Same as the plain component form, plus a placement_hint block. All attrs inside placement_hint are optional and independent; include only the ones you need.",
                     "example": "component U1: mcu \"stm32h743\" { placement_hint { region: top_left priority: hard } }"
@@ -1331,6 +1336,7 @@ fn route_design_externally_with(
             .unwrap_or_else(|| "jlc-standard".to_string()),
     );
     request.use_board_length_groups(&board);
+    request.use_board_escapes(&board);
     // Discarded deliberately: an unmet requirement has already failed ERC
     // with E-SYNTH-PROCESS-002, which these tools return, and the gate still
     // refuses the copper. What this call is here for is the granting.
@@ -2576,6 +2582,7 @@ fn select_placement_by_route(
         );
         // See the note at the other call sites: this is here to grant, and an
         // unmet requirement is already an ERC error.
+        request.use_board_escapes(board);
         let _ = request.use_board_process_requirements(board);
         request.input_hash = sha256_of(&res.pcb_path);
         request.preserve_baseline().map_err(|f| f.to_string())?;
@@ -2673,6 +2680,7 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
             .unwrap_or_else(|| "jlc-standard".to_string()),
     );
     request.use_board_length_groups(&board);
+    request.use_board_escapes(&board);
     // Discarded deliberately: an unmet requirement has already failed ERC
     // with E-SYNTH-PROCESS-002, which these tools return, and the gate still
     // refuses the copper. What this call is here for is the granting.
