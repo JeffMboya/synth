@@ -651,6 +651,11 @@ pub enum NetclassAttr {
     /// (`impedance 50ohm`). Distinct from a `diff_pair`'s differential
     /// impedance: this sizes one trace against its reference plane.
     Impedance(ValueWithUnit),
+    /// Tolerance within which every net in the class must be the same routed
+    /// length (`match_length 0.25mm`). Bounds the class's nets against each
+    /// other, which a `diff_pair`'s `max_skew` cannot express: that one
+    /// bounds the two halves of a single pair.
+    MatchLength(ValueWithUnit),
     /// Current the class's nets carry (`current 1.5A`), used to check routed
     /// width against the IPC-2221 ampacity curve.
     Current(ValueWithUnit),

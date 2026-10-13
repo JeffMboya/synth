@@ -1270,6 +1270,16 @@ impl Parser {
                         attrs.push(NetclassAttr::Impedance(v));
                     }
                 }
+                // Net-to-net length tolerance for the class. `max_skew` on a
+                // `diff_pair` bounds the two halves of one pair; this bounds
+                // every net in the class against the others, which is what a
+                // length-sensitive bus needs.
+                TokenKind::KwMatchLength => {
+                    self.bump();
+                    if let Some(v) = self.expect_value() {
+                        attrs.push(NetclassAttr::MatchLength(v));
+                    }
+                }
                 // `color`, `current` and `plane` are parsed contextually
                 // (identifiers, not reserved keywords) so existing designs
                 // that use the words as names keep parsing.
@@ -1303,7 +1313,7 @@ impl Parser {
                         self.peek().span,
                         "E-SYNTH-PARSE-019",
                         "unexpected attribute inside netclass",
-                        "`trace_width <value><unit>`, `clearance <value><unit>`, `impedance <value><unit>`, `current <value><unit>`, `plane`, or `color \"#rrggbb\"`",
+                        "`trace_width <value><unit>`, `clearance <value><unit>`, `impedance <value><unit>`, `match_length <value><unit>`, `current <value><unit>`, `plane`, or `color \"#rrggbb\"`",
                         self.describe_current(),
                         None,
                     );
@@ -2468,6 +2478,7 @@ impl Parser {
             TokenKind::KwSheet => "`sheet`".to_string(),
             TokenKind::KwImpedance => "`impedance`".to_string(),
             TokenKind::KwMaxSkew => "`max_skew`".to_string(),
+            TokenKind::KwMatchLength => "`match_length`".to_string(),
             TokenKind::KwCouple => "`couple`".to_string(),
             TokenKind::KwTraceWidth => "`trace_width`".to_string(),
             TokenKind::KwClearance => "`clearance`".to_string(),

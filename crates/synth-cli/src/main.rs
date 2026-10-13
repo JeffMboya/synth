@@ -1211,6 +1211,14 @@ const UNSUPPORTED: &[CapabilityLimit] = &[
 
 const UNVERIFIED: &[CapabilityLimit] = &[
     (
+        "netclass_match_length",
+        Some("netclass.match_length"),
+        "The tolerance is parsed, lowered and carried in the IR, and nothing in this build \
+         measures it. Checking it means summing each member net from emitted copper and \
+         comparing the shortest against the longest, which belongs to the routing validator. \
+         A board may state a length budget; it will not be told when the copper misses it.",
+    ),
+    (
         "diff_pair_impedance",
         Some("diff_pair.impedance"),
         "Used only on a declared stackup: an outer-layer microstrip width (and, for a true \
@@ -1321,7 +1329,7 @@ fn capability_descriptor() -> serde_json::Value {
                 "notes": "No fabricator presets are shipped; every value is declared by the design. A diff_pair impedance derives its net class trace width (and, for a true pair, its gap) from the first copper and insulator layers."
             },
             "routing_constraints": {
-                "netclass": ["trace_width", "clearance", "color", "impedance", "current", "plane", "max_length"],
+                "netclass": ["trace_width", "clearance", "match_length", "color", "impedance", "current", "plane", "max_length"],
                 "diff_pair": ["impedance", "max_skew", "couple"],
                 "keepout": ["radius"],
                 "component": ["placement_hint"]

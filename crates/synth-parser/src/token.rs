@@ -54,6 +54,7 @@ pub enum TokenKind {
     KwSheet,
     KwImpedance,
     KwMaxSkew,
+    KwMatchLength,
     KwCouple,
     KwTraceWidth,
     KwClearance,
@@ -473,6 +474,7 @@ impl<'a> Lexer<'a> {
             "sheet" => TokenKind::KwSheet,
             "impedance" => TokenKind::KwImpedance,
             "max_skew" => TokenKind::KwMaxSkew,
+            "match_length" => TokenKind::KwMatchLength,
             "couple" => TokenKind::KwCouple,
             "trace_width" => TokenKind::KwTraceWidth,
             "clearance" => TokenKind::KwClearance,
@@ -523,7 +525,7 @@ mod tests {
     #[test]
     fn keywords_recognized() {
         let ks = kinds(
-            "board import layers manufacturer revision company schematic stackup legends component connect net power notes dnp module interface bus use bind prefix param as class diff_pair netclass keepout group sheet impedance max_skew couple trace_width clearance radius value tolerance voltage power_rating dielectric variant description",
+            "board import layers manufacturer revision company schematic stackup legends component connect net power notes dnp module interface bus use bind prefix param as class diff_pair netclass keepout group sheet impedance max_skew match_length couple trace_width clearance radius value tolerance voltage power_rating dielectric variant description",
         );
         assert_eq!(
             ks,
@@ -559,6 +561,7 @@ mod tests {
                 TokenKind::KwSheet,
                 TokenKind::KwImpedance,
                 TokenKind::KwMaxSkew,
+                TokenKind::KwMatchLength,
                 TokenKind::KwCouple,
                 TokenKind::KwTraceWidth,
                 TokenKind::KwClearance,

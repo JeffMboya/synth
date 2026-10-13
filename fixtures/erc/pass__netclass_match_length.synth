@@ -1,0 +1,25 @@
+board "netclass_match_length" {
+  layers 4
+  manufacturer "jlcpcb"
+
+  component R1: resistor "r_generic_0603" value "10k"
+  component R2: resistor "r_generic_0603" value "10k"
+  component R3: resistor "r_generic_0603" value "10k"
+  component R4: resistor "r_generic_0603" value "10k"
+
+  connect R1.p1 -> R2.p1 as "LANE0_P" class "LANES"
+  connect R1.p2 -> R2.p2 as "LANE0_N" class "LANES"
+  connect R3.p1 -> R4.p1 as "LANE1_P" class "LANES"
+  connect R3.p2 -> R4.p2 as "LANE1_N" class "LANES"
+
+  // Bounds the four lane nets against each other. A diff_pair's max_skew
+  // bounds one pair's own two halves and cannot express this.
+  netclass "LANES" {
+    trace_width 0.2mm
+    clearance 0.2mm
+    match_length 0.25mm
+  }
+
+  diff_pair LANE0_P LANE0_N { impedance 100ohm  max_skew 0.1mm }
+  diff_pair LANE1_P LANE1_N { impedance 100ohm  max_skew 0.1mm }
+}

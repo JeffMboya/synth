@@ -532,6 +532,7 @@ impl<'a> LowerCtx<'a> {
         use synth_ast::NetclassAttr;
         let mut trace_width: Option<Length> = None;
         let mut clearance: Option<Length> = None;
+        let mut match_length: Option<Length> = None;
         let mut color: Option<[u8; 3]> = None;
         let mut impedance: Option<Impedance> = None;
         let mut current: Option<Current> = None;
@@ -546,6 +547,10 @@ impl<'a> LowerCtx<'a> {
                 NetclassAttr::Clearance(v) => match Length::try_from(v) {
                     Ok(l) => clearance = Some(l),
                     Err(e) => self.emit_unit_error(&e, "netclass clearance"),
+                },
+                NetclassAttr::MatchLength(v) => match Length::try_from(v) {
+                    Ok(l) => match_length = Some(l),
+                    Err(e) => self.emit_unit_error(&e, "netclass match_length"),
                 },
                 NetclassAttr::Impedance(v) => match Impedance::try_from(v) {
                     Ok(i) => impedance = Some(i),
@@ -589,6 +594,7 @@ impl<'a> LowerCtx<'a> {
             name: n.name.clone(),
             trace_width,
             clearance,
+            match_length,
             color,
             impedance,
             current,
