@@ -1174,12 +1174,6 @@ const UNSUPPORTED: &[CapabilityLimit] = &[
          halves of a differential pair coupled or check that they are; that is left to the router.",
     ),
     (
-        "length_skew_enforcement",
-        Some("diff_pair.max_skew"),
-        "`max_skew` can be declared and is recorded in the IR, but nothing enforces it and no \
-         stage fails on residual skew; any tuning is left to the router.",
-    ),
-    (
         "return_path_and_layer_transition_analysis",
         None,
         "Return paths, reference-plane continuity and signal layer transitions are not analysed.",
@@ -1216,6 +1210,14 @@ const UNVERIFIED: &[CapabilityLimit] = &[
         "Used only on a declared stackup: an outer-layer microstrip width (and, for a true \
          differential pair, the gap between its legs) is derived and declared geometry is \
          checked, as an estimate. Inner-layer pairs are not verified.",
+    ),
+    (
+        "diff_pair_skew",
+        Some("diff_pair.max_skew"),
+        "Checked on the routed copper: `E-SYNTH-DRC-014` sums each half of a pair that declares \
+         `max_skew` and fails one whose halves differ by more than the budget. Measured from the \
+         emitted segments, not from the router's own report, so it holds whatever the engine \
+         claims. A half with no copper is skipped rather than failed.",
     ),
     (
         "rf_net_trace_width",
