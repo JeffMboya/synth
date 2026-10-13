@@ -508,6 +508,46 @@ position (it moves only to clear a collision, and `priority = "hard"` entries
 win over soft ones), so the placer's spacing choices do not apply to it;
 pinning every part bypasses the placer.
 
+### Silkscreen reference labels
+
+The export keeps each part's reference label on the board and clear of other
+parts and labels: it tries the long-standing offset first, then the other
+three sides of the part, and keeps the offset if nothing fits. Two optional
+schemas steer it.
+
+A part file can state a preference in its `[footprint_dimensions]` table:
+
+```toml
+[footprint_dimensions]
+width_mm = 3.54
+height_mm = 8.62
+label_side = "below"   # above | below | left | right, tried first
+label_hidden = true    # leave the label off the silkscreen
+```
+
+A design can override one label in `<design>.placement.layout.toml`, keyed by
+designator (this file is board millimetres, and so are these offsets):
+
+```toml
+[labels.R9]
+dx = 0.0          # label centre relative to the part's courtyard centre,
+dy = -3.0         # in board axes
+angle = 0         # degrees; 0 reads left to right
+priority = "hard" # hard: use it as given; soft (default): try it first
+
+[labels.C3]
+hide = true       # hide it; `hide = false` shows a part file's hidden label
+```
+
+A hidden label takes no room. A sidecar entry beats the part file, and a hard
+offset is not checked for collisions. `angle` and `priority` apply to an
+offset: without `dx` or `dy` they do nothing, and if only one of the two is
+given the other counts as 0. A designator that names no part is ignored. A
+sidecar that does not parse is ignored as a whole, so a typo in one entry
+(for example `priority = "firm"`) drops every label entry and every part
+position in that file. The sidecar schema version is unchanged: the `labels`
+table is optional, and an older file without it loads as before.
+
 ---
 
 ## 5. Fabrication exports

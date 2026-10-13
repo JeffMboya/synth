@@ -74,11 +74,14 @@ pub struct PlaneFanoutError {
     pub detail: String,
 }
 
+/// `label_overrides` is the design's say over reference labels, by designator,
+/// from the placement sidecar.
 pub fn build_pcb(
     board: &Board,
     placement: &Placement,
     routing: &Routing,
     project: &Uuid,
+    label_overrides: &HashMap<String, synth_layout::sidecar::SidecarLabel>,
 ) -> Result<Sexp, PlaneFanoutError> {
     let placements_by_id: HashMap<ComponentId, &ComponentPlacement> =
         placement.components.iter().map(|p| (p.id, p)).collect();
@@ -134,6 +137,7 @@ pub fn build_pcb(
     let labels = silk_labels::place_labels(
         &label_parts(board, &placements_by_id),
         placement.board_outline,
+        &label_overrides_by_id(board, label_overrides),
     );
     for component in &board.components {
         let Some(part) = component.part.as_ref() else {
@@ -1449,6 +1453,7 @@ fn label_parts(
             };
             let (half_w, half_h) = (mm_to_nm(w) / 2, mm_to_nm(h) / 2);
             let c = placement.center;
+            let (side, hidden) = part_label_hints(part);
             Some(silk_labels::LabelPart {
                 id: component.id,
                 refdes: component.refdes.clone(),
@@ -1459,9 +1464,54 @@ fn label_parts(
                     synth_geometry::Point::new(c.x_nm + half_w, c.y_nm + half_h),
                 ),
                 half_extent_mm: footprint_half_extent_mm(part),
+                side,
+                hidden,
             })
         })
         .collect()
+}
+
+/// The label side and visibility a part file asks for.
+fn part_label_hints(part: &synth_registry::Part) -> (Option<silk_labels::Side>, bool) {
+    use synth_registry::LabelSide;
+    let dims = part.footprint_dimensions.as_ref();
+    let side = dims.and_then(|d| d.label_side).map(|s| match s {
+        LabelSide::Above => silk_labels::Side::Above,
+        LabelSide::Below => silk_labels::Side::Below,
+        LabelSide::Left => silk_labels::Side::Left,
+        LabelSide::Right => silk_labels::Side::Right,
+    });
+    (side, dims.and_then(|d| d.label_hidden).unwrap_or(false))
+}
+
+/// The placement sidecar's label entries, keyed by component instead of
+/// designator. A designator that names no part is ignored.
+fn label_overrides_by_id(
+    board: &Board,
+    overrides: &HashMap<String, synth_layout::sidecar::SidecarLabel>,
+) -> HashMap<ComponentId, silk_labels::LabelOverride> {
+    board
+        .components
+        .iter()
+        .filter_map(|component| {
+            let o = overrides.get(&component.refdes)?;
+            Some((component.id, label_override(o)))
+        })
+        .collect()
+}
+
+/// A sidecar label entry as the placer sees it. A missing `dx` or `dy` counts
+/// as 0; with neither there is no offset, so `angle` and `priority` have
+/// nothing to apply to.
+fn label_override(entry: &synth_layout::sidecar::SidecarLabel) -> silk_labels::LabelOverride {
+    let offset_mm = (entry.dx.is_some() || entry.dy.is_some())
+        .then(|| (entry.dx.unwrap_or(0.0), entry.dy.unwrap_or(0.0)));
+    silk_labels::LabelOverride {
+        offset_mm,
+        angle_deg: entry.angle,
+        hide: entry.hide,
+        hard: entry.priority == synth_layout::sidecar::OverridePriority::Hard,
+    }
 }
 
 fn build_footprint_instance(
@@ -1505,6 +1555,7 @@ fn build_footprint_instance(
         local_x_mm: ref_local_x,
         local_y_mm: ref_local_y,
         angle_deg: ref_text_angle,
+        hidden: ref_hidden,
     } = ref_label;
 
     let (val_local_x, val_local_y, val_text_angle) = match placement.rotation {
@@ -1575,30 +1626,32 @@ fn build_footprint_instance(
         )
     };
 
+    let mut reference_property = vec![
+        Sexp::str("Reference"),
+        Sexp::str(&component.refdes),
+        Sexp::list(
+            "at",
+            vec![num(ref_local_x), num(ref_local_y), num(ref_text_angle)],
+        ),
+        Sexp::list("layer", vec![Sexp::str(silk_layer)]),
+        str_pair("uuid", ref_prop_uuid.to_string()),
+    ];
+    if ref_hidden {
+        reference_property.push(Sexp::list("hide", vec![Sexp::atom("yes")]));
+    }
+    reference_property.push(Sexp::list(
+        "effects",
+        vec![Sexp::list(
+            "font",
+            vec![Sexp::list("size", vec![num(1.0), num(1.0)])],
+        )],
+    ));
+
     let mut children = vec![
         Sexp::list("layer", vec![Sexp::str(layer_name)]),
         str_pair("uuid", fp_uuid.to_string()),
         Sexp::list("at", at_args),
-        Sexp::list(
-            "property",
-            vec![
-                Sexp::str("Reference"),
-                Sexp::str(&component.refdes),
-                Sexp::list(
-                    "at",
-                    vec![num(ref_local_x), num(ref_local_y), num(ref_text_angle)],
-                ),
-                Sexp::list("layer", vec![Sexp::str(silk_layer)]),
-                str_pair("uuid", ref_prop_uuid.to_string()),
-                Sexp::list(
-                    "effects",
-                    vec![Sexp::list(
-                        "font",
-                        vec![Sexp::list("size", vec![num(1.0), num(1.0)])],
-                    )],
-                ),
-            ],
-        ),
+        Sexp::list("property", reference_property),
         Sexp::list(
             "property",
             vec![
@@ -2213,6 +2266,68 @@ mod tests {
         assert_eq!(via, Point::new(0, PLANE_VIA_OFFSET_NM));
     }
 
+    fn part_from_toml(id: &str, dims: &str) -> synth_registry::Part {
+        let toml = format!(
+            "id = \"{id}\"\nkind = \"resistor\"\n\n[footprint_dimensions]\nwidth_mm = 2.0\nheight_mm = 1.0\n{dims}\n"
+        );
+        let registry =
+            synth_registry::load_from_strs(&[(&format!("{id}.synth.toml"), &toml)]).unwrap();
+        registry.lookup(id).unwrap().clone()
+    }
+
+    fn entry(dx: Option<f64>, dy: Option<f64>) -> synth_layout::sidecar::SidecarLabel {
+        synth_layout::sidecar::SidecarLabel {
+            dx,
+            dy,
+            angle: 0.0,
+            hide: None,
+            priority: synth_layout::sidecar::OverridePriority::Soft,
+        }
+    }
+
+    #[test]
+    fn a_half_set_sidecar_offset_counts_the_missing_axis_as_zero() {
+        assert_eq!(
+            label_override(&entry(Some(2.5), None)).offset_mm,
+            Some((2.5, 0.0))
+        );
+        assert_eq!(
+            label_override(&entry(None, Some(-1.0))).offset_mm,
+            Some((0.0, -1.0))
+        );
+    }
+
+    #[test]
+    fn a_sidecar_label_with_no_offset_has_no_position() {
+        let hidden_only = synth_layout::sidecar::SidecarLabel {
+            hide: Some(true),
+            ..entry(None, None)
+        };
+        let o = label_override(&hidden_only);
+        assert_eq!((o.offset_mm, o.hide), (None, Some(true)));
+    }
+
+    #[test]
+    fn a_hard_priority_is_carried_to_the_placer() {
+        let hard = synth_layout::sidecar::SidecarLabel {
+            priority: synth_layout::sidecar::OverridePriority::Hard,
+            ..entry(Some(1.0), Some(1.0))
+        };
+        assert!(label_override(&hard).hard);
+        assert!(!label_override(&entry(Some(1.0), Some(1.0))).hard);
+    }
+
+    #[test]
+    fn a_part_files_label_hints_reach_the_placer() {
+        let hinted = part_from_toml("hinted", "label_side = \"left\"\nlabel_hidden = true");
+        assert_eq!(
+            part_label_hints(&hinted),
+            (Some(silk_labels::Side::Left), true)
+        );
+        let plain = part_from_toml("plain", "");
+        assert_eq!(part_label_hints(&plain), (None, false));
+    }
+
     fn no_footprint_part() -> synth_registry::Part {
         synth_registry::Part {
             id: synth_registry::PartId("nofp".into()),
@@ -2347,6 +2462,7 @@ mod tests {
                 local_x_mm: 0.0,
                 local_y_mm: -4.5,
                 angle_deg: 0.0,
+                hidden: false,
             },
         );
         let instance_text = instance.to_string_pretty();
@@ -2675,7 +2791,8 @@ mod tests {
             pad_escape_rejections: 0,
         };
         let project = Uuid::nil();
-        let pcb_sexp = build_pcb(&board, &placement, &routing, &project).expect("plane fanout");
+        let pcb_sexp = build_pcb(&board, &placement, &routing, &project, &HashMap::new())
+            .expect("plane fanout");
         let pcb_str = pcb_sexp.to_string_pretty();
 
         let tmp_path =

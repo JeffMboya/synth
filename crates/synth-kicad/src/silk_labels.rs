@@ -24,6 +24,15 @@ const SIDE_GAP_MM: f64 = 0.3;
 /// A label keeps this far inside the board edge.
 const EDGE_CLEARANCE_MM: f64 = 0.2;
 
+/// A side of a part's courtyard, in board axes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Side {
+    Above,
+    Below,
+    Left,
+    Right,
+}
+
 /// What the label placer needs to know about one part.
 #[derive(Debug, Clone)]
 pub(crate) struct LabelPart {
@@ -36,6 +45,22 @@ pub(crate) struct LabelPart {
     pub courtyard: Rect,
     /// Half of the unrotated footprint width and height, in millimetres.
     pub half_extent_mm: (f64, f64),
+    /// Side the part file prefers for the label, tried before the default.
+    pub side: Option<Side>,
+    /// The part file asks for no label on the silkscreen.
+    pub hidden: bool,
+}
+
+/// A design's say over one label, from the placement sidecar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LabelOverride {
+    /// Label centre relative to the courtyard centre, in board axes.
+    pub offset_mm: Option<(f64, f64)>,
+    pub angle_deg: f64,
+    /// Overrides the part file's `hidden` when set.
+    pub hide: Option<bool>,
+    /// A hard offset is used as given; a soft one is tried first.
+    pub hard: bool,
 }
 
 /// Where a reference label goes: a footprint-local offset and a text angle.
@@ -44,6 +69,8 @@ pub(crate) struct LabelPos {
     pub local_x_mm: f64,
     pub local_y_mm: f64,
     pub angle_deg: f64,
+    /// Emit the label hidden.
+    pub hidden: bool,
 }
 
 /// The fixed offset the export has always used for a part's label.
@@ -60,6 +87,7 @@ pub(crate) fn default_label(part: &LabelPart) -> LabelPos {
         local_x_mm: dx,
         local_y_mm: dy,
         angle_deg,
+        hidden: false,
     }
 }
 
@@ -71,15 +99,43 @@ fn text_width_nm(refdes: &str) -> i64 {
 
 /// Choose a label position for every part.
 ///
-/// Parts are visited in order, each taking the first candidate that fits:
-/// the default, then above, below, left and right of its courtyard. A
-/// candidate fits when it stays inside the board, clear of every other part's
-/// courtyard and clear of the labels already placed. A part with no fitting
-/// candidate keeps the default.
-pub(crate) fn place_labels(parts: &[LabelPart], outline: Rect) -> HashMap<ComponentId, LabelPos> {
+/// A label the design or the part file hides takes no room. A hard sidecar
+/// offset is used as given. Otherwise each part takes the first candidate
+/// that fits: a soft sidecar offset, the part file's preferred side, the
+/// default, then above, below, left and right of its courtyard. A candidate
+/// fits when it stays inside the board, clear of every other part's courtyard
+/// and clear of the labels already placed. A part with no fitting candidate
+/// keeps the default.
+pub(crate) fn place_labels(
+    parts: &[LabelPart],
+    outline: Rect,
+    overrides: &HashMap<ComponentId, LabelOverride>,
+) -> HashMap<ComponentId, LabelPos> {
     let mut placed = HashMap::new();
     let mut taken: Vec<Rect> = Vec::new();
     for part in parts {
+        let design = overrides.get(&part.id);
+        let default = default_label(part);
+        if design.and_then(|o| o.hide).unwrap_or(part.hidden) {
+            placed.insert(
+                part.id,
+                LabelPos {
+                    hidden: true,
+                    ..default
+                },
+            );
+            continue;
+        }
+        let hard = design.is_some_and(|o| o.hard);
+        let from_design = design.and_then(|o| {
+            let (dx, dy) = o.offset_mm?;
+            let c = part.courtyard;
+            let centre = Point::new(
+                (c.min.x_nm + c.max.x_nm) / 2 + mm_to_nm(dx),
+                (c.min.y_nm + c.max.y_nm) / 2 + mm_to_nm(dy),
+            );
+            Some(local_label(part, centre, o.angle_deg))
+        });
         let others = || {
             parts
                 .iter()
@@ -92,36 +148,44 @@ pub(crate) fn place_labels(parts: &[LabelPart], outline: Rect) -> HashMap<Compon
                 && !others().any(|c| c.intersects(&b))
                 && !taken.iter().any(|t| t.intersects(&b))
         };
-        let default = default_label(part);
-        let pos = std::iter::once(default)
-            .chain(side_candidates(part))
-            .find(|&p| fits(p))
-            .unwrap_or(default);
+        let pos = match from_design {
+            Some(forced) if hard => forced,
+            _ => from_design
+                .into_iter()
+                .chain(part.side.map(|s| side_candidate(part, s)))
+                .chain(std::iter::once(default))
+                .chain(
+                    [Side::Above, Side::Below, Side::Left, Side::Right]
+                        .map(|s| side_candidate(part, s)),
+                )
+                .find(|&p| fits(p))
+                .unwrap_or(default),
+        };
         taken.push(label_box(part, pos));
         placed.insert(part.id, pos);
     }
     placed
 }
 
-/// Horizontal-text positions above, below, left and right of the courtyard.
-fn side_candidates(part: &LabelPart) -> [LabelPos; 4] {
-    let w = text_width_nm(&part.refdes);
-    let h = mm_to_nm(TEXT_HEIGHT_MM);
+/// A horizontal label just outside one side of the courtyard.
+fn side_candidate(part: &LabelPart, side: Side) -> LabelPos {
+    let width = text_width_nm(&part.refdes);
+    let height = mm_to_nm(TEXT_HEIGHT_MM);
     let gap = mm_to_nm(SIDE_GAP_MM);
-    let c = part.courtyard;
-    let mid_x = (c.min.x_nm + c.max.x_nm) / 2;
-    let mid_y = (c.min.y_nm + c.max.y_nm) / 2;
-    [
-        (mid_x, c.min.y_nm - gap - h / 2),
-        (mid_x, c.max.y_nm + gap + h / 2),
-        (c.min.x_nm - gap - w / 2, mid_y),
-        (c.max.x_nm + gap + w / 2, mid_y),
-    ]
-    .map(|(x, y)| local_label(part, Point::new(x, y)))
+    let court = part.courtyard;
+    let mid_x = (court.min.x_nm + court.max.x_nm) / 2;
+    let mid_y = (court.min.y_nm + court.max.y_nm) / 2;
+    let (x, y) = match side {
+        Side::Above => (mid_x, court.min.y_nm - gap - height / 2),
+        Side::Below => (mid_x, court.max.y_nm + gap + height / 2),
+        Side::Left => (court.min.x_nm - gap - width / 2, mid_y),
+        Side::Right => (court.max.x_nm + gap + width / 2, mid_y),
+    };
+    local_label(part, Point::new(x, y), 0.0)
 }
 
-/// A horizontal label centred on a board-coordinate point.
-fn local_label(part: &LabelPart, centre: Point) -> LabelPos {
+/// A label at `angle_deg`, centred on a board-coordinate point.
+fn local_label(part: &LabelPart, centre: Point, angle_deg: f64) -> LabelPos {
     let inverse = match part.rotation {
         Rotation::Zero => Rotation::Zero,
         Rotation::Ninety => Rotation::TwoSeventy,
@@ -135,7 +199,8 @@ fn local_label(part: &LabelPart, centre: Point) -> LabelPos {
     LabelPos {
         local_x_mm: nm_to_mm(x),
         local_y_mm: nm_to_mm(y),
-        angle_deg: 0.0,
+        angle_deg,
+        hidden: false,
     }
 }
 
@@ -191,7 +256,13 @@ mod tests {
             rotation: Rotation::Zero,
             courtyard: rect(cx, cy, 2.0, 1.0),
             half_extent_mm: (1.0, 0.5),
+            side: None,
+            hidden: false,
         }
+    }
+
+    fn place(parts: &[LabelPart], outline: Rect) -> HashMap<ComponentId, LabelPos> {
+        place_labels(parts, outline, &HashMap::new())
     }
 
     fn outline() -> Rect {
@@ -205,7 +276,7 @@ mod tests {
     #[test]
     fn a_label_with_room_keeps_the_default_position() {
         let part = resistor(1, "R1", 20.0, 20.0);
-        let placed = place_labels(std::slice::from_ref(&part), outline());
+        let placed = place(std::slice::from_ref(&part), outline());
         assert_eq!(placed[&part.id], default_label(&part));
     }
 
@@ -216,7 +287,7 @@ mod tests {
         let mut neighbour = resistor(2, "U1", 20.0, 16.0);
         neighbour.courtyard = rect(20.0, 16.0, 8.0, 2.0);
         let parts = [part.clone(), neighbour.clone()];
-        let placed = place_labels(&parts, outline());
+        let placed = place(&parts, outline());
         let pos = placed[&part.id];
         assert_ne!(pos, default_label(&part), "the default is covered");
         let b = label_box(&part, pos);
@@ -231,7 +302,7 @@ mod tests {
     fn a_label_past_the_board_edge_moves_inside() {
         // 2 mm from the top edge, so the default label (4 mm above) is off the board.
         let part = resistor(1, "R1", 20.0, 2.0);
-        let placed = place_labels(std::slice::from_ref(&part), outline());
+        let placed = place(std::slice::from_ref(&part), outline());
         let pos = placed[&part.id];
         assert_ne!(pos, default_label(&part));
         assert!(inside(outline(), label_box(&part, pos)));
@@ -243,7 +314,7 @@ mod tests {
         let a = resistor(1, "R_TNOW", 20.0, 20.0);
         let b = resistor(2, "R9_TNO", 23.0, 20.0);
         let parts = [a.clone(), b.clone()];
-        let placed = place_labels(&parts, outline());
+        let placed = place(&parts, outline());
         let box_a = label_box(&a, placed[&a.id]);
         let box_b = label_box(&b, placed[&b.id]);
         assert!(
@@ -259,7 +330,7 @@ mod tests {
         let mut part = resistor(1, "J2", 20.0, 38.0);
         part.rotation = Rotation::Ninety;
         part.courtyard = rect(20.0, 38.0, 1.0, 2.0);
-        let placed = place_labels(std::slice::from_ref(&part), outline());
+        let placed = place(std::slice::from_ref(&part), outline());
         let pos = placed[&part.id];
         assert_ne!(pos, default_label(&part));
         assert!(inside(outline(), label_box(&part, pos)));
@@ -287,7 +358,7 @@ mod tests {
                 if rotation.swaps_extents() {
                     part.courtyard = rect(cx, cy, 1.0, 2.0);
                 }
-                let placed = place_labels(std::slice::from_ref(&part), outline());
+                let placed = place(std::slice::from_ref(&part), outline());
                 let b = label_box(&part, placed[&part.id]);
                 assert!(
                     inside(outline(), b),
@@ -301,12 +372,114 @@ mod tests {
         }
     }
 
+    fn soft(offset: (f64, f64)) -> LabelOverride {
+        LabelOverride {
+            offset_mm: Some(offset),
+            angle_deg: 0.0,
+            hide: None,
+            hard: false,
+        }
+    }
+
+    fn overrides(id: u32, o: LabelOverride) -> HashMap<ComponentId, LabelOverride> {
+        HashMap::from([(ComponentId(id), o)])
+    }
+
+    #[test]
+    fn a_preferred_side_is_used_when_it_is_free() {
+        let mut part = resistor(1, "R1", 20.0, 20.0);
+        part.side = Some(Side::Below);
+        let pos = place(std::slice::from_ref(&part), outline())[&part.id];
+        let b = label_box(&part, pos);
+        assert!(
+            b.min.y_nm >= part.courtyard.max.y_nm,
+            "label {b:?} not below the part"
+        );
+    }
+
+    #[test]
+    fn a_blocked_preferred_side_falls_back_to_a_free_one() {
+        let mut part = resistor(1, "R1", 20.0, 20.0);
+        part.side = Some(Side::Below);
+        let mut neighbour = resistor(2, "U1", 20.0, 22.0);
+        neighbour.courtyard = rect(20.0, 22.0, 8.0, 2.0);
+        let parts = [part.clone(), neighbour.clone()];
+        let b = label_box(&part, place(&parts, outline())[&part.id]);
+        assert!(
+            !overlaps(b, neighbour.courtyard),
+            "label {b:?} on the neighbour"
+        );
+        assert!(inside(outline(), b));
+    }
+
+    #[test]
+    fn a_soft_offset_is_used_when_it_fits() {
+        let part = resistor(1, "R1", 20.0, 20.0);
+        let parts = std::slice::from_ref(&part);
+        let pos = place_labels(parts, outline(), &overrides(1, soft((0.0, 3.0))))[&part.id];
+        let b = label_box(&part, pos);
+        let (mid_x, mid_y) = ((b.min.x_nm + b.max.x_nm) / 2, (b.min.y_nm + b.max.y_nm) / 2);
+        assert_eq!((mid_x, mid_y), (mm_to_nm(20.0), mm_to_nm(23.0)));
+    }
+
+    #[test]
+    fn a_soft_offset_that_collides_falls_back_to_auto() {
+        let part = resistor(1, "R1", 20.0, 20.0);
+        let mut neighbour = resistor(2, "U1", 20.0, 23.0);
+        neighbour.courtyard = rect(20.0, 23.0, 8.0, 2.0);
+        let parts = [part.clone(), neighbour.clone()];
+        let pos = place_labels(&parts, outline(), &overrides(1, soft((0.0, 3.0))))[&part.id];
+        let b = label_box(&part, pos);
+        assert!(
+            !overlaps(b, neighbour.courtyard),
+            "label {b:?} on the neighbour"
+        );
+    }
+
+    #[test]
+    fn a_hard_offset_is_used_even_when_it_collides() {
+        let part = resistor(1, "R1", 20.0, 20.0);
+        let mut neighbour = resistor(2, "U1", 20.0, 23.0);
+        neighbour.courtyard = rect(20.0, 23.0, 8.0, 2.0);
+        let parts = [part.clone(), neighbour];
+        let hard = LabelOverride {
+            hard: true,
+            ..soft((0.0, 3.0))
+        };
+        let pos = place_labels(&parts, outline(), &overrides(1, hard))[&part.id];
+        let b = label_box(&part, pos);
+        let mid = ((b.min.x_nm + b.max.x_nm) / 2, (b.min.y_nm + b.max.y_nm) / 2);
+        assert_eq!(mid, (mm_to_nm(20.0), mm_to_nm(23.0)));
+    }
+
+    #[test]
+    fn a_label_is_hidden_by_the_part_file_unless_the_design_says_otherwise() {
+        let mut part = resistor(1, "R1", 20.0, 20.0);
+        part.hidden = true;
+        assert!(place(std::slice::from_ref(&part), outline())[&part.id].hidden);
+        let show = LabelOverride {
+            offset_mm: None,
+            angle_deg: 0.0,
+            hide: Some(false),
+            hard: false,
+        };
+        let shown = place_labels(std::slice::from_ref(&part), outline(), &overrides(1, show));
+        assert!(!shown[&part.id].hidden);
+        let hide = LabelOverride {
+            hide: Some(true),
+            ..show
+        };
+        let plain = resistor(1, "R1", 20.0, 20.0);
+        let hidden = place_labels(std::slice::from_ref(&plain), outline(), &overrides(1, hide));
+        assert!(hidden[&plain.id].hidden);
+    }
+
     #[test]
     fn when_nothing_fits_the_default_is_kept() {
         // A 6 mm board cannot hold the label anywhere.
         let tiny = Rect::new(mm(0.0, 0.0), mm(6.0, 6.0));
         let part = resistor(1, "R_LONGNAME", 3.0, 3.0);
-        let placed = place_labels(std::slice::from_ref(&part), tiny);
+        let placed = place(std::slice::from_ref(&part), tiny);
         assert_eq!(placed[&part.id], default_label(&part));
     }
 }

@@ -5169,6 +5169,7 @@ mod tests {
             .into_iter()
             .collect(),
             forced_net_labels: Vec::new(),
+            labels: std::collections::HashMap::new(),
             fit_sheet: false,
         };
 
@@ -5230,6 +5231,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             forced_net_labels: Vec::new(),
+            labels: std::collections::HashMap::new(),
             fit_sheet: false,
         };
 
