@@ -150,8 +150,13 @@ escape geometry changes with the declaration.
 What does change is what the router is told. Before #136 the engine was given
 no permission and the 40 via-in-pad findings were blocking; now the declaration
 grants it, and KRT encodes the permission as a clearance sentinel, so the copper
-it returns may differ from the run this file last measured. The routed numbers
-below are the pre-declaration measurement until CI re-measures them.
+it returns may differ from the run this file last measured.
+
+The routed numbers below are that earlier run, and nothing re-measures them
+yet. The release routability gate covers `sensor_logger`, `env_logger` and
+`secure_tracker`, not this board, and the qualification matrix that would is
+not on this branch (#45). Treat every routed figure here as pre-declaration
+until a run against the filled-via tier replaces it.
 
 ## Notable parts
 
