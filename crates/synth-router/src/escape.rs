@@ -450,20 +450,23 @@ mod tests {
     fn the_reported_gap_belongs_to_the_pair_that_sets_the_pitch() {
         // Two 0.3 mm signal pads on a 0.5 mm pitch leave 0.2 mm. A mounting
         // pad sits a row away, 0.02 mm from the first signal pad's edge.
+        let mut pads = String::new();
+        for index in 0..8 {
+            let x = f64::from(index) * 0.5;
+            let number = index + 1;
+            let _ = write!(
+                pads,
+                "    (pad \"{number}\" smd roundrect (at {x:.4} 0) (size 0.300 1.900)\n      \
+                 (layers \"F.Cu\" \"F.Paste\" \"F.Mask\") (net {number} \"N{number}\"))\n"
+            );
+        }
+        let _ = write!(
+            pads,
+            "    (pad \"MP\" smd roundrect (at 0 -1.920) (size 1.000 1.900)\n      \
+             (layers \"F.Cu\" \"F.Paste\" \"F.Mask\") (net 99 \"SHIELD\"))\n"
+        );
         let pcb = format!(
-            "(kicad_pcb\n  (version 20260206)\n  (generator \"synth-eda\")\n  (layers (0 \"F.Cu\" signal) (31 \"B.Cu\" signal) (44 \"Edge.Cuts\" user))\n  (net 0 \"\")\n  (footprint \"Connector:Test\"\n    (layer \"F.Cu\")\n    (at 0 0)\n    (property \"Reference\" \"J9\" (at 0 -1) (layer \"F.SilkS\"))\n{}  )\n  (gr_line (start 0 0) (end 40 0) (layer \"Edge.Cuts\") (width 0.1))\n  (gr_line (start 0 0) (end 0 30) (layer \"Edge.Cuts\") (width 0.1))\n  (gr_line (start 40 0) (end 40 30) (layer \"Edge.Cuts\") (width 0.1))\n  (gr_line (start 0 30) (end 40 30) (layer \"Edge.Cuts\") (width 0.1))\n)",
-            (0..8)
-                .map(|i| {
-                    let x = f64::from(i) * 0.5;
-                    format!(
-                        "    (pad \"{}\" smd roundrect (at {x:.4} 0) (size 0.300 1.900)\n      (layers \"F.Cu\" \"F.Paste\" \"F.Mask\") (net {} \"N{}\"))\n",
-                        i + 1,
-                        i + 1,
-                        i + 1
-                    )
-                })
-                .collect::<String>()
-                + "    (pad \"MP\" smd roundrect (at 0 -1.920) (size 1.000 1.900)\n      (layers \"F.Cu\" \"F.Paste\" \"F.Mask\") (net 99 \"SHIELD\"))\n"
+            "(kicad_pcb\n  (version 20260206)\n  (generator \"synth-eda\")\n  (layers (0 \"F.Cu\" signal) (31 \"B.Cu\" signal) (44 \"Edge.Cuts\" user))\n  (net 0 \"\")\n  (footprint \"Connector:Test\"\n    (layer \"F.Cu\")\n    (at 0 0)\n    (property \"Reference\" \"J9\" (at 0 -1) (layer \"F.SilkS\"))\n{pads}  )\n  (gr_line (start 0 0) (end 40 0) (layer \"Edge.Cuts\") (width 0.1))\n  (gr_line (start 0 0) (end 0 30) (layer \"Edge.Cuts\") (width 0.1))\n  (gr_line (start 40 0) (end 40 30) (layer \"Edge.Cuts\") (width 0.1))\n  (gr_line (start 0 30) (end 40 30) (layer \"Edge.Cuts\") (width 0.1))\n)"
         );
         let board = board(&pcb);
         let findings = analyse(&board, &FabricationPolicy::default());
