@@ -253,7 +253,7 @@ bill of materials; this table is the actives and omits 39 generic passives.
 | BGA / fine-pitch escape, via and fanout rules | **Partly.** 121 balls on 0.8 mm. The escape requirement and the escape via are both declared and checked against the process (#136, #138). Fanout *strategy* is not: KiCadRoutingTools ships a BGA fanout engine with an under-pad method for arrays like this one, and Synth does not invoke it (#137). |
 | DDR or equivalent length-sensitive interface | **No.** No DRAM part exists, and `match_length` is one tolerance per class, so per-byte-group budgets are not expressible. |
 | PCIe / USB 3.x / HDMI-class differential | **Declared and checked, not met.** Four TMDS pairs at 100 Ω with a skew budget, and a length-matched class the routed copper fails — see *Limitations*. |
-| Multi-rail compute, thermal, keepout, DFM | **Partly.** Both rails route as inner-layer planes; thermal and sequencing are not modelled. |
+| Multi-rail compute, thermal, keepout, DFM | **Partly.** Both rails route as inner-layer planes. Thermal and sequencing are not modelled, and keepouts export nothing at all (#142), so the TMDS corridor this board wants cannot be declared — it would need a rule area with a net condition, not a keepout zone. |
 
 ## Reproducibility
 

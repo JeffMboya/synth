@@ -456,10 +456,15 @@ board "ice40_hdmi_video" {
     connect J2.vcc_5v -> C16.p1
     connect J1.gnd    -> C16.p2
 
-    // The pairs leave the BGA and run to the connector. Nothing else may
-    // cross that corridor; a plane cut under a TMDS lane is the classic
-    // way to lose the return path.
-    keepout tmds_corridor { radius 6mm }
+    // The pairs leave the BGA and run to the connector, and nothing else
+    // should cross that corridor: a plane cut under a TMDS lane is the
+    // classic way to lose the return path.
+    //
+    // Not declared, because it cannot be. A `keepout` exports nothing at all
+    // (#142), and even once it does, a KiCad keepout is unconditional — the
+    // corridor has to exclude other nets while these lanes pass through it,
+    // which needs a rule area and a custom DRC rule rather than a keepout
+    // zone. Declaring one here claimed a constraint the board did not have.
 
     notes "Produced from a prompt via the Synth MCP server for #40." {
       "Two language and registry gaps were closed to write this board:"
