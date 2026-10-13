@@ -11,7 +11,8 @@ protection device. Two cases:
 - **ESD** — a connector pin carrying an interface capability
   (`usb_dp`, `usb_dn`, `usb_cc`, `uart_tx`, `uart_rx`), or whose net
   reaches an `rs485_a` / `rs485_b` transceiver pin, with no TVS/ESD
-  array on its net. A user's touch can inject kilovolts. Only the same net
+  array on its net. A user's touch can inject kilovolts. The transceiver's
+  own on-chip ESD rating does not count as that array. Only the same net
   is followed, so a series resistor between transceiver and connector hides
   the bus from this check.
 - **Reverse polarity** — a power connector (USB / DC jack / battery)

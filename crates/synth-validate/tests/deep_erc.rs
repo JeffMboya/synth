@@ -473,12 +473,14 @@ fn esd_check_can_be_disabled() {
 // RS-485 lines: E-SYNTH-ESD-001 and E-SYNTH-RS485-001
 // ---------------------------------------------------------------------------
 
-/// A half-duplex RS-485 transceiver with its bus pins tagged.
+/// A half-duplex RS-485 transceiver with its bus pins tagged. Its
+/// description mentions the on-chip ESD rating, as real transceivers do:
+/// that is not an external TVS and must not silence the warning.
 const RS485_XCVR: &str = r#"id = "rs485_xcvr"
 kind = "ic"
 version = 0
 lifecycle = "active"
-description = "Test RS-485 transceiver"
+description = "Test RS-485 transceiver, 18 kV IEC 61000-4-2 contact ESD"
 
 [[pins]]
 name = "a"

@@ -155,6 +155,11 @@ fn net_has_protection(board: &Board, net: NetId) -> bool {
         return false;
     };
     target.endpoints.iter().any(|ep| {
+        // A transceiver's own on-chip ESD rating, which its description
+        // often names, is not an external protection device.
+        if crate::endpoint_has_any_capability(board, ep.component, ep.pin, &RS485_LINES) {
+            return false;
+        }
         let Some(component) = board.component(ep.component) else {
             return false;
         };
