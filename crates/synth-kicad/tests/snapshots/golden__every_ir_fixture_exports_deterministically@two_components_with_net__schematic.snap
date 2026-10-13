@@ -1,6 +1,5 @@
 ---
 source: crates/synth-kicad/tests/golden.rs
-assertion_line: 60
 expression: schematic
 ---
 (kicad_sch
