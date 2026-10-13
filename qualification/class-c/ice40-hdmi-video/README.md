@@ -107,7 +107,7 @@ balls plus both PLL grounds.
 
 | Class | Track | Clearance | Other | Applies to |
 | --- | --- | --- | --- | --- |
-| TMDS | 0.2 mm | 0.2 mm | `match_length 0.25mm` | the 8 lane nets |
+| TMDS | 0.2 mm | 0.2 mm | `match_length 0.25mm`, via 0.56/0.3 mm | the 8 lane nets |
 | CORE | 0.6 mm | 0.25 mm | `plane` | the 1.2 V net |
 | IO | 0.4 mm | 0.2 mm | `plane` | the 3.3 V net |
 
@@ -139,6 +139,13 @@ balls 0.8 mm apart it sits 0.400 mm from each ball centre and needs 0.582 mm to
 clear the pad copper. Dog-bone escape is therefore impossible on this tier, and
 via-in-pad is the required technique rather than a shortcut.
 
+That 0.56 mm via is now declared rather than assumed. Until `via_diameter`
+existed the exporter wrote 0.6 mm into every net class on every board, so the
+arithmetic above described a via the board was not actually routed with. The
+TMDS class names the tier's smallest legal via, and `E-SYNTH-PROCESS-003`
+checks it against the profile's drill and annular floors instead of trusting
+it.
+
 The board therefore declares `requires via_in_pad` and names a tier that offers
 it. That is not a waiver. The requirement is checked against the process: the
 same board against `manufacturer "jlcpcb"` is `E-SYNTH-PROCESS-002` rather than
@@ -153,7 +160,9 @@ grants it, and KRT encodes the permission as a clearance sentinel, so the copper
 it returns may differ from the run this file last measured.
 
 The routed numbers below are that earlier run, and nothing re-measures them
-yet. The release routability gate covers `sensor_logger`, `env_logger` and
+yet. The declared 0.56 mm via is a second reason they are stale: it is 0.04 mm
+smaller than the 0.6 mm the exporter used to write, which can only help an
+escape on a 0.8 mm grid, but no run here has measured by how much. The release routability gate covers `sensor_logger`, `env_logger` and
 `secure_tracker`, not this board, and the qualification matrix that would is
 not on this branch (#45). Treat every routed figure here as pre-declaration
 until a run against the filled-via tier replaces it.
@@ -211,7 +220,7 @@ bill of materials; this table is the actives and omits 39 generic passives.
 
 | Case | Answer |
 | --- | --- |
-| BGA / fine-pitch escape, via and fanout rules | **Partly.** 121 balls on 0.8 mm. The escape requirement is declared in the board and checked against the process (#136); via and fanout *rules* remain inexpressible (#137). |
+| BGA / fine-pitch escape, via and fanout rules | **Partly.** 121 balls on 0.8 mm. The escape requirement and the escape via are both declared and checked against the process (#136, #138). Fanout *strategy* is not: KiCadRoutingTools ships a BGA fanout engine with an under-pad method for arrays like this one, and Synth does not invoke it (#137). |
 | DDR or equivalent length-sensitive interface | **No.** No DRAM part exists, and `match_length` is one tolerance per class, so per-byte-group budgets are not expressible. |
 | PCIe / USB 3.x / HDMI-class differential | **Declared and checked, not met.** Four TMDS pairs at 100 Ω with a skew budget, and a length-matched class the routed copper fails — see *Limitations*. |
 | Multi-rail compute, thermal, keepout, DFM | **Partly.** Both rails route as inner-layer planes; thermal and sequencing are not modelled. |

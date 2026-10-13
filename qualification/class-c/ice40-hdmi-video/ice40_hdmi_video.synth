@@ -102,6 +102,14 @@ board "ice40_hdmi_video" {
       trace_width 0.2mm
       clearance 0.2mm
       match_length 0.25mm
+      // The smallest via this tier permits: a 0.3 mm drill with the 0.13 mm
+      // annular minimum, 0.56 mm across. That is the via the escape
+      // arithmetic in this board's README reasons about, and until
+      // `via_diameter` existed the exporter wrote 0.6 mm regardless. On a
+      // 0.8 mm ball grid the 0.04 mm matters, and declaring it is what makes
+      // E-SYNTH-PROCESS-003 check it against the tier rather than assume.
+      via_diameter 0.56mm
+      via_drill 0.3mm
     }
 
     // `plane` floods a zone for the class's nets on the inner layers, which
