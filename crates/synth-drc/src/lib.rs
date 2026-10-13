@@ -367,7 +367,7 @@ mod tests {
         // same technique as `geometry::flags_trace_running_
         // through_a_component_courtyard` — independent of
         // whatever quality the router happens to produce.
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = synth_place::place(&board).expect("place");
         let mut routing = synth_route::route(&board, &placement);
 
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn report_is_deterministic() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = synth_place::place(&board).expect("place");
         let routing = synth_route::route(&board, &placement);
         let profile = ManufacturerProfile::jlc_standard();
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn a_board_without_a_stackup_substitutes_a_standard_profile() {
-        let board = load_board("../../examples/env_logger.synth");
+        let board = load_board("../../examples/env_logger/env_logger.synth");
         assert!(
             StackupProfile::declared(&board).is_none(),
             "env_logger must not declare a stackup for this test to be meaningful"
@@ -490,7 +490,8 @@ mod tests {
     }
 
     fn board_with_controlled_pair() -> Board {
-        let mut board = load_board("../../examples/placement_and_diff_pair.synth");
+        let mut board =
+            load_board("../../examples/placement_and_diff_pair/placement_and_diff_pair.synth");
         board.stackup = Some(four_layer_stackup());
         board
     }
@@ -610,7 +611,7 @@ mod tests {
 
     #[test]
     fn an_undersized_trace_on_a_declared_current_blocks() {
-        let mut board = load_board("../../examples/env_logger.synth");
+        let mut board = load_board("../../examples/env_logger/env_logger.synth");
         board.nets[0].netclass = Some("PWR".to_string());
         board.netclasses.push(synth_ir::NetClass {
             name: "PWR".to_string(),
@@ -796,7 +797,7 @@ mod tests {
 
     #[test]
     fn env_logger_drc() {
-        let board = load_board("../../examples/env_logger.synth");
+        let board = load_board("../../examples/env_logger/env_logger.synth");
         let placement = synth_place::place(&board).expect("place");
         let routing = synth_route::route(&board, &placement);
         let profile = ManufacturerProfile::jlc_standard();
@@ -813,7 +814,7 @@ mod tests {
 
     #[test]
     fn a_signal_via_needs_a_nearby_ground_return_via() {
-        let mut board = load_board("../../examples/env_logger.synth");
+        let mut board = load_board("../../examples/env_logger/env_logger.synth");
         board.stackup = Some(four_layer_stackup());
         let stackup = StackupProfile::for_board(&board);
         let ground = board
@@ -858,7 +859,7 @@ mod tests {
 
     #[test]
     fn a_rail_dropping_more_than_the_budget_is_warned() {
-        let mut board = load_board("../../examples/env_logger.synth");
+        let mut board = load_board("../../examples/env_logger/env_logger.synth");
         board.stackup = Some(four_layer_stackup());
         board.nets[0].netclass = Some("PWR".to_string());
         board.netclasses.push(synth_ir::NetClass {
@@ -928,7 +929,7 @@ mod tests {
 
     #[test]
     fn a_net_longer_than_its_class_allows_is_flagged() {
-        let mut board = load_board("../../examples/env_logger.synth");
+        let mut board = load_board("../../examples/env_logger/env_logger.synth");
         board.nets[0].netclass = Some("LEN".to_string());
         board.netclasses.push(synth_ir::NetClass {
             name: "LEN".to_string(),
@@ -974,7 +975,7 @@ mod tests {
 
     #[test]
     fn a_matched_bus_with_too_much_skew_is_flagged() {
-        let mut board = load_board("../../examples/env_logger.synth");
+        let mut board = load_board("../../examples/env_logger/env_logger.synth");
         board.netclasses.push(bus_class("BUS"));
         board.nets[0].netclass = Some("BUS".to_string());
         board.nets[1].netclass = Some("BUS".to_string());
@@ -1000,7 +1001,7 @@ mod tests {
 
     #[test]
     fn too_much_current_per_via_is_flagged() {
-        let mut board = load_board("../../examples/env_logger.synth");
+        let mut board = load_board("../../examples/env_logger/env_logger.synth");
         board.nets[0].netclass = Some("PWR".to_string());
         board.netclasses.push(synth_ir::NetClass {
             name: "PWR".to_string(),

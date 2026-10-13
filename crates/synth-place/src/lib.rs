@@ -4521,7 +4521,7 @@ mod tests {
         // The estimate is built from net bounding boxes, so moving the whole
         // board cannot change it. If it did, the exporter would pick between
         // placements on absolute position rather than on routing.
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let mut shifted = placement.clone();
         for component in &mut shifted.components {
@@ -4538,7 +4538,7 @@ mod tests {
 
     #[test]
     fn pulling_one_part_away_from_its_nets_scores_worse() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let baseline = routability(&board, &placement);
 
@@ -4560,7 +4560,7 @@ mod tests {
 
     #[test]
     fn placement_is_deterministic_across_100_runs() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let reference = place(&board).expect("place");
         for run in 1..=100 {
             let current = place(&board).expect("place");
@@ -4573,7 +4573,7 @@ mod tests {
 
     #[test]
     fn every_component_is_placed_exactly_once() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         assert_eq!(
             placement.components.len(),
@@ -4584,7 +4584,7 @@ mod tests {
 
     #[test]
     fn no_two_courtyards_overlap() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let rects = authoritative_courtyards(&board, &placement);
         for i in 0..rects.len() {
@@ -4613,7 +4613,7 @@ mod tests {
         // that would break it.
         use synth_layout::pcb_courtyard_for_part;
 
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
 
         // Reconstruct the pre-refinement placement: run the
         // greedy first-fit and grab the HPWL before refinement
@@ -4692,7 +4692,7 @@ mod tests {
         // (slice 1A's algorithm — components placed in
         // IR order on a fixed grid). The cluster-weighted
         // refinement must improve the sum-of-L1.
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let refined = place(&board).expect("place");
         let cluster_pairs = build_cluster_pairs(&board);
         if cluster_pairs.is_empty() {
@@ -4744,7 +4744,7 @@ mod tests {
 
     #[test]
     fn all_placements_lie_inside_board_outline() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let courtyards = authoritative_courtyards(&board, &placement);
         for (p, courtyard) in placement.components.iter().zip(&courtyards) {
@@ -4777,7 +4777,7 @@ mod tests {
 
     #[test]
     fn hard_region_hint_lands_in_correct_quadrant() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let hints = vec![ExternalHint {
             component: Some("U1".into()),
             region: Some("top_left".into()),
@@ -4822,7 +4822,7 @@ mod tests {
     /// the current cost model cannot resolve.
     #[test]
     fn hpwl_is_insensitive_to_passive_rotation() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let pad_offsets = build_pad_offset_lookup(&board);
         let baseline = hpwl_total(&board, &placement.components, &pad_offsets);
@@ -4884,7 +4884,7 @@ mod tests {
 
     #[test]
     fn describe_placement_returns_cluster_summary() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let desc = describe_placement(&board, &placement);
         assert!(!desc.cluster_summary.is_empty());
@@ -4901,7 +4901,7 @@ mod tests {
     /// claim a clean board.
     #[test]
     fn visual_review_does_not_assert_unevaluated_drc_or_routing() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let desc = describe_placement(&board, &placement);
         assert_eq!(
@@ -4918,7 +4918,7 @@ mod tests {
     /// the placer regressed or the gate thresholds drifted.
     #[test]
     fn visual_review_passes_for_a_placed_example() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let desc = describe_placement(&board, &placement);
         assert!(
@@ -4933,7 +4933,7 @@ mod tests {
     /// Score must be `100 - 20 * findings`, saturating at zero.
     #[test]
     fn visual_review_score_tracks_finding_count() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
 
         // Push one component clear of the right-hand edge, adding exactly one
@@ -4968,7 +4968,7 @@ mod tests {
     /// Two components sharing a spot must be reported with a separating move.
     #[test]
     fn visual_review_reports_overlapping_courtyards_with_a_separation() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
 
         // Collapse the second component onto the first.
@@ -5002,7 +5002,7 @@ mod tests {
     /// human-readable rationale, otherwise it is not actionable.
     #[test]
     fn visual_review_recommendations_are_actionable() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let mut broken = placement.clone();
         broken.components[0].center.x_nm = broken.board_outline.max.x_nm + mm_to_nm(20.0);
@@ -5132,7 +5132,7 @@ mod tests {
         // requested coordinate in place — which put two courtyards on top of
         // each other and exported an illegal board. Whoever is in the way has
         // to move.
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
         let victim = placement
             .components
@@ -5206,7 +5206,7 @@ mod tests {
         // read back from the live placement it would return wherever it was
         // parked — the outline corner — and the part would be exported at
         // (0, 0) instead of where the sidecar asked.
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let auto = place(&board).expect("place");
         let square = |refdes: &str| {
             auto.component_by_refdes(&board, refdes)
@@ -5275,7 +5275,7 @@ mod tests {
 
     #[test]
     fn sidecar_overrides_are_applied_by_tuned_placement() {
-        let board = load_board("../../examples/sensor_logger.synth");
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
 
         // Without a sidecar the tuned entry point matches plain place.
         let plain = place(&board).expect("place");
@@ -5503,7 +5503,13 @@ mod tests {
         for edge in EDGES {
             cases.push((FEATHER, &[], "J2", edge, false));
             cases.push((FEATHER, &[], "J2", edge, true));
-            cases.push(("../../examples/env_logger.synth", &[], "J2", edge, true));
+            cases.push((
+                "../../examples/env_logger/env_logger.synth",
+                &[],
+                "J2",
+                edge,
+                true,
+            ));
         }
         cases.push((
             "../../fixtures/designs/iot_sensor_board.synth",
@@ -5555,7 +5561,7 @@ mod tests {
                 Rotation::OneEighty,
                 Rotation::TwoSeventy,
             ] {
-                let board = load_board("../../examples/env_logger.synth");
+                let board = load_board("../../examples/env_logger/env_logger.synth");
                 let board = with_wide_pad_footprint(board, "J2");
                 let board = with_hint(&board, "J2", edge, "hard");
                 let j2 = board
