@@ -1331,6 +1331,10 @@ fn route_design_externally_with(
             .unwrap_or_else(|| "jlc-standard".to_string()),
     );
     request.use_board_length_groups(&board);
+    // Discarded deliberately: an unmet requirement has already failed ERC
+    // with E-SYNTH-PROCESS-002, which these tools return, and the gate still
+    // refuses the copper. What this call is here for is the granting.
+    let _ = request.use_board_process_requirements(&board);
     request.input_hash = sha256_of(&res.pcb_path);
     request.preserve_baseline().map_err(|f| f.to_string())?;
 
@@ -2570,6 +2574,9 @@ fn select_placement_by_route(
                 .clone()
                 .unwrap_or_else(|| "jlc-standard".to_string()),
         );
+        // See the note at the other call sites: this is here to grant, and an
+        // unmet requirement is already an ERC error.
+        let _ = request.use_board_process_requirements(board);
         request.input_hash = sha256_of(&res.pcb_path);
         request.preserve_baseline().map_err(|f| f.to_string())?;
         let report = synth_router::route(&request);
@@ -2666,6 +2673,10 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
             .unwrap_or_else(|| "jlc-standard".to_string()),
     );
     request.use_board_length_groups(&board);
+    // Discarded deliberately: an unmet requirement has already failed ERC
+    // with E-SYNTH-PROCESS-002, which these tools return, and the gate still
+    // refuses the copper. What this call is here for is the granting.
+    let _ = request.use_board_process_requirements(&board);
     request.input_hash = sha256_of(&res.pcb_path);
     request.preserve_baseline().map_err(|f| f.to_string())?;
     let routing = synth_router::route(&request);
