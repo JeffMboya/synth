@@ -219,6 +219,14 @@ board "ice40_hdmi_video" {
     group "iCE40 HX4K BGA" color "#047857" {
       component U1: fpga "ice40hx4k_bg121" value "ICE40HX4K-BG121" {
         placement_hint { region: centre priority: hard }
+
+        // 121 balls on 0.8 mm. A fab-floor via sits 0.400 mm from each ball
+        // centre and needs 0.582 mm to clear the pad copper, so there is no
+        // dog-bone to route and no channel to route it in: the escape has to
+        // go down through the pads. Declared rather than inferred, because
+        // the geometric default picks this package for the right reason by
+        // luck — nothing in a 0.8 mm pitch says the channels are unusable.
+        escape { method underpad }
       }
       component C7:  capacitor "c_generic_0603" value "100nF"
       component C8:  capacitor "c_generic_0603" value "100nF"
