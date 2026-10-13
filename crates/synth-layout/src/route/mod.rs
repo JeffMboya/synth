@@ -2072,6 +2072,7 @@ mod cleanup_tests {
             buses: vec![],
             modules: vec![],
             variants: vec![],
+            required_processes: std::collections::BTreeSet::new(),
             source_span: synth_diagnostics::Span::new(0, 0),
         }
     }
@@ -2595,6 +2596,7 @@ mod channel_router_tests {
             buses: vec![],
             modules: vec![],
             variants: vec![],
+            required_processes: std::collections::BTreeSet::new(),
             source_span: synth_diagnostics::Span::new(0, 0),
         };
         let layout = Layout {
@@ -2789,6 +2791,7 @@ mod drc_tests {
             buses: vec![],
             modules: vec![],
             variants: vec![],
+            required_processes: std::collections::BTreeSet::new(),
             source_span: synth_diagnostics::Span::new(0, 0),
         };
         let placements: HashMap<ComponentId, ComponentPlacement> = [
@@ -2978,6 +2981,7 @@ mod net_termination_tests {
             buses: vec![],
             modules: vec![],
             variants: vec![],
+            required_processes: std::collections::BTreeSet::new(),
             source_span: synth_diagnostics::Span::new(0, 0),
         }
     }

@@ -1073,6 +1073,7 @@ mod tests {
             buses: vec![],
             modules: vec![],
             variants: vec![],
+            required_processes: std::collections::BTreeSet::new(),
             source_span: synth_diagnostics::Span::new(0, 100),
         }
     }
