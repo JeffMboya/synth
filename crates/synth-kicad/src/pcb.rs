@@ -45,6 +45,7 @@ use synth_place::{ComponentPlacement, Placement};
 use uuid::Uuid;
 
 use crate::sexp::{num, pair, str_pair, Sexp};
+use crate::silk_labels;
 use crate::uuid_v5::derive_entity_uuid;
 
 /// Board thickness in millimetres. JLC standard 1.6 mm.
@@ -130,6 +131,10 @@ pub fn build_pcb(
     // being dropped. The router stamps the *same* synthesized pad
     // geometry (`kicad_footprint_loader::synth_part_pads`), so traces
     // planned against the part actually terminate on real copper.
+    let labels = silk_labels::place_labels(
+        &label_parts(board, &placements_by_id),
+        placement.board_outline,
+    );
     for component in &board.components {
         let Some(part) = component.part.as_ref() else {
             continue;
@@ -146,6 +151,7 @@ pub fn build_pcb(
             lib_id,
             project,
             &pad_net_lookup,
+            labels[&component.id],
         ));
     }
 
@@ -1406,6 +1412,58 @@ fn build_edge_cuts(placement: &Placement, project: &Uuid) -> Vec<Sexp> {
         .collect()
 }
 
+/// Half of a part's unrotated footprint width and height, in millimetres.
+/// Falls back to a size by pin count when the part has no dimensions.
+fn footprint_half_extent_mm(part: &synth_registry::Part) -> (f64, f64) {
+    let (w, h) = part.footprint_dimensions.as_ref().map_or_else(
+        || {
+            if part.pins.len() <= 2 {
+                (2.0, 2.0)
+            } else if part.pins.len() <= 8 {
+                (3.0, 3.0)
+            } else {
+                (7.62, 36.0)
+            }
+        },
+        |dims| (dims.width_mm, dims.height_mm),
+    );
+    (w / 2.0, h / 2.0)
+}
+
+/// Everything the label placer needs about each placed part.
+fn label_parts(
+    board: &Board,
+    placements_by_id: &HashMap<ComponentId, &ComponentPlacement>,
+) -> Vec<silk_labels::LabelPart> {
+    board
+        .components
+        .iter()
+        .filter_map(|component| {
+            let part = component.part.as_ref()?;
+            let placement = placements_by_id.get(&component.id)?;
+            let (_, (court_w, court_h)) = synth_layout::pcb_courtyard_geometry_for_part(part);
+            let (w, h) = if placement.rotation.swaps_extents() {
+                (court_h, court_w)
+            } else {
+                (court_w, court_h)
+            };
+            let (half_w, half_h) = (mm_to_nm(w) / 2, mm_to_nm(h) / 2);
+            let c = placement.center;
+            Some(silk_labels::LabelPart {
+                id: component.id,
+                refdes: component.refdes.clone(),
+                origin: synth_place::footprint_origin(Some(part), placement),
+                rotation: placement.rotation,
+                courtyard: synth_geometry::Rect::new(
+                    synth_geometry::Point::new(c.x_nm - half_w, c.y_nm - half_h),
+                    synth_geometry::Point::new(c.x_nm + half_w, c.y_nm + half_h),
+                ),
+                half_extent_mm: footprint_half_extent_mm(part),
+            })
+        })
+        .collect()
+}
+
 fn build_footprint_instance(
     component: &synth_ir::Component,
     part: &synth_registry::Part,
@@ -1413,6 +1471,7 @@ fn build_footprint_instance(
     lib_id: &str,
     project: &Uuid,
     pad_net_lookup: &PadNetLookup,
+    ref_label: silk_labels::LabelPos,
 ) -> Sexp {
     // Route the origin through the same helper the external placement
     // contract uses (`synth_place::to_external`), so the exported `(at x y)`
@@ -1437,31 +1496,16 @@ fn build_footprint_instance(
         at_args.push(num(angle));
     }
 
-    let (unrot_w, unrot_h) = part.footprint_dimensions.as_ref().map_or_else(
-        || {
-            if part.pins.len() <= 2 {
-                (2.0, 2.0)
-            } else if part.pins.len() <= 8 {
-                (3.0, 3.0)
-            } else {
-                (7.62, 36.0)
-            }
-        },
-        |dims| (dims.width_mm, dims.height_mm),
-    );
+    let (half_w, half_h) = footprint_half_extent_mm(part);
+    let text_margin = silk_labels::DEFAULT_MARGIN_MM;
 
-    let half_w = unrot_w / 2.0;
-    let half_h = unrot_h / 2.0;
-
-    // Dynamic silkscreen text legalizer: compute text offset margin to clear pads and courtyards
-    let text_margin = 3.5;
-
-    let (ref_local_x, ref_local_y, ref_text_angle) = match placement.rotation {
-        Rotation::Zero => (0.0, -(half_h + text_margin), 0.0),
-        Rotation::Ninety => (-(half_w + text_margin), 0.0, -90.0),
-        Rotation::OneEighty => (0.0, half_h + text_margin, 180.0),
-        Rotation::TwoSeventy => (half_w + text_margin, 0.0, 90.0),
-    };
+    // The reference label's position comes from the label placer; the hidden
+    // value text keeps its fixed offset.
+    let silk_labels::LabelPos {
+        local_x_mm: ref_local_x,
+        local_y_mm: ref_local_y,
+        angle_deg: ref_text_angle,
+    } = ref_label;
 
     let (val_local_x, val_local_y, val_text_angle) = match placement.rotation {
         Rotation::Zero => (0.0, half_h + text_margin, 0.0),
@@ -2299,6 +2343,11 @@ mod tests {
             lib_id,
             &project,
             &pad_net_lookup,
+            silk_labels::LabelPos {
+                local_x_mm: 0.0,
+                local_y_mm: -4.5,
+                angle_deg: 0.0,
+            },
         );
         let instance_text = instance.to_string_pretty();
 
