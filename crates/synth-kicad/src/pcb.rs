@@ -59,8 +59,26 @@ const EDGE_CUT_WIDTH_MM: f64 = 0.1;
 /// `project` namespaces deterministic uuids the same way the
 /// schematic exporter does — re-running on identical IR + identical
 /// placement produces byte-identical output.
-#[must_use]
-pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, project: &Uuid) -> Sexp {
+/// A declared power plane could not be fanned out without a via-in-pad.
+///
+/// The plane is opt-in and its stitching vias are placed beside the pad on
+/// purpose, so the board never depends on a filled/capped via-in-pad process.
+/// When no side location is legal, export stops with this instead of quietly
+/// emitting a via-in-pad the board was not designed around.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaneFanoutError {
+    /// The plane net whose pad could not be fanned out.
+    pub net: String,
+    /// A human-readable explanation, including the pad position.
+    pub detail: String,
+}
+
+pub fn build_pcb(
+    board: &Board,
+    placement: &Placement,
+    routing: &Routing,
+    project: &Uuid,
+) -> Result<Sexp, PlaneFanoutError> {
     let placements_by_id: HashMap<ComponentId, &ComponentPlacement> =
         placement.components.iter().map(|p| (p.id, p)).collect();
 
@@ -253,11 +271,23 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
     // Declared planes (`netclass "PWR" { plane }`): flood a zone for each
     // member net on the dedicated power layers, so a rail gets a low-impedance
     // path of its own. The plane sits on the inner layers, away from ground, so
-    // each of the net's own pads gets a stitching via: without one the plane
-    // exists but connects nothing, because the pads are on the outer copper and
-    // the plane is not. Opt-in: no plane is emitted for a class that does not
-    // ask, and none at all on a board with no inner layer to put it on.
+    // each of the net's own pads gets a stitching via reached by a short
+    // fanout stub: without one the plane exists but connects nothing, because
+    // the pads are on the outer copper and the plane is not. The via is placed
+    // beside the pad, not in it, so the board does not silently depend on
+    // via-in-pad. Opt-in: no plane is emitted for a class that does not ask,
+    // and none at all on a board with no inner layer to put it on.
+    // Every pad on the board, so a generated stitching via can be kept clear of
+    // one: a via dropped on another net's pad is a short. Computed once, and
+    // only when a plane is actually going to be emitted.
+    let mut obstacles: Vec<(synth_geometry::Point, i64)> =
+        if board.netclasses.iter().any(|class| class.plane) && !power_layers.is_empty() {
+            all_pad_obstacles(board, placement)
+        } else {
+            Vec::new()
+        };
     let mut plane_via_index = 0usize;
+    let mut plane_stub_index = 0usize;
     for class in &board.netclasses {
         if !class.plane || power_layers.is_empty() {
             continue;
@@ -282,20 +312,49 @@ pub fn build_pcb(board: &Board, placement: &Placement, routing: &Routing, projec
                     POWER_ZONE_PRIORITY,
                 ));
             }
-            for point in plane_pad_centres(board, placement, net) {
+            for (pad, origin, layer) in plane_pad_targets(board, placement, net) {
+                let Some(via) = plane_via_offset(pad, origin, placement.board_outline, &obstacles)
+                else {
+                    return Err(PlaneFanoutError {
+                        net: net.name.clone(),
+                        detail: format!(
+                            "no legal stitching-via position beside the pad at ({:.2}, {:.2}) mm \
+                             on {layer:?}: every candidate is outside the board or within \
+                             clearance of another pad or via. Move the part, widen the board, or \
+                             allow via-in-pad explicitly.",
+                            nm_to_mm(pad.x_nm),
+                            nm_to_mm(pad.y_nm),
+                        ),
+                    });
+                };
+                obstacles.push((via, PLANE_VIA_RADIUS_NM));
                 children.push(build_plane_via(
-                    point.x_nm,
-                    point.y_nm,
+                    via.x_nm,
+                    via.y_nm,
                     pcb_net,
                     project,
                     plane_via_index,
                 ));
                 plane_via_index += 1;
+                children.push(build_segment(
+                    &Segment {
+                        net: net.id,
+                        layer,
+                        start: pad,
+                        end: via,
+                        width_nm: PLANE_STUB_WIDTH_NM,
+                    },
+                    plane_stub_index,
+                    &net_id_lookup,
+                    project,
+                    board.layers,
+                ));
+                plane_stub_index += 1;
             }
         }
     }
 
-    Sexp::list("kicad_pcb", children)
+    Ok(Sexp::list("kicad_pcb", children))
 }
 
 fn ground_plane_layers(layer_count: u32) -> Vec<&'static str> {
@@ -341,20 +400,20 @@ fn build_via(
     )
 }
 
-/// Emit a through via that electrically joins the generated ground planes.
-/// Board-space centres of the pads `net` connects, one per pad.
+/// Board-space targets for a declared power plane: one
+/// `(pad centre, footprint origin, pad layer)` per pad the net connects.
 ///
-/// A declared power plane is on the inner layers while its pads are on the
-/// outer copper, so each pad needs a via through the plane. This resolves a
-/// pad's board position the same way the exporter places the footprint: the
-/// pad's local offset, rotated by the placement and translated by the
-/// footprint origin.
+/// The plane is on the inner layers while its pads are on the outer copper, so
+/// each pad needs a via through the plane, reached by a short stub. This
+/// resolves a pad's board position the same way the exporter places the
+/// footprint: the pad's local offset, rotated by the placement and translated
+/// by the footprint origin.
 #[allow(clippy::similar_names)] // dx_nm/dy_nm are the natural names for an axis pair
-fn plane_pad_centres(
+fn plane_pad_targets(
     board: &Board,
     placement: &Placement,
     net: &synth_ir::Net,
-) -> Vec<synth_geometry::Point> {
+) -> Vec<(synth_geometry::Point, synth_geometry::Point, Layer)> {
     let mut out = Vec::new();
     for endpoint in &net.endpoints {
         let Some(component) = board.component(endpoint.component) else {
@@ -384,19 +443,165 @@ fn plane_pad_centres(
             let (dx_nm, dy_nm) = placed
                 .rotation
                 .rotate_offset(mm_to_nm(pad.center_mm.0), mm_to_nm(pad.center_mm.1));
-            out.push(synth_geometry::Point::new(
-                origin.x_nm + dx_nm,
-                origin.y_nm + dy_nm,
+            let center = synth_geometry::Point::new(origin.x_nm + dx_nm, origin.y_nm + dy_nm);
+            out.push((center, origin, placed.layer));
+        }
+    }
+    out
+}
+
+/// Stitching-via pad radius in nanometres (a 0.6 mm via).
+const PLANE_VIA_RADIUS_NM: i64 = 300_000;
+
+/// Fabrication copper clearance, in nanometres, used to keep a generated via
+/// legal against the nearest pad or other via.
+const PLANE_VIA_FAB_CLEARANCE_NM: i64 = 200_000;
+
+/// Keep a plane stitching via at least this far inside Edge.Cuts, in
+/// nanometres (via radius plus the fabrication edge clearance).
+const PLANE_EDGE_MARGIN_NM: i64 = 1_000_000;
+
+/// Every copper pad on the board as `(centre, circumscribed radius)`, in board
+/// space. Used to keep a generated plane stitching via off a neighbouring pad:
+/// a via dropped onto another net's pad is a short, and the exporter has to
+/// avoid it rather than rely on the router's DRC to catch it later.
+#[allow(clippy::similar_names)] // dx_nm/dy_nm are the natural names for an axis pair
+fn all_pad_obstacles(board: &Board, placement: &Placement) -> Vec<(synth_geometry::Point, i64)> {
+    let mut out = Vec::new();
+    for component in &board.components {
+        let Some(part) = component.part.as_ref() else {
+            continue;
+        };
+        let Some(placed) = placement
+            .components
+            .iter()
+            .find(|placed| placed.id == component.id)
+        else {
+            continue;
+        };
+        let Some(pads) = synth_layout::kicad_footprint_loader::synth_part_pads(part) else {
+            continue;
+        };
+        let origin = synth_place::footprint_origin(Some(part), placed);
+        for pad in pads.iter().filter(|pad| !pad.is_npth) {
+            let (dx_nm, dy_nm) = placed
+                .rotation
+                .rotate_offset(mm_to_nm(pad.center_mm.0), mm_to_nm(pad.center_mm.1));
+            let (w_mm, h_mm) = pad.size_mm;
+            let radius_nm = mm_to_nm(((w_mm / 2.0).powi(2) + (h_mm / 2.0).powi(2)).sqrt());
+            out.push((
+                synth_geometry::Point::new(origin.x_nm + dx_nm, origin.y_nm + dy_nm),
+                radius_nm,
             ));
         }
     }
     out
 }
 
-/// A through via at a power pad, joining the outer pad to the inner power
-/// plane. The drill sits in the pad (via-in-pad), so the connection is direct
-/// and deterministic; a declared power plane is opt-in, and a process that
-/// cannot fill and cap via-in-pad should not declare one.
+/// Squared distance from the segment `a`–`b` to the point `p`, in nanometres
+/// squared.
+///
+/// Used to test a whole fanout stub against an obstacle, not only its endpoint:
+/// the minimum distance from the segment to the obstacle centre is what a
+/// clearance check needs.
+fn segment_clearance_nm_sq(
+    a: synth_geometry::Point,
+    b: synth_geometry::Point,
+    p: synth_geometry::Point,
+) -> i64 {
+    let abx = b.x_nm - a.x_nm;
+    let aby = b.y_nm - a.y_nm;
+    let apx = p.x_nm - a.x_nm;
+    let apy = p.y_nm - a.y_nm;
+    let denom = abx * abx + aby * aby;
+    let (cx, cy) = if denom == 0 {
+        (a.x_nm, a.y_nm)
+    } else {
+        // Integer projection: t is clamped to [0, denom], so the closest point
+        // stays on the segment. i128 avoids the i64 overflow of t * ab.
+        let t = (apx * abx + apy * aby).clamp(0, denom);
+        let tx = (i128::from(t) * i128::from(abx)) / i128::from(denom);
+        let ty = (i128::from(t) * i128::from(aby)) / i128::from(denom);
+        (
+            a.x_nm + i64::try_from(tx).unwrap_or(0),
+            a.y_nm + i64::try_from(ty).unwrap_or(0),
+        )
+    };
+    let dx = p.x_nm - cx;
+    let dy = p.y_nm - cy;
+    dx * dx + dy * dy
+}
+
+/// Where a power pad's stitching via goes.
+///
+/// The preferred spot is [`PLANE_VIA_OFFSET_NM`] from the pad, away from the
+/// footprint origin along the dominant axis so the direction is stable, and the
+/// via sits beside the pad rather than in it so the board does not depend on
+/// via-in-pad. That preference is only a first choice: 1 mm along one axis can
+/// land outside Edge.Cuts or on a neighbouring pad, so candidate positions are
+/// tried (four axes, three distances) and the first that stays inside the board
+/// and clear of every pad and already-placed via is used. `None` when no side
+/// location is legal — a pad boxed in on every side — so the caller can stop
+/// rather than silently fall back to via-in-pad.
+fn plane_via_offset(
+    pad: synth_geometry::Point,
+    origin: synth_geometry::Point,
+    outline: synth_geometry::Rect,
+    obstacles: &[(synth_geometry::Point, i64)],
+) -> Option<synth_geometry::Point> {
+    let inset = PLANE_EDGE_MARGIN_NM;
+    let usable = synth_geometry::Rect::new(
+        synth_geometry::Point::new(outline.min.x_nm + inset, outline.min.y_nm + inset),
+        synth_geometry::Point::new(outline.max.x_nm - inset, outline.max.y_nm - inset),
+    );
+
+    let dx = pad.x_nm - origin.x_nm;
+    let dy = pad.y_nm - origin.y_nm;
+    let sx = if dx >= 0 { 1 } else { -1 };
+    let sy = if dy >= 0 { 1 } else { -1 };
+    let axes: [(i64, i64); 4] = if dx.abs() >= dy.abs() {
+        [(sx, 0), (0, sy), (0, -sy), (-sx, 0)]
+    } else {
+        [(0, sy), (sx, 0), (-sx, 0), (0, -sy)]
+    };
+    let distances = [
+        PLANE_VIA_OFFSET_NM,
+        PLANE_VIA_OFFSET_NM * 3 / 4,
+        PLANE_VIA_OFFSET_NM / 2,
+    ];
+    // The whole fanout stub is checked, not only the via endpoint: a stub from
+    // the pad to a nearby candidate can cut across another pad even when the via
+    // itself is clear. The stub body is held to its own half-width, the via at
+    // its end to the via radius.
+    let stub_half_nm = PLANE_STUB_WIDTH_NM / 2;
+    let clear_of_obstacles = |candidate: synth_geometry::Point| -> bool {
+        obstacles
+            .iter()
+            .filter(|(centre, _)| *centre != pad)
+            .all(|(centre, radius_nm)| {
+                let seg_need = stub_half_nm + PLANE_VIA_FAB_CLEARANCE_NM + radius_nm;
+                let via_need = PLANE_VIA_RADIUS_NM + PLANE_VIA_FAB_CLEARANCE_NM + radius_nm;
+                let vdx = candidate.x_nm - centre.x_nm;
+                let vdy = candidate.y_nm - centre.y_nm;
+                segment_clearance_nm_sq(pad, candidate, *centre) >= seg_need * seg_need
+                    && vdx * vdx + vdy * vdy >= via_need * via_need
+            })
+    };
+    for distance in distances {
+        for (ux, uy) in axes {
+            let candidate =
+                synth_geometry::Point::new(pad.x_nm + ux * distance, pad.y_nm + uy * distance);
+            if usable.contains(candidate) && clear_of_obstacles(candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    // Boxed in on every side: report it rather than quietly place a via-in-pad.
+    None
+}
+
+/// A through via beside a power pad, joining the outer pad (through the fanout
+/// stub) to the inner power plane.
 fn build_plane_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usize) -> Sexp {
     let via_uuid = derive_entity_uuid(project, "plane-via", &idx.to_string());
     Sexp::list(
@@ -437,6 +642,12 @@ const GROUND_ZONE_PRIORITY: u8 = 1;
 
 /// Priority of a declared power plane (`netclass "PWR" { plane }`).
 const POWER_ZONE_PRIORITY: u8 = 0;
+
+/// Distance from a power pad to its stitching via, in nanometres.
+const PLANE_VIA_OFFSET_NM: i64 = 1_000_000; // 1 mm
+
+/// Width of the pad-to-via fanout stub, in nanometres.
+const PLANE_STUB_WIDTH_NM: i64 = 250_000; // 0.25 mm
 
 /// Emit a `(zone ...)` S-expression for a full-board copper flood on one layer.
 ///
@@ -1879,6 +2090,26 @@ mod tests {
     use synth_geometry::Point;
     use synth_registry::{ElectricalType, Lifecycle, Pin, PinNumber};
 
+    /// A fanout stub that crosses another pad is rejected even when the via
+    /// endpoint itself is clear: the whole segment is checked, not only its end.
+    #[test]
+    fn plane_via_rejects_a_stub_that_crosses_another_pad() {
+        let pad = Point::new(0, 0);
+        let origin = Point::new(0, 0);
+        let outline = synth_geometry::Rect::new(
+            Point::new(-10_000_000, -10_000_000),
+            Point::new(10_000_000, 10_000_000),
+        );
+        // A small pad 0.4 mm along +x. The +x via endpoint at 1 mm is clear of
+        // it on its own, but the stub from the pad to that endpoint runs
+        // straight through it.
+        let blocker = (Point::new(400_000, 0), 50_000);
+        let obstacles = vec![(pad, 50_000), blocker];
+        let via = plane_via_offset(pad, origin, outline, &obstacles)
+            .expect("an off-axis candidate is legal");
+        assert_eq!(via, Point::new(0, PLANE_VIA_OFFSET_NM));
+    }
+
     fn no_footprint_part() -> synth_registry::Part {
         synth_registry::Part {
             id: synth_registry::PartId("nofp".into()),
@@ -2336,7 +2567,7 @@ mod tests {
             pad_escape_rejections: 0,
         };
         let project = Uuid::nil();
-        let pcb_sexp = build_pcb(&board, &placement, &routing, &project);
+        let pcb_sexp = build_pcb(&board, &placement, &routing, &project).expect("plane fanout");
         let pcb_str = pcb_sexp.to_string_pretty();
 
         let tmp_path =
