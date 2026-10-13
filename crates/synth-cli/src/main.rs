@@ -1202,14 +1202,13 @@ const UNSUPPORTED: &[CapabilityLimit] = &[
         "Enable ordering, power-good signals and sequencing timing are neither declared nor checked.",
     ),
     (
-        "escape_fanout_strategy",
+        "declared_escape_strategy",
         None,
-        "Via geometry is declarable per netclass, but escape strategy is not: nothing expresses \
-         which layer a fine-pitch ball fans out to, or in what pattern. The gap is Synth's, not \
-         the router's — KiCadRoutingTools ships a BGA fanout engine (`py_router/bga_fanout`, \
-         including an under-pad method for arrays its channel router cannot escape) and Synth \
-         never invokes it. `synth_router::escape` reports whether a package can be fanned out at \
-         the process floor, and nothing acts on what it reports.",
+        "Dense grid arrays are escaped before routing, by KiCadRoutingTools' under-pad engine, \
+         with the escape via sized from the declared process. What cannot be *declared* is which \
+         package escapes how: the selection is geometric (three pad rows and three columns make \
+         a lattice) and the method is fixed, so a design cannot name a layer to fan out to, a \
+         pattern to use, or a package to leave alone.",
     ),
 ];
 
@@ -1347,7 +1346,8 @@ fn capability_descriptor() -> serde_json::Value {
                 },
                 "profiles_offering_via_in_pad": ["jlc-filled-via"],
                 "gate": "E-SYNTH-PROCESS-002: a requirement the declared tier does not offer is an error, so a requirement is never a permission on its own",
-                "via_geometry": "netclass via_diameter / via_drill reach the exported net class; E-SYNTH-PROCESS-003 checks both against the profile's drill and annular-ring floors. Escape strategy — which layer a ball fans out to, and in what pattern — is not declarable; see the unsupported entry",
+                "via_geometry": "netclass via_diameter / via_drill reach the exported project file's net class, which is what KiCad and the router read; E-SYNTH-PROCESS-003 checks both against the profile's drill and annular-ring floors",
+                "escape": "dense grid arrays (three pad rows and three columns, at or below 1.3 mm pitch) are escaped before routing by KiCadRoutingTools' under-pad engine, with the escape via sized from the declared process floor and the fabrication tier pinned to it. Which package escapes how is not declarable; see the declared_escape_strategy limit",
                 "override": "--krt-allow-via-in-pad permits via-in-pad in the fabrication gate without a declared requirement or a capable tier; it is an operator taking responsibility for one panel, not a process answer"
             },
             "units": ["mm", "mil", "ohm", "kohm", "mohm", "v", "mv", "a", "ma", "mhz", "ghz", "pf", "nf", "uf"]
