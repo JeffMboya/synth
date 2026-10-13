@@ -4237,6 +4237,13 @@ fn export_kicad(
         .write_to(out_dir)
         .map_err(|e| anyhow::anyhow!("could not write the release manifest: {e}"))?;
     eprintln!("wrote {}", manifest_path.display());
+    for note in manifest
+        .routing
+        .iter()
+        .flat_map(|r| r.fabrication_notes.iter())
+    {
+        eprintln!("fabrication note: {note}");
+    }
     if let Some(banner) = manifest.banner() {
         eprintln!();
         eprintln!("{banner}");
