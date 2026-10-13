@@ -157,13 +157,17 @@ const PROPERTY_OVERRIDES: &[&str] = &[
 /// installed locally or the file is missing — the caller falls
 /// back to instance-only emission and pcbnew shows a
 /// "no body cached" warning rather than failing to open.
+/// Where KiCad's 3D models live on this machine; the root [`inline_body`]
+/// substitutes for KiCad's 3D-model variables.
+pub(crate) const MODEL_DIR: &str = "/usr/share/kicad/3dmodels";
+
 pub fn inline_body(lib_id: &str) -> Option<String> {
     let text = read_footprint(lib_id)?;
     let text = text
-        .replace("${KICAD10_3DMODEL_DIR}", "/usr/share/kicad/3dmodels")
-        .replace("${KICAD8_3DMODEL_DIR}", "/usr/share/kicad/3dmodels")
-        .replace("${KICAD7_3DMODEL_DIR}", "/usr/share/kicad/3dmodels")
-        .replace("${KICAD6_3DMODEL_DIR}", "/usr/share/kicad/3dmodels");
+        .replace("${KICAD10_3DMODEL_DIR}", MODEL_DIR)
+        .replace("${KICAD8_3DMODEL_DIR}", MODEL_DIR)
+        .replace("${KICAD7_3DMODEL_DIR}", MODEL_DIR)
+        .replace("${KICAD6_3DMODEL_DIR}", MODEL_DIR);
     let body_start = footprint_body_start(&text)?;
     let body_end = find_matching_close(&text, body_start)?;
     let body = &text[body_start..body_end];

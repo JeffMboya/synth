@@ -446,6 +446,17 @@ entries only when stock does not cover the part:
   re-export and diff — pin numbers and names must be identical to the
   previous export. Synth's deterministic UUIDs make this diff
   mechanical.
+- **3D model coverage:** `synth registry qualify` reports, per part,
+  whether the footprint's 3D model resolves (`E-SYNTH-QUAL-016`, review
+  level, never blocking: a model is not needed to fabricate a board). It
+  names a model file that is not installed (a footprint that lists several
+  models passes if any one is installed), a footprint that declares no
+  model, a footprint that is not in KiCad's library, and a part with no
+  KiCad footprint. Expect the mechanical parts (mounting hole, test
+  point, fiducial) to show "no model". A model file missing for a stock
+  footprint usually means `kicad-packages3d` is older than
+  `kicad-footprints`: update both to the same version before treating it
+  as a gap in the registry.
 
 ---
 
