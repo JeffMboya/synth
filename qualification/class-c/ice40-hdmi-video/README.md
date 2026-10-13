@@ -139,9 +139,19 @@ balls 0.8 mm apart it sits 0.400 mm from each ball centre and needs 0.582 mm to
 clear the pad copper. Dog-bone escape is therefore impossible on this tier, and
 via-in-pad is the required technique rather than a shortcut.
 
-The routed board carries 40 via-in-pad findings for this reason. They are
-recorded, not waived: a process that cannot fill and cap via-in-pad cannot build
-this board.
+The board therefore declares `requires via_in_pad` and names a tier that offers
+it. That is not a waiver. The requirement is checked against the process: the
+same board against `manufacturer "jlcpcb"` is `E-SYNTH-PROCESS-002` rather than
+a board that quietly routes, because a process that cannot fill and cap
+via-in-pad cannot build it. The two tiers carry identical geometric floors —
+filling a via buys the capability, not a finer drill — so nothing about the
+escape geometry changes with the declaration.
+
+What does change is what the router is told. Before #136 the engine was given
+no permission and the 40 via-in-pad findings were blocking; now the declaration
+grants it, and KRT encodes the permission as a clearance sentinel, so the copper
+it returns may differ from the run this file last measured. The routed numbers
+below are the pre-declaration measurement until CI re-measures them.
 
 ## Notable parts
 
@@ -196,7 +206,7 @@ bill of materials; this table is the actives and omits 39 generic passives.
 
 | Case | Answer |
 | --- | --- |
-| BGA / fine-pitch escape, via and fanout rules | **Partly.** 121 balls on 0.8 mm; escape needs via-in-pad, which the board source cannot declare — only a CLI flag can. |
+| BGA / fine-pitch escape, via and fanout rules | **Partly.** 121 balls on 0.8 mm. The escape requirement is declared in the board and checked against the process (#136); via and fanout *rules* remain inexpressible (#137). |
 | DDR or equivalent length-sensitive interface | **No.** No DRAM part exists, and `match_length` is one tolerance per class, so per-byte-group budgets are not expressible. |
 | PCIe / USB 3.x / HDMI-class differential | **Declared and checked, not met.** Four TMDS pairs at 100 Ω with a skew budget, and a length-matched class the routed copper fails — see *Limitations*. |
 | Multi-rail compute, thermal, keepout, DFM | **Partly.** Both rails route as inner-layer planes; thermal and sequencing are not modelled. |

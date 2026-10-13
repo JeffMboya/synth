@@ -64,8 +64,18 @@
 
 board "ice40_hdmi_video" {
     layers 4
-    manufacturer "jlcpcb"
+    // The filled-via tier, not the standard one. Identical geometric floors
+    // — filling a via buys the capability, not a finer drill — and the one
+    // thing this board cannot be built without.
+    manufacturer "jlc-filled-via"
     revision "A"
+
+    // At 0.8 mm a fab-floor via sits 0.400 mm from each ball centre and
+    // needs 0.582 mm to clear the pad copper, so dog-bone escape is
+    // arithmetically impossible on this tier. Declaring the requirement is
+    // what makes that a checked fact rather than a comment: against a tier
+    // that does not fill and cap the via, this board is E-SYNTH-PROCESS-002.
+    requires via_in_pad
 
     // Impedance-controlled stackup. The 0.2104 mm prepreg under the signal
     // layer is what puts a 0.2 mm trace over the ground plane near 50 ohm
