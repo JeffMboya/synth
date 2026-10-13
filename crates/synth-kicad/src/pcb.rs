@@ -3441,7 +3441,7 @@ mod tests {
             name: "ESCAPE".to_string(),
             trace_width: Some(Length::from_mm(0.2)),
             clearance: Some(Length::from_mm(0.2)),
-            match_length: None,
+            max_length: None,
             via_diameter: Some(Length::from_mm(0.45)),
             via_drill: Some(Length::from_mm(0.2)),
             color: None,
