@@ -1314,6 +1314,20 @@ impl Parser {
                     self.bump();
                     attrs.push(NetclassAttr::Plane);
                 }
+                // Escape geometry. Contextual like the three above, so a
+                // design already using these words as names keeps parsing.
+                TokenKind::Ident(name) if name == "via_diameter" => {
+                    self.bump();
+                    if let Some(v) = self.expect_value() {
+                        attrs.push(NetclassAttr::ViaDiameter(v));
+                    }
+                }
+                TokenKind::Ident(name) if name == "via_drill" => {
+                    self.bump();
+                    if let Some(v) = self.expect_value() {
+                        attrs.push(NetclassAttr::ViaDrill(v));
+                    }
+                }
                 TokenKind::Ident(name) if name == "color" => {
                     self.bump();
                     if let Some(hex) = self.expect_string(
@@ -1328,7 +1342,7 @@ impl Parser {
                         self.peek().span,
                         "E-SYNTH-PARSE-019",
                         "unexpected attribute inside netclass",
-                        "`trace_width <value><unit>`, `clearance <value><unit>`, `impedance <value><unit>`, `match_length <value><unit>`, `current <value><unit>`, `plane`, or `color \"#rrggbb\"`",
+                        "`trace_width <value><unit>`, `clearance <value><unit>`, `impedance <value><unit>`, `match_length <value><unit>`, `current <value><unit>`, `via_diameter <value><unit>`, `via_drill <value><unit>`, `plane`, or `color \"#rrggbb\"`",
                         self.describe_current(),
                         None,
                     );

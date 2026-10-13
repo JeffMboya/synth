@@ -547,6 +547,8 @@ impl<'a> LowerCtx<'a> {
         let mut color: Option<[u8; 3]> = None;
         let mut impedance: Option<Impedance> = None;
         let mut current: Option<Current> = None;
+        let mut via_diameter: Option<Length> = None;
+        let mut via_drill: Option<Length> = None;
         let mut plane = false;
         for attr in &n.attrs {
             match attr {
@@ -569,6 +571,14 @@ impl<'a> LowerCtx<'a> {
                 NetclassAttr::Current(v) => match Current::try_from(v) {
                     Ok(c) => current = Some(c),
                     Err(e) => self.emit_unit_error(&e, "netclass current"),
+                },
+                NetclassAttr::ViaDiameter(v) => match Length::try_from(v) {
+                    Ok(l) => via_diameter = Some(l),
+                    Err(e) => self.emit_unit_error(&e, "netclass via_diameter"),
+                },
+                NetclassAttr::ViaDrill(v) => match Length::try_from(v) {
+                    Ok(l) => via_drill = Some(l),
+                    Err(e) => self.emit_unit_error(&e, "netclass via_drill"),
                 },
                 NetclassAttr::Plane => plane = true,
                 NetclassAttr::Color(hex) => match parse_hex_color(hex) {
@@ -604,6 +614,8 @@ impl<'a> LowerCtx<'a> {
             color,
             impedance,
             current,
+            via_diameter,
+            via_drill,
             plane,
             source_span: n.span,
         }
