@@ -239,7 +239,7 @@ pub fn build_pcb(
                 net_name,
                 project,
                 &zone_key,
-                GROUND_ZONE_PRIORITY,
+                ground_zone_priority(plane_index, plane_nets.len()),
             ));
         }
         // A zone on each copper layer is only a plane, not an electrical
@@ -632,13 +632,19 @@ fn build_ground_stitch_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, i
     )
 }
 
-/// Priority of the generated ground planes.
+/// Priority of a generated ground plane: distinct per ground net, and every
+/// ground above the power planes.
 ///
-/// Above the declared power planes so that, where a rail plane and a ground
-/// plane share a layer, KiCad fills the ground first and carves the rail around
-/// it. Two zones at the same priority can be filled in an order that leaves
-/// either net with isolated islands, so the ordering is made explicit.
-const GROUND_ZONE_PRIORITY: u8 = 1;
+/// Distinct so that split grounds on one layer are filled in a deterministic
+/// order — the first declared ground wins and the rest are carved around it —
+/// rather than in an order that leaves an arbitrary one with isolated islands.
+/// Above zero so that, where a rail plane shares a layer, ground is filled
+/// first.
+fn ground_zone_priority(index: usize, count: usize) -> u8 {
+    u8::try_from(count.saturating_sub(index))
+        .unwrap_or(1)
+        .max(1)
+}
 
 /// Priority of a declared power plane (`netclass "PWR" { plane }`).
 const POWER_ZONE_PRIORITY: u8 = 0;

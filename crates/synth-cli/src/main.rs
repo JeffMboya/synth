@@ -4536,31 +4536,15 @@ fn select_placement_for_routing(
 
     let mut best: Option<(CandidateCost, synth_place::Placement, Vec<String>)> = None;
     for (index, candidate) in candidates.iter().enumerate() {
-        let scratch =
-            std::env::temp_dir().join(format!("synth-place-route-{}-{index}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        let result = synth_kicad::export_with_placement(board, &scratch, sidecars, candidate)
-            .map_err(|e| anyhow::anyhow!("candidate export failed: {e}"))?;
-        let request = build_route_request(board, &result, engine.into(), options, &[])?;
-        // Best-of-N per candidate when asked: the winner of a candidate is the
-        // best engine's attempt, judged by the same independent checks.
-        let report = if best_of {
-            synth_router::route_best_of(&request, &synth_router::RouterEngine::all())
-                .report()
-                .clone()
-        } else {
-            synth_router::route(&request)
-        };
-        let _ = std::fs::remove_dir_all(&scratch);
-
-        if report.state == synth_router::RouteState::RouterUnavailable {
+        let Some((cost, report)) =
+            evaluate_candidate(board, sidecars, engine, options, best_of, candidate, index)?
+        else {
             eprintln!(
                 "placement feedback: {} is unavailable; keeping the export's own placement",
                 engine.as_str()
             );
             return Ok(None);
-        }
-        let cost = report.layout_cost();
+        };
         eprintln!(
             "placement feedback: candidate {index} -> {} (open nets {}, blocking {}, vias {}, \
              segments {})",
@@ -4581,8 +4565,48 @@ fn select_placement_for_routing(
             ));
         }
     }
-    // The hardest nets the winner named, carried forward so a retry can reserve
-    // routes for them first (see `synth_route --routing-order`).
+
+    // Hardest-net grouping: the winner named the nets the router struggled
+    // with. Ask for one more placement that pulls each such net's parts toward
+    // the component carrying most of its pins, and keep it if it routes better.
+    if let Some((best_cost, _, order)) = best.clone() {
+        if !order.is_empty() {
+            let hints = synth_place::hard_net_proximity_hints(board, &order);
+            if !hints.is_empty() {
+                let hinted = synth_place::with_hard_net_hints(board, &hints);
+                if let Ok(grouped) = synth_kicad::placement_candidates(&hinted, sidecars) {
+                    if let Some(candidate) = grouped.into_iter().next() {
+                        if let Some((cost, report)) = evaluate_candidate(
+                            board,
+                            sidecars,
+                            engine,
+                            options,
+                            best_of,
+                            &candidate,
+                            usize::MAX,
+                        )? {
+                            eprintln!(
+                                "placement feedback: hardest-net grouping -> {cost:?} \
+                                 (was {best_cost:?})"
+                            );
+                            if cost < best_cost {
+                                // Keep the grouped placement's own advice, not the
+                                // earlier candidate's: the routing order is
+                                // calculated per-placement, so the two are not
+                                // interchangeable.
+                                best = Some((
+                                    cost,
+                                    candidate,
+                                    report.recommended_routing_order.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if let Some((_, _, order)) = &best {
         if !order.is_empty() {
             eprintln!(
@@ -4592,6 +4616,39 @@ fn select_placement_for_routing(
         }
     }
     Ok(best.map(|(_, placement, order)| (placement, order)))
+}
+
+/// Export `candidate` to a scratch directory and route it, returning the route
+/// cost and report. `None` when the engine is unavailable.
+fn evaluate_candidate(
+    board: &synth_ir::Board,
+    sidecars: &synth_kicad::Sidecars,
+    engine: ExternalRouter,
+    options: &RouterOptions,
+    best_of: bool,
+    candidate: &synth_place::Placement,
+    index: usize,
+) -> anyhow::Result<Option<(CandidateCost, synth_router::RouteReport)>> {
+    let scratch =
+        std::env::temp_dir().join(format!("synth-place-route-{}-{index}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let result = synth_kicad::export_with_placement(board, &scratch, sidecars, candidate)
+        .map_err(|e| anyhow::anyhow!("candidate export failed: {e}"))?;
+    let request = build_route_request(board, &result, engine.into(), options, &[])?;
+    // Best-of-N per candidate when asked: the winner is the best engine's
+    // attempt, judged by the same independent checks.
+    let report = if best_of {
+        synth_router::route_best_of(&request, &synth_router::RouterEngine::all())
+            .report()
+            .clone()
+    } else {
+        synth_router::route(&request)
+    };
+    let _ = std::fs::remove_dir_all(&scratch);
+    if report.state == synth_router::RouteState::RouterUnavailable {
+        return Ok(None);
+    }
+    Ok(Some((report.layout_cost(), report)))
 }
 
 /// Run the external router and report the outcome to the operator.
