@@ -523,6 +523,13 @@ fn outline_with_flush_connectors(
         });
     let mut outline = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
     for (component, placed, rect) in &parts {
+        // A mounting hole belongs in a corner, so the outline ends at its
+        // courtyard instead of leaving a margin round it.
+        let margin_nm = if component.kind == "mounting_hole" {
+            0
+        } else {
+            margin_nm
+        };
         let mut reach = [
             rect.min.x_nm - margin_nm,
             rect.min.y_nm - margin_nm,
@@ -5651,6 +5658,46 @@ mod tests {
         let mut past = j2_protruding(&hard, "left", 4.1);
         tighten_outline_after_sidecar(&hard, &mut past);
         assert_flush_with_copper_clear(&hard, &past, "J2", "left");
+    }
+
+    #[test]
+    fn a_mounting_hole_reaches_the_outline_without_the_four_millimetre_margin() {
+        let board = load_board_replacing(
+            FEATHER,
+            &[(
+                "component J2:",
+                "component H1: mounting_hole \"mounting_hole_m2_5\"\n  component J2:",
+            )],
+        );
+        let mut placement = place(&board).expect("place");
+        let hole = board
+            .components
+            .iter()
+            .find(|c| c.refdes == "H1")
+            .expect("H1");
+        let others_min_x = placement
+            .components
+            .iter()
+            .filter(|placed| placed.id != hole.id)
+            .map(|placed| {
+                let component = board.component(placed.id).expect("component");
+                sidecar_courtyard_rect(&board, component, placed).min.x_nm
+            })
+            .min()
+            .expect("other parts");
+        let placed = placement
+            .components
+            .iter_mut()
+            .find(|placed| placed.id == hole.id)
+            .expect("H1 placement");
+        let half_w = sidecar_courtyard_rect(&board, hole, placed).width_nm() / 2;
+        placed.center.x_nm = others_min_x - mm_to_nm(10.0) + half_w;
+        tighten_outline_after_sidecar(&board, &mut placement);
+        assert_eq!(
+            courtyard_gaps(&board, &placement, "H1")[0],
+            0,
+            "a mounting hole sits in the corner: the outline ends at its courtyard"
+        );
     }
 
     #[test]
