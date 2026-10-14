@@ -1858,6 +1858,25 @@ mod tests {
     }
 
     #[test]
+    fn test_lower_netclass_length_match_from_source() {
+        // End-to-end from source: a `netclass { max_length / max_skew }` must
+        // reach the IR. The rule tests build `NetClass` directly in Rust, so
+        // this is the guard that the parser/lowering path is actually wired.
+        let src = r#"board "b" {
+            netclass "DDR" {
+                max_length 50mm
+                max_skew 1mm
+            }
+        }"#;
+        let ast = parse(src, "test.synth").ast.unwrap();
+        let res = lower(&ast, &Registry::default(), "test.synth");
+        assert!(res.diagnostics.is_empty(), "{:?}", res.diagnostics);
+        let nc = &res.board.unwrap().netclasses[0];
+        assert_eq!(nc.max_length, Some(Length::from_mm(50.0)));
+        assert_eq!(nc.max_skew, Some(Length::from_mm(1.0)));
+    }
+
+    #[test]
     fn test_lower_netclass_color() {
         let src = r##"board "b" {
             netclass "PWR" {
