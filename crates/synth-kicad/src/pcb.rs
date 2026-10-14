@@ -298,6 +298,33 @@ pub fn build_pcb(
         }
     }
 
+    // A screw head over copper shorts it or crushes the mask, so each mounting
+    // hole keeps tracks, vias and pour out of the area under the head.
+    for component in board
+        .components
+        .iter()
+        .filter(|component| component.kind == "mounting_hole")
+    {
+        let Some(placed) = placements_by_id.get(&component.id) else {
+            continue;
+        };
+        let Some(width_mm) = component
+            .part
+            .as_ref()
+            .and_then(|part| part.footprint_dimensions.as_ref())
+            .map(|dimensions| dimensions.width_mm)
+        else {
+            continue;
+        };
+        children.push(build_mounting_hole_keepout(
+            placed.center,
+            mm_to_nm(width_mm / 2.0),
+            &ground_plane_layers(board.layers),
+            project,
+            &component.refdes,
+        ));
+    }
+
     // Declared planes (`netclass "PWR" { plane }`): flood a zone for each
     // member net on the dedicated power layers, so a rail gets a low-impedance
     // path of its own. The plane sits on the inner layers, away from ground, so
@@ -665,7 +692,7 @@ fn build_plane_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usiz
         "via",
         vec![
             Sexp::list("at", vec![num(nm_to_mm(x_nm)), num(nm_to_mm(y_nm))]),
-            Sexp::list("size", vec![num(0.6)]),
+            Sexp::list("size", vec![num(GROUND_VIA_RADIUS_MM * 2.0)]),
             Sexp::list("drill", vec![num(0.3)]),
             Sexp::list("layers", vec![Sexp::str("F.Cu"), Sexp::str("B.Cu")]),
             Sexp::list("net", vec![Sexp::atom(pcb_net.to_string())]),
@@ -680,6 +707,62 @@ fn build_plane_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usiz
 /// for the via's own pad.
 const MOUNTING_HOLE_KEEPOUT_MM: f64 = 1.5;
 
+/// Radius of the pad of a ground fence via (the via is 0.6 mm across).
+const GROUND_VIA_RADIUS_MM: f64 = 0.3;
+
+/// A copper keepout under a mounting hole's screw head: a round rule area on
+/// every copper layer that refuses tracks, vias and pour, as wide as the hole
+/// plus `MOUNTING_HOLE_KEEPOUT_MM`. Pads stay allowed, so the hole's own part
+/// is not flagged. `layers` are the board's copper layers.
+fn build_mounting_hole_keepout(
+    centre: Point,
+    radius_nm: i64,
+    layers: &[&str],
+    project: &Uuid,
+    refdes: &str,
+) -> Sexp {
+    const SIDES: u32 = 24;
+    let reach = nm_to_mm(radius_nm) + MOUNTING_HOLE_KEEPOUT_MM;
+    let points = (0..SIDES)
+        .map(|k| {
+            let angle = std::f64::consts::TAU * f64::from(k) / f64::from(SIDES);
+            Sexp::list(
+                "xy",
+                vec![
+                    num(nm_to_mm(centre.x_nm) + reach * angle.cos()),
+                    num(nm_to_mm(centre.y_nm) + reach * angle.sin()),
+                ],
+            )
+        })
+        .collect();
+    let zone_uuid = derive_entity_uuid(project, "mounting-hole-keepout", refdes);
+    Sexp::list(
+        "zone",
+        vec![
+            Sexp::list("net", vec![Sexp::atom("0")]),
+            str_pair("net_name", ""),
+            Sexp::list(
+                "layers",
+                layers.iter().map(|layer| Sexp::str(*layer)).collect(),
+            ),
+            str_pair("uuid", zone_uuid.to_string()),
+            str_pair("name", format!("{refdes} screw head")),
+            Sexp::list("hatch", vec![Sexp::atom("edge"), num(0.5)]),
+            Sexp::list(
+                "keepout",
+                vec![
+                    Sexp::list("tracks", vec![Sexp::atom("not_allowed")]),
+                    Sexp::list("vias", vec![Sexp::atom("not_allowed")]),
+                    Sexp::list("pads", vec![Sexp::atom("allowed")]),
+                    Sexp::list("copperpour", vec![Sexp::atom("not_allowed")]),
+                    Sexp::list("footprints", vec![Sexp::atom("allowed")]),
+                ],
+            ),
+            Sexp::list("polygon", vec![Sexp::list("pts", points)]),
+        ],
+    )
+}
+
 /// Slide a corner fence via along the board edge, toward the inside (`inward`
 /// is +1 for a left-hand corner and -1 for a right-hand one), until it is out of
 /// every mounting hole's zone: the hole's radius plus the keepout. A via that is
@@ -687,7 +770,8 @@ const MOUNTING_HOLE_KEEPOUT_MM: f64 = 1.5;
 fn clear_of_mounting_holes(via: Point, inward: i64, holes: &[(Point, i64)]) -> Point {
     let mut via = via;
     for &(centre, radius) in holes {
-        let limit = nm_to_mm(radius) + MOUNTING_HOLE_KEEPOUT_MM;
+        // The whole pad must be outside the zone, not only its centre.
+        let limit = nm_to_mm(radius) + MOUNTING_HOLE_KEEPOUT_MM + GROUND_VIA_RADIUS_MM;
         let dx = nm_to_mm(via.x_nm - centre.x_nm);
         let dy = nm_to_mm(via.y_nm - centre.y_nm);
         if dx.hypot(dy) >= limit {
@@ -2457,12 +2541,77 @@ mod tests {
         (Point::new(mm_to_nm(x), mm_to_nm(y)), mm_to_nm(radius))
     }
 
+    /// The `(xy x y)` pairs of a serialised s-expression, in order.
+    fn xy_pairs(text: &str) -> Vec<(f64, f64)> {
+        text.split("(xy ")
+            .skip(1)
+            .map(|rest| {
+                let mut numbers = rest.trim_start().split([' ', ')']);
+                let x = numbers.next().unwrap().parse().unwrap();
+                let y = numbers.next().unwrap().parse().unwrap();
+                (x, y)
+            })
+            .collect()
+    }
+
+    /// Under a screw head no copper may run: a rule area on every copper layer
+    /// that refuses tracks, vias and pour, centred on the hole and as wide as
+    /// the hole plus the head's keepout. Pads stay allowed so the part itself
+    /// is not flagged.
+    #[test]
+    fn a_mounting_hole_gets_a_copper_keepout_the_size_of_its_screw_head() {
+        let project = Uuid::nil();
+        let (centre, radius) = hole(3.5, 3.45, 1.6);
+        let layers = ground_plane_layers(4);
+
+        let zone = build_mounting_hole_keepout(centre, radius, &layers, &project, "H1");
+        let text = zone.to_string_pretty();
+
+        for expected in [
+            "(tracks not_allowed)",
+            "(vias not_allowed)",
+            "(copperpour not_allowed)",
+            "(pads allowed)",
+            "\"F.Cu\"",
+            "\"In1.Cu\"",
+            "\"In2.Cu\"",
+            "\"B.Cu\"",
+        ] {
+            assert!(text.contains(expected), "{expected}\n{text}");
+        }
+        let reach = 1.6 + MOUNTING_HOLE_KEEPOUT_MM;
+        let points = xy_pairs(&text);
+        assert!(
+            points.len() >= 16,
+            "a round outline, not a box: {}",
+            points.len()
+        );
+        for (x, y) in points {
+            let distance = (x - 3.5).hypot(y - 3.45);
+            assert!(
+                (distance - reach).abs() < 0.02,
+                "({x}, {y}) is {distance:.3} mm from the centre, not {reach}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_same_hole_gives_the_same_keepout_bytes() {
+        let project = Uuid::nil();
+        let (centre, radius) = hole(47.0, 3.45, 1.6);
+        let layers = ground_plane_layers(4);
+        let a = build_mounting_hole_keepout(centre, radius, &layers, &project, "H2");
+        let b = build_mounting_hole_keepout(centre, radius, &layers, &project, "H2");
+        assert_eq!(a.to_string_pretty(), b.to_string_pretty());
+    }
+
     fn gap_mm(a: Point, b: Point) -> f64 {
         nm_to_mm(a.x_nm - b.x_nm).hypot(nm_to_mm(a.y_nm - b.y_nm))
     }
 
     /// A ground fence via in the corner must stay out of a mounting hole's
-    /// screw-head zone: the hole's radius plus `MOUNTING_HOLE_KEEPOUT_MM`.
+    /// screw-head zone: the whole pad, so its centre is the hole's radius plus
+    /// `MOUNTING_HOLE_KEEPOUT_MM` plus the pad's radius from the hole.
     #[test]
     fn a_corner_via_moves_along_the_edge_out_of_a_mounting_hole_zone() {
         // M3 hole 3.5 mm in from both edges; the via sits 1.5 mm in.
@@ -2470,7 +2619,7 @@ mod tests {
         let corner = Point::new(mm_to_nm(1.5), mm_to_nm(1.5));
         let moved = clear_of_mounting_holes(corner, 1, &[hole]);
         assert!(
-            gap_mm(moved, hole.0) >= 1.6 + MOUNTING_HOLE_KEEPOUT_MM - 0.001,
+            gap_mm(moved, hole.0) >= 1.6 + MOUNTING_HOLE_KEEPOUT_MM + GROUND_VIA_RADIUS_MM - 0.001,
             "{moved:?}"
         );
         assert_eq!(moved.y_nm, corner.y_nm, "it slides along the edge only");
@@ -2486,7 +2635,9 @@ mod tests {
         let corner = Point::new(mm_to_nm(49.0), mm_to_nm(1.5));
         let moved = clear_of_mounting_holes(corner, -1, &[hole]);
         assert!(moved.x_nm < corner.x_nm);
-        assert!(gap_mm(moved, hole.0) >= 1.6 + MOUNTING_HOLE_KEEPOUT_MM - 0.001);
+        assert!(
+            gap_mm(moved, hole.0) >= 1.6 + MOUNTING_HOLE_KEEPOUT_MM + GROUND_VIA_RADIUS_MM - 0.001
+        );
     }
 
     #[test]
