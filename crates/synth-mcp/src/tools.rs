@@ -2670,11 +2670,27 @@ fn evaluate_candidate_mcp(
 
 /// Signal/power-integrity rules run on the routed board, read back from disk.
 fn routed_signal_integrity(board: &synth_ir::Board, pcb_path: &Path) -> Vec<synth_drc::Violation> {
-    let Ok(text) = std::fs::read_to_string(pcb_path) else {
-        return Vec::new();
+    // A delivered board that cannot be read must not look clean: a consumer
+    // reading `signal_integrity_blocking`/`drc_clean` cannot tell "checked,
+    // nothing found" from "never checked" if the failure is swallowed. Report
+    // it as a blocking finding so it clears `drc_clean` and blocks a release.
+    let text = match std::fs::read_to_string(pcb_path) {
+        Ok(text) => text,
+        Err(error) => {
+            return vec![synth_drc::unreadable_routed_board(
+                pcb_path,
+                &error.to_string(),
+            )];
+        }
     };
-    let Ok(routed) = synth_router::pcb_read::PcbBoard::parse(&text) else {
-        return Vec::new();
+    let routed = match synth_router::pcb_read::PcbBoard::parse(&text) {
+        Ok(routed) => routed,
+        Err(error) => {
+            return vec![synth_drc::unreadable_routed_board(
+                pcb_path,
+                &error.to_string(),
+            )];
+        }
     };
     let net_of = |code: Option<u32>| -> Option<synth_ir::NetId> {
         let name = routed.nets.get(&code?)?;
@@ -4706,5 +4722,47 @@ mod tests {
             .map(|i| (f64::from(i) * 10.0, f64::from(i) * 10.0))
             .collect();
         assert_eq!(hinted_ids(&scatter), None);
+    }
+}
+
+#[cfg(test)]
+mod routed_integrity_tests {
+    use super::*;
+
+    /// A minimal board for the routed-SI/PI read-back tests.
+    fn check_board() -> synth_ir::Board {
+        let parse = synth_parser::parse(r#"board "t" { layers 2 }"#, "t.synth".to_string());
+        let ast = parse.ast.as_ref().expect("parse");
+        synth_ir::lower(ast, &synth_registry::Registry::default(), "t.synth")
+            .board
+            .expect("board")
+    }
+
+    #[test]
+    fn a_missing_routed_board_is_a_blocking_finding() {
+        let findings = routed_signal_integrity(
+            &check_board(),
+            Path::new("/nonexistent/synth-routed-board.kicad_pcb"),
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, "E-SYNTH-DRC-022");
+        assert!(
+            findings[0].is_blocking(),
+            "an unreadable routed board must block, not read as clean"
+        );
+    }
+
+    #[test]
+    fn a_malformed_routed_board_is_a_blocking_finding() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-mcp-malformed-{}.kicad_pcb",
+            std::process::id()
+        ));
+        std::fs::write(&path, "(kicad_pcb (unbalanced").expect("write scratch board");
+        let findings = routed_signal_integrity(&check_board(), &path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, "E-SYNTH-DRC-022");
+        assert!(findings[0].is_blocking());
     }
 }

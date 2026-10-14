@@ -244,6 +244,34 @@ pub fn check_signal_integrity(
     violations
 }
 
+/// A blocking finding that the routed board could not be read, so the
+/// signal/power-integrity rules never ran.
+///
+/// A delivered board that is missing, unreadable or malformed must not look
+/// clean. A gate that swallows the read error cannot tell "checked, nothing
+/// found" from "never checked" — the exact failure the routed SI/PI pass
+/// exists to prevent. Callers that read the routed copper back from disk emit
+/// this in place of the (empty) rule output, so it flows through the same
+/// blocking path as a real violation and downgrades the release manifest.
+///
+/// Code: `E-SYNTH-DRC-022`.
+#[must_use]
+pub fn unreadable_routed_board(path: &std::path::Path, error: &str) -> Violation {
+    Violation {
+        code: "E-SYNTH-DRC-022".to_string(),
+        message: format!(
+            "the routed board `{}` could not be read ({error}); signal/power integrity \
+             was not checked",
+            path.display()
+        ),
+        witness: Vec::new(),
+        nets: Vec::new(),
+        components: Vec::new(),
+        pos_mm: None,
+        suggested_override: None,
+    }
+}
+
 fn evaluate(
     board: &Board,
     placement: &Placement,

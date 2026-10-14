@@ -4735,11 +4735,27 @@ fn synth_drc_on_routed(
     pcb_path: &Path,
     profile: &synth_drc::ManufacturerProfile,
 ) -> Vec<synth_drc::Violation> {
-    let Ok(text) = std::fs::read_to_string(pcb_path) else {
-        return Vec::new();
+    // A board that cannot be read must not look clean: the gate cannot tell
+    // "checked, nothing found" from "never checked" if the failure is
+    // swallowed. Report it as a blocking finding so it downgrades the manifest
+    // and stops the export, exactly as a real violation would.
+    let text = match std::fs::read_to_string(pcb_path) {
+        Ok(text) => text,
+        Err(error) => {
+            return vec![synth_drc::unreadable_routed_board(
+                pcb_path,
+                &error.to_string(),
+            )];
+        }
     };
-    let Ok(routed) = synth_router::pcb_read::PcbBoard::parse(&text) else {
-        return Vec::new();
+    let routed = match synth_router::pcb_read::PcbBoard::parse(&text) {
+        Ok(routed) => routed,
+        Err(error) => {
+            return vec![synth_drc::unreadable_routed_board(
+                pcb_path,
+                &error.to_string(),
+            )];
+        }
     };
     let routing = routing_from_routed(board, &routed);
     let stackup = synth_geometry::StackupProfile::for_board(board);
@@ -5540,5 +5556,45 @@ mod tests {
         assert_eq!(routing.segments.len(), 1, "one segment maps");
         assert_eq!(routing.segments[0].net, net, "net matched by name");
         assert_eq!(routing.segments[0].layer, synth_geometry::Layer::Bottom);
+    }
+
+    /// A minimal board for the routed-SI/PI read-back tests.
+    fn routed_check_board() -> synth_ir::Board {
+        let parse = synth_parser::parse(r#"board "t" { layers 2 }"#, "t.synth".to_string());
+        let ast = parse.ast.as_ref().expect("parse");
+        synth_ir::lower(ast, &synth_registry::Registry::default(), "t.synth")
+            .board
+            .expect("board")
+    }
+
+    #[test]
+    fn a_missing_routed_board_is_a_blocking_finding() {
+        let board = routed_check_board();
+        let profile = synth_drc::ManufacturerProfile::from_name("jlc-standard");
+        let findings = synth_drc_on_routed(
+            &board,
+            std::path::Path::new("/nonexistent/synth-routed-board.kicad_pcb"),
+            &profile,
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, "E-SYNTH-DRC-022");
+        assert!(
+            findings[0].is_blocking(),
+            "an unreadable routed board must block, not read as clean"
+        );
+    }
+
+    #[test]
+    fn a_malformed_routed_board_is_a_blocking_finding() {
+        let board = routed_check_board();
+        let profile = synth_drc::ManufacturerProfile::from_name("jlc-standard");
+        let path =
+            std::env::temp_dir().join(format!("synth-malformed-{}.kicad_pcb", std::process::id()));
+        std::fs::write(&path, "(kicad_pcb (unbalanced").expect("write scratch board");
+        let findings = synth_drc_on_routed(&board, &path, &profile);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, "E-SYNTH-DRC-022");
+        assert!(findings[0].is_blocking());
     }
 }
