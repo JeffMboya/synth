@@ -910,19 +910,19 @@ fn execute_language_reference(_args: &Value) -> Value {
         },
         "examples": [
             {
-                "file": "examples/env_logger.synth",
+                "file": "examples/env_logger/env_logger.synth",
                 "description": "2-layer USB-C environmental sensor logger: STM32F103 MCU, BME680 sensor, AMS1117 LDO regulator, I2C bus with pull-ups, hardware reset circuit, UART debug header.",
-                "source": include_str!("../../../examples/env_logger.synth")
+                "source": include_str!("../../../examples/env_logger/env_logger.synth")
             },
             {
-                "file": "examples/sensor_logger.synth",
+                "file": "examples/sensor_logger/sensor_logger.synth",
                 "description": "4-layer sensor logger: ATmega328P MCU, USB-C with ESD protection diodes, two I2C environmental sensors, SPI NOR flash, status LEDs.",
-                "source": include_str!("../../../examples/sensor_logger.synth")
+                "source": include_str!("../../../examples/sensor_logger/sensor_logger.synth")
             },
             {
-                "file": "examples/placement_and_diff_pair.synth",
+                "file": "examples/placement_and_diff_pair/placement_and_diff_pair.synth",
                 "description": "Compact board isolating features the other two examples don't exercise: a hard placement_hint pinning the MCU to a board region, a diff_pair with a target impedance resolved via the <REFDES>_<pin> endpoint convention, and a keepout zone.",
-                "source": include_str!("../../../examples/placement_and_diff_pair.synth")
+                "source": include_str!("../../../examples/placement_and_diff_pair/placement_and_diff_pair.synth")
             }
         ],
         "workflow_tip": "1) synth_search_registry to find real (kind, part_id) pairs and exact pin names. 2) Draft the .synth source using the grammar above. Put every component inside a `group` and give each group a `notes` block - grouping is what makes the generated sheet readable, and an ungrouped board lays out as one flat band. Give every generic passive a `value` (a missing one is an error, E-SYNTH-VALUE-001). 3) synth_validate it: this returns electrical ERC *and* the readability rules (E-SYNTH-SCHEM-*). 4) synth_fix in a loop over diagnostics with suggested_fixes until clean. 5) synth_preview_schematic to inspect group_boxes/annotations before exporting. 6) synth_export."

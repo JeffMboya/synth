@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Bit-exact regression tests for `synth-place`. Snapshot is the
-//! `Placement` of `examples/sensor_logger.synth` rendered as a
+//! `Placement` of `examples/sensor_logger/sensor_logger.synth` rendered as a
 //! short, human-readable summary. Updates land via
 //! `cargo insta review` when the algorithm intentionally changes.
 
@@ -69,7 +69,7 @@ fn render_placement_snapshot(board: &Board, placement: &synth_place::Placement) 
 
 #[test]
 fn sensor_logger_placement_snapshot() {
-    let board = load_board("examples/sensor_logger.synth");
+    let board = load_board("examples/sensor_logger/sensor_logger.synth");
     let placement = synth_place::place(&board).expect("place");
     let snapshot = render_placement_snapshot(&board, &placement);
     insta::assert_snapshot!("sensor_logger_placement", snapshot);
@@ -110,7 +110,7 @@ fn feather_m4_express_outline_area_stays_within_baseline_tolerance() {
 /// every downstream consumer (notably synth-ee) relative to the exported PCB.
 #[test]
 fn external_placement_publishes_footprint_origin_not_courtyard_centre() {
-    let board = load_board("examples/sensor_logger.synth");
+    let board = load_board("examples/sensor_logger/sensor_logger.synth");
     let placement = synth_place::place(&board).expect("place");
     let external = synth_place::to_external(&board, &placement);
 
