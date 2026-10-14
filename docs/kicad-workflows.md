@@ -242,6 +242,18 @@ report every plane-backed net as open however correctly it was routed. Zones
 are refilled before DRC so clearances are checked against copper that actually
 exists.
 
+After FreeRouting, two steps add ground vias where the pour alone is not enough.
+The first rescues a pour piece that no via ties to the rest of the net (a piece
+holding only SMD pads is cut off). The second gives every outer ground pad a via
+within 2 mm of its edge, in the same pour piece, at the nearest legal spot and
+never inside a pad: a decoupling capacitor or protection part whose only ground
+path is a long run of pour has a long return loop. "Within 2 mm" is a straight
+line, so a narrow neck in the pour can still make the copper path longer. A pad
+with no legal spot within 2 mm is
+reported in the router log (`ground pad C4.2 has no via within 2.0 mm and no
+room for one`) and counted as `ground_unresolved` in the run record; the fix is
+a layout change.
+
 The delivered board has those same fills saved into it (the router's board,
 plus KiCad's `filled_polygon` copper and nothing else), so KiCad opens it showing
 the connectivity the gate validated rather than unrouted plane pads until you
