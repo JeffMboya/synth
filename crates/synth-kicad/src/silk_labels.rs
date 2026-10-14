@@ -64,6 +64,8 @@ pub(crate) struct LabelOverride {
 }
 
 /// Where a reference label goes: a footprint-local offset and a text angle.
+/// The angle is in board axes, which is how KiCad reads a footprint text's
+/// angle, so it does not change when the part is rotated.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LabelPos {
     pub local_x_mm: f64,
@@ -516,6 +518,34 @@ mod tests {
             "label {b:?} on the neighbour"
         );
         assert_ne!(pos.local_y_mm, 3.0, "the turned offset was kept");
+    }
+
+    #[test]
+    fn a_sidecar_angle_is_a_board_angle_whatever_the_part_rotation() {
+        // KiCad reads a footprint text's angle in board axes, so a rotated
+        // part must not add its own rotation to the angle the design asked for.
+        let mut part = resistor(1, "R1", 20.0, 20.0);
+        part.rotation = Rotation::Ninety;
+        part.courtyard = rect(20.0, 20.0, 1.0, 2.0);
+        for (angle_deg, reads_wide) in [(0.0, true), (90.0, false)] {
+            let turned = LabelOverride {
+                angle_deg,
+                ..soft((0.0, 4.0))
+            };
+            let placed = place_labels(
+                std::slice::from_ref(&part),
+                outline(),
+                &overrides(1, turned),
+            );
+            let pos = placed[&part.id];
+            assert_eq!(pos.angle_deg, angle_deg, "the angle was changed");
+            let b = label_box(&part, pos);
+            assert_eq!(
+                b.max.x_nm - b.min.x_nm > b.max.y_nm - b.min.y_nm,
+                reads_wide,
+                "label {b:?} has the wrong orientation at {angle_deg} degrees"
+            );
+        }
     }
 
     #[test]

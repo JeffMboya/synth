@@ -540,7 +540,7 @@ designator (this file is board millimetres, and so are these offsets):
 [labels.R9]
 dx = 0.0          # label centre relative to the part's courtyard centre,
 dy = -3.0         # in board axes
-angle = 0         # degrees; 0 reads left to right
+angle = 0         # degrees in board axes, even on a rotated part; 0 reads left to right
 priority = "hard" # hard: use it as given, kept on the board; soft (default): try it first
 
 [labels.C3]
