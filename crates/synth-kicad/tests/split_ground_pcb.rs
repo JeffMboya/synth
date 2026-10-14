@@ -381,3 +381,73 @@ fn power_plane_connects_its_pads_after_refill() {
     );
     let _ = fs::remove_dir_all(&result.out_dir);
 }
+
+/// Three declared rails on a six-layer board, so there are four inner layers
+/// for three rails: one rail takes two, and no rail shares.
+const THREE_RAIL_SOURCE: &str = r#"board "three_rail" {
+  layers 6
+  netclass "CORE" {
+    plane
+  }
+  netclass "IO" {
+    plane
+  }
+  netclass "ANALOG" {
+    plane
+  }
+  component C1: capacitor "c_generic_0603" value "100nF"
+  component C2: capacitor "c_generic_0603" value "100nF"
+  component C3: capacitor "c_generic_0603" value "100nF"
+  component C4: capacitor "c_generic_0603" value "100nF"
+  component C5: capacitor "c_generic_0603" value "100nF"
+  component C6: capacitor "c_generic_0603" value "100nF"
+  component C7: capacitor "c_generic_0603" value "100nF"
+  component C8: capacitor "c_generic_0603" value "100nF"
+  connect C1.p1 -> C2.p1 as "GND"
+  connect C2.p1 -> C3.p1
+  connect C3.p1 -> C4.p1
+  connect C4.p1 -> C5.p1
+  connect C1.p2 -> C2.p2 as "V1P2" class "CORE"
+  connect C3.p2 -> C4.p2 as "V3P3" class "IO"
+  connect C5.p2 -> C6.p2 as "V1P8" class "ANALOG"
+  connect C7.p2 -> C8.p2 as "SPARE"
+}
+"#;
+
+/// Rails must be dealt across the inner layers with a stride, not in
+/// contiguous blocks. Four layers shared out to three rails in blocks of
+/// `ceil(4/3) = 2` gives the first rail In1/In2, the second In3/In4, and the
+/// third In1/In2 again — so the first and third starve each other on both,
+/// which is the bug this is supposed to fix.
+#[test]
+fn three_declared_rails_do_not_share_an_inner_layer() {
+    let pcb = export_pcb(THREE_RAIL_SOURCE, "three-rail");
+    let core = zone_layers(&pcb, "V1P2");
+    let io = zone_layers(&pcb, "V3P3");
+    let analog = zone_layers(&pcb, "V1P8");
+    for (name, layers) in [("core", &core), ("io", &io), ("analog", &analog)] {
+        assert!(!layers.is_empty(), "the {name} rail must be poured");
+        assert!(
+            layers.iter().all(|layer| layer.starts_with("In")),
+            "a rail plane belongs on the inner layers: {name} {layers:?}"
+        );
+    }
+    for (a_name, a, b_name, b) in [
+        ("core", &core, "io", &io),
+        ("core", &core, "analog", &analog),
+        ("io", &io, "analog", &analog),
+    ] {
+        assert!(
+            !a.iter().any(|layer| b.contains(layer)),
+            "two rails must not share a layer, or one starves the other: \
+             {a_name} {a:?}, {b_name} {b:?}"
+        );
+    }
+    let mut all: Vec<&str> = core.iter().chain(&io).chain(&analog).copied().collect();
+    all.sort_unstable();
+    assert_eq!(
+        all,
+        ["In1.Cu", "In2.Cu", "In3.Cu", "In4.Cu"],
+        "three rails over four inner layers must use all four exactly once"
+    );
+}
