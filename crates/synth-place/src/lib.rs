@@ -4917,7 +4917,9 @@ fn pack_edge_rows(
 
 /// Label geometry of the PCB exporter's reference-label placer
 /// (`synth-kicad/src/silk_labels.rs`), which this crate cannot call. If those
-/// numbers change there, change them here too.
+/// numbers change there, change them here too. The exporter also honours
+/// design and part overrides (hidden labels, preferred sides); the check here
+/// ignores them, which only makes it stricter.
 const LABEL_CHAR_WIDTH_MM: f64 = 1.0;
 const LABEL_TEXT_HEIGHT_MM: f64 = 1.3;
 const LABEL_SIDE_GAP_MM: f64 = 0.3;
