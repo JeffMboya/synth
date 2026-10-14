@@ -470,6 +470,22 @@ fn tighten_outline_after_sidecar(board: &Board, placement: &mut Placement) {
         &placement.components,
         mm_to_nm(EDGE_MARGIN_MM),
         sidecar_courtyard_rect,
+        false,
+    ) {
+        placement.board_outline = outline;
+    }
+}
+
+/// Fit the outline round an automatic placement. The flush side of an edge
+/// connector comes from its hint, not from where it happens to stick out,
+/// because nothing here was dragged by hand.
+fn tighten_outline_to_hints(board: &Board, placement: &mut Placement) {
+    if let Some(outline) = outline_with_flush_connectors(
+        board,
+        &placement.components,
+        mm_to_nm(EDGE_MARGIN_MM),
+        sidecar_courtyard_rect,
+        true,
     ) {
         placement.board_outline = outline;
     }
@@ -498,11 +514,48 @@ fn is_edge_flush_connector(component: &synth_ir::Component) -> bool {
         })
 }
 
+/// The index the outline code gives each board edge: left 0, top 1, right 2,
+/// bottom 3. Even indices face along x, odd ones along y.
+fn edge_index(edge: &synth_ir::PlacementEdge) -> usize {
+    match edge {
+        synth_ir::PlacementEdge::Left => 0,
+        synth_ir::PlacementEdge::Top => 1,
+        synth_ir::PlacementEdge::Right => 2,
+        synth_ir::PlacementEdge::Bottom => 3,
+    }
+}
+
+/// The edge an edge-flush connector is hinted to, as an [`edge_index`].
+fn flush_edge_index(board: &Board, id: ComponentId) -> Option<usize> {
+    board
+        .component(id)
+        .filter(|c| is_edge_flush_connector(c))
+        .and_then(|c| c.placement_hint.as_ref()?.edge.as_ref())
+        .map(edge_index)
+}
+
+/// The reach of an edge connector: its courtyard, or its copper plus the
+/// clearance the board edge keeps from it, whichever goes further.
+fn connector_reach(real: Rect, copper: Rect) -> Rect {
+    let clearance = mm_to_nm(COPPER_EDGE_CLEARANCE_MM);
+    Rect::new(
+        Point::new(
+            real.min.x_nm.min(copper.min.x_nm - clearance),
+            real.min.y_nm.min(copper.min.y_nm - clearance),
+        ),
+        Point::new(
+            real.max.x_nm.max(copper.max.x_nm + clearance),
+            real.max.y_nm.max(copper.max.y_nm + clearance),
+        ),
+    )
+}
+
 fn outline_with_flush_connectors(
     board: &Board,
     placements: &[ComponentPlacement],
     margin_nm: i64,
     courtyard: impl Fn(&Board, &synth_ir::Component, &ComponentPlacement) -> Rect,
+    side_from_hint: bool,
 ) -> Option<Rect> {
     let parts: Vec<_> = placements
         .iter()
@@ -539,14 +592,14 @@ fn outline_with_flush_connectors(
         if is_edge_flush_connector(component) {
             let real = sidecar_courtyard_rect(board, component, placed);
             let copper = exported_pad_bounds(component, placed).unwrap_or(real);
-            let clearance = mm_to_nm(COPPER_EDGE_CLEARANCE_MM);
+            let flush = connector_reach(real, copper);
             let flush = [
-                real.min.x_nm.min(copper.min.x_nm - clearance),
-                real.min.y_nm.min(copper.min.y_nm - clearance),
-                real.max.x_nm.max(copper.max.x_nm + clearance),
-                real.max.y_nm.max(copper.max.y_nm + clearance),
+                flush.min.x_nm,
+                flush.min.y_nm,
+                flush.max.x_nm,
+                flush.max.y_nm,
             ];
-            let side = match body {
+            let side = match body.filter(|_| !side_from_hint) {
                 Some(body) => [
                     body.min.x_nm - real.min.x_nm,
                     body.min.y_nm - real.min.y_nm,
@@ -561,12 +614,7 @@ fn outline_with_flush_connectors(
                     .placement_hint
                     .as_ref()
                     .and_then(|hint| hint.edge.as_ref())
-                    .map(|edge| match edge {
-                        synth_ir::PlacementEdge::Left => 0,
-                        synth_ir::PlacementEdge::Top => 1,
-                        synth_ir::PlacementEdge::Right => 2,
-                        synth_ir::PlacementEdge::Bottom => 3,
-                    }),
+                    .map(edge_index),
             };
             if let Some(side) = side {
                 reach[side] = flush[side];
@@ -831,7 +879,8 @@ pub fn place_with_sidecar(
 ) -> Result<Placement, PlaceError> {
     // Start from the same production defaults as `place()`, then apply the
     // agent/human sidecar so exact coordinates and rotations can take control.
-    let mut placement = place(board)?;
+    let has_sidecar = sidecar_path.is_some_and(std::path::Path::exists);
+    let mut placement = place_with_default_tuning(board, !has_sidecar)?;
     if let Some(path) = sidecar_path {
         if path.exists() {
             if let Some(sidecar) = synth_layout::sidecar::SidecarLayout::load_from_file(path) {
@@ -839,7 +888,7 @@ pub fn place_with_sidecar(
             }
         }
     }
-    if sidecar_path.is_some_and(std::path::Path::exists) {
+    if has_sidecar {
         tighten_outline_after_sidecar(board, &mut placement);
     }
     Ok(placement)
@@ -883,7 +932,14 @@ pub fn place_with_tuning_and_sidecar_seeded<S: ::std::hash::BuildHasher>(
     sidecar_path: Option<&std::path::Path>,
     seed: u64,
 ) -> Result<Placement, PlaceError> {
-    let mut placement = place_with_tuning_seeded(board, extra_margin_mm, rotation_overrides, seed)?;
+    let has_sidecar = sidecar_path.is_some_and(std::path::Path::exists);
+    let mut placement = place_with_tuning_impl(
+        board,
+        extra_margin_mm,
+        rotation_overrides,
+        seed,
+        !has_sidecar,
+    )?;
     if let Some(path) = sidecar_path {
         if path.exists() {
             if let Some(sidecar) = synth_layout::sidecar::SidecarLayout::load_from_file(path) {
@@ -899,6 +955,11 @@ pub fn place_with_tuning_and_sidecar_seeded<S: ::std::hash::BuildHasher>(
 
 #[allow(clippy::too_many_lines)]
 pub fn place(board: &Board) -> Result<Placement, PlaceError> {
+    place_with_default_tuning(board, true)
+}
+
+/// `place()` with the production defaults, optionally without compaction.
+fn place_with_default_tuning(board: &Board, compact: bool) -> Result<Placement, PlaceError> {
     let mut rotation_overrides = std::collections::HashMap::new();
     let has_rp2350 = board.components.iter().any(|component| {
         component
@@ -916,7 +977,7 @@ pub fn place(board: &Board) -> Result<Placement, PlaceError> {
             rotation_overrides.insert(component.id, synth_geometry::Rotation::Zero);
         }
     }
-    place_with_tuning(board, 1.5, &rotation_overrides)
+    place_with_tuning_impl(board, 1.5, &rotation_overrides, 0, compact)
 }
 
 /// Place a board inside an explicit rectangular outline in millimetres.
@@ -1080,12 +1141,25 @@ pub fn with_hard_net_hints(board: &Board, hints: &[(ComponentId, String)]) -> Bo
 /// changes the greedy first-fit packing without relaxing any hard constraint,
 /// so distinct seeds give distinct-but-legal arrangements. Seed `0` is the
 /// canonical order and is what every non-iterating caller uses.
-#[allow(clippy::too_many_lines)]
 pub fn place_with_tuning_seeded<S: ::std::hash::BuildHasher>(
     board: &Board,
     extra_margin_mm: f64,
     rotation_overrides: &std::collections::HashMap<ComponentId, synth_geometry::Rotation, S>,
     seed: u64,
+) -> Result<Placement, PlaceError> {
+    place_with_tuning_impl(board, extra_margin_mm, rotation_overrides, seed, true)
+}
+
+/// `compact` squeezes the finished layout. A caller that is about to apply a
+/// placement sidecar passes false: the sidecar was written against the
+/// uncompacted layout, and every part it leaves alone must stay where it was.
+#[allow(clippy::too_many_lines)]
+fn place_with_tuning_impl<S: ::std::hash::BuildHasher>(
+    board: &Board,
+    extra_margin_mm: f64,
+    rotation_overrides: &std::collections::HashMap<ComponentId, synth_geometry::Rotation, S>,
+    seed: u64,
+    compact: bool,
 ) -> Result<Placement, PlaceError> {
     use synth_layout::pcb_courtyard_geometry_for_part;
 
@@ -1139,7 +1213,14 @@ pub fn place_with_tuning_seeded<S: ::std::hash::BuildHasher>(
             true,
             seed,
         ) {
-            Ok(p) => return Ok(refine_placement(board, &p, rotation_overrides)),
+            Ok(p) => {
+                let packed = if compact {
+                    compact_and_fit(board, p)
+                } else {
+                    p
+                };
+                return Ok(refine_placement(board, &packed, rotation_overrides));
+            }
             Err(e) => last_err = Some(e),
         }
     }
@@ -2499,6 +2580,7 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
             &placements,
             mm_to_nm(EDGE_MARGIN_MM),
             |_, _, placed| padded_courtyard_rect(&courtyard_lookup, placed),
+            false,
         );
         if let Some(outline) = outline {
             for placement in &mut placements {
@@ -3403,8 +3485,19 @@ pub fn place_with_hints(
     board: &Board,
     external_hints: &[ExternalHint],
 ) -> Result<(Placement, HintSatisfactionReport), PlaceError> {
+    place_with_hints_compacting(board, external_hints, true)
+}
+
+/// [`place_with_hints`], optionally without compaction. A caller that is about
+/// to apply a placement sidecar passes false: the sidecar was written against
+/// the uncompacted layout, and every part it leaves alone must stay put.
+pub fn place_with_hints_compacting(
+    board: &Board,
+    external_hints: &[ExternalHint],
+    compact: bool,
+) -> Result<(Placement, HintSatisfactionReport), PlaceError> {
     let modified_board = board_with_external_hints(board, external_hints);
-    let placement = place(&modified_board)?;
+    let placement = place_with_default_tuning(&modified_board, compact)?;
     Ok((
         placement.clone(),
         hint_satisfaction(&modified_board, &placement),
@@ -4542,6 +4635,714 @@ fn refine_placement<S: ::std::hash::BuildHasher>(
     keep_unless_worse(board, best, shortened)
 }
 
+/// Scale factors (in thousandths) `compact_placement` tries each round,
+/// biggest squeeze first.
+const COMPACT_PERMILLE: [i64; 3] = [900, 950, 980];
+
+/// Parts with at least this many pins get a wider keep-out ring while
+/// compacting, so the router can still escape their pins.
+const DENSE_PART_PINS: usize = 12;
+
+/// Extra width and height added to a dense part's courtyard while compacting.
+/// Calibrated on the reference boards: smaller rings strand USB-C and MCU
+/// nets in the native router, and the right size is not monotonic, so
+/// re-check `sensor_logger_routes_cleanly` and `iot_sensor_board_routes_cleanly`
+/// before changing it.
+const DENSE_PART_RING_MM: f64 = 7.0;
+
+/// Rounds of squeezing before the pass gives up. Each accepted round shrinks
+/// the layout, so this only bounds a layout that keeps finding room.
+const COMPACT_ROUNDS: usize = 60;
+
+/// Sweeps `separate_overlaps` may spend pushing courtyards apart.
+const SEPARATION_SWEEPS: usize = 200;
+
+/// Courtyard size of every component, in `placement.components` order. Looked
+/// up once per pass: the lookup is far too slow to repeat inside the loops.
+fn courtyard_sizes(board: &Board, placement: &Placement) -> Vec<(f64, f64)> {
+    placement
+        .components
+        .iter()
+        .map(|placed| {
+            board.component(placed.id).map_or((0.0, 0.0), |component| {
+                component.part.as_ref().map_or_else(
+                    || fallback_courtyard(&component.kind),
+                    |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
+                )
+            })
+        })
+        .collect()
+}
+
+/// The box around every courtyard.
+fn courtyard_envelope(placement: &Placement, sizes: &[(f64, f64)]) -> Option<Rect> {
+    placement
+        .components
+        .iter()
+        .zip(sizes)
+        .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+        .reduce(|a, b| {
+            Rect::new(
+                Point::new(a.min.x_nm.min(b.min.x_nm), a.min.y_nm.min(b.min.y_nm)),
+                Point::new(a.max.x_nm.max(b.max.x_nm), a.max.y_nm.max(b.max.y_nm)),
+            )
+        })
+}
+
+/// Area of a rectangle in square millimetres.
+fn area_mm2(rect: &Rect) -> f64 {
+    synth_geometry::nm_to_mm(rect.width_nm()) * synth_geometry::nm_to_mm(rect.height_nm())
+}
+
+/// Area of the box around every courtyard, in square millimetres. The board
+/// outline is this box plus a margin, so it is the size being minimised.
+#[cfg(test)]
+fn courtyard_envelope_area_mm2(board: &Board, placement: &Placement) -> f64 {
+    courtyard_envelope(placement, &courtyard_sizes(board, placement)).map_or(0.0, |r| area_mm2(&r))
+}
+
+/// Push overlapping courtyards apart along the axis they overlap least. Both
+/// parts move, the lighter one further, so a squeezed row of equal parts
+/// spreads out evenly instead of drifting; a part in `frozen` never moves.
+/// Returns false when the overlaps could not be removed.
+fn separate_overlaps(placement: &mut Placement, sizes: &[(f64, f64)], frozen: &[bool]) -> bool {
+    let pitch_nm = mm_to_nm(0.5);
+    let rect_of = |placement: &Placement, index: usize| {
+        rotated_courtyard_rect(&placement.components[index], sizes[index])
+    };
+    let weight = area_mm2;
+    for _ in 0..SEPARATION_SWEEPS {
+        let mut moved = false;
+        for i in 0..placement.components.len() {
+            for j in (i + 1)..placement.components.len() {
+                let (a, b) = (rect_of(placement, i), rect_of(placement, j));
+                if !a.intersects(&b) {
+                    continue;
+                }
+                // Share of the push each part takes: the lighter one moves
+                // further, a frozen one not at all.
+                let share_i = match (frozen[i], frozen[j]) {
+                    (true, true) => return false,
+                    (true, false) => 0.0,
+                    (false, true) => 1.0,
+                    (false, false) => weight(&b) / (weight(&a) + weight(&b)),
+                };
+                let overlap_x = a.max.x_nm.min(b.max.x_nm) - a.min.x_nm.max(b.min.x_nm);
+                let overlap_y = a.max.y_nm.min(b.max.y_nm) - a.min.y_nm.max(b.min.y_nm);
+                let along_x = overlap_x <= overlap_y;
+                let push =
+                    ((if along_x { overlap_x } else { overlap_y }) / pitch_nm + 1) * pitch_nm;
+                let move_i =
+                    (synth_geometry::nm_to_mm(push) * share_i / 0.5).round() as i64 * pitch_nm;
+                let move_j = push - move_i;
+                let i_is_low = if along_x {
+                    a.min.x_nm + a.max.x_nm < b.min.x_nm + b.max.x_nm
+                } else {
+                    a.min.y_nm + a.max.y_nm < b.min.y_nm + b.max.y_nm
+                };
+                // i moves away from j, j the other way.
+                let (delta_i, delta_j) = if i_is_low {
+                    (-move_i, move_j)
+                } else {
+                    (move_i, -move_j)
+                };
+                for (index, delta) in [(i, delta_i), (j, delta_j)] {
+                    let centre = &mut placement.components[index].center;
+                    if along_x {
+                        centre.x_nm += delta;
+                    } else {
+                        centre.y_nm += delta;
+                    }
+                }
+                moved = true;
+            }
+        }
+        if !moved {
+            return true;
+        }
+    }
+    false
+}
+
+/// Compact the finished placement and fit the outline round the result, with
+/// the origin back at the corner. A placement compaction cannot improve comes
+/// back untouched, outline included.
+fn compact_and_fit(board: &Board, placement: Placement) -> Placement {
+    let packed = compact_placement(board, placement.clone());
+    if packed.components == placement.components {
+        return placement;
+    }
+    let mut fitted = packed;
+    tighten_outline_to_hints(board, &mut fitted);
+    let origin = fitted.board_outline.min;
+    for placed in &mut fitted.components {
+        placed.center = Point::new(
+            placed.center.x_nm - origin.x_nm,
+            placed.center.y_nm - origin.y_nm,
+        );
+    }
+    fitted.board_outline = Rect::new(
+        Point::new(0, 0),
+        Point::new(
+            fitted.board_outline.width_nm(),
+            fitted.board_outline.height_nm(),
+        ),
+    );
+    fitted
+}
+
+/// Parts whose reach (courtyard plus the edge margin the outline keeps round
+/// it) passes the outer side of an edge connector row. Such a part would hold
+/// the outline out past the connector, leaving it inside the board instead of
+/// on its edge.
+fn edge_overhang(
+    board: &Board,
+    placement: &Placement,
+    sizes: &[(f64, f64)],
+    flush_edge: &dyn Fn(ComponentId) -> Option<usize>,
+) -> usize {
+    let rects: Vec<(Option<usize>, Rect)> = placement
+        .components
+        .iter()
+        .zip(sizes)
+        .map(|(p, size)| {
+            let real = rotated_courtyard_rect(p, *size);
+            let component = board.component(p.id);
+            let edge = flush_edge(p.id);
+            // A connector's reach is its copper plus the clearance the
+            // outline keeps from it, as in `outline_with_flush_connectors`.
+            if let (Some(_), Some(component)) = (edge, component) {
+                let copper = exported_pad_bounds(component, p).unwrap_or(real);
+                return (edge, connector_reach(real, copper));
+            }
+            let margin = component.map_or(0, |c| {
+                if synth_layout::is_board_feature_kind(&c.kind) {
+                    0
+                } else {
+                    mm_to_nm(EDGE_MARGIN_MM)
+                }
+            });
+            (
+                edge,
+                Rect::new(
+                    Point::new(real.min.x_nm - margin, real.min.y_nm - margin),
+                    Point::new(real.max.x_nm + margin, real.max.y_nm + margin),
+                ),
+            )
+        })
+        .collect();
+    (0..4)
+        .map(|edge| {
+            let row = || {
+                rects
+                    .iter()
+                    .filter(|(e, _)| *e == Some(edge))
+                    .map(|(_, r)| r)
+            };
+            let outer = match edge {
+                0 => row().map(|r| r.min.x_nm).min(),
+                1 => row().map(|r| r.min.y_nm).min(),
+                2 => row().map(|r| r.max.x_nm).max(),
+                _ => row().map(|r| r.max.y_nm).max(),
+            };
+            let Some(outer) = outer else { return 0 };
+            rects
+                .iter()
+                .filter(|(e, r)| {
+                    *e != Some(edge)
+                        && match edge {
+                            0 => r.min.x_nm < outer,
+                            1 => r.min.y_nm < outer,
+                            2 => r.max.x_nm > outer,
+                            _ => r.max.y_nm > outer,
+                        }
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// Pack each edge's row of connectors together along that edge, in their
+/// present order and centred on where the row is now. Each connector keeps its
+/// spaced courtyard, so nothing overlaps. This is one-dimensional compaction:
+/// the row only ever moves along its own axis.
+fn pack_edge_rows(
+    placement: &mut Placement,
+    spaced: &[(f64, f64)],
+    flush_edge: &dyn Fn(ComponentId) -> Option<usize>,
+) {
+    let pitch_nm = mm_to_nm(0.5);
+    for edge in 0..4 {
+        // Top and bottom rows run along x, left and right rows along y.
+        let runs_along_x = edge % 2 == 1;
+        let extent_and_centre = |placement: &Placement, index: usize| {
+            let rect = rotated_courtyard_rect(&placement.components[index], spaced[index]);
+            if runs_along_x {
+                (rect.width_nm(), placement.components[index].center.x_nm)
+            } else {
+                (rect.height_nm(), placement.components[index].center.y_nm)
+            }
+        };
+        let mut row: Vec<usize> = (0..placement.components.len())
+            .filter(|&i| flush_edge(placement.components[i].id) == Some(edge))
+            .collect();
+        if row.len() < 2 {
+            continue;
+        }
+        row.sort_by_key(|&i| extent_and_centre(placement, i).1);
+        // Touching courtyards count as overlapping, so leave one grid step
+        // between neighbours.
+        let total: i64 = row
+            .iter()
+            .map(|&i| extent_and_centre(placement, i).0 + pitch_nm)
+            .sum();
+        let first = row[0];
+        let last = row[row.len() - 1];
+        let middle =
+            (extent_and_centre(placement, first).1 + extent_and_centre(placement, last).1) / 2;
+        let mut cursor = middle - total / 2;
+        for &i in &row {
+            let (extent, _) = extent_and_centre(placement, i);
+            let centre = (cursor + extent / 2) / pitch_nm * pitch_nm;
+            let component = &mut placement.components[i];
+            if runs_along_x {
+                component.center.x_nm = centre;
+            } else {
+                component.center.y_nm = centre;
+            }
+            cursor += extent + pitch_nm;
+        }
+    }
+}
+
+/// Label geometry of the PCB exporter's reference-label placer
+/// (`synth-kicad/src/silk_labels.rs`), which this crate cannot call. If those
+/// numbers change there, change them here too.
+const LABEL_CHAR_WIDTH_MM: f64 = 1.0;
+const LABEL_TEXT_HEIGHT_MM: f64 = 1.3;
+const LABEL_SIDE_GAP_MM: f64 = 0.3;
+const LABEL_EDGE_CLEARANCE_MM: f64 = 0.2;
+
+/// How many parts have no free side for their reference label. The exporter
+/// puts each label against its part on the first side that is clear of other
+/// courtyards, other labels and the board edge, and falls back to a far default
+/// that collides when none is. Parts are visited in board order, as there.
+fn labels_without_room(board: &Board, placement: &Placement, sizes: &[(f64, f64)]) -> usize {
+    let courtyards: Vec<Rect> = placement
+        .components
+        .iter()
+        .zip(sizes)
+        .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+        .collect();
+    let edge = mm_to_nm(LABEL_EDGE_CLEARANCE_MM);
+    let outline = placement.board_outline;
+    let inside = |b: &Rect| {
+        b.min.x_nm >= outline.min.x_nm + edge
+            && b.min.y_nm >= outline.min.y_nm + edge
+            && b.max.x_nm <= outline.max.x_nm - edge
+            && b.max.y_nm <= outline.max.y_nm - edge
+    };
+    let mut taken: Vec<Rect> = Vec::new();
+    let mut without_room = 0;
+    for component in &board.components {
+        let Some(i) = placement
+            .components
+            .iter()
+            .position(|p| p.id == component.id)
+        else {
+            continue;
+        };
+        let c = courtyards[i];
+        // A designator is a handful of characters, so the cast is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let width = mm_to_nm(component.refdes.chars().count() as f64 * LABEL_CHAR_WIDTH_MM);
+        let height = mm_to_nm(LABEL_TEXT_HEIGHT_MM);
+        let gap = mm_to_nm(LABEL_SIDE_GAP_MM);
+        let (mid_x, mid_y) = ((c.min.x_nm + c.max.x_nm) / 2, (c.min.y_nm + c.max.y_nm) / 2);
+        let free = [
+            (mid_x, c.min.y_nm - gap - height / 2),
+            (mid_x, c.max.y_nm + gap + height / 2),
+            (c.min.x_nm - gap - width / 2, mid_y),
+            (c.max.x_nm + gap + width / 2, mid_y),
+        ]
+        .iter()
+        .map(|&(x, y)| Rect::from_center_half_extents(Point::new(x, y), width / 2, height / 2))
+        .find(|b| {
+            inside(b)
+                && !courtyards
+                    .iter()
+                    .enumerate()
+                    .any(|(j, o)| j != i && o.intersects(b))
+                && !taken.iter().any(|t| t.intersects(b))
+        });
+        match free {
+            Some(b) => taken.push(b),
+            None => without_room += 1,
+        }
+    }
+    without_room
+}
+
+/// Slide every movable part along one axis, toward the low or the high side,
+/// until it touches the part in its way or reaches the edge of the layout. A
+/// part alone in its band moves into a free spot in the next band over, which
+/// scaling toward the middle never does. Parts move in order from the target
+/// side outward, so none passes another.
+fn slide_parts(
+    placement: &mut Placement,
+    sizes: &[(f64, f64)],
+    movable: &[bool],
+    along_y: bool,
+    toward_low: bool,
+) {
+    let pitch_nm = mm_to_nm(0.5);
+    let Some(envelope) = courtyard_envelope(placement, sizes) else {
+        return;
+    };
+    let mut rects: Vec<Rect> = placement
+        .components
+        .iter()
+        .zip(sizes)
+        .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+        .collect();
+    let along = |r: &Rect| {
+        if along_y {
+            (r.min.y_nm, r.max.y_nm)
+        } else {
+            (r.min.x_nm, r.max.x_nm)
+        }
+    };
+    let across = |r: &Rect| {
+        if along_y {
+            (r.min.x_nm, r.max.x_nm)
+        } else {
+            (r.min.y_nm, r.max.y_nm)
+        }
+    };
+    let (envelope_low, envelope_high) = along(&envelope);
+    let mut order: Vec<usize> = (0..rects.len()).filter(|&i| movable[i]).collect();
+    if toward_low {
+        order.sort_by_key(|&i| along(&rects[i]).0);
+    } else {
+        order.sort_by_key(|&i| std::cmp::Reverse(along(&rects[i]).1));
+    }
+    let mut settled: Vec<usize> = (0..rects.len()).filter(|&i| !movable[i]).collect();
+    for i in order {
+        let (low, high) = along(&rects[i]);
+        let (across_low, across_high) = across(&rects[i]);
+        let mut bound = if toward_low {
+            envelope_low
+        } else {
+            envelope_high
+        };
+        for &other in &settled {
+            let (other_across_low, other_across_high) = across(&rects[other]);
+            if !(across_low < other_across_high && other_across_low < across_high) {
+                continue;
+            }
+            let (other_low, other_high) = along(&rects[other]);
+            if toward_low && other_high <= low {
+                bound = bound.max(other_high + pitch_nm);
+            } else if !toward_low && other_low >= high {
+                bound = bound.min(other_low - pitch_nm);
+            }
+        }
+        // Whole grid steps only, and never away from the target side.
+        let wanted = if toward_low {
+            (bound - low).min(0)
+        } else {
+            (bound - high).max(0)
+        };
+        let shift = wanted / pitch_nm * pitch_nm;
+        let centre = &mut placement.components[i].center;
+        let r = &mut rects[i];
+        if along_y {
+            centre.y_nm += shift;
+            r.min.y_nm += shift;
+            r.max.y_nm += shift;
+        } else {
+            centre.x_nm += shift;
+            r.min.x_nm += shift;
+            r.max.x_nm += shift;
+        }
+        settled.push(i);
+    }
+}
+
+/// Move each edge's connector row inward, as one body, until it meets the
+/// parts beside it or its outer side comes level with the rest of the board.
+/// Sliding the body makes room, and this is how the outline follows.
+fn shift_rows_inward(
+    placement: &mut Placement,
+    sizes: &[(f64, f64)],
+    flush_edge: &dyn Fn(ComponentId) -> Option<usize>,
+) {
+    let pitch_nm = mm_to_nm(0.5);
+    let margin_nm = mm_to_nm(EDGE_MARGIN_MM);
+    let rects: Vec<Rect> = placement
+        .components
+        .iter()
+        .zip(sizes)
+        .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+        .collect();
+    let edges: Vec<Option<usize>> = placement
+        .components
+        .iter()
+        .map(|placed| flush_edge(placed.id))
+        .collect();
+    for edge in 0..4 {
+        let members: Vec<usize> = (0..rects.len())
+            .filter(|&i| edges[i] == Some(edge))
+            .collect();
+        let others: Vec<usize> = (0..rects.len()).filter(|&i| edges[i].is_none()).collect();
+        if members.is_empty() || others.is_empty() {
+            continue;
+        }
+        // Top and bottom rows move in y, left and right rows in x. Rows on a
+        // low edge (left, top) move toward high coordinates.
+        let moves_along_y = edge % 2 == 1;
+        let toward_high = edge < 2;
+        let span = |r: &Rect| {
+            if moves_along_y {
+                (r.min.y_nm, r.max.y_nm)
+            } else {
+                (r.min.x_nm, r.max.x_nm)
+            }
+        };
+        let side = |r: &Rect| {
+            if moves_along_y {
+                (r.min.x_nm, r.max.x_nm)
+            } else {
+                (r.min.y_nm, r.max.y_nm)
+            }
+        };
+        let mut room = i64::MAX;
+        for &m in &members {
+            let (m_low, m_high) = span(&rects[m]);
+            let (m_side_low, m_side_high) = side(&rects[m]);
+            for &o in &others {
+                let (o_side_low, o_side_high) = side(&rects[o]);
+                if !(m_side_low < o_side_high && o_side_low < m_side_high) {
+                    continue;
+                }
+                let (o_low, o_high) = span(&rects[o]);
+                if toward_high && o_low >= m_high {
+                    room = room.min(o_low - m_high - pitch_nm);
+                } else if !toward_high && o_high <= m_low {
+                    room = room.min(m_low - o_high - pitch_nm);
+                }
+            }
+        }
+        // The outer side may come level with the other parts' reach, no more.
+        let row_outer = if toward_high {
+            members.iter().map(|&m| span(&rects[m]).0).min()
+        } else {
+            members.iter().map(|&m| span(&rects[m]).1).max()
+        };
+        let reach = if toward_high {
+            others.iter().map(|&o| span(&rects[o]).0 - margin_nm).min()
+        } else {
+            others.iter().map(|&o| span(&rects[o]).1 + margin_nm).max()
+        };
+        if let (Some(row_outer), Some(reach)) = (row_outer, reach) {
+            room = room.min(if toward_high {
+                reach - row_outer
+            } else {
+                row_outer - reach
+            });
+        }
+        let shift = room.max(0) / pitch_nm * pitch_nm;
+        if shift == 0 {
+            continue;
+        }
+        let signed = if toward_high { shift } else { -shift };
+        for &m in &members {
+            let centre = &mut placement.components[m].center;
+            if moves_along_y {
+                centre.y_nm += signed;
+            } else {
+                centre.x_nm += signed;
+            }
+        }
+    }
+}
+
+/// Pull the layout toward `middle` by `permille` thousandths of each distance.
+/// Free parts scale about the middle; each edge's connector row moves inward
+/// as one body, by the amount its own middle would have scaled, so the row
+/// keeps its spacing.
+fn squeeze(
+    placement: &mut Placement,
+    permille: i64,
+    middle: Point,
+    frozen: &[bool],
+    flush_edge: &dyn Fn(ComponentId) -> Option<usize>,
+) {
+    let pitch_nm = mm_to_nm(0.5);
+    let scale = |value: i64, centre: i64| {
+        (centre + (value - centre) * permille / 1000) / pitch_nm * pitch_nm
+    };
+    let mut row_shift = [0i64; 4];
+    for (edge, shift) in row_shift.iter_mut().enumerate() {
+        // Left and right rows move in x, top and bottom rows in y.
+        let faces_x = edge % 2 == 0;
+        let row: Vec<i64> = placement
+            .components
+            .iter()
+            .filter(|p| flush_edge(p.id) == Some(edge))
+            .map(|p| {
+                if faces_x {
+                    p.center.x_nm
+                } else {
+                    p.center.y_nm
+                }
+            })
+            .collect();
+        if row.is_empty() {
+            continue;
+        }
+        let mean = row.iter().sum::<i64>() / row.len() as i64;
+        *shift = scale(mean, if faces_x { middle.x_nm } else { middle.y_nm }) - mean;
+    }
+    for (placed, frozen) in placement.components.iter_mut().zip(frozen) {
+        if let Some(edge) = flush_edge(placed.id) {
+            if edge % 2 == 0 {
+                placed.center.x_nm += row_shift[edge];
+            } else {
+                placed.center.y_nm += row_shift[edge];
+            }
+        } else if !frozen {
+            placed.center = Point::new(
+                scale(placed.center.x_nm, middle.x_nm),
+                scale(placed.center.y_nm, middle.y_nm),
+            );
+        }
+    }
+}
+
+/// Global compaction: pull every free part toward the middle of the layout,
+/// push apart whatever then overlaps, and keep the step only when the box
+/// around the courtyards shrinks while wiring gets no longer, nothing enters a
+/// keepout and the review does not get worse. Scaling the whole layout together
+/// keeps neighbours near each other, and a step that lengthens the wiring (an
+/// IC leaving its caps) is rejected by the wirelength check.
+/// Hard-hinted parts stay put, except an edge connector, which the outline
+/// follows: each edge's row of connectors moves inward as one body. The
+/// caller fits the outline around the result.
+fn compact_placement(board: &Board, placement: Placement) -> Placement {
+    let frozen_ids: std::collections::HashSet<ComponentId> = board
+        .components
+        .iter()
+        .filter(|c| is_hard_hinted(c) && !is_edge_flush_connector(c))
+        .map(|c| c.id)
+        .collect();
+    // Edge connectors keep their spacing: each edge's row moves as one body,
+    // inward from its own edge, and the separation pass never nudges them.
+    let flush_edge = |id: ComponentId| flush_edge_index(board, id);
+    // Judge every step against an outline fitted to its parts, so a part
+    // pushed past the old edge is not mistaken for an off-board one.
+    let mut current = placement;
+    tighten_outline_to_hints(board, &mut current);
+    let sizes = courtyard_sizes(board, &current);
+    // A part with many pins needs room for its traces to leave, so it gets a
+    // wider ring.
+    let spaced: Vec<(f64, f64)> = current
+        .components
+        .iter()
+        .zip(&sizes)
+        .map(|(placed, (w, h))| {
+            let pins = board
+                .component(placed.id)
+                .and_then(|c| c.part.as_ref())
+                .map_or(0, |part| part.pins.len());
+            let ring = if pins >= DENSE_PART_PINS {
+                DENSE_PART_RING_MM
+            } else {
+                0.0
+            };
+            (w + ring, h + ring)
+        })
+        .collect();
+    let frozen: Vec<bool> = current
+        .components
+        .iter()
+        .map(|p| frozen_ids.contains(&p.id))
+        .collect();
+    let pinned: Vec<bool> = current
+        .components
+        .iter()
+        .zip(&frozen)
+        .map(|(p, frozen)| *frozen || flush_edge(p.id).is_some())
+        .collect();
+    let movable: Vec<bool> = pinned.iter().map(|p| !p).collect();
+    // The placer docks each edge connector to the edge later, by a short
+    // slide. That only works when nothing sits beyond the connector row, so a
+    // layout that already has such a part is left as it is.
+    if edge_overhang(board, &current, &sizes, &flush_edge) > 0 {
+        return current;
+    }
+    for _ in 0..COMPACT_ROUNDS {
+        let Some(envelope) = courtyard_envelope(&current, &sizes) else {
+            break;
+        };
+        let area = area_mm2(&envelope);
+        let middle = Point::new(
+            (envelope.min.x_nm + envelope.max.x_nm) / 2,
+            (envelope.min.y_nm + envelope.max.y_nm) / 2,
+        );
+        let hpwl = total_hpwl_nm(board, &current);
+        let hits = keepout_hits(board, &current);
+        let labels = labels_without_room(board, &current, &sizes);
+        // Separate what overlaps, then keep the candidate only if the box
+        // around the courtyards is smaller and nothing got worse.
+        let settle = |mut candidate: Placement| -> Option<Placement> {
+            let fitted = separate_overlaps(&mut candidate, &spaced, &pinned);
+            let smaller = courtyard_envelope(&candidate, &sizes)
+                .is_some_and(|candidate_envelope| area_mm2(&candidate_envelope) < area);
+            if !(fitted && smaller) {
+                return None;
+            }
+            tighten_outline_to_hints(board, &mut candidate);
+            let better = total_hpwl_nm(board, &candidate) <= hpwl
+                && keepout_hits(board, &candidate) <= hits
+                && edge_overhang(board, &candidate, &sizes, &flush_edge) == 0
+                && labels_without_room(board, &candidate, &sizes) <= labels;
+            (better && keep_unless_worse(board, current.clone(), candidate.clone()) == candidate)
+                .then_some(candidate)
+        };
+        let squeezed = COMPACT_PERMILLE.iter().find_map(|permille| {
+            let mut candidate = current.clone();
+            squeeze(&mut candidate, *permille, middle, &frozen, &flush_edge);
+            settle(candidate)
+        });
+        // When nothing squeezes any further, let parts slide into free spots
+        // in the next band, and let the connector rows follow.
+        let slid = || {
+            [(true, true), (true, false), (false, true), (false, false)]
+                .iter()
+                .find_map(|&(along_y, toward_low)| {
+                    let mut candidate = current.clone();
+                    slide_parts(&mut candidate, &spaced, &movable, along_y, toward_low);
+                    shift_rows_inward(&mut candidate, &spaced, &flush_edge);
+                    settle(candidate)
+                })
+        };
+        // A row of connectors along an edge may still be setting the board
+        // width: pack it.
+        let packed = || {
+            let mut packed = current.clone();
+            pack_edge_rows(&mut packed, &spaced, &flush_edge);
+            settle(packed)
+        };
+        let next = squeezed.or_else(slid).or_else(packed);
+        match next {
+            Some(candidate) => current = candidate,
+            None => break,
+        }
+    }
+    current
+}
+
 /// Nets with more pins than this are power rails or buses. They are
 /// routed as pours or trunks, so pulling parts toward their middle only
 /// scatters everything else.
@@ -4590,6 +5391,8 @@ fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
     let pitch_nm = mm_to_nm(0.5);
     let mut hpwl = total_hpwl_nm(board, &placement);
     let mut hits = keepout_hits(board, &placement);
+    let sizes = courtyard_sizes(board, &placement);
+    let mut labels = labels_without_room(board, &placement, &sizes);
     for _ in 0..HPWL_PASSES {
         let mut improved = false;
         for (component_index, component) in board.components.iter().enumerate() {
@@ -4657,9 +5460,11 @@ fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
             }
             let (trial_hpwl, trial_hits) =
                 (total_hpwl_nm(board, &trial), keepout_hits(board, &trial));
-            if trial_hpwl < hpwl && trial_hits <= hits {
+            let trial_labels = labels_without_room(board, &trial, &sizes);
+            if trial_hpwl < hpwl && trial_hits <= hits && trial_labels <= labels {
                 hpwl = trial_hpwl;
                 hits = trial_hits;
+                labels = trial_labels;
                 placement = trial;
                 improved = true;
             }
@@ -5554,6 +6359,488 @@ mod tests {
         assert_eq!(keep_unless_worse(&board, clean, closer.clone()), closer);
     }
 
+    const FOUR_IN_A_CHAIN: &str = r#"
+        component R1: resistor "r_generic_0603" value "10k"
+        component R2: resistor "r_generic_0603" value "10k"
+        component R3: resistor "r_generic_0603" value "10k"
+        component R4: resistor "r_generic_0603" value "10k"
+        connect R1.p2 -> R2.p1
+        connect R2.p2 -> R3.p1
+        connect R3.p2 -> R4.p1
+    "#;
+
+    fn overlaps(board: &Board, placement: &Placement) -> usize {
+        describe_placement(board, placement)
+            .visual_review
+            .findings
+            .iter()
+            .filter(|f| f.contains("courtyard overlap"))
+            .count()
+    }
+
+    /// A loose layout is squeezed toward its centre: the envelope around the
+    /// courtyards shrinks, wiring gets no longer, and nothing overlaps.
+    #[test]
+    fn compaction_squeezes_a_loose_layout() {
+        let (board, loose) = row_board(FOUR_IN_A_CHAIN, &[8.0, 24.0, 40.0, 56.0]);
+        let packed = compact_placement(&board, loose.clone());
+        assert!(
+            courtyard_envelope_area_mm2(&board, &packed)
+                < courtyard_envelope_area_mm2(&board, &loose) / 2.0,
+            "envelope did not shrink"
+        );
+        assert!(total_hpwl_nm(&board, &packed) <= total_hpwl_nm(&board, &loose));
+        assert_eq!(overlaps(&board, &packed), 0);
+    }
+
+    /// Parts that already touch cannot be squeezed through each other: the
+    /// pass separates them again instead of leaving an overlap.
+    #[test]
+    fn compaction_never_leaves_an_overlap() {
+        let (board, tight) = row_board(FOUR_IN_A_CHAIN, &[30.0, 33.5, 37.0, 40.5]);
+        assert_eq!(overlaps(&board, &tight), 0, "setup: parts only touch");
+        let packed = compact_placement(&board, tight);
+        assert_eq!(overlaps(&board, &packed), 0);
+    }
+
+    /// A hard hint is the author's decision: those parts keep their places
+    /// relative to each other (the whole board may shift to the origin).
+    #[test]
+    fn compaction_never_moves_a_hard_hinted_part() {
+        let hard = "{ placement_hint { region: top_left priority: hard } }";
+        let components = FOUR_IN_A_CHAIN
+            .replace(
+                r#"component R1: resistor "r_generic_0603" value "10k""#,
+                &format!(r#"component R1: resistor "r_generic_0603" value "10k" {hard}"#),
+            )
+            .replace(
+                r#"component R4: resistor "r_generic_0603" value "10k""#,
+                &format!(r#"component R4: resistor "r_generic_0603" value "10k" {hard}"#),
+            );
+        let (board, loose) = row_board(&components, &[8.0, 24.0, 40.0, 56.0]);
+        let packed = compact_placement(&board, loose.clone());
+        let span = |p: &Placement| {
+            let (r1, r4) = (centre_of(&board, p, "R1"), centre_of(&board, p, "R4"));
+            (r4.x_nm - r1.x_nm, r4.y_nm - r1.y_nm)
+        };
+        assert_eq!(span(&packed), span(&loose));
+    }
+
+    /// Squeezing must not push a part into a keepout circle. With the antenna
+    /// held in place and no keepout declared, the same squeeze does bring a
+    /// part inside the circle, so the guard is what holds it back.
+    #[test]
+    fn compaction_never_moves_a_part_into_a_keepout() {
+        let build = |keepout: &str| {
+            let components = format!(
+                r#"{FOUR_IN_A_CHAIN}
+                   component ANT1: antenna "ant_chip_2g4" {{ placement_hint {{ region: top_left priority: hard }} }}
+                   {keepout}"#
+            );
+            let (board, mut loose) = row_board(&components, &[8.0, 24.0, 40.0, 56.0, 30.0]);
+            move_part(&mut loose, &board, "ANT1", 30.0, 30.0);
+            (board, loose)
+        };
+        let nearest_part = |board: &Board, p: &Placement| {
+            let ant = centre_of(board, p, "ANT1");
+            ["R1", "R2", "R3", "R4"]
+                .iter()
+                .map(|r| {
+                    let c = centre_of(board, p, r);
+                    synth_geometry::nm_to_mm(c.x_nm - ant.x_nm)
+                        .hypot(synth_geometry::nm_to_mm(c.y_nm - ant.y_nm))
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        let radius_mm = 15.0;
+
+        let (open_board, open) = build("");
+        let squeezed = compact_placement(&open_board, open);
+        assert!(
+            nearest_part(&open_board, &squeezed) < radius_mm,
+            "setup: without a keepout the squeeze enters the circle"
+        );
+
+        let (board, loose) = build("keepout antenna { radius 15mm }");
+        assert_eq!(keepout_hits(&board, &loose), 0, "setup is clear");
+        let packed = compact_placement(&board, loose);
+        assert_eq!(keepout_hits(&board, &packed), 0);
+    }
+
+    /// A row of connectors along an edge is packed together, in the same
+    /// order, so the row stops setting the board width.
+    #[test]
+    fn packing_an_edge_row_closes_its_gaps_and_keeps_the_order() {
+        let edge = "{ placement_hint { edge: bottom priority: hard } }";
+        let components = format!(
+            r#"component J1: connector "header_1x3" {edge}
+               component J2: connector "header_1x3" {edge}
+               component J3: connector "header_1x3" {edge}
+               component R1: resistor "r_generic_0603" value "10k""#
+        );
+        let (board, mut loose) = row_board(&components, &[8.0, 30.0, 52.0, 30.0]);
+        for (refdes, x) in [("J1", 8.0), ("J2", 30.0), ("J3", 52.0)] {
+            move_part(&mut loose, &board, refdes, x, 26.0);
+        }
+        let sizes = courtyard_sizes(&board, &loose);
+        let flush_edge = |id: ComponentId| {
+            board
+                .component(id)
+                .filter(|c| is_edge_flush_connector(c))
+                .map(|_| 3)
+        };
+
+        let mut packed = loose.clone();
+        pack_edge_rows(&mut packed, &sizes, &flush_edge);
+
+        let x = |p: &Placement, r| centre_of(&board, p, r).x_nm;
+        assert!(x(&packed, "J3") - x(&packed, "J1") < (x(&loose, "J3") - x(&loose, "J1")) / 2);
+        assert!(x(&packed, "J1") < x(&packed, "J2") && x(&packed, "J2") < x(&packed, "J3"));
+        assert_eq!(
+            centre_of(&board, &packed, "R1"),
+            centre_of(&board, &loose, "R1")
+        );
+        assert_eq!(overlaps(&board, &packed), 0);
+    }
+
+    /// A part alone in its band slides into the free spot in the band above,
+    /// and the part it would have to pass stays put.
+    #[test]
+    fn a_lone_part_slides_into_the_band_above() {
+        let components = r#"
+            component R1: resistor "r_generic_0603" value "10k"
+            component R2: resistor "r_generic_0603" value "10k"
+            component R3: resistor "r_generic_0603" value "10k"
+        "#;
+        let (board, mut loose) = row_board(components, &[10.0, 30.0, 20.0]);
+        move_part(&mut loose, &board, "R3", 20.0, 25.0);
+        let sizes = courtyard_sizes(&board, &loose);
+        let movable = vec![true; loose.components.len()];
+
+        let mut slid = loose.clone();
+        slide_parts(&mut slid, &sizes, &movable, true, true);
+
+        let y = |p: &Placement, r| centre_of(&board, p, r).y_nm;
+        assert_eq!(y(&slid, "R3"), y(&slid, "R1"), "R3 joins the band above");
+        assert_eq!(y(&slid, "R1"), y(&loose, "R1"));
+        assert_eq!(overlaps(&board, &slid), 0);
+    }
+
+    /// A part cannot slide through one that is in its way.
+    #[test]
+    fn a_sliding_part_stops_at_the_part_above_it() {
+        let components = r#"
+            component R1: resistor "r_generic_0603" value "10k"
+            component R2: resistor "r_generic_0603" value "10k"
+        "#;
+        let (board, mut loose) = row_board(components, &[20.0, 20.0]);
+        move_part(&mut loose, &board, "R2", 20.0, 25.0);
+        let sizes = courtyard_sizes(&board, &loose);
+        let movable = vec![true; loose.components.len()];
+
+        let mut slid = loose.clone();
+        slide_parts(&mut slid, &sizes, &movable, true, true);
+
+        let y = |p: &Placement, r| centre_of(&board, p, r).y_nm;
+        assert!(y(&slid, "R2") > y(&slid, "R1"), "order kept");
+        assert!(y(&slid, "R2") < y(&loose, "R2"), "closed the gap");
+        assert_eq!(overlaps(&board, &slid), 0);
+    }
+
+    /// A connector row follows the body inward as far as nothing is in its way.
+    #[test]
+    fn an_edge_row_moves_inward_to_meet_the_body() {
+        let edge = "{ placement_hint { edge: bottom priority: hard } }";
+        let components = format!(
+            r#"component J1: connector "header_1x3" {edge}
+               component R1: resistor "r_generic_0603" value "10k""#
+        );
+        let (board, mut loose) = row_board(&components, &[30.0, 30.0]);
+        move_part(&mut loose, &board, "J1", 30.0, 40.0);
+        move_part(&mut loose, &board, "R1", 30.0, 10.0);
+        let sizes = courtyard_sizes(&board, &loose);
+        let flush_edge = |id: ComponentId| {
+            board
+                .component(id)
+                .filter(|c| is_edge_flush_connector(c))
+                .map(|_| 3)
+        };
+
+        let mut moved = loose.clone();
+        shift_rows_inward(&mut moved, &sizes, &flush_edge);
+
+        let y = |p: &Placement, r| centre_of(&board, p, r).y_nm;
+        assert!(y(&moved, "J1") < y(&loose, "J1"), "row moved up");
+        assert!(
+            y(&moved, "J1") > y(&moved, "R1"),
+            "row still below the part"
+        );
+        assert_eq!(overlaps(&board, &moved), 0);
+    }
+
+    /// Reference labels need a free side to sit on. A grid of parts with
+    /// long designators is squeezed only as far as every part keeps room for
+    /// its label, so the silkscreen stays readable.
+    #[test]
+    fn compaction_keeps_a_free_side_for_every_label() {
+        // Two columns, three rows, 8 mm apart: plenty of room for labels.
+        let grid = [
+            ("RLONG1", 15.0, 6.0),
+            ("RLONG2", 40.0, 6.0),
+            ("RLONG3", 15.0, 14.0),
+            ("RLONG4", 40.0, 14.0),
+            ("RLONG5", 15.0, 22.0),
+            ("RLONG6", 40.0, 22.0),
+        ];
+        let components: String = grid
+            .iter()
+            .map(|(n, _, _)| format!("component {n}: resistor \"r_generic_0603\" value \"10k\"\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let (board, mut loose) = row_board(&components, &[0.0; 6]);
+        for (name, x, y) in grid {
+            move_part(&mut loose, &board, name, x, y);
+        }
+        let sizes = courtyard_sizes(&board, &loose);
+        assert_eq!(
+            labels_without_room(&board, &loose, &sizes),
+            0,
+            "setup: every label has room"
+        );
+
+        let packed = compact_placement(&board, loose.clone());
+
+        let sizes = courtyard_sizes(&board, &packed);
+        assert_eq!(labels_without_room(&board, &packed, &sizes), 0);
+        assert!(
+            courtyard_envelope_area_mm2(&board, &packed)
+                < courtyard_envelope_area_mm2(&board, &loose),
+            "setup: the grid still compacts"
+        );
+    }
+
+    /// The wirelength pass does not crowd a part so that its reference label
+    /// loses the last free side: R2 is boxed in above, below and to the right,
+    /// so a part parked on its left would leave its label nowhere to go.
+    #[test]
+    fn the_wirelength_pass_leaves_every_label_a_free_side() {
+        let names = ["RLONG1", "RLONG2", "RLONG3", "RLONG4", "RLONG5", "RLONG6"];
+        // Only R1 may move; the parts around R2 are held by hard hints.
+        let held = "{ placement_hint { region: top_left priority: hard } }";
+        let mut components: String = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let hint = if i == 0 { "" } else { held };
+                format!("component {n}: resistor \"r_generic_0603\" value \"10k\" {hint}\n")
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        components.push_str("connect RLONG1.p2 -> RLONG2.p1\n");
+        let (board, mut loose) = row_board(&components, &[0.0; 6]);
+        for (name, x, y) in [
+            ("RLONG1", 8.0, 15.0),
+            ("RLONG2", 30.0, 15.0),
+            ("RLONG3", 30.0, 12.4),
+            ("RLONG4", 30.0, 17.6),
+            ("RLONG5", 33.4, 15.0),
+            ("RLONG6", 27.0, 12.4),
+        ] {
+            move_part(&mut loose, &board, name, x, y);
+        }
+        let sizes = courtyard_sizes(&board, &loose);
+        let before = labels_without_room(&board, &loose, &sizes);
+
+        let moved = shorten_wires(&board, loose.clone());
+
+        let after = labels_without_room(&board, &moved, &sizes);
+        assert!(after <= before, "labels without room: {before} -> {after}");
+    }
+
+    /// With nothing but a spread-out row of edge connectors, only packing the
+    /// row can shrink the board, so this is the compaction loop's packing step.
+    #[test]
+    fn compaction_packs_a_lone_connector_row() {
+        let edge = "{ placement_hint { edge: bottom priority: hard } }";
+        let components = format!(
+            r#"component J1: connector "header_1x3" {edge}
+               component J2: connector "header_1x3" {edge}
+               component J3: connector "header_1x3" {edge}"#
+        );
+        let (board, mut loose) = row_board(&components, &[0.0; 3]);
+        for (refdes, x) in [("J1", 8.0), ("J2", 30.0), ("J3", 52.0)] {
+            move_part(&mut loose, &board, refdes, x, 26.0);
+        }
+
+        let packed = compact_placement(&board, loose.clone());
+
+        let x = |p: &Placement, r| centre_of(&board, p, r).x_nm;
+        assert!(x(&packed, "J3") - x(&packed, "J1") < (x(&loose, "J3") - x(&loose, "J1")) / 2);
+        assert_eq!(overlaps(&board, &packed), 0);
+    }
+
+    /// A bottom connector row follows the body up when the body sits far
+    /// above it, which is what makes the board shorter.
+    #[test]
+    fn compaction_moves_a_bottom_row_up_to_meet_the_body() {
+        let edge = "{ placement_hint { edge: bottom priority: hard } }";
+        let components = format!(
+            r#"component J1: connector "header_1x3" {edge}
+               component R1: resistor "r_generic_0603" value "10k"
+               component R2: resistor "r_generic_0603" value "10k""#
+        );
+        let (board, mut loose) = row_board(&components, &[0.0; 3]);
+        move_part(&mut loose, &board, "J1", 30.0, 40.0);
+        move_part(&mut loose, &board, "R1", 25.0, 8.0);
+        move_part(&mut loose, &board, "R2", 35.0, 8.0);
+
+        let packed = compact_placement(&board, loose.clone());
+
+        let y = |p: &Placement| centre_of(&board, p, "J1").y_nm;
+        assert!(y(&packed) < y(&loose), "the row did not move up");
+        assert_eq!(overlaps(&board, &packed), 0);
+    }
+
+    /// The flush side of an edge connector comes from its hint. Here the
+    /// connector pokes out furthest on the left, so the geometry alone would
+    /// pick the left edge; the hint says bottom.
+    #[test]
+    fn the_outline_is_flush_on_the_hinted_side() {
+        let edge = "{ placement_hint { edge: bottom priority: hard } }";
+        let components = format!(
+            r#"component J1: connector "header_1x3" {edge}
+               component R1: resistor "r_generic_0603" value "10k"
+               component R2: resistor "r_generic_0603" value "10k""#
+        );
+        let (board, mut placement) = row_board(&components, &[0.0; 3]);
+        move_part(&mut placement, &board, "J1", 8.0, 24.0);
+        move_part(&mut placement, &board, "R1", 40.0, 10.0);
+        move_part(&mut placement, &board, "R2", 46.0, 12.0);
+        let j1 = board
+            .components
+            .iter()
+            .find(|c| c.refdes == "J1")
+            .expect("J1");
+        let placed = placement.component_by_refdes(&board, "J1").expect("placed");
+        let bottom_gap = |p: &Placement| {
+            p.board_outline.max.y_nm - sidecar_courtyard_rect(&board, j1, placed).max.y_nm
+        };
+
+        let mut by_hint = placement.clone();
+        tighten_outline_to_hints(&board, &mut by_hint);
+        let mut by_geometry = placement.clone();
+        tighten_outline_after_sidecar(&board, &mut by_geometry);
+
+        assert!(
+            bottom_gap(&by_hint) <= mm_to_nm(1.0),
+            "flush on the hinted bottom"
+        );
+        assert!(
+            bottom_gap(&by_geometry) > mm_to_nm(1.0),
+            "setup: geometry picks another side"
+        );
+    }
+
+    /// An IC keeps its decoupling caps beside it: squeezing the board does not
+    /// leave them further away than they started.
+    #[test]
+    fn compaction_does_not_pull_an_ic_away_from_its_caps() {
+        let components = r#"
+            component U1: mcu "rp2350"
+            component C1: capacitor "c_generic_0603" value "100n"
+            component C2: capacitor "c_generic_0603" value "100n"
+            component R1: resistor "r_generic_0603" value "10k"
+            connect U1.dvdd -> C1.p1
+            connect U1.gnd -> C1.p2
+            connect U1.dvdd -> C2.p1
+            connect U1.gnd -> C2.p2
+        "#;
+        let (board, mut loose) = row_board(components, &[0.0; 4]);
+        move_part(&mut loose, &board, "U1", 30.0, 15.0);
+        move_part(&mut loose, &board, "C1", 21.0, 15.0);
+        move_part(&mut loose, &board, "C2", 39.0, 15.0);
+        move_part(&mut loose, &board, "R1", 5.0, 5.0);
+        let gap_mm = |p: &Placement, cap: &str| {
+            let (u, c) = (centre_of(&board, p, "U1"), centre_of(&board, p, cap));
+            nm_to_mm(c.x_nm - u.x_nm).hypot(nm_to_mm(c.y_nm - u.y_nm))
+        };
+
+        let packed = compact_placement(&board, loose.clone());
+
+        for cap in ["C1", "C2"] {
+            assert!(
+                gap_mm(&packed, cap) <= gap_mm(&loose, cap) + 0.01,
+                "{cap} moved away from U1: {:.1} -> {:.1} mm",
+                gap_mm(&loose, cap),
+                gap_mm(&packed, cap)
+            );
+        }
+    }
+
+    /// A caller that is about to apply a sidecar asks for the uncompacted
+    /// layout; the default keeps compacting.
+    #[test]
+    fn place_with_hints_can_skip_compaction() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let (uncompacted, _) = place_with_hints_compacting(&board, &[], false).expect("place");
+        assert_eq!(
+            uncompacted,
+            place_with_default_tuning(&board, false).expect("place")
+        );
+        let (compacted, _) = place_with_hints(&board, &[]).expect("place");
+        assert_eq!(compacted, place(&board).expect("place"));
+        assert_ne!(
+            compacted, uncompacted,
+            "setup: compaction changes this board"
+        );
+    }
+
+    /// One squeeze step on its own: a free part scales toward the middle and
+    /// a bottom connector row moves up by the same proportion, as one body.
+    #[test]
+    fn a_squeeze_step_moves_parts_and_edge_rows_toward_the_middle() {
+        let edge = "{ placement_hint { edge: bottom priority: hard } }";
+        let components = format!(
+            r#"component J1: connector "header_1x3" {edge}
+               component J2: connector "header_1x3" {edge}
+               component R1: resistor "r_generic_0603" value "10k""#
+        );
+        let (board, mut loose) = row_board(&components, &[0.0; 3]);
+        move_part(&mut loose, &board, "J1", 20.0, 40.0);
+        move_part(&mut loose, &board, "J2", 40.0, 40.0);
+        move_part(&mut loose, &board, "R1", 30.0, 10.0);
+        let frozen = vec![false; loose.components.len()];
+        let flush_edge = |id: ComponentId| flush_edge_index(&board, id);
+        let middle = Point::new(mm_to_nm(30.0), mm_to_nm(25.0));
+
+        let mut squeezed = loose.clone();
+        squeeze(&mut squeezed, 900, middle, &frozen, &flush_edge);
+
+        let at = |p: &Placement, r| centre_of(&board, p, r);
+        // y: 40 -> 25 + 15 * 0.9 = 38.5, snapped to the grid; R1: 10 -> 11.5.
+        assert_eq!(at(&squeezed, "J1").y_nm, mm_to_nm(38.5));
+        assert_eq!(
+            at(&squeezed, "J2").y_nm,
+            at(&squeezed, "J1").y_nm,
+            "one body"
+        );
+        assert_eq!(
+            at(&squeezed, "J1").x_nm,
+            at(&loose, "J1").x_nm,
+            "row keeps its spacing"
+        );
+        assert_eq!(at(&squeezed, "R1").y_nm, mm_to_nm(11.5));
+    }
+
+    #[test]
+    fn compaction_is_deterministic() {
+        let (board, loose) = row_board(FOUR_IN_A_CHAIN, &[8.0, 24.0, 40.0, 56.0]);
+        assert_eq!(
+            compact_placement(&board, loose.clone()),
+            compact_placement(&board, loose)
+        );
+    }
+
     /// A two-pin connector is still a connector: it sits where the board edge
     /// and the cable want it, so only the resistor moves.
     #[test]
@@ -5943,6 +7230,44 @@ mod tests {
             u1_index,
             overridden.components[u1_placement_index]
         ));
+    }
+
+    /// A sidecar was written against the uncompacted layout, so a board that
+    /// has one is placed without compaction and every part it leaves alone
+    /// stays where the sidecar's author saw it.
+    #[test]
+    fn a_board_with_a_sidecar_is_placed_without_compaction() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let sidecar_path = std::env::temp_dir().join(format!(
+            "synth-place-no-compact-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &sidecar_path,
+            "schema_version = 2\n\n[components.U1]\nx = 31.0\ny = 13.0\nrotation = 90\nsource = \"human_drag\"\npriority = \"hard\"\n",
+        )
+        .expect("sidecar TOML written");
+
+        let with_sidecar = place_with_sidecar(&board, Some(&sidecar_path)).expect("place");
+
+        let mut expected = place_with_default_tuning(&board, false).expect("place");
+        let sidecar = synth_layout::sidecar::SidecarLayout::load_from_file(&sidecar_path)
+            .expect("sidecar loads");
+        apply_sidecar_overrides(&board, &mut expected, &sidecar);
+        tighten_outline_after_sidecar(&board, &mut expected);
+        std::fs::remove_file(&sidecar_path).ok();
+
+        assert_eq!(with_sidecar, expected);
+        assert_ne!(
+            with_sidecar,
+            {
+                let mut compacted = place(&board).expect("place");
+                apply_sidecar_overrides(&board, &mut compacted, &sidecar);
+                tighten_outline_after_sidecar(&board, &mut compacted);
+                compacted
+            },
+            "setup: compaction changes this board"
+        );
     }
 
     const EDGES: [&str; 4] = ["left", "right", "top", "bottom"];

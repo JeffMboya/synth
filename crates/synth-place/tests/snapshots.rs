@@ -92,15 +92,17 @@ fn feather_m4_express_placement_snapshot() {
 }
 
 #[test]
-fn feather_m4_express_outline_area_stays_within_baseline_tolerance() {
+fn feather_m4_express_outline_area_does_not_grow_past_baseline() {
     let board = load_board("fixtures/designs/feather_m4_express.synth");
     let placement = synth_place::place(&board).expect("place");
     let area = nm_to_mm(placement.board_outline.width_nm())
         * nm_to_mm(placement.board_outline.height_nm());
     let baseline = FEATHER_M4_EXPRESS_BASELINE_OUTLINE_AREA_MM2_115_04_X_95_40;
+    // The guard is against growth. Global compaction now shrinks this board,
+    // which is the point, so only an outline above the baseline fails.
     assert!(
-        (area - baseline).abs() <= baseline * OUTLINE_AREA_TOLERANCE,
-        "outline area {area:.1} mm2 deviates more than 10% from baseline {baseline:.1} mm2"
+        area <= baseline * (1.0 + OUTLINE_AREA_TOLERANCE),
+        "outline area {area:.1} mm2 is more than 10% above baseline {baseline:.1} mm2"
     );
 }
 

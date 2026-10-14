@@ -3128,8 +3128,12 @@ fn execute_place_with_hints(
     }
     let requested_dimensions = family_dimensions.or(explicit_dimensions);
 
+    // A sidecar was written against the uncompacted layout, so a board that
+    // has one is placed without compaction.
+    let sidecar_opt = resolve_placement_sidecar(args, file_name);
+    let compact = !sidecar_opt.as_deref().is_some_and(std::path::Path::exists);
     let placement_result = requested_dimensions.map_or_else(
-        || synth_place::place_with_hints(&board, &hints),
+        || synth_place::place_with_hints_compacting(&board, &hints, compact),
         |(width, height)| {
             synth_place::place_with_hints_and_dimensions(&board, &hints, width, height)
         },
@@ -3137,7 +3141,6 @@ fn execute_place_with_hints(
 
     match placement_result {
         Ok((mut placement, report)) => {
-            let sidecar_opt = resolve_placement_sidecar(args, file_name);
             if let Some(sc_path) = sidecar_opt.as_deref() {
                 if let Some(sidecar) = synth_layout::sidecar::SidecarLayout::load_from_file(sc_path)
                 {
