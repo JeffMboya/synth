@@ -38,7 +38,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use synth_geometry::{mm_to_nm, nm_to_mm, Layer, Rotation};
+use synth_geometry::{mm_to_nm, nm_to_mm, Layer, Point, Rotation};
 use synth_ir::{Board, ComponentId, Stackup, StackupLayer};
 use synth_pcb::{Routing, Segment};
 use synth_place::{ComponentPlacement, Placement};
@@ -262,13 +262,31 @@ pub fn build_pcb(
         if board.layers >= 4 && plane_index == 0 {
             let outline = placement.board_outline;
             let inset = mm_to_nm(1.5);
+            let holes: Vec<(Point, i64)> = board
+                .components
+                .iter()
+                .filter(|component| component.kind == "mounting_hole")
+                .filter_map(|component| {
+                    let centre = placements_by_id.get(&component.id)?.center;
+                    let width_mm = component
+                        .part
+                        .as_ref()?
+                        .footprint_dimensions
+                        .as_ref()?
+                        .width_mm;
+                    Some((centre, mm_to_nm(width_mm / 2.0)))
+                })
+                .collect();
+            // Left corners slide right and right corners slide left.
             let points = [
-                (outline.min.x_nm + inset, outline.min.y_nm + inset),
-                (outline.max.x_nm - inset, outline.min.y_nm + inset),
-                (outline.max.x_nm - inset, outline.max.y_nm - inset),
-                (outline.min.x_nm + inset, outline.max.y_nm - inset),
+                (outline.min.x_nm + inset, outline.min.y_nm + inset, 1),
+                (outline.max.x_nm - inset, outline.min.y_nm + inset, -1),
+                (outline.max.x_nm - inset, outline.max.y_nm - inset, -1),
+                (outline.min.x_nm + inset, outline.max.y_nm - inset, 1),
             ];
-            for (stitch_index, (x_nm, y_nm)) in points.into_iter().enumerate() {
+            for (stitch_index, (x_nm, y_nm, inward)) in points.into_iter().enumerate() {
+                let Point { x_nm, y_nm } =
+                    clear_of_mounting_holes(Point::new(x_nm, y_nm), inward, &holes);
                 children.push(build_ground_stitch_via(
                     x_nm,
                     y_nm,
@@ -654,6 +672,32 @@ fn build_plane_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usiz
             str_pair("uuid", via_uuid.to_string()),
         ],
     )
+}
+
+/// How far a via keeps from a mounting hole's edge, in mm. A screw head and its
+/// washer sit over the copper round the hole, so a via closer than this is
+/// under them. Covers the head of an M3 screw (about 5.5 mm across) with room
+/// for the via's own pad.
+const MOUNTING_HOLE_KEEPOUT_MM: f64 = 1.5;
+
+/// Slide a corner fence via along the board edge, toward the inside (`inward`
+/// is +1 for a left-hand corner and -1 for a right-hand one), until it is out of
+/// every mounting hole's zone: the hole's radius plus the keepout. A via that is
+/// already clear is returned as it is. `holes` are `(centre, radius)`.
+fn clear_of_mounting_holes(via: Point, inward: i64, holes: &[(Point, i64)]) -> Point {
+    let mut via = via;
+    for &(centre, radius) in holes {
+        let limit = nm_to_mm(radius) + MOUNTING_HOLE_KEEPOUT_MM;
+        let dx = nm_to_mm(via.x_nm - centre.x_nm);
+        let dy = nm_to_mm(via.y_nm - centre.y_nm);
+        if dx.hypot(dy) >= limit {
+            continue;
+        }
+        // Along the edge the via must be at least this far from the centre.
+        let reach = (limit * limit - dy * dy).sqrt();
+        via.x_nm = centre.x_nm + inward * (mm_to_nm(reach) + 1);
+    }
+    via
 }
 
 fn build_ground_stitch_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usize) -> Sexp {
@@ -2407,8 +2451,51 @@ fn escape_sexp_str(s: &str) -> String {
 mod tests {
     use super::*;
     use synth_diagnostics::Span;
-    use synth_geometry::Point;
     use synth_registry::{ElectricalType, Lifecycle, Pin, PinNumber};
+
+    fn hole(x: f64, y: f64, radius: f64) -> (Point, i64) {
+        (Point::new(mm_to_nm(x), mm_to_nm(y)), mm_to_nm(radius))
+    }
+
+    fn gap_mm(a: Point, b: Point) -> f64 {
+        nm_to_mm(a.x_nm - b.x_nm).hypot(nm_to_mm(a.y_nm - b.y_nm))
+    }
+
+    /// A ground fence via in the corner must stay out of a mounting hole's
+    /// screw-head zone: the hole's radius plus `MOUNTING_HOLE_KEEPOUT_MM`.
+    #[test]
+    fn a_corner_via_moves_along_the_edge_out_of_a_mounting_hole_zone() {
+        // M3 hole 3.5 mm in from both edges; the via sits 1.5 mm in.
+        let hole = hole(3.5, 3.45, 1.6);
+        let corner = Point::new(mm_to_nm(1.5), mm_to_nm(1.5));
+        let moved = clear_of_mounting_holes(corner, 1, &[hole]);
+        assert!(
+            gap_mm(moved, hole.0) >= 1.6 + MOUNTING_HOLE_KEEPOUT_MM - 0.001,
+            "{moved:?}"
+        );
+        assert_eq!(moved.y_nm, corner.y_nm, "it slides along the edge only");
+        assert!(
+            moved.x_nm > corner.x_nm,
+            "and toward the inside of the board"
+        );
+    }
+
+    #[test]
+    fn a_right_hand_corner_slides_the_other_way() {
+        let hole = hole(47.0, 3.45, 1.6);
+        let corner = Point::new(mm_to_nm(49.0), mm_to_nm(1.5));
+        let moved = clear_of_mounting_holes(corner, -1, &[hole]);
+        assert!(moved.x_nm < corner.x_nm);
+        assert!(gap_mm(moved, hole.0) >= 1.6 + MOUNTING_HOLE_KEEPOUT_MM - 0.001);
+    }
+
+    #[test]
+    fn a_via_clear_of_every_hole_stays_where_it_is() {
+        let corner = Point::new(mm_to_nm(1.5), mm_to_nm(1.5));
+        assert_eq!(clear_of_mounting_holes(corner, 1, &[]), corner);
+        let far = hole(40.0, 30.0, 1.6);
+        assert_eq!(clear_of_mounting_holes(corner, 1, &[far]), corner);
+    }
 
     /// A fanout stub that crosses another pad is rejected even when the via
     /// endpoint itself is clear: the whole segment is checked, not only its end.
