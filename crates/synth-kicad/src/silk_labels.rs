@@ -207,13 +207,27 @@ mod tests {
     fn a_label_with_room_sits_next_to_its_part() {
         let part = resistor(1, "R1", 20.0, 20.0);
         let placed = place_labels(std::slice::from_ref(&part), outline());
-        let b = label_box(&part, placed[&part.id]);
-        let reach = Rect::new(mm(19.0 - 1.0, 19.5 - 1.0), mm(21.0 + 1.0, 20.5 + 1.0));
-        assert!(
-            reach.intersects(&b),
-            "label {b:?} is more than 1 mm from its part"
-        );
-        assert!(!overlaps(b, part.courtyard), "label {b:?} on its own part");
+        assert_eq!(placed[&part.id], side_candidates(&part)[0]);
+    }
+
+    #[test]
+    fn a_label_with_every_side_blocked_falls_back_to_the_default() {
+        let part = resistor(1, "R1", 20.0, 20.0);
+        // One neighbour over each side spot, none over the default spot 4 mm above.
+        let blockers = [
+            (2, 20.0, 18.5, 4.0, 1.4),
+            (3, 20.0, 21.5, 4.0, 1.4),
+            (4, 17.7, 20.0, 2.0, 2.0),
+            (5, 22.3, 20.0, 2.0, 2.0),
+        ];
+        let mut parts = vec![part.clone()];
+        for (id, cx, cy, w, h) in blockers {
+            let mut blocker = resistor(id, "U1", cx, cy);
+            blocker.courtyard = rect(cx, cy, w, h);
+            parts.push(blocker);
+        }
+        let placed = place_labels(&parts, outline());
+        assert_eq!(placed[&part.id], default_label(&part));
     }
 
     #[test]
