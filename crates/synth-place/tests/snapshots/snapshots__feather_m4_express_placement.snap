@@ -28,18 +28,18 @@ board_outline_mm: 90.57 x 76.16
   D2  (  35.80,   27.71) mm  rot=Zero layer=Top
   D3  (  45.30,   29.71) mm  rot=Zero layer=Top
   D4  (  30.50,   26.50) mm  rot=Zero layer=Top
-  D5  (  43.50,   31.50) mm  rot=Zero layer=Top
+  D5  (  54.80,   31.21) mm  rot=Zero layer=Top
   D6  (  31.00,   40.50) mm  rot=Zero layer=Top
   D7  (  16.50,   25.50) mm  rot=Zero layer=Top
   R1  (  31.80,   17.71) mm  rot=Zero layer=Top
   R2  (  13.80,   11.71) mm  rot=Zero layer=Top
   R3  (  54.80,   43.21) mm  rot=Zero layer=Top
   R4  (  57.30,   46.71) mm  rot=Zero layer=Top
-  R5  (  47.00,   45.50) mm  rot=Zero layer=Top
+  R5  (  38.80,   50.21) mm  rot=Zero layer=Top
   R6  (  23.30,   38.21) mm  rot=Zero layer=Top
   R7  (  45.80,   27.71) mm  rot=Zero layer=Top
   R8  (  30.50,   28.00) mm  rot=Zero layer=Top
-  R9  (  45.00,   33.00) mm  rot=Zero layer=Top
+  R9  (  54.50,   34.50) mm  rot=Zero layer=Top
  R10  (  29.50,   39.00) mm  rot=Zero layer=Top
  R11  (  15.50,   24.00) mm  rot=Zero layer=Top
  R12  (  56.80,   27.71) mm  rot=Zero layer=Top
@@ -55,7 +55,7 @@ board_outline_mm: 90.57 x 76.16
   C7  (  26.80,   57.71) mm  rot=Zero layer=Top
   C8  (  67.30,   17.21) mm  rot=Zero layer=Top
   C9  (  45.30,   16.71) mm  rot=Zero layer=Top
- C10  (  46.00,   43.50) mm  rot=Zero layer=Top
+ C10  (  50.30,   54.21) mm  rot=Zero layer=Top
  C11  (  56.80,   24.21) mm  rot=Zero layer=Top
  C12  (  45.30,   61.21) mm  rot=Zero layer=Top
  C13  (  21.80,   59.71) mm  rot=Zero layer=Top
