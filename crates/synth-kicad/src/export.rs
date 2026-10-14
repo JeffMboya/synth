@@ -224,6 +224,21 @@ pub fn export_with_placement(
     export_inner(board, out_dir, sidecars, Some(placement))
 }
 
+/// The placement [`export_with_sidecars`] would choose, without exporting.
+///
+/// Lets a caller read the routed board back and evaluate the placed geometry
+/// against it (the routed-DRC pass), using the same placement the export wrote.
+///
+/// # Errors
+/// [`ExportError::Placement`] when the placer finds no legal placement.
+pub fn placement_for_export(
+    board: &Board,
+    sidecars: &Sidecars,
+) -> Result<synth_place::Placement, ExportError> {
+    place_for_export(board, sidecars.placement_path())
+        .map_err(|source| ExportError::Placement { source })
+}
+
 /// Candidate placements for a caller that can route and wants to choose.
 ///
 /// A superset of what [`export_with_sidecars`] itself chooses among: the

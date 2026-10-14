@@ -1237,7 +1237,14 @@ fn execute_router_capabilities(args: &Value) -> Result<Value, String> {
 fn route_design_externally(
     args: &Value,
     default_registry: Option<&Path>,
-) -> Result<(synth_router::RouteReport, PathBuf), String> {
+) -> Result<
+    (
+        synth_router::RouteReport,
+        PathBuf,
+        Vec<synth_drc::Violation>,
+    ),
+    String,
+> {
     route_design_externally_with(args, default_registry, None)
 }
 
@@ -1250,7 +1257,14 @@ fn route_design_externally_with(
     args: &Value,
     default_registry: Option<&Path>,
     prepared: Option<synth_router::RouteRequest>,
-) -> Result<(synth_router::RouteReport, PathBuf), String> {
+) -> Result<
+    (
+        synth_router::RouteReport,
+        PathBuf,
+        Vec<synth_drc::Violation>,
+    ),
+    String,
+> {
     let source = get_source_from_args(args)?;
     let file_name = args["file_path"].as_str().unwrap_or("board.synth");
     let engine = resolve_router(args)?;
@@ -1328,7 +1342,17 @@ fn route_design_externally_with(
     request.preserve_baseline().map_err(|f| f.to_string())?;
 
     let report = synth_router::route(&request);
-    Ok((report, res.out_dir))
+    // Read the delivered copper, not the input path: the router may deliver its
+    // board elsewhere, and reading the un-routed baseline would make these rules
+    // silently no-op. Fall back to the request path only when nothing was
+    // delivered (a failed route leaves the baseline there).
+    let delivered = report
+        .artifacts
+        .delivered
+        .clone()
+        .unwrap_or_else(|| request.board_path.clone());
+    let signal_integrity = routed_signal_integrity(&board, &delivered);
+    Ok((report, res.out_dir, signal_integrity))
 }
 
 fn sha256_of(path: &Path) -> String {
@@ -1385,6 +1409,20 @@ fn route_report_payload(report: &synth_router::RouteReport) -> Value {
     payload
 }
 
+/// Attach the routed signal/power-integrity findings to a route payload.
+///
+/// A blocking finding clears `drc_clean`, so a consumer reading only that flag
+/// cannot be told the board is clean when a rail is over its IR budget or a
+/// net exceeds its length.
+fn attach_signal_integrity(payload: &mut Value, findings: &[synth_drc::Violation]) {
+    let blocking = findings.iter().filter(|v| v.is_blocking()).count();
+    payload["signal_integrity"] = serde_json::json!(findings);
+    payload["signal_integrity_blocking"] = serde_json::json!(blocking);
+    if blocking > 0 {
+        payload["drc_clean"] = serde_json::json!(false);
+    }
+}
+
 /// Report the independent physical checks over an externally routed board.
 ///
 /// The verdict comes from re-reading the routed board — topology against
@@ -1392,15 +1430,15 @@ fn route_report_payload(report: &synth_router::RouteReport) -> Value {
 /// with zones refilled — so it cannot be satisfied by the router's own
 /// opinion of its work.
 fn execute_drc_report(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
-    let (report, _) = route_design_externally(args, default_registry)?;
-    let payload = route_report_payload(&report);
+    let (report, _, signal_integrity) = route_design_externally(args, default_registry)?;
+    let mut payload = route_report_payload(&report);
+    attach_signal_integrity(&mut payload, &signal_integrity);
 
     // A structurally poor floorplan never reaches the router at all, so
     // the placement gate keeps its own early return.
     let Some(validation) = &report.validation else {
         return Ok(payload);
     };
-    let mut payload = payload;
     payload["status"] = serde_json::json!(match report.state {
         synth_router::RouteState::Routed => "ok",
         synth_router::RouteState::RouterUnavailable => "router_unavailable",
@@ -1418,10 +1456,11 @@ fn execute_drc_report(args: &Value, default_registry: Option<&Path>) -> Result<V
 /// to decode: it means the engine is not installed here, and the payload
 /// says what to install.
 fn execute_route(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
-    let (report, out_dir) = route_design_externally(args, default_registry)?;
+    let (report, out_dir, signal_integrity) = route_design_externally(args, default_registry)?;
     log_routing_outcome(args, &report);
     let mut payload = route_report_payload(&report);
     payload["out_dir"] = serde_json::json!(out_dir);
+    attach_signal_integrity(&mut payload, &signal_integrity);
     Ok(payload)
 }
 
@@ -2629,6 +2668,83 @@ fn evaluate_candidate_mcp(
     )))
 }
 
+/// Signal/power-integrity rules run on the routed board, read back from disk.
+fn routed_signal_integrity(board: &synth_ir::Board, pcb_path: &Path) -> Vec<synth_drc::Violation> {
+    // A delivered board that cannot be read must not look clean: a consumer
+    // reading `signal_integrity_blocking`/`drc_clean` cannot tell "checked,
+    // nothing found" from "never checked" if the failure is swallowed. Report
+    // it as a blocking finding so it clears `drc_clean` and blocks a release.
+    let text = match std::fs::read_to_string(pcb_path) {
+        Ok(text) => text,
+        Err(error) => {
+            return vec![synth_drc::unreadable_routed_board(
+                pcb_path,
+                &error.to_string(),
+            )];
+        }
+    };
+    let routed = match synth_router::pcb_read::PcbBoard::parse(&text) {
+        Ok(routed) => routed,
+        Err(error) => {
+            return vec![synth_drc::unreadable_routed_board(
+                pcb_path,
+                &error.to_string(),
+            )];
+        }
+    };
+    let net_of = |code: Option<u32>| -> Option<synth_ir::NetId> {
+        let name = routed.nets.get(&code?)?;
+        board
+            .nets
+            .iter()
+            .find(|net| net.name == *name)
+            .map(|net| net.id)
+    };
+    let layer = |name: &str| match name {
+        "B.Cu" => synth_geometry::Layer::Bottom,
+        "In1.Cu" => synth_geometry::Layer::Inner1,
+        "In2.Cu" => synth_geometry::Layer::Inner2,
+        "In3.Cu" => synth_geometry::Layer::Inner3,
+        "In4.Cu" => synth_geometry::Layer::Inner4,
+        _ => synth_geometry::Layer::Top,
+    };
+    let segments = routed
+        .segments
+        .iter()
+        .filter_map(|segment| {
+            Some(synth_pcb::Segment {
+                net: net_of(segment.net)?,
+                layer: layer(&segment.layer),
+                start: synth_geometry::Point::new(segment.start.x_nm, segment.start.y_nm),
+                end: synth_geometry::Point::new(segment.end.x_nm, segment.end.y_nm),
+                width_nm: segment.width_nm,
+            })
+        })
+        .collect();
+    let vias = routed
+        .vias
+        .iter()
+        .filter_map(|via| {
+            Some(synth_pcb::Via {
+                net: net_of(via.net)?,
+                at: synth_geometry::Point::new(via.at.x_nm, via.at.y_nm),
+                drill_nm: via.drill_nm,
+                pad_diameter_nm: via.size_nm,
+            })
+        })
+        .collect();
+    let routing = synth_pcb::Routing {
+        segments,
+        vias,
+        ..synth_pcb::Routing::default()
+    };
+    let profile = synth_drc::ManufacturerProfile::from_name(
+        board.manufacturer.as_deref().unwrap_or("jlc-standard"),
+    );
+    let stackup = synth_geometry::StackupProfile::for_board(board);
+    synth_drc::check_signal_integrity(board, &routing, &profile, Some(&stackup))
+}
+
 fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
     // Long by design: one linear arg-parse + compile + export
     // pipeline per tool keeps the MCP surface reviewable in one
@@ -2725,6 +2841,29 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
         return Ok(payload);
     }
 
+    // Signal/power integrity on the routed copper: the rules kicad-cli cannot
+    // see. Blocking findings stop a release export, exactly as in the CLI path.
+    // Read the delivered board, not the input export path.
+    let delivered = routing
+        .artifacts
+        .delivered
+        .clone()
+        .unwrap_or_else(|| res.pcb_path.clone());
+    let signal_integrity = routed_signal_integrity(&board, &delivered);
+    let si_blocking = signal_integrity
+        .iter()
+        .filter(|violation| violation.is_blocking())
+        .count();
+    if si_blocking > 0 && !allow_incomplete {
+        let mut payload = route_report_payload(&routing);
+        payload["signal_integrity"] = serde_json::json!(signal_integrity);
+        payload["hint"] = serde_json::Value::String(format!(
+            "The routed board has {si_blocking} blocking signal/power-integrity finding(s). \
+             Fix the routing, or set allow_incomplete=true for an explicitly labelled draft."
+        ));
+        return Ok(payload);
+    }
+
     // Aesthetic schematic ERC over the same layout the exporter used:
     // surfaced to the agent so it can repair readability regressions
     // in the same closed loop as electrical ERC findings. Per-sheet
@@ -2748,8 +2887,10 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
 
     let mut result = serde_json::json!({
         "status": if route_complete { "success" } else { "draft_incomplete" },
-        "release_ready": route_complete,
+        "release_ready": route_complete && si_blocking == 0,
         "route_complete": route_complete,
+        "signal_integrity": signal_integrity,
+        "signal_integrity_blocking": si_blocking,
         "routing": routing,
         "warning": if route_complete { serde_json::Value::Null } else { serde_json::json!("DRAFT ONLY: the board is not fabrication-ready. Review the routing run record and manually complete the PCB before any fabrication use.") },
         "capability_tier": "engineer-review-required",
@@ -3437,9 +3578,11 @@ fn execute_route_with_constraints(
         routed.policy.min_clearance_nm = routed.policy.min_clearance_nm.max(clearance);
     }
 
-    let (report, _) = route_design_externally_with(args, default_registry, Some(routed))?;
+    let (report, _, signal_integrity) =
+        route_design_externally_with(args, default_registry, Some(routed))?;
     log_routing_outcome(args, &report);
     let mut payload = route_report_payload(&report);
+    attach_signal_integrity(&mut payload, &signal_integrity);
     payload["diagnostics"] = serde_json::json!(diagnostics);
     payload["constraints"] = serde_json::json!({
         "min_track_width_nm": min_width_nm,
@@ -4579,5 +4722,47 @@ mod tests {
             .map(|i| (f64::from(i) * 10.0, f64::from(i) * 10.0))
             .collect();
         assert_eq!(hinted_ids(&scatter), None);
+    }
+}
+
+#[cfg(test)]
+mod routed_integrity_tests {
+    use super::*;
+
+    /// A minimal board for the routed-SI/PI read-back tests.
+    fn check_board() -> synth_ir::Board {
+        let parse = synth_parser::parse(r#"board "t" { layers 2 }"#, "t.synth".to_string());
+        let ast = parse.ast.as_ref().expect("parse");
+        synth_ir::lower(ast, &synth_registry::Registry::default(), "t.synth")
+            .board
+            .expect("board")
+    }
+
+    #[test]
+    fn a_missing_routed_board_is_a_blocking_finding() {
+        let findings = routed_signal_integrity(
+            &check_board(),
+            Path::new("/nonexistent/synth-routed-board.kicad_pcb"),
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, "E-SYNTH-DRC-022");
+        assert!(
+            findings[0].is_blocking(),
+            "an unreadable routed board must block, not read as clean"
+        );
+    }
+
+    #[test]
+    fn a_malformed_routed_board_is_a_blocking_finding() {
+        let path = std::env::temp_dir().join(format!(
+            "synth-mcp-malformed-{}.kicad_pcb",
+            std::process::id()
+        ));
+        std::fs::write(&path, "(kicad_pcb (unbalanced").expect("write scratch board");
+        let findings = routed_signal_integrity(&check_board(), &path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, "E-SYNTH-DRC-022");
+        assert!(findings[0].is_blocking());
     }
 }
