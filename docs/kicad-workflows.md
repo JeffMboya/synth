@@ -533,20 +533,21 @@ designator (this file is board millimetres, and so are these offsets):
 dx = 0.0          # label centre relative to the part's courtyard centre,
 dy = -3.0         # in board axes
 angle = 0         # degrees; 0 reads left to right
-priority = "hard" # hard: use it as given; soft (default): try it first
+priority = "hard" # hard: use it as given, kept on the board; soft (default): try it first
 
 [labels.C3]
 hide = true       # hide it; `hide = false` shows a part file's hidden label
 ```
 
 A hidden label takes no room. A sidecar entry beats the part file, and a hard
-offset is not checked for collisions. `angle` and `priority` apply to an
-offset: without `dx` or `dy` they do nothing, and if only one of the two is
-given the other counts as 0. A designator that names no part is ignored. A
-sidecar that does not parse is ignored as a whole, so a typo in one entry
-(for example `priority = "firm"`) drops every label entry and every part
-position in that file. The sidecar schema version is unchanged: the `labels`
-table is optional, and an older file without it loads as before.
+offset is not checked for collisions but is pulled back inside the board edge.
+`angle` and `priority` apply to an offset: without `dx` or `dy` they do
+nothing, and if only one of the two is given the other counts as 0. A
+designator that names no part is ignored. A sidecar that does not parse is
+ignored as a whole, so a typo in one entry (for example `priority = "firm"`)
+drops every label entry and every part position in that file. The sidecar
+schema version is unchanged: the `labels` table is optional, and an older
+file without it loads as before.
 
 ---
 

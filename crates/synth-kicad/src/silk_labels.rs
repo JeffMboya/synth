@@ -59,7 +59,7 @@ pub(crate) struct LabelOverride {
     pub angle_deg: f64,
     /// Overrides the part file's `hidden` when set.
     pub hide: Option<bool>,
-    /// A hard offset is used as given; a soft one is tried first.
+    /// A hard offset is used as given (kept on the board); a soft one is tried first.
     pub hard: bool,
 }
 
@@ -100,7 +100,8 @@ fn text_width_nm(refdes: &str) -> i64 {
 /// Choose a label position for every part.
 ///
 /// A label the design or the part file hides takes no room. A hard sidecar
-/// offset is used as given. Otherwise each part takes the first candidate
+/// offset is used as given, skipping the collision checks but pulled back
+/// inside the board. Otherwise each part takes the first candidate
 /// that fits: a soft sidecar offset, the part file's preferred side, the
 /// default, then above, below, left and right of its courtyard. A candidate
 /// fits when it stays inside the board, clear of every other part's courtyard
@@ -149,7 +150,7 @@ pub(crate) fn place_labels(
                 && !taken.iter().any(|t| t.intersects(&b))
         };
         let pos = match from_design {
-            Some(forced) if hard => forced,
+            Some(forced) if hard => pulled_inside(part, outline, forced),
             _ => from_design
                 .into_iter()
                 .chain(part.side.map(|s| side_candidate(part, s)))
@@ -204,6 +205,30 @@ fn local_label(part: &LabelPart, centre: Point, angle_deg: f64) -> LabelPos {
     }
 }
 
+/// `pos` moved the shortest distance that puts its box inside the board.
+///
+/// A hard offset skips the collision checks but not the board edge. A box
+/// larger than the board ends up centred on it.
+fn pulled_inside(part: &LabelPart, outline: Rect, pos: LabelPos) -> LabelPos {
+    let b = label_box(part, pos);
+    let edge = mm_to_nm(EDGE_CLEARANCE_MM);
+    let shift = |board_lo: i64, board_hi: i64, box_lo: i64, box_hi: i64| {
+        let back = (board_hi - edge - box_hi).min(0);
+        let forward = (board_lo + edge - box_lo).max(0);
+        back + forward
+    };
+    let dx = shift(outline.min.x_nm, outline.max.x_nm, b.min.x_nm, b.max.x_nm);
+    let dy = shift(outline.min.y_nm, outline.max.y_nm, b.min.y_nm, b.max.y_nm);
+    if dx == 0 && dy == 0 {
+        return pos;
+    }
+    let centre = Point::new(
+        (b.min.x_nm + b.max.x_nm) / 2 + dx,
+        (b.min.y_nm + b.max.y_nm) / 2 + dy,
+    );
+    local_label(part, centre, pos.angle_deg)
+}
+
 /// True when `inner` lies within `outer`, clear of its edge.
 fn inside(outer: Rect, inner: Rect) -> bool {
     let edge = mm_to_nm(EDGE_CLEARANCE_MM);
@@ -219,13 +244,11 @@ fn label_box(part: &LabelPart, pos: LabelPos) -> Rect {
         .rotation
         .rotate_offset(mm_to_nm(pos.local_x_mm), mm_to_nm(pos.local_y_mm));
     let centre = Point::new(part.origin.x_nm + dx, part.origin.y_nm + dy);
-    let w = text_width_nm(&part.refdes);
-    let h = mm_to_nm(TEXT_HEIGHT_MM);
-    let (w, h) = if pos.angle_deg.abs() == 90.0 {
-        (h, w)
-    } else {
-        (w, h)
-    };
+    // Axis-aligned bounds of the text rectangle turned by `angle_deg`.
+    let (text_w, text_h) = (nm_to_mm(text_width_nm(&part.refdes)), TEXT_HEIGHT_MM);
+    let (sin, cos) = pos.angle_deg.to_radians().sin_cos();
+    let w = mm_to_nm(text_w * cos.abs() + text_h * sin.abs());
+    let h = mm_to_nm(text_w * sin.abs() + text_h * cos.abs());
     Rect::new(
         Point::new(centre.x_nm - w / 2, centre.y_nm - h / 2),
         Point::new(centre.x_nm + w / 2, centre.y_nm + h / 2),
@@ -450,6 +473,45 @@ mod tests {
         let b = label_box(&part, pos);
         let mid = ((b.min.x_nm + b.max.x_nm) / 2, (b.min.y_nm + b.max.y_nm) / 2);
         assert_eq!(mid, (mm_to_nm(20.0), mm_to_nm(23.0)));
+    }
+
+    #[test]
+    fn a_soft_offset_at_an_arbitrary_angle_is_checked_with_its_rotated_extent() {
+        let part = resistor(1, "R1", 20.0, 20.0);
+        // The label, turned 45 degrees, reaches up to y = 21.83; unturned it
+        // would stop at y = 22.35 and clear this neighbour.
+        let mut neighbour = resistor(2, "U1", 20.0, 21.5);
+        neighbour.courtyard = rect(20.0, 21.5, 8.0, 1.0);
+        let parts = [part.clone(), neighbour.clone()];
+        let turned = LabelOverride {
+            angle_deg: 45.0,
+            ..soft((0.0, 3.0))
+        };
+        let pos = place_labels(&parts, outline(), &overrides(1, turned))[&part.id];
+        let b = label_box(&part, pos);
+        assert!(
+            !overlaps(b, neighbour.courtyard),
+            "label {b:?} on the neighbour"
+        );
+        assert_ne!(pos.local_y_mm, 3.0, "the turned offset was kept");
+    }
+
+    #[test]
+    fn a_hard_offset_past_the_board_edge_is_pulled_back_inside() {
+        let part = resistor(1, "R1", 20.0, 20.0);
+        let hard = LabelOverride {
+            hard: true,
+            ..soft((0.0, -25.0))
+        };
+        let pos =
+            place_labels(std::slice::from_ref(&part), outline(), &overrides(1, hard))[&part.id];
+        let b = label_box(&part, pos);
+        assert!(inside(outline(), b), "label {b:?} off the board");
+        assert_eq!(
+            (b.min.x_nm + b.max.x_nm) / 2,
+            mm_to_nm(20.0),
+            "only the offending axis moves"
+        );
     }
 
     #[test]
