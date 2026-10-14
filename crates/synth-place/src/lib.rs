@@ -1139,7 +1139,7 @@ pub fn place_with_tuning_seeded<S: ::std::hash::BuildHasher>(
             true,
             seed,
         ) {
-            Ok(p) => return Ok(p),
+            Ok(p) => return Ok(refine_placement(board, &p)),
             Err(e) => last_err = Some(e),
         }
     }
@@ -4004,6 +4004,115 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         }
     }
 
+    // Two parts that are the only members of a net (power rails with many
+    // members are skipped), parked far apart over empty board, cost routing
+    // length and leave a hole in the layout. Parts with a hard hint are left
+    // where the author put them; the smaller of the other two is pulled
+    // toward its partner.
+    let mut seen_pairs = std::collections::HashSet::new();
+    for net in &board.nets {
+        let mut ids: Vec<ComponentId> = net.endpoints.iter().map(|e| e.component).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let [first_id, second_id] = ids[..] else {
+            continue;
+        };
+        if !seen_pairs.insert((first_id, second_id)) {
+            continue;
+        }
+        let (Some(first), Some(second)) = (board.component(first_id), board.component(second_id))
+        else {
+            continue;
+        };
+        let rect_of = |refdes: &str| {
+            courtyard_rects
+                .iter()
+                .find(|(name, _)| *name == refdes)
+                .map(|(_, rect)| *rect)
+        };
+        let (Some(first_rect), Some(second_rect), Some(first_center), Some(second_center)) = (
+            rect_of(&first.refdes),
+            rect_of(&second.refdes),
+            center_of(first_id),
+            center_of(second_id),
+        ) else {
+            continue;
+        };
+        let axis_gap = |lo_a: i64, hi_a: i64, lo_b: i64, hi_b: i64| {
+            synth_geometry::nm_to_mm((lo_a - hi_b).max(lo_b - hi_a).max(0))
+        };
+        let gap_x = axis_gap(
+            first_rect.min.x_nm,
+            first_rect.max.x_nm,
+            second_rect.min.x_nm,
+            second_rect.max.x_nm,
+        );
+        let gap_y = axis_gap(
+            first_rect.min.y_nm,
+            first_rect.max.y_nm,
+            second_rect.min.y_nm,
+            second_rect.max.y_nm,
+        );
+        let gap_mm = gap_x.hypot(gap_y);
+        if gap_mm <= CONNECTED_GAP_MM {
+            continue;
+        }
+        let steps = (distance_mm(first_center, second_center) / GAP_PROBE_STEP_MM).ceil() as i64;
+        let blocked = (1..steps).any(|step| {
+            let t = step as f64 / steps as f64;
+            let probe = Point::new(
+                first_center.x_nm + ((second_center.x_nm - first_center.x_nm) as f64 * t) as i64,
+                first_center.y_nm + ((second_center.y_nm - first_center.y_nm) as f64 * t) as i64,
+            );
+            courtyard_rects.iter().any(|(name, rect)| {
+                *name != first.refdes.as_str()
+                    && *name != second.refdes.as_str()
+                    && rect.contains(probe)
+            })
+        });
+        if blocked {
+            continue;
+        }
+        let is_free = |component: &synth_ir::Component| !is_hard_hinted(component);
+        let area = |rect: Rect| rect.width_nm() as f64 * rect.height_nm() as f64;
+        let (mover, anchor, mover_center, anchor_center) = match (is_free(first), is_free(second)) {
+            (true, true) if area(first_rect) <= area(second_rect) => {
+                (first, second, first_center, second_center)
+            }
+            (true, false) => (first, second, first_center, second_center),
+            (false | true, true) => (second, first, second_center, first_center),
+            (false, false) => continue,
+        };
+        let finding = format!(
+            "{} and {} share a net but sit {:.1} mm apart with nothing between them; pull {} toward {}",
+            first.refdes, second.refdes, gap_mm, mover.refdes, anchor.refdes
+        );
+        functional_warnings.push(finding.clone());
+        visual_findings.push(finding);
+        let travel = gap_mm - CONNECTED_GAP_TARGET_MM;
+        let length = distance_mm(mover_center, anchor_center).max(0.001);
+        recommended_actions.push(PlacementRecommendation {
+            action: "close_connected_gap".into(),
+            refdes: mover.refdes.clone(),
+            relative_to: Some(anchor.refdes.clone()),
+            suggested_x_mm: Some(
+                synth_geometry::nm_to_mm(mover_center.x_nm)
+                    + synth_geometry::nm_to_mm(anchor_center.x_nm - mover_center.x_nm) / length
+                        * travel,
+            ),
+            suggested_y_mm: Some(
+                synth_geometry::nm_to_mm(mover_center.y_nm)
+                    + synth_geometry::nm_to_mm(anchor_center.y_nm - mover_center.y_nm) / length
+                        * travel,
+            ),
+            suggested_rotation_deg: None,
+            rationale: format!(
+                "move {} about {:.1} mm toward {} so the pair is {:.0} mm apart",
+                mover.refdes, travel, anchor.refdes, CONNECTED_GAP_TARGET_MM
+            ),
+        });
+    }
+
     // Sidecar coordinates are intentionally authoritative, but an exact
     // manual/agent move must not leave a courtyard outside Edge.Cuts. Catch
     // this before routing; otherwise the router can spend time on geometry
@@ -4454,6 +4563,151 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         dense_regions,
         functional_warnings,
         visual_review,
+    }
+}
+
+/// Courtyard-to-courtyard distance past which two parts that share a net
+/// are reported as drifted apart.
+const CONNECTED_GAP_MM: f64 = 8.0;
+
+/// Distance the fix closes a drifted pair to. Below the threshold, so a
+/// closed pair is not flagged again.
+const CONNECTED_GAP_TARGET_MM: f64 = 3.0;
+
+/// Spacing of the samples that look for a part between a drifted pair.
+const GAP_PROBE_STEP_MM: f64 = 0.5;
+
+/// Review passes `refine_placement` may spend. Each pass applies every
+/// recommended move at once, so a few are enough for the moves to settle.
+const REFINE_MAX_PASSES: usize = 4;
+
+/// Apply the visual review's recommended moves to `placement`, re-reviewing
+/// after each pass, and return the version with the fewest findings.
+///
+/// Moves are applied together, so two of them can undo each other, and a
+/// move that closes one finding can open a collision. A pass only counts when
+/// it adds no overlap or off-board part, so a refined placement is never
+/// worse than the one passed in and never less legal.
+fn refine_placement(board: &Board, placement: &Placement) -> Placement {
+    let review_of = |candidate: &Placement| describe_placement(board, candidate).visual_review;
+    // Overlap and off-board parts are what the independent validator
+    // rejects, so a pass may not add any. Each defect emits exactly one of
+    // these actions, so counting them counts the defects; a new emitter for
+    // either defect must keep that pairing or the gate stops seeing it.
+    let physical_defects = |review: &VisualPlacementReview| {
+        review
+            .recommended_actions
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.action.as_str(),
+                    "separate_courtyards" | "keep_courtyard_inside_board"
+                )
+            })
+            .count()
+    };
+    let mut best = placement.clone();
+    let mut best_review = review_of(&best);
+    let mut current = placement.clone();
+    let mut review = best_review.clone();
+    for _ in 0..REFINE_MAX_PASSES {
+        if best_review.findings.is_empty() {
+            break;
+        }
+        let before = current.clone();
+        for action in &review.recommended_actions {
+            let hits = keepout_hits(board, &current);
+            let undo = current.clone();
+            apply_recommendation(board, &mut current, action);
+            // The validator rejects a part inside a keepout, so a move that
+            // would put one there is dropped.
+            if keepout_hits(board, &current) > hits {
+                current = undo;
+            }
+        }
+        if current == before {
+            break;
+        }
+        review = review_of(&current);
+        if physical_defects(&review) <= physical_defects(&best_review)
+            && review.findings.len() < best_review.findings.len()
+        {
+            best = current.clone();
+            best_review = review.clone();
+        }
+    }
+    best
+}
+
+/// Parts whose centre lies inside a keepout circle, the rule the independent
+/// validator enforces (E-SYNTH-PLACE-004).
+fn keepout_hits(board: &Board, placement: &Placement) -> usize {
+    let centre_rect = |id: ComponentId| {
+        placement
+            .components
+            .iter()
+            .find(|placed| placed.id == id)
+            .map(|placed| Rect::new(placed.center, placed.center))
+    };
+    placement
+        .components
+        .iter()
+        .filter(|placed| {
+            intersects_keepout(
+                Rect::new(placed.center, placed.center),
+                placed.id,
+                board,
+                placement.board_outline,
+                centre_rect,
+            )
+        })
+        .count()
+}
+
+fn apply_recommendation(
+    board: &Board,
+    placement: &mut Placement,
+    action: &PlacementRecommendation,
+) {
+    let Some(component) = board
+        .components
+        .iter()
+        .find(|component| component.refdes == action.refdes)
+    else {
+        return;
+    };
+    // A hard hint is the author's decision, so the refiner never overrides it.
+    if is_hard_hinted(component) {
+        return;
+    }
+    let id = component.id;
+    let Some(placed) = placement.components.iter_mut().find(|p| p.id == id) else {
+        return;
+    };
+    if let Some(x) = action.suggested_x_mm {
+        placed.center.x_nm = mm_to_nm(x);
+    }
+    if let Some(y) = action.suggested_y_mm {
+        placed.center.y_nm = mm_to_nm(y);
+    }
+    if let Some(degrees) = action.suggested_rotation_deg {
+        placed.rotation = rotation_from_degrees(degrees);
+    }
+}
+
+fn is_hard_hinted(component: &synth_ir::Component) -> bool {
+    component
+        .placement_hint
+        .as_ref()
+        .is_some_and(|hint| hint.priority == synth_ir::PlacementPriority::Hard)
+}
+
+fn rotation_from_degrees(degrees: u32) -> Rotation {
+    match degrees {
+        90 => Rotation::Ninety,
+        180 => Rotation::OneEighty,
+        270 => Rotation::TwoSeventy,
+        _ => Rotation::Zero,
     }
 }
 
@@ -5029,6 +5283,219 @@ mod tests {
                 action.refdes
             );
         }
+    }
+
+    /// The refiner applies the review's own moves, so a part pushed off the
+    /// board comes back inside it and the review stops firing.
+    #[test]
+    fn refine_placement_pulls_a_part_back_inside_the_outline() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut broken = place(&board).expect("place");
+        broken.components[0].center.x_nm = broken.board_outline.max.x_nm + mm_to_nm(20.0);
+
+        let refined = refine_placement(&board, &broken);
+        let review = describe_placement(&board, &refined).visual_review;
+
+        assert!(
+            !review
+                .findings
+                .iter()
+                .any(|f| f.contains("extends outside the board outline")),
+            "still outside: {:?}",
+            review.findings
+        );
+    }
+
+    /// Two parts stacked on one spot are pulled apart.
+    #[test]
+    fn refine_placement_separates_overlapping_courtyards() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut broken = place(&board).expect("place");
+        broken.components[1].center = broken.components[0].center;
+
+        let refined = refine_placement(&board, &broken);
+        let review = describe_placement(&board, &refined).visual_review;
+
+        assert!(
+            !review
+                .findings
+                .iter()
+                .any(|f| f.contains("courtyard overlap")),
+            "still overlapping: {:?}",
+            review.findings
+        );
+    }
+
+    /// A placement the review already accepts comes back untouched.
+    #[test]
+    fn refine_placement_leaves_a_clean_placement_alone() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        assert!(
+            !describe_placement(&board, &placement)
+                .visual_review
+                .requires_revision
+        );
+        assert_eq!(refine_placement(&board, &placement), placement);
+    }
+
+    #[test]
+    fn refine_placement_is_deterministic() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut broken = place(&board).expect("place");
+        broken.components[1].center = broken.components[0].center;
+        assert_eq!(
+            refine_placement(&board, &broken),
+            refine_placement(&board, &broken)
+        );
+    }
+
+    /// Lower `components` into a board on a 60 x 30 mm outline and put them in
+    /// a row at `x_mm`, 15 mm down, in declaration order.
+    fn row_board(components: &str, x_mm: &[f64]) -> (Board, Placement) {
+        let source = format!("board \"row\" {{ layers 2 {components} }}");
+        let file = "row.synth".to_string();
+        let parse = synth_parser::parse(&source, file.clone());
+        let ast = parse.ast.as_ref().expect("parses");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        let board = synth_ir::lower(ast, &registry, &file)
+            .board
+            .expect("lowers");
+        let mut placement = place(&board).expect("place");
+        placement.board_outline =
+            Rect::new(Point::new(0, 0), Point::new(mm_to_nm(60.0), mm_to_nm(30.0)));
+        assert_eq!(board.components.len(), x_mm.len(), "one x per part");
+        for (component, x) in board.components.iter().zip(x_mm) {
+            move_part(&mut placement, &board, &component.refdes, *x, 15.0);
+        }
+        (board, placement)
+    }
+
+    fn move_part(placement: &mut Placement, board: &Board, refdes: &str, x_mm: f64, y_mm: f64) {
+        let id = board
+            .components
+            .iter()
+            .find(|c| c.refdes == refdes)
+            .expect("part exists")
+            .id;
+        let placed = placement
+            .components
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("part placed");
+        placed.center = Point::new(mm_to_nm(x_mm), mm_to_nm(y_mm));
+    }
+
+    fn gap_findings(board: &Board, placement: &Placement) -> usize {
+        describe_placement(board, placement)
+            .visual_review
+            .findings
+            .iter()
+            .filter(|f| f.contains("nothing between them"))
+            .count()
+    }
+
+    const TWO_RESISTORS: &str = r#"
+        component R1: resistor "r_generic_0603" value "10k"
+        component R2: resistor "r_generic_0603" value "10k"
+        connect R1.p2 -> R2.p1
+    "#;
+
+    /// Two parts that share a net and have drifted apart over empty board are
+    /// flagged, and the refiner pulls the free one back toward its partner.
+    #[test]
+    fn refine_placement_closes_an_empty_gap_between_connected_parts() {
+        let (board, placement) = row_board(TWO_RESISTORS, &[10.0, 50.0]);
+        assert_eq!(gap_findings(&board, &placement), 1, "gap was not flagged");
+        let refined = refine_placement(&board, &placement);
+        assert_eq!(
+            gap_findings(&board, &refined),
+            0,
+            "gap not closed: {:?}",
+            describe_placement(&board, &refined).visual_review.findings
+        );
+    }
+
+    /// A part sitting between the pair means the space is not empty.
+    #[test]
+    fn a_part_between_connected_parts_is_not_an_empty_gap() {
+        let components =
+            format!("{TWO_RESISTORS} component R3: resistor \"r_generic_0603\" value \"1k\"");
+        let (board, placement) = row_board(&components, &[10.0, 50.0, 30.0]);
+        assert_eq!(gap_findings(&board, &placement), 0);
+    }
+
+    /// With one part hard-hinted and one free, the free one closes the gap,
+    /// whichever order the two are declared in.
+    #[test]
+    fn the_free_part_of_a_pair_closes_the_gap_to_a_hard_hinted_one() {
+        let hard = "{ placement_hint { edge: top priority: hard } }";
+        for (r1_hint, r2_hint, free) in [(hard, "", "R2"), ("", hard, "R1")] {
+            let components = format!(
+                r#"component R1: resistor "r_generic_0603" value "10k" {r1_hint}
+                   component R2: resistor "r_generic_0603" value "10k" {r2_hint}
+                   connect R1.p2 -> R2.p1"#
+            );
+            let (board, placement) = row_board(&components, &[10.0, 50.0]);
+            let refined = refine_placement(&board, &placement);
+
+            let id_of = |refdes: &str| {
+                board
+                    .components
+                    .iter()
+                    .find(|c| c.refdes == refdes)
+                    .expect("part exists")
+                    .id
+            };
+            let centre = |p: &Placement, refdes: &str| {
+                p.components
+                    .iter()
+                    .find(|c| c.id == id_of(refdes))
+                    .expect("placed")
+                    .center
+            };
+            let pinned = if free == "R2" { "R1" } else { "R2" };
+            assert_eq!(centre(&refined, pinned), centre(&placement, pinned));
+            assert_ne!(centre(&refined, free), centre(&placement, free));
+            assert_eq!(gap_findings(&board, &refined), 0);
+        }
+    }
+
+    /// A part must not be pulled into a keepout to close a gap.
+    #[test]
+    fn the_refiner_never_moves_a_part_into_a_keepout() {
+        let components = format!(
+            r#"{TWO_RESISTORS}
+               component ANT1: antenna "ant_chip_2g4"
+               keepout antenna {{ radius 20mm }}"#
+        );
+        let (board, mut placement) = row_board(&components, &[10.0, 50.0, 30.0]);
+        move_part(&mut placement, &board, "ANT1", 30.0, 24.0);
+        assert_eq!(keepout_hits(&board, &placement), 0, "setup is clear");
+        assert_eq!(gap_findings(&board, &placement), 1, "setup has a gap");
+
+        let refined = refine_placement(&board, &placement);
+
+        assert_eq!(keepout_hits(&board, &refined), 0);
+    }
+
+    /// A hard hint is the author's decision: neither the gap check nor the
+    /// auto-fix may move a part that carries one.
+    #[test]
+    fn hard_hinted_parts_are_never_moved_by_the_refiner() {
+        let hard = "{ placement_hint { edge: top priority: hard } }";
+        let components = format!(
+            r#"component R1: resistor "r_generic_0603" value "10k" {hard}
+               component R2: resistor "r_generic_0603" value "10k" {hard}
+               connect R1.p2 -> R2.p1"#
+        );
+        let (board, apart) = row_board(&components, &[10.0, 50.0]);
+        assert_eq!(gap_findings(&board, &apart), 0);
+
+        let (board, stacked) = row_board(&components, &[30.0, 30.0]);
+        assert_eq!(refine_placement(&board, &stacked), stacked);
     }
 
     #[test]
