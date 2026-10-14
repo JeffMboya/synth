@@ -186,6 +186,80 @@ fn pullup_to_the_devices_own_rail_is_clean() {
     );
 }
 
+/// An adjustable regulator's feedback divider is not a bus pull-up.
+///
+/// The divider from the output rail down to `fb` is how the part is told what
+/// to produce, so the two voltages this rule compares are the divider's own
+/// two ends: a 5 V buck with a 1.2 V reference reads as "a 5.0 V pull-up on a
+/// 1.2 V device", and the rule condemns the circuit that sets the very rail
+/// it is measuring against.
+///
+/// Reduced from the Class-C multi-rail board, where it was the only error.
+/// It needs the whole input chain to fire — a bare buck and divider does not
+/// resolve the rail's voltage — which is why the fixture is this long.
+#[test]
+fn a_regulators_feedback_divider_is_not_a_pullup() {
+    let src = r##"board "multirail_compute" {
+    layers 4
+    manufacturer "jlcpcb"
+    netclass "V5" {
+      trace_width 0.8mm
+      clearance 0.25mm
+      plane
+    }
+    group "POWER IN" color "#c2410c" {
+      component J1: connector "jst_ph_2pin" 
+      component F1: fuse      "polyfuse"
+      component D1: diode     "d_schottky"
+      component D2: diode     "tvs_array_5v"
+      component C1: capacitor "c_electrolytic_100uf" value "100uF"
+      component TP1: testpoint "testpoint_pad_1_5" 
+      connect J1.p1 -> D1.anode
+      connect D1.cathode -> F1.p1
+      connect F1.p2 -> D2.ch1 as "V12"
+      connect F1.p2 -> C1.p1
+      connect F1.p2 -> TP1.p1
+      connect J1.p2 -> D2.gnd as "GND"
+      connect J1.p2 -> C1.p2
+      connect D2.vcc -> D2.ch1
+    }
+    group "5V BUCK" color "#b91c1c" {
+      component U1: regulator "mp2307_buck" 
+      component L1: inductor  "l_generic_1210" value "10uH"
+      component C2: capacitor "c_generic_0805" value "22uF"
+      component C3: capacitor "c_generic_0805" value "22uF"
+      component R1: resistor  "r_generic_0603" value "31.6k"
+      component R2: resistor  "r_generic_0603" value "10k"
+      component C4: capacitor "c_generic_0603" value "100nF"
+      component NTC1: resistor "r_thermistor_ntc_10k" value "10k"
+      component TP2: testpoint "testpoint_pad_1_5" 
+      connect F1.p2 -> U1.in
+      connect F1.p2 -> C2.p1
+      connect C2.p2 -> U1.gnd
+      connect U1.en -> F1.p2
+      connect U1.bs -> C4.p1
+      connect C4.p2 -> U1.sw
+      connect U1.sw -> L1.p1
+      connect L1.p2 -> C3.p1 as "V5" class "V5"
+      connect L1.p2 -> R1.p1
+      connect R1.p2 -> U1.fb
+      connect U1.fb -> R2.p1
+      connect R2.p2 -> U1.gnd
+      connect C3.p2 -> U1.gnd
+      connect L1.p2 -> TP2.p1
+      connect U1.ep -> U1.gnd
+      connect NTC1.p1 -> L1.p2
+      connect NTC1.p2 -> U1.gnd
+    }
+}"##;
+    let diags = validate(src);
+    assert!(
+        codes(&diags, "E-SYNTH-POWER-008").is_empty(),
+        "a feedback divider is how an adjustable rail is set, not a pull-up: {:?}",
+        codes(&diags, "E-SYNTH-POWER-008")
+    );
+}
+
 #[test]
 fn regulator_input_below_minimum_is_an_error() {
     let src = r#"board "t" {
