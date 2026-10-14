@@ -16,19 +16,19 @@ board_outline_mm: 82.69 x 69.06
   C9  (  63.76,   61.98) mm  rot=OneEighty layer=Top
   R4  (  29.76,   32.98) mm  rot=Zero layer=Top
   D3  (  28.50,   31.50) mm  rot=Zero layer=Top
-  R5  (  33.00,   39.50) mm  rot=Zero layer=Top
-  D4  (  31.50,   41.00) mm  rot=Zero layer=Top
-  R6  (  29.00,   35.00) mm  rot=Zero layer=Top
-  D5  (  27.50,   36.50) mm  rot=Zero layer=Top
+  R5  (  29.00,   40.50) mm  rot=Zero layer=Top
+  D4  (  27.50,   42.00) mm  rot=Zero layer=Top
+  R6  (  25.50,   34.50) mm  rot=Zero layer=Top
+  D5  (  24.00,   33.00) mm  rot=Zero layer=Top
  SW1  (  46.39,   11.63) mm  rot=Zero layer=Top
-  C1  (  16.00,   18.50) mm  rot=Zero layer=Top
-  C2  (  16.00,   16.50) mm  rot=Zero layer=Top
+  C1  (  12.50,   19.00) mm  rot=Zero layer=Top
+  C2  (   7.47,   27.30) mm  rot=Zero layer=Top
   C3  (  50.81,   35.64) mm  rot=Zero layer=Top
   D1  (  29.85,   12.95) mm  rot=Zero layer=Top
   D2  (   6.35,   12.95) mm  rot=Zero layer=Top
   C4  (  50.68,   41.76) mm  rot=Zero layer=Top
-  R1  (  33.00,   21.50) mm  rot=Zero layer=Top
-  C6  (  33.00,   23.50) mm  rot=Zero layer=Top
+  R1  (  29.00,   24.50) mm  rot=Zero layer=Top
+  C6  (  27.50,   23.00) mm  rot=Zero layer=Top
   R2  (  54.66,   27.62) mm  rot=Zero layer=Top
   R3  (  50.50,   32.50) mm  rot=Zero layer=Top
   R7  (  63.00,   52.00) mm  rot=Zero layer=Top

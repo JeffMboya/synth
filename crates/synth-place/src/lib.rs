@@ -4542,6 +4542,24 @@ fn refine_placement<S: ::std::hash::BuildHasher>(
     keep_unless_worse(board, best, shortened)
 }
 
+/// Parts with at least this many pins keep other parts out of a ring around
+/// them in the wirelength pass, so the router can still leave their pins.
+const DENSE_PART_PINS: usize = 12;
+
+/// Extra width and height of that ring around a dense part, in millimetres:
+/// half of it on each side. Calibrated on the reference boards (the native
+/// router's `routability_report` gate); the right size is not monotonic, so
+/// re-run that gate before changing it.
+const DENSE_PART_RING_MM: f64 = 7.0;
+
+/// Whether a component has enough pins to need a keep-out ring.
+fn is_dense_part(board: &Board, id: ComponentId) -> bool {
+    board
+        .component(id)
+        .and_then(|c| c.part.as_ref())
+        .is_some_and(|part| part.pins.len() >= DENSE_PART_PINS)
+}
+
 /// Nets with more pins than this are power rails or buses. They are
 /// routed as pours or trunks, so pulling parts toward their middle only
 /// scatters everything else.
@@ -4580,16 +4598,72 @@ fn total_hpwl_nm(board: &Board, placement: &Placement) -> i64 {
         .sum()
 }
 
+/// The nearest centre to `centre` whose rectangle (`half` wide and tall on each
+/// side) is clear of every ring: whichever ring it overlaps, it moves out along
+/// the axis with the smaller distance to travel.
+fn centre_outside_rings(
+    mut centre: Point,
+    half: (i64, i64),
+    rings: &[Rect],
+    pitch_nm: i64,
+) -> Point {
+    for _ in 0..=rings.len() {
+        let rect = Rect::from_center_half_extents(centre, half.0, half.1);
+        let Some(ring) = rings.iter().find(|ring| ring.intersects(&rect)) else {
+            break;
+        };
+        let ring_middle = Point::new(
+            (ring.min.x_nm + ring.max.x_nm) / 2,
+            (ring.min.y_nm + ring.max.y_nm) / 2,
+        );
+        let x = if centre.x_nm >= ring_middle.x_nm {
+            ring.max.x_nm + half.0 + pitch_nm
+        } else {
+            ring.min.x_nm - half.0 - pitch_nm
+        };
+        let y = if centre.y_nm >= ring_middle.y_nm {
+            ring.max.y_nm + half.1 + pitch_nm
+        } else {
+            ring.min.y_nm - half.1 - pitch_nm
+        };
+        if (x - centre.x_nm).abs() <= (y - centre.y_nm).abs() {
+            centre.x_nm = x / pitch_nm * pitch_nm;
+        } else {
+            centre.y_nm = y / pitch_nm * pitch_nm;
+        }
+    }
+    centre
+}
+
 /// Wirelength-driven detailed placement: move each small two-pin part to the
 /// median of the boxes its nets form around the other parts (the spot that
 /// minimises its nets' half-perimeter), snap it to a legal slot nearby, and
 /// keep the move only if total wirelength drops. ICs, connectors and
 /// hard-hinted parts stay where they are, so only passives travel toward the
 /// parts they serve, and a move can never make the wiring longer.
+/// A passive does not move into the keep-out ring around a many-pin part
+/// (see `DENSE_PART_RING_MM`), so a decoupling cap stays about half the ring
+/// away from such a part, not against it. The router needs that room.
 fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
     let pitch_nm = mm_to_nm(0.5);
     let mut hpwl = total_hpwl_nm(board, &placement);
     let mut hits = keepout_hits(board, &placement);
+    // A passive may not move into the ring around a many-pin part. Only
+    // passives move here, so these rings stay where they are.
+    let half_ring_nm = mm_to_nm(DENSE_PART_RING_MM) / 2;
+    let rings: Vec<Rect> = board
+        .components
+        .iter()
+        .filter(|c| is_dense_part(board, c.id))
+        .filter_map(|c| {
+            let placed = placement.components.iter().find(|p| p.id == c.id)?;
+            let r = sidecar_courtyard_rect(board, c, placed);
+            Some(Rect::new(
+                Point::new(r.min.x_nm - half_ring_nm, r.min.y_nm - half_ring_nm),
+                Point::new(r.max.x_nm + half_ring_nm, r.max.y_nm + half_ring_nm),
+            ))
+        })
+        .collect();
     for _ in 0..HPWL_PASSES {
         let mut improved = false;
         for (component_index, component) in board.components.iter().enumerate() {
@@ -4641,8 +4715,17 @@ fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
                 let mid = values.len() / 2;
                 (values[mid - 1] + values[mid]) / 2 / pitch_nm * pitch_nm
             };
+            let half = {
+                let r = sidecar_courtyard_rect(board, component, &current);
+                (r.width_nm() / 2, r.height_nm() / 2)
+            };
             let target = ComponentPlacement {
-                center: Point::new(middle(&mut xs), middle(&mut ys)),
+                center: centre_outside_rings(
+                    Point::new(middle(&mut xs), middle(&mut ys)),
+                    half,
+                    &rings,
+                    pitch_nm,
+                ),
                 ..current
             };
             let slot = if sidecar_position_is_legal(board, &placement, component_index, target) {
@@ -4651,6 +4734,12 @@ fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
                 nearest_local_slot(board, &placement, component_index, target, pitch_nm)
             };
             let Some(slot) = slot else { continue };
+            // The legal slot search knows nothing about rings, so it can still
+            // land inside one; then the part stays where it is.
+            let slot_rect = sidecar_courtyard_rect(board, component, &slot);
+            if rings.iter().any(|ring| ring.intersects(&slot_rect)) {
+                continue;
+            }
             let mut trial = placement.clone();
             if let Some(placed) = trial.components.iter_mut().find(|p| p.id == component.id) {
                 *placed = slot;
@@ -5649,6 +5738,44 @@ mod tests {
         assert_eq!(keepout_hits(&board, &placement), 0, "setup is clear");
         let refined = refine(&board, &placement);
         assert_eq!(keepout_hits(&board, &refined), 0);
+    }
+
+    /// The router needs room to leave a many-pin part's pins, so the
+    /// wirelength pass does not park a passive inside that part's ring even
+    /// though it would shorten the wire.
+    #[test]
+    fn the_wirelength_pass_keeps_out_of_a_many_pin_part_s_ring() {
+        let components = r#"
+            component U1: mcu "rp2350" { placement_hint { region: top_left priority: hard } }
+            component C1: capacitor "c_generic_0603" value "100n"
+            connect U1.dvdd -> C1.p1
+        "#;
+        let (board, mut loose) = row_board(components, &[0.0; 2]);
+        move_part(&mut loose, &board, "U1", 30.0, 15.0);
+        move_part(&mut loose, &board, "C1", 5.0, 15.0);
+
+        let moved = shorten_wires(&board, loose.clone());
+
+        let rect_of = |p: &Placement, refdes: &str| {
+            let component = board
+                .components
+                .iter()
+                .find(|c| c.refdes == refdes)
+                .expect(refdes);
+            let placed = p.component_by_refdes(&board, refdes).expect(refdes);
+            sidecar_courtyard_rect(&board, component, placed)
+        };
+        let (u1, c1) = (rect_of(&moved, "U1"), rect_of(&moved, "C1"));
+        let gap_nm = (c1.min.x_nm - u1.max.x_nm)
+            .max(u1.min.x_nm - c1.max.x_nm)
+            .max(c1.min.y_nm - u1.max.y_nm)
+            .max(u1.min.y_nm - c1.max.y_nm);
+        assert!(
+            gap_nm >= mm_to_nm(DENSE_PART_RING_MM / 2.0) - mm_to_nm(0.01),
+            "C1 sits {:.1} mm from U1",
+            nm_to_mm(gap_nm)
+        );
+        assert_ne!(moved, loose, "setup: C1 still moves toward U1");
     }
 
     #[test]
