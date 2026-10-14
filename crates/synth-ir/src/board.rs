@@ -506,6 +506,14 @@ pub struct NetClass {
     /// zone for each member net on the plane layers too, not only for ground.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plane: bool,
+    /// Maximum routed length for the class's nets (`max_length 50mm`), checked
+    /// against the routed copper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<Length>,
+    /// Length the class's nets may differ from each other (`max_skew 1mm`), a
+    /// bus/group length-match budget checked across the class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_skew: Option<Length>,
     pub source_span: Span,
 }
 

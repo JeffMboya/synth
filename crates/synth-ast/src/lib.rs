@@ -659,6 +659,12 @@ pub enum NetclassAttr {
     /// routed traces. Opt-in, because on a two-layer board a plane competes
     /// with signal routing.
     Plane,
+    /// Maximum routed length for the class's nets (`max_length 50mm`), a
+    /// length-match/ propagation-delay budget.
+    MaxLength(ValueWithUnit),
+    /// Length the class's nets may differ from each other (`max_skew 1mm`), a
+    /// bus/group length-match budget.
+    MaxSkew(ValueWithUnit),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,9 +4,9 @@
 //!
 //! A part's reference label used to sit at one fixed offset from the part,
 //! whatever was already there: it could land on a neighbour, on another label,
-//! or past the board edge. [`place_labels`] keeps that offset when it is free
-//! and otherwise tries the other three sides, so a board with no conflict
-//! exports exactly as before.
+//! or past the board edge, and it sat well clear of the part. [`place_labels`]
+//! puts it right against the courtyard on the first free side and falls back
+//! to that offset only when no side is free.
 
 use std::collections::HashMap;
 
@@ -102,11 +102,11 @@ fn text_width_nm(refdes: &str) -> i64 {
 /// A label the design or the part file hides takes no room. A hard sidecar
 /// offset is used as given, skipping the collision checks but pulled back
 /// inside the board. Otherwise each part takes the first candidate
-/// that fits: a soft sidecar offset, the part file's preferred side, the
-/// default, then above, below, left and right of its courtyard. A candidate
-/// fits when it stays inside the board, clear of every other part's courtyard
-/// and clear of the labels already placed. A part with no fitting candidate
-/// keeps the default.
+/// that fits: a soft sidecar offset, the part file's preferred side, then
+/// above, below, left and right of its courtyard, then the default. A
+/// candidate fits when it stays inside the board, clear of every other part's
+/// courtyard and clear of the labels already placed. A part with no fitting
+/// candidate keeps the default.
 pub(crate) fn place_labels(
     parts: &[LabelPart],
     outline: Rect,
@@ -154,11 +154,11 @@ pub(crate) fn place_labels(
             _ => from_design
                 .into_iter()
                 .chain(part.side.map(|s| side_candidate(part, s)))
-                .chain(std::iter::once(default))
                 .chain(
                     [Side::Above, Side::Below, Side::Left, Side::Right]
                         .map(|s| side_candidate(part, s)),
                 )
+                .chain(std::iter::once(default))
                 .find(|&p| fits(p))
                 .unwrap_or(default),
         };
@@ -297,26 +297,48 @@ mod tests {
     }
 
     #[test]
-    fn a_label_with_room_keeps_the_default_position() {
+    fn a_label_with_room_sits_next_to_its_part() {
         let part = resistor(1, "R1", 20.0, 20.0);
         let placed = place(std::slice::from_ref(&part), outline());
+        assert_eq!(placed[&part.id], side_candidate(&part, Side::Above));
+    }
+
+    #[test]
+    fn a_label_with_every_side_blocked_falls_back_to_the_default() {
+        let part = resistor(1, "R1", 20.0, 20.0);
+        // One neighbour over each side spot, none over the default spot 4 mm above.
+        let blockers = [
+            (2, 20.0, 18.5, 4.0, 1.4),
+            (3, 20.0, 21.5, 4.0, 1.4),
+            (4, 17.7, 20.0, 2.0, 2.0),
+            (5, 22.3, 20.0, 2.0, 2.0),
+        ];
+        let mut parts = vec![part.clone()];
+        for (id, cx, cy, w, h) in blockers {
+            let mut blocker = resistor(id, "U1", cx, cy);
+            blocker.courtyard = rect(cx, cy, w, h);
+            parts.push(blocker);
+        }
+        let placed = place(&parts, outline());
         assert_eq!(placed[&part.id], default_label(&part));
     }
 
     #[test]
     fn a_label_that_lands_on_a_neighbour_moves_to_a_free_side() {
         let part = resistor(1, "R1", 20.0, 20.0);
-        // The default label sits 4 mm above the part; a wide neighbour covers it.
-        let mut neighbour = resistor(2, "U1", 20.0, 16.0);
-        neighbour.courtyard = rect(20.0, 16.0, 8.0, 2.0);
+        // A wide neighbour covers the spot just above the part.
+        let mut neighbour = resistor(2, "U1", 20.0, 18.4);
+        neighbour.courtyard = rect(20.0, 18.4, 8.0, 1.8);
         let parts = [part.clone(), neighbour.clone()];
         let placed = place(&parts, outline());
-        let pos = placed[&part.id];
-        assert_ne!(pos, default_label(&part), "the default is covered");
-        let b = label_box(&part, pos);
+        let b = label_box(&part, placed[&part.id]);
         assert!(
             !overlaps(b, neighbour.courtyard),
             "label {b:?} on the neighbour"
+        );
+        assert!(
+            b.min.y_nm >= part.courtyard.max.y_nm,
+            "label {b:?} not moved below the part"
         );
         assert!(inside(outline(), b), "label {b:?} off the board");
     }

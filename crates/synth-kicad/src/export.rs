@@ -224,6 +224,21 @@ pub fn export_with_placement(
     export_inner(board, out_dir, sidecars, Some(placement))
 }
 
+/// The placement [`export_with_sidecars`] would choose, without exporting.
+///
+/// Lets a caller read the routed board back and evaluate the placed geometry
+/// against it (the routed-DRC pass), using the same placement the export wrote.
+///
+/// # Errors
+/// [`ExportError::Placement`] when the placer finds no legal placement.
+pub fn placement_for_export(
+    board: &Board,
+    sidecars: &Sidecars,
+) -> Result<synth_place::Placement, ExportError> {
+    place_for_export(board, sidecars.placement_path())
+        .map_err(|source| ExportError::Placement { source })
+}
+
 /// Candidate placements for a caller that can route and wants to choose.
 ///
 /// A superset of what [`export_with_sidecars`] itself chooses among: the
@@ -779,14 +794,61 @@ fn place_candidates_with_margins(
 ///
 /// Violations lead — an illegal placement is never preferred, however short
 /// its copper — then net hazards, then total copper.
-fn placement_key(board: &Board, placement: &synth_place::Placement) -> (usize, usize, u64) {
+fn placement_key(board: &Board, placement: &synth_place::Placement) -> (usize, usize, usize, u64) {
     let violations = placement_score(board, placement);
     let estimate = synth_place::routability(board, placement);
     (
         violations,
+        thermal_crowding(board, placement),
         estimate.overlong_nets,
         estimate.copper_length_nm,
     )
+}
+
+/// Pairs of hot components placed within [`HOT_SPACING_MM`] of each other.
+///
+/// Two parts that each run warm and sit close share a thermal envelope; the
+/// gap is the cheapest thing a placer can fix, and unlike the route-aware terms
+/// it needs no router. Lower is better, and a design with no declared
+/// dissipation scores zero.
+fn thermal_crowding(board: &Board, placement: &synth_place::Placement) -> usize {
+    /// A part dissipating at least this much is treated as hot.
+    const HOT_DISSIPATION_MW: f64 = 500.0;
+    /// Two hot parts closer than this on both axes are crowded.
+    const HOT_SPACING_MM: f64 = 15.0;
+
+    let hot: Vec<synth_geometry::Point> = board
+        .components
+        .iter()
+        .filter(|component| {
+            component
+                .part
+                .as_ref()
+                .and_then(|part| part.operating_conditions.as_ref())
+                .and_then(|operating| operating.max_power_mw)
+                .is_some_and(|mw| mw >= HOT_DISSIPATION_MW)
+        })
+        .filter_map(|component| {
+            placement
+                .components
+                .iter()
+                .find(|placed| placed.id == component.id)
+                .map(|placed| placed.center)
+        })
+        .collect();
+
+    let spacing_nm = synth_geometry::mm_to_nm(HOT_SPACING_MM);
+    let mut crowded = 0;
+    for i in 0..hot.len() {
+        for j in (i + 1)..hot.len() {
+            if (hot[i].x_nm - hot[j].x_nm).abs() <= spacing_nm
+                && (hot[i].y_nm - hot[j].y_nm).abs() <= spacing_nm
+            {
+                crowded += 1;
+            }
+        }
+    }
+    crowded
 }
 
 /// Orientation overrides for QSPI flash on an RP2350 board.
