@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,29 @@ from pathlib import Path
 # rejected the result. Distinct from a crash so a caller can tell "the
 # router refused this board" from "the router broke".
 POLICY_REJECTED = 3
+
+
+def _plane_zones(board: Path) -> list[tuple[str, str]]:
+    """Each zone's net and the one copper layer it pours on, in file order.
+
+    Read from the board rather than passed in: Synth's exporter already writes
+    a zone per plane net, so the board itself is the record of which net pours
+    where. `route_planes.py` takes the two as positionally matched lists, one
+    layer per net, and a zone spanning several layers cannot be expressed that
+    way — those are skipped rather than guessed at.
+    """
+    try:
+        text = board.read_text()
+    except OSError:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for chunk in text.split("(zone")[1:]:
+        head = chunk[:400]
+        net = re.search(r'\(net_name "([^"]+)"\)', head)
+        layers = re.findall(r'"([A-Za-z0-9_.]+\.Cu)"', head)
+        if net and len(layers) == 1:
+            pairs.append((net.group(1), layers[0]))
+    return pairs
 
 
 def _fanout(python: str, repo: Path, board: Path, components: list[str],
@@ -61,12 +85,17 @@ def _fanout(python: str, repo: Path, board: Path, components: list[str],
     0.56/0.3 down to 0.35/0.2 and placed 11 vias there.
     """
     planes = repo / "py_router" / "route_planes.py"
+    pairs = _plane_zones(board)
     fanout = repo / "py_router" / "bga_fanout.py"
     current = board
 
-    if planes.is_file():
+    if planes.is_file() and pairs:
         poured = board.with_suffix(".poured.kicad_pcb")
         command = [python, str(planes), str(current), str(poured)]
+        command.append("--nets")
+        command.extend(net for net, _ in pairs)
+        command.append("--plane-layers")
+        command.extend(layer for _, layer in pairs)
         print("pouring planes:", " ".join(command), flush=True)
         if subprocess.run(command, check=False).returncode == 0 and poured.is_file():
             current = poured
