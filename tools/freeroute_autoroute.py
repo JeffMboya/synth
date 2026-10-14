@@ -330,6 +330,23 @@ def _near_pad(pad, layer, point, limit) -> bool:
     )
 
 
+def _inside_pad_disc(pads, net, point) -> bool:
+    """True if `point` is inside the disc Synth's gate reads a pad of `net` as.
+
+    The connectivity check treats a pad as the disc of its larger half-dimension
+    and calls a via of the same net inside it a via-in-pad, which the fab
+    charges for (filled and capped vias). A via beside a long pad can sit in
+    that disc without touching the pad, so stay out of it.
+    """
+    for pad in pads:
+        if pad.GetNetCode() != net:
+            continue
+        radius = max(pad.GetSizeX(), pad.GetSizeY()) // 2
+        if (pad.GetPosition() - point).EuclideanNorm() <= radius:
+            return True
+    return False
+
+
 def _nearest_via_spot(piece, tracks, pads, net, pad, limit):
     """The legal via position nearest to `pad`'s centre, within `limit` of its edge.
 
@@ -355,6 +372,7 @@ def _nearest_via_spot(piece, tracks, pads, net, pad, limit):
             inner.PointInside(point)
             and _near_pad(pad, layer, point, limit)
             and _via_fits(tracks, pads, net, point)
+            and not _inside_pad_disc(pads, net, point)
         ):
             return point
     return None

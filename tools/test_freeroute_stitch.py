@@ -159,8 +159,12 @@ def build_open_board(path, boxed=False, corridor=False, far_size=1.0, far_back=F
             for layer in (pcbnew.B_Cu, pcbnew.B_Mask, pcbnew.B_Paste):
                 layers.AddLayer(layer)
         pad.SetLayerSet(layers if back else pad.SMDMask())
-        size = far_size if ref == "C2" else 1
-        pad.SetSize(point(size, size))
+        width, height = (
+            (far_size if isinstance(far_size, tuple) else (far_size, far_size))
+            if ref == "C2"
+            else (1, 1)
+        )
+        pad.SetSize(point(width, height))
         pad.SetPosition(point(x, y))
         pad.SetNet(gnd)
         footprint.Add(pad)
@@ -371,6 +375,22 @@ class TieDistantGroundPads(unittest.TestCase):
             self.assertGreaterEqual(max(abs(x - 22), abs(y - 20)) - 1.7, 0.5 - 1e-6)
             # A second run sees the pad as tied.
             self.assertEqual(router.tie_distant_ground_pads(str(path)), ([], 0))
+
+    def test_a_via_stays_out_of_the_disc_the_gate_reads_a_long_pad_as(self):
+        import freeroute_autoroute as router
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "board.kicad_pcb"
+            # A 2.0 x 0.6 mm pad. Synth's connectivity check treats a pad as the
+            # disc of its larger half-dimension (1.0 mm here), and calls a via of
+            # the same net inside it a via-in-pad, which costs a filled and
+            # capped via at the fab. A via beside the pad but inside that disc
+            # would be reported as one.
+            build_open_board(path, far_size=(2.0, 0.6))
+            added, unresolved = router.tie_distant_ground_pads(str(path))
+            self.assertEqual((len(added), unresolved), (1, 0))
+            x, y = added[0]
+            self.assertGreater(((x - 22) ** 2 + (y - 20) ** 2) ** 0.5, 1.0)
 
 
 if __name__ == "__main__":

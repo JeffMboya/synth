@@ -246,7 +246,9 @@ After FreeRouting, two steps add ground vias where the pour alone is not enough.
 The first rescues a pour piece that no via ties to the rest of the net (a piece
 holding only SMD pads is cut off). The second gives every outer ground pad a via
 within 2 mm of its edge, in the same pour piece, at the nearest legal spot and
-never inside a pad: a decoupling capacitor or protection part whose only ground
+never inside a pad and never inside the disc the release gate reads a pad as
+(its larger half-dimension), which the gate would report as a via-in-pad: a
+decoupling capacitor or protection part whose only ground
 path is a long run of pour has a long return loop. "Within 2 mm" is a straight
 line, so a narrow neck in the pour can still make the copper path longer. A pad
 with no legal spot within 2 mm is
