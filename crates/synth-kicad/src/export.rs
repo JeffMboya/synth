@@ -359,6 +359,10 @@ fn export_inner(
     let project_text = serde_json::to_string_pretty(&project_doc)
         .map_err(|source| ExportError::SerializeProject { source })?;
     write_file(&project_path, &project_text)?;
+    write_file(
+        &out_dir.join(format!("{stem}.kicad_dru")),
+        &design_rules(&manufacturer_profile(board)),
+    )?;
 
     // Library file (.kicad_sym): self-contained symbol library
     // covering every part referenced by the IR plus the
@@ -910,6 +914,29 @@ fn placement_score(board: &Board, placement: &synth_place::Placement) -> usize {
     .len()
 }
 
+/// The profile of the manufacturer the board declares, resolved as the router
+/// resolves it, so the exported rules and the router work to the same numbers.
+fn manufacturer_profile(board: &Board) -> synth_drc::ManufacturerProfile {
+    synth_drc::ManufacturerProfile::from_name(board.manufacturer.as_deref().unwrap_or_default())
+}
+
+/// The project's custom DRC rules (`<board>.kicad_dru`), from the board's
+/// manufacturer profile. KiCad checks copper against the board edge and
+/// against holes with rules that default to 0.5 mm and 0.25 mm, and
+/// `kicad-cli` does not read them from the project file. An NPTH hole is an
+/// edge to KiCad, so it gets its own rule at the hole-to-copper figure; KiCad
+/// applies the last matching rule, so it comes after the general one.
+fn design_rules(profile: &synth_drc::ManufacturerProfile) -> String {
+    let edge = synth_geometry::nm_to_mm(profile.min_copper_to_edge_nm);
+    let hole = synth_geometry::nm_to_mm(profile.min_drill_to_copper_nm);
+    format!(
+        "(version 1)\n\
+         (rule \"manufacturer copper to board edge\"\n  (constraint edge_clearance (min {edge}mm)))\n\
+         (rule \"manufacturer copper to NPTH hole\"\n  (constraint edge_clearance (min {hole}mm))\n  (condition \"A.Pad_Type == 'NPTH, mechanical'\"))\n\
+         (rule \"manufacturer copper to hole\"\n  (constraint hole_clearance (min {hole}mm)))\n"
+    )
+}
+
 /// Build the `.kicad_pro` `net_settings` block (schematic-quality
 /// plan Phase B1).
 ///
@@ -942,6 +969,12 @@ fn build_net_settings<'a>(
                 .unwrap_or_else(|| synth_layout::netclass::net_class_color(&nc.name))
         });
     }
+    // A class the author gave no clearance falls back to the manufacturer
+    // minimum the router works to. KiCad checks the larger clearance of the
+    // two classes involved, so KiCad's own 0.2 mm default would flag copper
+    // the router placed legally.
+    let default_clearance =
+        synth_geometry::nm_to_mm(manufacturer_profile(board).min_copper_clearance_nm);
     // Declared width/clearance per class, where the author set them.
     let mut rules: BTreeMap<&str, (f64, f64)> = BTreeMap::new();
     for nc in &board.netclasses {
@@ -949,7 +982,8 @@ fn build_net_settings<'a>(
             nc.name.as_str(),
             (
                 nc.trace_width.map_or(0.2, synth_ir::Length::to_mm),
-                nc.clearance.map_or(0.2, synth_ir::Length::to_mm),
+                nc.clearance
+                    .map_or(default_clearance, synth_ir::Length::to_mm),
             ),
         );
     }
@@ -972,7 +1006,10 @@ fn build_net_settings<'a>(
             .get(name)
             .copied()
             .unwrap_or_else(|| synth_layout::netclass::net_class_color(name));
-        let (track_width, clearance) = rules.get(name.as_str()).copied().unwrap_or((0.2, 0.2));
+        let (track_width, clearance) = rules
+            .get(name.as_str())
+            .copied()
+            .unwrap_or((0.2, default_clearance));
         let (pair_width, pair_gap) = pairs.get(name.as_str()).copied().unwrap_or((0.2, 0.25));
         // KiCad gives Default the max priority so it always loses to a
         // specific class; specific classes count up from 0.
@@ -1196,5 +1233,80 @@ mod tests {
         // Declared width/clearance flow through.
         assert_eq!(pwr["track_width"], 0.5);
         assert_eq!(pwr["clearance"], 0.2);
+    }
+
+    /// KiCad checks copper against the board edge and against holes with rules
+    /// that default to 0.5 mm and 0.25 mm, and `kicad-cli` does not read them
+    /// from the project file: they go in as custom rules, from the profile the
+    /// board's manufacturer resolves to. An NPTH hole is an edge to KiCad, so it
+    /// gets its own rule at the profile's hole-to-copper figure.
+    #[test]
+    fn custom_rules_come_from_the_profile_not_from_literals() {
+        let profile = synth_drc::ManufacturerProfile::from_toml_str(
+            "name = \"t\"\nmin_trace_width_mm = 0.11\nmin_copper_clearance_mm = 0.12\n\
+             min_copper_to_edge_mm = 0.77\nmin_drill_diameter_mm = 0.3\n\
+             min_annular_ring_mm = 0.13\nmin_drill_to_copper_mm = 0.33\n",
+        )
+        .unwrap();
+        let rules = design_rules(&profile);
+        for expected in [
+            "(constraint edge_clearance (min 0.77mm))",
+            "(constraint hole_clearance (min 0.33mm))",
+            "(constraint edge_clearance (min 0.33mm))\n  (condition \"A.Pad_Type == 'NPTH, mechanical'\")",
+        ] {
+            assert!(rules.contains(expected), "{expected}\n{rules}");
+        }
+    }
+
+    /// The router resolves the board's declared manufacturer, so the exported
+    /// clearances must too: an OSH Park board is routed to 0.125 mm, and a class
+    /// exported at the JLCPCB 0.127 mm would be tighter than the router worked to.
+    #[test]
+    fn class_clearance_follows_the_boards_manufacturer() {
+        let board = board_from(
+            r#"board "b" {
+                manufacturer "oshpark"
+                component U1: regulator "ams1117_3v3"
+                component C1: capacitor "c_generic_0805" value "10uF"
+                connect U1.vout -> C1.p1
+                connect U1.gnd -> C1.p2
+            }"#,
+        );
+        let settings = build_net_settings(&board, std::iter::once(&synth_layout::layout(&board)));
+        for class in settings["classes"].as_array().unwrap() {
+            assert_eq!(
+                class["clearance"].as_f64().unwrap(),
+                0.125,
+                "{}",
+                class["name"]
+            );
+        }
+    }
+
+    /// A class with no declared clearance gets the manufacturer minimum the
+    /// router and the DRC profile use, not KiCad's 0.2 mm default: KiCad
+    /// checks the larger class clearance, so 0.2 mm flags copper the router
+    /// legally placed 0.127 mm apart.
+    #[test]
+    fn classes_without_a_declared_clearance_use_the_manufacturer_minimum() {
+        let board = board_from(
+            r#"board "b" {
+                netclass "FAST" { trace_width 0.3mm }
+                component U1: regulator "ams1117_3v3"
+                component C1: capacitor "c_generic_0805" value "10uF"
+                connect U1.vout -> C1.p1
+                connect U1.gnd -> C1.p2
+            }"#,
+        );
+        let settings = build_net_settings(&board, std::iter::once(&synth_layout::layout(&board)));
+        let minimum = 0.127;
+        for class in settings["classes"].as_array().unwrap() {
+            assert_eq!(
+                class["clearance"].as_f64().unwrap(),
+                minimum,
+                "class {} must not exceed the {minimum} mm the router uses",
+                class["name"]
+            );
+        }
     }
 }
