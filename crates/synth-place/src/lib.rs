@@ -523,6 +523,13 @@ fn outline_with_flush_connectors(
         });
     let mut outline = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
     for (component, placed, rect) in &parts {
+        // A mounting hole, test point or fiducial belongs in a corner, so the
+        // outline ends at its courtyard instead of leaving a margin round it.
+        let margin_nm = if synth_layout::is_board_feature_kind(&component.kind) {
+            0
+        } else {
+            margin_nm
+        };
         let mut reach = [
             rect.min.x_nm - margin_nm,
             rect.min.y_nm - margin_nm,
@@ -5651,6 +5658,54 @@ mod tests {
         let mut past = j2_protruding(&hard, "left", 4.1);
         tighten_outline_after_sidecar(&hard, &mut past);
         assert_flush_with_copper_clear(&hard, &past, "J2", "left");
+    }
+
+    /// Mounting holes, test points and fiducials are board features that sit
+    /// in a corner, so the outline ends at their courtyard.
+    #[test]
+    fn a_board_feature_reaches_the_outline_without_the_four_millimetre_margin() {
+        for (refdes, kind, part) in [
+            ("H1", "mounting_hole", "mounting_hole_m2_5"),
+            ("TP1", "testpoint", "testpoint_pad_1_5"),
+            ("FID1", "fiducial", "fiducial_1mm"),
+        ] {
+            let board = load_board_replacing(
+                FEATHER,
+                &[(
+                    "component J2:",
+                    &format!("component {refdes}: {kind} \"{part}\"\n  component J2:"),
+                )],
+            );
+            let mut placement = place(&board).expect("place");
+            let feature = board
+                .components
+                .iter()
+                .find(|c| c.refdes == refdes)
+                .expect(refdes);
+            let others_min_x = placement
+                .components
+                .iter()
+                .filter(|placed| placed.id != feature.id)
+                .map(|placed| {
+                    let component = board.component(placed.id).expect("component");
+                    sidecar_courtyard_rect(&board, component, placed).min.x_nm
+                })
+                .min()
+                .expect("other parts");
+            let placed = placement
+                .components
+                .iter_mut()
+                .find(|placed| placed.id == feature.id)
+                .expect("placement");
+            let half_w = sidecar_courtyard_rect(&board, feature, placed).width_nm() / 2;
+            placed.center.x_nm = others_min_x - mm_to_nm(10.0) + half_w;
+            tighten_outline_after_sidecar(&board, &mut placement);
+            assert_eq!(
+                courtyard_gaps(&board, &placement, refdes)[0],
+                0,
+                "{kind}: the outline ends at its courtyard"
+            );
+        }
     }
 
     #[test]
