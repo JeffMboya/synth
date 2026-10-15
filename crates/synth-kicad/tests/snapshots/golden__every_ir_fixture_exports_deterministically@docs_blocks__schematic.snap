@@ -724,7 +724,7 @@ expression: schematic
 	)
 	(symbol
 		(lib_id "Device:R_US")
-		(at 116.84 96.52 90)
+		(at 116.84 55.88 90)
 		(unit 1)
 		(in_bom yes)
 		(on_board yes)
@@ -733,7 +733,7 @@ expression: schematic
 		(property
 			"Reference"
 			"R2"
-			(at 116.84 91.98 90)
+			(at 116.84 51.34 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -743,7 +743,7 @@ expression: schematic
 		(property
 			"Value"
 			"(no value)"
-			(at 116.84 101.06 90)
+			(at 116.84 60.42 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -753,7 +753,7 @@ expression: schematic
 		(property
 			"Footprint"
 			"Resistor_SMD:R_0603_1608Metric"
-			(at 116.84 96.52 0)
+			(at 116.84 55.88 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -764,7 +764,7 @@ expression: schematic
 		(property
 			"Datasheet"
 			""
-			(at 116.84 96.52 0)
+			(at 116.84 55.88 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -775,7 +775,7 @@ expression: schematic
 		(property
 			"MPN"
 			""
-			(at 116.84 96.52 0)
+			(at 116.84 55.88 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -786,7 +786,7 @@ expression: schematic
 		(property
 			"LCSC"
 			""
-			(at 116.84 96.52 0)
+			(at 116.84 55.88 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -947,57 +947,57 @@ expression: schematic
 	(wire
 		(pts
 			(xy 113.03 34.29)
-			(xy 113.03 96.52)
+			(xy 113.03 55.88)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "46c99406-98d2-5cb3-8662-f7d0bc56f1a6")
+		(uuid "f685699e-749a-5e82-b083-58b5a183f696")
 	)
 	(wire
 		(pts
-			(xy 120.65 96.52)
-			(xy 124.46 96.52)
+			(xy 120.65 55.88)
+			(xy 124.46 55.88)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "39be00f6-bd7f-52bc-ba01-77a294d3b2c2")
+		(uuid "a1fd837a-b4c3-523d-8577-8f0a5709e4c9")
 	)
 	(wire
 		(pts
-			(xy 124.46 96.52)
-			(xy 124.46 107.95)
+			(xy 124.46 55.88)
+			(xy 124.46 67.31)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "c955624d-2cde-5701-8f2b-dca227bea54e")
+		(uuid "8c45fdfa-309f-5da5-aab0-df26c53c6f4c")
 	)
 	(wire
 		(pts
-			(xy 124.46 107.95)
-			(xy 50.8 107.95)
+			(xy 124.46 67.31)
+			(xy 50.8 67.31)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "531bc829-6a90-596e-8ddb-6e2839485ce1")
+		(uuid "77acf33c-c386-5836-bd30-c74f78b1c653")
 	)
 	(wire
 		(pts
-			(xy 50.8 107.95)
+			(xy 50.8 67.31)
 			(xy 50.8 30.48)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "dcfab05c-3a79-5d7a-a172-b96c7532f04a")
+		(uuid "4f69fddd-8982-5bac-bed4-afb10b9551e4")
 	)
 	(wire
 		(pts
@@ -1119,7 +1119,7 @@ expression: schematic
 	)
 	(text
 		"Build"
-		(at 20 115.95 0)
+		(at 20 75.31 0)
 		(effects
 			(font
 				(size 2 2)
@@ -1130,7 +1130,7 @@ expression: schematic
 	)
 	(text
 		"Assemble at JLCPCB."
-		(at 20 119.95 0)
+		(at 20 79.31 0)
 		(effects
 			(font
 				(size 1 1)

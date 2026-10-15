@@ -421,6 +421,9 @@ const GROUP_CAPTION_INSET: f64 = 1.0;
 /// Padding between a group's outline box (§21.1) and its contents —
 /// caption included, so the box top clears the caption baseline.
 const GROUP_BOX_PAD: f64 = 5.0;
+/// Gap (mm) left between two group boxes once they are stretched to meet:
+/// one grid step, a visible channel between regions.
+const GROUP_TILE_GAP: f64 = 2.54;
 /// Title and line sizes for design notes (§21.1 `notes` blocks) and
 /// generated connector pin legends. Phase B typography: titles stay
 /// at 2.0 mm, lines drop to 1.0 mm so prose reads subordinate to
@@ -468,6 +471,9 @@ const MAX_SHELVES: usize = 4;
 /// margin `E-SYNTH-SCHEM-013` checks — while reading as a deliberate
 /// separation rather than a void.
 const REGION_GAP: f64 = 20.32;
+/// Gap (mm) between two clusters stacked in one column of a region, on top of
+/// the taller cluster's own height.
+const REGION_ROW_GAP: f64 = 20.0;
 /// Candidate shelf widths (mm) for region packing, one per sheet the
 /// exporter can declare (A4/A3/A2 content width). The fitting loop
 /// tries each and keeps whichever lands on the smallest page.
@@ -476,6 +482,50 @@ const REGION_SHELF_WIDTHS: [f64; 3] = [
     420.0 - 2.0 * PAGE_MARGIN,
     594.0 - 2.0 * PAGE_MARGIN,
 ];
+/// Offsets `(x, y)` of rectangles `sizes` (`(w, h)`), `gap` apart, packed into
+/// a strip `target_w` wide.
+///
+/// Rectangles are placed in the order given. Each goes to the lowest spot
+/// where it fits, the leftmost one on a tie (bottom-left packing), so a short
+/// rectangle leaves its neighbours' reading order alone and the next one
+/// slides up into the hole beside a tall one instead of starting a new row
+/// below everything. A rectangle wider than the strip goes at the left edge.
+fn pack_regions(sizes: &[(f64, f64)], target_w: f64, gap: f64) -> Vec<(f64, f64)> {
+    let mut offsets: Vec<(f64, f64)> = Vec::with_capacity(sizes.len());
+    for &(w, _) in sizes {
+        // Candidate left edges: the strip's left edge, and just right of each
+        // rectangle already placed.
+        let mut lefts = vec![0.0];
+        lefts.extend(
+            offsets
+                .iter()
+                .zip(sizes)
+                .map(|(&(x, _), &(placed_w, _))| x + placed_w + gap),
+        );
+        let mut best: Option<(f64, f64)> = None;
+        for left in lefts {
+            if left > 0.0 && left + w > target_w {
+                continue;
+            }
+            // Rest on the lowest edge that blocks this column.
+            let top = offsets
+                .iter()
+                .zip(sizes)
+                .filter(|&(&(x, _), &(placed_w, _))| {
+                    left < x + placed_w + gap && x < left + w + gap
+                })
+                .map(|(&(_, y), &(_, placed_h))| y + placed_h + gap)
+                .fold(0.0_f64, f64::max);
+            if best.is_none_or(|(by, bx)| top < by || (top == by && left < bx)) {
+                best = Some((top, left));
+            }
+        }
+        let (y, x) = best.expect("the left edge is always a candidate");
+        offsets.push((x, y));
+    }
+    offsets
+}
+
 /// Target sheet aspect ratio (width/height) for cluster packing.
 /// 1.4 ≈ A4 landscape.
 const TARGET_ASPECT: f64 = 1.4;
@@ -898,6 +948,10 @@ pub fn layout_with_overrides(
     annotate_groups(board, &mut layout);
     place_connector_legends(board, &mut layout);
     place_design_notes(board, &mut layout);
+    // Notes sit under their box's bottom edge, so the boxes are stretched to
+    // meet each other only once the notes are placed.
+    let ungrouped = ungrouped_blocks(board, &layout);
+    tile_group_boxes(&mut layout.group_boxes, &ungrouped, GROUP_TILE_GAP);
     resolve_text_overlaps(board, &mut layout);
     grow_sheet_to_fit(board, &mut layout);
     compact_sheet_to_fit(board, &mut layout);
@@ -1007,6 +1061,105 @@ fn annotate_groups(board: &Board, layout: &mut Layout) {
         });
     }
 }
+/// Stretch each group box right and down until it meets its neighbour, so the
+/// boxes tile the rectangle they span instead of floating apart.
+///
+/// A box keeps its top-left corner, which is where its caption sits. It grows
+/// right to just short of the nearest box beside it, or to the right edge of
+/// all the boxes when nothing is there, then down the same way. Boxes never
+/// end up overlapping.
+fn tile_group_boxes(boxes: &mut [GroupBox], fixed: &[Rect], gap: f64) {
+    if boxes.len() < 2 && fixed.is_empty() {
+        return;
+    }
+    let right_edge = boxes.iter().map(|b| b.max_mm.0).fold(f64::MIN, f64::max);
+    let bottom_edge = boxes.iter().map(|b| b.max_mm.1).fold(f64::MIN, f64::max);
+    // Every rectangle on the sheet: the boxes first, then the fixed blocks
+    // (the parts of regions that have no box), which stop a box but never
+    // grow themselves.
+    let rects = |boxes: &[GroupBox]| -> Vec<Rect> {
+        boxes
+            .iter()
+            .map(|b| (b.min_mm, b.max_mm))
+            .chain(fixed.iter().copied())
+            .collect()
+    };
+    let overlap = |a: &Rect, b: &Rect| {
+        a.0 .0 < b.1 .0 && b.0 .0 < a.1 .0 && a.0 .1 < b.1 .1 && b.0 .1 < a.1 .1
+    };
+    let beside = |a: &Rect, b: &Rect| {
+        // `b` starts at or past `a`'s right edge and shares some of its rows.
+        b.0 .0 >= a.1 .0 && b.0 .1 < a.1 .1 && a.0 .1 < b.1 .1
+    };
+    let below = |a: &Rect, b: &Rect| {
+        // `b` starts at or past `a`'s bottom edge and shares some of its columns.
+        b.0 .1 >= a.1 .1 && b.0 .0 < a.1 .0 && a.0 .0 < b.1 .0
+    };
+    // A box that already overlaps another rectangle is left as it is: growing
+    // it would only make the overlap worse.
+    let all = rects(boxes);
+    let settled: Vec<bool> = (0..boxes.len())
+        .map(|i| {
+            all.iter()
+                .enumerate()
+                .any(|(j, other)| i != j && overlap(&all[i], other))
+        })
+        .collect();
+    let grow_right: Vec<f64> = (0..boxes.len())
+        .map(|i| {
+            all.iter()
+                .filter(|b| beside(&all[i], b))
+                .map(|b| b.0 .0 - gap)
+                .fold(right_edge, f64::min)
+        })
+        .collect();
+    for ((b, edge), keep) in boxes.iter_mut().zip(grow_right).zip(&settled) {
+        if !keep {
+            b.max_mm.0 = b.max_mm.0.max(edge);
+        }
+    }
+    let all = rects(boxes);
+    let grow_down: Vec<f64> = (0..boxes.len())
+        .map(|i| {
+            all.iter()
+                .filter(|b| below(&all[i], b))
+                .map(|b| b.0 .1 - gap)
+                .fold(bottom_edge, f64::min)
+        })
+        .collect();
+    for ((b, edge), keep) in boxes.iter_mut().zip(grow_down).zip(&settled) {
+        if !keep {
+            b.max_mm.1 = b.max_mm.1.max(edge);
+        }
+    }
+}
+
+/// A rectangle as `(min, max)` corners in sheet millimetres.
+type Rect = ((f64, f64), (f64, f64));
+
+/// Bodies of the parts that belong to no group, padded like a group box. They
+/// have no box of their own, so a group box must stop short of them.
+fn ungrouped_blocks(board: &Board, layout: &Layout) -> Vec<Rect> {
+    layout
+        .components
+        .iter()
+        .filter(|p| effective_group(board, p.id).is_none())
+        .filter_map(|p| {
+            let part = board.component(p.id)?.part.as_ref()?;
+            let (w, h) = body_size_for_part(part);
+            let (w, h) = match p.rotation {
+                Rotation::Ninety | Rotation::TwoSeventy => (h, w),
+                _ => (w, h),
+            };
+            let (x, y) = p.center_mm;
+            Some((
+                (x - w / 2.0 - GROUP_BOX_PAD, y - h / 2.0 - GROUP_BOX_PAD),
+                (x + w / 2.0 + GROUP_BOX_PAD, y + h / 2.0 + GROUP_BOX_PAD),
+            ))
+        })
+        .collect()
+}
+
 /// Height (mm) a group's box adds above and below its members'
 /// bodies: `(above, below)`.
 ///
@@ -3048,10 +3201,36 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                 let mut local: Vec<ComponentPlacement> = Vec::new();
                 let mut occupied: std::collections::HashSet<(i64, i64)> =
                     std::collections::HashSet::new();
+                // The row pitch of this region comes from its own clusters,
+                // measured, not from the largest body anywhere on the board:
+                // a connector in one region must not space the LEDs in
+                // another 70 mm apart. A cluster's members hang above and
+                // below its anchor by different amounts, so the pitch is the
+                // largest reach above plus the largest reach below, which is
+                // what two neighbours in a column can need in the worst case.
+                let (reach_above, reach_below) = (start..end)
+                    .flat_map(|col| col_groups[col].iter().copied())
+                    .map(|cluster_idx| {
+                        let mut alone = Vec::new();
+                        place_cluster_into(
+                            board,
+                            &clusters[cluster_idx],
+                            0.0,
+                            0.0,
+                            grid_w,
+                            &mut alone,
+                            &mut std::collections::HashSet::new(),
+                        );
+                        body_bbox_of(board, &alone).map_or((0.0, 0.0), |b| (-b.2, b.3))
+                    })
+                    .fold((0.0_f64, 0.0_f64), |(above, below), (a, b)| {
+                        (above.max(a), below.max(b))
+                    });
+                let row_pitch = snap_grid(reach_above + reach_below + REGION_ROW_GAP);
                 for col in start..end {
                     for &cluster_idx in &col_groups[col] {
                         let anchor_x = snap_grid(col_x_local[col]);
-                        let anchor_y = snap_grid((bk_units[cluster_idx] - bk_min) * grid_h);
+                        let anchor_y = snap_grid((bk_units[cluster_idx] - bk_min) * row_pitch);
                         place_cluster_into(
                             board,
                             &clusters[cluster_idx],
@@ -3108,32 +3287,24 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                     .max(widest)
                     .max(region_target_w),
             );
-            let mut region_offset: Vec<(f64, f64)> = vec![(0.0, 0.0); region_layouts.len()];
-            {
-                let mut cx = 0.0;
-                let mut cy = 0.0;
-                let mut shelf_h = 0.0;
-                for (i, region) in region_layouts.iter().enumerate() {
-                    let w = region.bbox.1 - region.bbox.0 + 2.0 * GROUP_BOX_PAD;
+            let sizes: Vec<(f64, f64)> = region_layouts
+                .iter()
+                .map(|region| {
                     // Pack against what is *drawn* — the box — not the
                     // bodies inside it. The box reaches above the bodies
                     // for its caption and below them for its note block,
                     // so packing on body bounds alone let two boxes
                     // overlap (`E-SYNTH-SCHEM-013`) even with a generous
                     // gap between the parts themselves.
-                    let h = region.bbox.3 - region.bbox.2
-                        + region.box_overhang.0
-                        + region.box_overhang.1;
-                    if cx > 0.0 && cx + w > target_w {
-                        cy += shelf_h + region_gap;
-                        cx = 0.0;
-                        shelf_h = 0.0;
-                    }
-                    region_offset[i] = (cx, cy);
-                    cx += w + region_gap;
-                    shelf_h = shelf_h.max(h);
-                }
-            }
+                    (
+                        region.bbox.1 - region.bbox.0 + 2.0 * GROUP_BOX_PAD,
+                        region.bbox.3 - region.bbox.2
+                            + region.box_overhang.0
+                            + region.box_overhang.1,
+                    )
+                })
+                .collect();
+            let region_offset = pack_regions(&sizes, target_w, region_gap);
 
             // Phase C: translate each region's local placements to its
             // slot, normalising the region's own top-left to the slot
@@ -7115,5 +7286,271 @@ mod documentation_tests {
         );
         let layout = layout(&b);
         assert!(!texts(&layout).iter().any(|t| t.contains("pinout")));
+    }
+}
+
+#[cfg(test)]
+mod region_packing_tests {
+    use super::pack_regions;
+
+    const GAP: f64 = 10.0;
+
+    fn overlaps(a: ((f64, f64), (f64, f64)), b: ((f64, f64), (f64, f64))) -> bool {
+        let ((ax, ay), (aw, ah)) = a;
+        let ((bx, by), (bw, bh)) = b;
+        ax < bx + bw + GAP - 1e-9
+            && bx < ax + aw + GAP - 1e-9
+            && ay < by + bh + GAP - 1e-9
+            && by < ay + ah + GAP - 1e-9
+    }
+
+    #[test]
+    fn regions_that_fit_one_row_share_it_in_order() {
+        let sizes = [(50.0, 40.0), (30.0, 60.0), (40.0, 20.0)];
+        let got = pack_regions(&sizes, 200.0, GAP);
+        assert_eq!(got, vec![(0.0, 0.0), (60.0, 0.0), (100.0, 0.0)]);
+    }
+
+    #[test]
+    fn a_short_region_leaves_room_for_the_next_one_under_it() {
+        // Width 110 holds the tall region and one short one side by side.
+        // The second short region goes in the hole under the first short
+        // one, beside the tall region, not below everything.
+        let sizes = [(50.0, 100.0), (50.0, 30.0), (50.0, 30.0)];
+        let got = pack_regions(&sizes, 110.0, GAP);
+        assert_eq!(got[0], (0.0, 0.0));
+        assert_eq!(got[1], (60.0, 0.0));
+        assert_eq!(got[2], (60.0, 40.0));
+    }
+
+    #[test]
+    fn a_region_wider_than_the_row_still_gets_placed_at_the_left() {
+        let sizes = [(30.0, 30.0), (300.0, 30.0)];
+        let got = pack_regions(&sizes, 100.0, GAP);
+        assert_eq!(got[1].0, 0.0);
+        assert!(got[1].1 >= 30.0 + GAP);
+    }
+
+    #[test]
+    fn regions_that_fit_the_strip_stay_inside_it() {
+        let sizes = [
+            (70.0, 110.0),
+            (60.0, 75.0),
+            (30.0, 55.0),
+            (80.0, 95.0),
+            (12.0, 37.0),
+        ];
+        for width in [150.0, 250.0] {
+            let got = pack_regions(&sizes, width, GAP);
+            for (&(x, _), &(w, _)) in got.iter().zip(&sizes) {
+                assert!(x + w <= width + 1e-9, "{x} + {w} past {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tie_for_the_lowest_spot_goes_to_the_leftmost() {
+        // Two equal short regions side by side at y 0. The third rests under
+        // one of them; both spots are equally low, and it takes the left one.
+        let sizes = [(40.0, 20.0), (40.0, 20.0), (40.0, 20.0)];
+        let got = pack_regions(&sizes, 90.0, GAP);
+        assert_eq!(got[2], (0.0, 30.0));
+    }
+
+    #[test]
+    fn no_two_regions_overlap_or_come_closer_than_the_gap() {
+        let sizes = [
+            (70.0, 110.0),
+            (60.0, 75.0),
+            (30.0, 55.0),
+            (80.0, 95.0),
+            (12.0, 37.0),
+            (29.0, 68.0),
+            (95.0, 110.0),
+            (87.0, 49.0),
+            (71.0, 20.0),
+        ];
+        for width in [150.0, 250.0, 400.0] {
+            let got = pack_regions(&sizes, width, GAP);
+            for i in 0..sizes.len() {
+                for j in i + 1..sizes.len() {
+                    assert!(
+                        !overlaps((got[i], sizes[i]), (got[j], sizes[j])),
+                        "regions {i} and {j} too close at width {width}: {got:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tile_group_boxes_tests {
+    use super::{tile_group_boxes, GroupBox};
+
+    const GAP: f64 = 2.0;
+
+    fn boxed(min: (f64, f64), max: (f64, f64)) -> GroupBox {
+        GroupBox {
+            group: "g".to_string(),
+            min_mm: min,
+            max_mm: max,
+            color: [0, 0, 0],
+            caption_inside: true,
+        }
+    }
+
+    fn rect(b: &GroupBox) -> (f64, f64, f64, f64) {
+        (b.min_mm.0, b.min_mm.1, b.max_mm.0, b.max_mm.1)
+    }
+
+    #[test]
+    fn a_short_box_beside_a_tall_one_grows_down_to_its_bottom() {
+        let mut boxes = [
+            boxed((0.0, 0.0), (10.0, 100.0)),
+            boxed((20.0, 0.0), (40.0, 50.0)),
+        ];
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert_eq!(rect(&boxes[1]), (20.0, 0.0, 40.0, 100.0));
+    }
+
+    #[test]
+    fn a_box_grows_right_to_just_short_of_its_neighbour() {
+        let mut boxes = [
+            boxed((0.0, 0.0), (10.0, 100.0)),
+            boxed((20.0, 0.0), (40.0, 50.0)),
+        ];
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert_eq!(rect(&boxes[0]), (0.0, 0.0, 18.0, 100.0));
+    }
+
+    #[test]
+    fn a_box_below_stops_the_growth_down() {
+        let mut boxes = [
+            boxed((0.0, 0.0), (10.0, 100.0)),
+            boxed((20.0, 0.0), (40.0, 50.0)),
+            boxed((20.0, 70.0), (40.0, 100.0)),
+        ];
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert_eq!(boxes[1].max_mm.1, 68.0);
+    }
+
+    #[test]
+    fn the_top_left_corner_never_moves() {
+        let mut boxes = [
+            boxed((3.0, 4.0), (10.0, 20.0)),
+            boxed((30.0, 8.0), (50.0, 90.0)),
+        ];
+        let corners: Vec<_> = boxes.iter().map(|b| b.min_mm).collect();
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert_eq!(boxes.iter().map(|b| b.min_mm).collect::<Vec<_>>(), corners);
+    }
+
+    #[test]
+    fn a_fixed_block_stops_a_box_like_a_neighbour_would() {
+        // Parts with no group have no box; a box must not grow over them.
+        let mut boxes = [
+            boxed((0.0, 0.0), (10.0, 50.0)),
+            boxed((60.0, 0.0), (80.0, 50.0)),
+        ];
+        let ungrouped = ((30.0, 10.0), (40.0, 40.0));
+        tile_group_boxes(&mut boxes, &[ungrouped], GAP);
+        assert_eq!(boxes[0].max_mm.0, 28.0);
+    }
+
+    #[test]
+    fn boxes_that_touch_exactly_stay_put() {
+        let mut boxes = [
+            boxed((0.0, 0.0), (10.0, 20.0)),
+            boxed((10.0, 0.0), (30.0, 20.0)),
+        ];
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert_eq!(rect(&boxes[0]), (0.0, 0.0, 10.0, 20.0));
+    }
+
+    #[test]
+    fn boxes_that_already_overlap_are_not_stretched_further() {
+        let mut boxes = [
+            boxed((0.0, 0.0), (30.0, 20.0)),
+            boxed((20.0, 0.0), (50.0, 40.0)),
+        ];
+        let before: Vec<_> = boxes.iter().map(rect).collect();
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert_eq!(boxes.iter().map(rect).collect::<Vec<_>>(), before);
+    }
+
+    #[test]
+    fn a_diagonal_neighbour_does_not_stop_a_box() {
+        // The second box is down and to the right of the first: no shared rows
+        // or columns, so the first grows to the outer edges instead.
+        let mut boxes = [
+            boxed((0.0, 0.0), (10.0, 10.0)),
+            boxed((40.0, 40.0), (50.0, 50.0)),
+        ];
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert_eq!(rect(&boxes[0]), (0.0, 0.0, 50.0, 38.0));
+    }
+
+    #[test]
+    fn a_lone_box_is_left_alone() {
+        let mut boxes = [boxed((5.0, 5.0), (25.0, 45.0))];
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert_eq!(rect(&boxes[0]), (5.0, 5.0, 25.0, 45.0));
+    }
+
+    /// The nine groups of the USB-C dual UART board as `pack_regions` leaves
+    /// them: some short boxes beside tall ones, two boxes under the first.
+    fn usb_uart_boxes() -> Vec<GroupBox> {
+        [
+            ((20.4, 19.1), (88.8, 132.6)),
+            ((111.8, 20.4), (168.8, 95.7)),
+            ((185.5, 20.4), (215.8, 74.2)),
+            ((228.7, 34.4), (309.8, 130.0)),
+            ((334.1, 19.1), (346.6, 56.4)),
+            ((406.5, 21.7), (435.5, 89.4)),
+            ((463.6, 20.4), (558.7, 130.0)),
+            ((25.5, 141.1), (113.0, 189.7)),
+            ((17.9, 204.9), (88.8, 225.1)),
+        ]
+        .into_iter()
+        .map(|(min, max)| boxed(min, max))
+        .collect()
+    }
+
+    #[test]
+    fn no_two_boxes_overlap_after_tiling() {
+        let mut boxes = usb_uart_boxes();
+        tile_group_boxes(&mut boxes, &[], GAP);
+        for i in 0..boxes.len() {
+            for j in i + 1..boxes.len() {
+                let (a, b) = (rect(&boxes[i]), rect(&boxes[j]));
+                let apart = a.2 <= b.0 || b.2 <= a.0 || a.3 <= b.1 || b.3 <= a.1;
+                assert!(apart, "boxes {i} and {j} overlap: {a:?} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn tiling_fills_most_of_the_rectangle_the_boxes_span() {
+        let coverage = |boxes: &[GroupBox]| {
+            let area: f64 = boxes
+                .iter()
+                .map(|b| (b.max_mm.0 - b.min_mm.0) * (b.max_mm.1 - b.min_mm.1))
+                .sum();
+            let w = boxes.iter().map(|b| b.max_mm.0).fold(f64::MIN, f64::max)
+                - boxes.iter().map(|b| b.min_mm.0).fold(f64::MAX, f64::min);
+            let h = boxes.iter().map(|b| b.max_mm.1).fold(f64::MIN, f64::max)
+                - boxes.iter().map(|b| b.min_mm.1).fold(f64::MAX, f64::min);
+            area / (w * h)
+        };
+        let mut boxes = usb_uart_boxes();
+        let before = coverage(&boxes);
+        tile_group_boxes(&mut boxes, &[], GAP);
+        assert!(before < 0.4, "the boxes start with holes: {before}");
+        assert!(
+            coverage(&boxes) > 0.85,
+            "tiled coverage {}",
+            coverage(&boxes)
+        );
     }
 }
