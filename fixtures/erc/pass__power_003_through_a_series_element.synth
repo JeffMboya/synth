@@ -1,0 +1,30 @@
+// A rail reached only through a series element. FB1's far terminal is on
+// another rail rather than on ground, so it really can carry power in, and
+// E-SYNTH-POWER-003 must stay silent on V3V3_A — the case that makes the
+// difference between asking where a passive goes and accepting every passive.
+board "power_003_through_a_series_element" {
+  layers 2
+
+  component J1: connector "jst_ph_2pin"
+  component U1: regulator "ams1117_3v3"
+  component FB1: inductor "ferrite_bead_0603" value "600R"
+  component U2: opamp "mcp6022_dual"
+  component C1: capacitor "c_generic_0603" value "100nF"
+  component C2: capacitor "c_generic_0603" value "100nF"
+  component C3: capacitor "c_generic_0603" value "100nF"
+
+  connect J1.p1 -> U1.vin as "V5"
+  connect J1.p2 -> U1.gnd as "GND"
+  connect U1.vin -> C1.p1
+  connect C1.p2 -> U1.gnd as "GND"
+
+  connect U1.vout -> C2.p1 as "V3V3"
+  connect C2.p2 -> U1.gnd as "GND"
+
+  // The analog rail is fed through the bead and by nothing else.
+  connect U1.vout -> FB1.p1 as "V3V3"
+  connect FB1.p2 -> U2.vdd as "V3V3_A"
+  connect U2.vdd -> C3.p1 as "V3V3_A"
+  connect C3.p2 -> U1.gnd as "GND"
+  connect U2.vss -> U1.gnd as "GND"
+}

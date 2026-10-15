@@ -1,0 +1,21 @@
+// The no-source fixture, plus the one decoupling capacitor that
+// E-SYNTH-POWER-001 requires on the same rail. There is still no power source
+// anywhere on the board, so E-SYNTH-POWER-003 must still fire: a capacitor
+// whose far plate is on ground brings no power in from anywhere, and treating
+// every passive as a source made this rule silent on every board carrying the
+// decoupling the other rule demands.
+board "no_power_source_with_cap" {
+  layers 2
+
+  component U1: mcu "stm32g030"
+  component U2: mcu "stm32g030"
+  component C1: capacitor "c_generic_0603" value "100nF"
+
+  connect U1.vdd -> U2.vdd
+  connect U1.vss -> U2.vss
+  connect U1.pa2 -> U2.pa3
+  connect U1.nrst -> U2.nrst
+
+  connect U1.vdd -> C1.p1
+  connect U1.vss -> C1.p2
+}

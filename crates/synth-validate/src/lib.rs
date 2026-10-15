@@ -1417,12 +1417,29 @@ impl ErcRule for PowerInputWithoutSourceRule {
                 continue;
             }
             let has_source = net.endpoints.iter().any(|e| {
-                board.pin(e.component, e.pin).is_some_and(|p| {
-                    matches!(
-                        p.electrical_type,
-                        ElectricalType::PowerOutput | ElectricalType::Passive
-                    )
-                })
+                // A net that reaches the board edge takes its power from off
+                // the board, and what supplies it there is not in this source.
+                if is_board_edge(board, e.component) {
+                    return true;
+                }
+                board
+                    .pin(e.component, e.pin)
+                    .is_some_and(|p| match p.electrical_type {
+                        ElectricalType::PowerOutput => true,
+                        // A passive can carry power onto this net from
+                        // somewhere else — a ferrite bead, a fuse and a
+                        // series resistor all do — but only when its other
+                        // terminal is on a net that could be carrying any.
+                        // A decoupling capacitor's far plate is on ground, so
+                        // it brings nothing in. Accepting every passive left
+                        // this rule unable to fire on any board that
+                        // satisfies E-SYNTH-POWER-001, which is the rule that
+                        // demands the decoupling in the first place.
+                        ElectricalType::Passive => {
+                            passive_reaches_another_rail(board, net.id, e.component)
+                        }
+                        _ => false,
+                    })
             });
             if !has_source {
                 let first = &net.endpoints[0];
@@ -3366,6 +3383,52 @@ fn net_has_ground_pin(board: &Board, net: &synth_ir::Net) -> bool {
                     || n.starts_with("vss")
             }
         })
+    })
+}
+
+/// Whether a component is a board-edge part, so a net reaching it leaves the
+/// design. Same notion as [`BOARD_EDGE_KINDS`] serves for the clock rules.
+fn is_board_edge(board: &Board, id: ComponentId) -> bool {
+    board
+        .component(id)
+        .and_then(|c| c.part.as_ref())
+        .is_some_and(|p| BOARD_EDGE_KINDS.contains(&p.kind.as_str()))
+}
+
+/// Whether a net is ground: an endpoint typed `ground_reference`, a pin named
+/// for ground, or a net named for it.
+fn is_ground_net(board: &Board, net: &synth_ir::Net) -> bool {
+    if net_has_ground_pin(board, net) {
+        return true;
+    }
+    if net.endpoints.iter().any(|e| {
+        board
+            .pin(e.component, e.pin)
+            .is_some_and(|p| p.electrical_type == ElectricalType::GroundReference)
+    }) {
+        return true;
+    }
+    let lower = net.name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "gnd" | "vss" | "vssa" | "gnda" | "agnd" | "dgnd" | "ground" | "0v"
+    ) || lower.starts_with("gnd")
+        || lower.starts_with("vss")
+}
+
+/// Whether a passive sitting on `net` reaches a net that could be carrying
+/// power in, which is what makes it a possible source for `E-SYNTH-POWER-003`.
+///
+/// A series element — ferrite bead, fuse, resistor — has its other terminal on
+/// another rail. A decoupling capacitor has it on ground.
+fn passive_reaches_another_rail(board: &Board, net: NetId, component: ComponentId) -> bool {
+    let Some(part) = board.component(component).and_then(|c| c.part.as_ref()) else {
+        return false;
+    };
+    (0..part.pins.len()).any(|idx| {
+        board
+            .nets_containing(component, PinId(u32::try_from(idx).unwrap_or(u32::MAX)))
+            .any(|(id, other)| id != net && !is_ground_net(board, other))
     })
 }
 
