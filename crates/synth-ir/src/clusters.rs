@@ -926,8 +926,10 @@ impl Recognizer {
     /// A declared `group` bounds cluster membership: drop any member
     /// whose group differs from its anchor's.
     ///
-    /// Recognition matches on topology alone, so an I²C pull-up declared
-    /// inside a sensor's group can be claimed by an MCU two groups away.
+    /// `passive_endpoints` already skips parts in another group, so this
+    /// is a backstop for the passes that walk nets themselves (dividers,
+    /// orphan rail caps). Without it an I²C pull-up declared inside a
+    /// sensor's group could be claimed by an MCU two groups away.
     /// Placement then puts it in the *anchor's* region while the group
     /// box still measures it as part of its own, stretching that box
     /// across the sheet and overlapping every other one. Ungrouped
@@ -984,10 +986,12 @@ impl Recognizer {
 
 /// Every `(net, (component, pin))` pair sharing a net with
 /// `anchor_id.anchor_pin`, in net-then-endpoint order, skipping the
-/// anchor itself and anything already claimed.
+/// anchor itself, anything already claimed and anything in another group
+/// than the anchor: such a part would be evicted from the cluster anyway,
+/// and skipping it here leaves it for an anchor in its own group.
 ///
-/// This is the single traversal every pass uses, so "what does this pin
-/// touch" is answered one way for all of them.
+/// This is the traversal the pin-anchored passes use, so "what does this
+/// pin touch" is answered one way for them.
 fn passive_endpoints(
     board: &Board,
     anchor_id: ComponentId,
@@ -995,9 +999,13 @@ fn passive_endpoints(
     claimed: &HashSet<ComponentId>,
 ) -> Vec<(NetId, (ComponentId, PinId))> {
     let mut out = Vec::new();
+    let group_of = |id: ComponentId| board.component(id).map(|c| &c.group);
     for (net_id, net) in board.nets_containing(anchor_id, anchor_pin) {
         for endpoint in &net.endpoints {
-            if endpoint.component == anchor_id || claimed.contains(&endpoint.component) {
+            if endpoint.component == anchor_id
+                || claimed.contains(&endpoint.component)
+                || group_of(endpoint.component) != group_of(anchor_id)
+            {
                 continue;
             }
             out.push((net_id, (endpoint.component, endpoint.pin)));
@@ -1363,6 +1371,54 @@ mod tests {
         let r = member_of(ic, 1);
         assert_eq!(r.role, MemberRole::PullUp);
         assert_eq!(r.binding.anchor_pin, PinId(3), "the pin it pulls, U1.mdm");
+    }
+
+    /// A resistor on a signal that two ICs share belongs to the IC in its
+    /// own group. The earlier IC used to claim it, and the layout then
+    /// evicted it for sitting in another group than its anchor, leaving it
+    /// loose on the sheet.
+    #[test]
+    fn a_pull_resistor_goes_to_the_ic_in_its_own_group() {
+        let ic = |id: u32, name: &str, group: &str| {
+            let mut c = component(
+                id,
+                name,
+                part_with_decoupling(
+                    "ic",
+                    vec![
+                        pin("dvdd", ElectricalType::PowerInput),
+                        pin("gnd", ElectricalType::GroundReference),
+                        pin("mdm", ElectricalType::Bidirectional),
+                    ],
+                    &[("dvdd", 1)],
+                ),
+            );
+            c.group = Some(group.to_string());
+            c
+        };
+        let mut r1 = component(
+            2,
+            "R1",
+            part("resistor", vec![passive_pin("p1"), passive_pin("p2")]),
+        );
+        r1.group = Some("B".to_string());
+        let b = plain_board(
+            vec![ic(0, "U1", "A"), ic(1, "U3", "B"), r1],
+            vec![
+                net(0, "MODEM", &[(0, 2), (1, 2), (2, 0)]),
+                net(1, "GND", &[(0, 1), (1, 1), (2, 1)]),
+                net(2, "3V3", &[(0, 0), (1, 0)]),
+            ],
+        );
+        let clusters = recognize_clusters(&b);
+        assert!(
+            find(&clusters, 0)
+                .members
+                .iter()
+                .all(|m| m.component.0 != 2),
+            "U1 is in another group"
+        );
+        assert_eq!(member_of(find(&clusters, 1), 2).role, MemberRole::PullUp);
     }
 
     /// A USB-C connector's CC pins carry Rd pull-downs to ground. They belong
