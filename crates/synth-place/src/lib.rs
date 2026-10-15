@@ -1139,7 +1139,7 @@ pub fn place_with_tuning_seeded<S: ::std::hash::BuildHasher>(
             true,
             seed,
         ) {
-            Ok(p) => return Ok(p),
+            Ok(p) => return Ok(refine_placement(board, &p, rotation_overrides)),
             Err(e) => last_err = Some(e),
         }
     }
@@ -4457,6 +4457,422 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
     }
 }
 
+/// Review passes `refine_placement` may spend. Each pass applies every
+/// recommended move at once, so a few are enough for the moves to settle.
+const REFINE_MAX_PASSES: usize = 4;
+
+/// Apply the visual review's recommended moves to `placement`, re-reviewing
+/// after each pass, and return the version with the fewest findings.
+///
+/// Moves are applied together, so two of them can undo each other, and a
+/// move that closes one finding can open a collision. A pass only counts when
+/// it adds no overlap or off-board part, so a refined placement is never
+/// worse than the one passed in and never less legal. The review's findings
+/// are then re-checked after the wirelength pass, which is dropped if it
+/// reopens any.
+/// Overlap and off-board parts are what the independent validator rejects,
+/// so a pass may not add any. Each defect emits exactly one of these actions,
+/// so counting them counts the defects; a new emitter for either defect must
+/// keep that pairing or the gate stops seeing it.
+fn physical_defects(review: &VisualPlacementReview) -> usize {
+    review
+        .recommended_actions
+        .iter()
+        .filter(|a| {
+            matches!(
+                a.action.as_str(),
+                "separate_courtyards" | "keep_courtyard_inside_board"
+            )
+        })
+        .count()
+}
+
+/// A finding with its measurements dropped, so one that only changed a
+/// distance is still the same finding.
+fn finding_identity(finding: &str) -> String {
+    finding
+        .split_whitespace()
+        .filter(|word| {
+            let bare = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+            bare.is_empty()
+                || !bare
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || "-.x".contains(c))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether `candidate` has a finding that `kept` does not. A count cannot
+/// tell, because a move can close one finding and open another.
+fn introduces_finding(kept: &VisualPlacementReview, candidate: &VisualPlacementReview) -> bool {
+    let known: std::collections::HashSet<String> =
+        kept.findings.iter().map(|f| finding_identity(f)).collect();
+    candidate
+        .findings
+        .iter()
+        .any(|f| !known.contains(&finding_identity(f)))
+}
+
+/// The wirelength pass only checks overlap, outline and keepouts, so a move
+/// can still reopen a review finding (decoupling distance, breakout
+/// corridor). Keep its result only when the review does not get worse.
+fn keep_unless_worse(board: &Board, kept: Placement, candidate: Placement) -> Placement {
+    let review_of = |placement: &Placement| describe_placement(board, placement).visual_review;
+    let (kept_review, candidate_review) = (review_of(&kept), review_of(&candidate));
+    if physical_defects(&candidate_review) <= physical_defects(&kept_review)
+        && !introduces_finding(&kept_review, &candidate_review)
+    {
+        candidate
+    } else {
+        kept
+    }
+}
+
+fn refine_placement<S: ::std::hash::BuildHasher>(
+    board: &Board,
+    placement: &Placement,
+    rotation_overrides: &std::collections::HashMap<ComponentId, Rotation, S>,
+) -> Placement {
+    let review_of = |candidate: &Placement| describe_placement(board, candidate).visual_review;
+    let mut best = placement.clone();
+    let mut best_review = review_of(&best);
+    let mut current = placement.clone();
+    let mut review = best_review.clone();
+    for _ in 0..REFINE_MAX_PASSES {
+        if best_review.findings.is_empty() {
+            break;
+        }
+        let before = current.clone();
+        for action in &review.recommended_actions {
+            let hits = keepout_hits(board, &current);
+            let undo = current.clone();
+            apply_recommendation(board, &mut current, action, rotation_overrides);
+            // The validator rejects a part inside a keepout, so a move that
+            // would put one there is dropped.
+            if keepout_hits(board, &current) > hits {
+                current = undo;
+            }
+        }
+        if current == before {
+            break;
+        }
+        review = review_of(&current);
+        if physical_defects(&review) <= physical_defects(&best_review)
+            && review.findings.len() < best_review.findings.len()
+            && !introduces_finding(&best_review, &review)
+        {
+            best = current.clone();
+            best_review = review.clone();
+        }
+    }
+    let shortened = shorten_wires(board, best.clone());
+    keep_unless_worse(board, best, shortened)
+}
+
+/// Parts with at least this many pins keep other parts out of a ring around
+/// them in the wirelength pass, so the router can still leave their pins.
+const DENSE_PART_PINS: usize = 12;
+
+/// Extra width and height of that ring around a dense part, in millimetres:
+/// half of it on each side. Calibrated on the reference boards (the native
+/// router's `routability_report` gate); the right size is not monotonic, so
+/// re-run that gate before changing it.
+const DENSE_PART_RING_MM: f64 = 7.0;
+
+/// Whether a component has enough pins to need a keep-out ring.
+fn is_dense_part(board: &Board, id: ComponentId) -> bool {
+    board
+        .component(id)
+        .and_then(|c| c.part.as_ref())
+        .is_some_and(|part| part.pins.len() >= DENSE_PART_PINS)
+}
+
+/// Nets with more pins than this are power rails or buses. They are
+/// routed as pours or trunks, so pulling parts toward their middle only
+/// scatters everything else.
+const HPWL_MAX_NET_MEMBERS: usize = 6;
+
+/// Wirelength passes `shorten_wires` may spend.
+const HPWL_PASSES: usize = 3;
+
+/// Sum over nets of the half-perimeter of the box around the centres of the
+/// parts on the net: the standard cheap stand-in for routed wire length.
+fn total_hpwl_nm(board: &Board, placement: &Placement) -> i64 {
+    board
+        .nets
+        .iter()
+        .filter_map(|net| {
+            let centres: Vec<Point> = net
+                .endpoints
+                .iter()
+                .filter_map(|e| {
+                    placement
+                        .components
+                        .iter()
+                        .find(|p| p.id == e.component)
+                        .map(|p| p.center)
+                })
+                .collect();
+            if centres.len() < 2 || centres.len() > HPWL_MAX_NET_MEMBERS {
+                return None;
+            }
+            let span = |value: fn(&Point) -> i64| {
+                centres.iter().map(value).max().unwrap_or(0)
+                    - centres.iter().map(value).min().unwrap_or(0)
+            };
+            Some(span(|p| p.x_nm) + span(|p| p.y_nm))
+        })
+        .sum()
+}
+
+/// The nearest centre to `centre` whose rectangle (`half` wide and tall on each
+/// side) is clear of every ring: whichever ring it overlaps, it moves out along
+/// the axis with the smaller distance to travel.
+fn centre_outside_rings(
+    mut centre: Point,
+    half: (i64, i64),
+    rings: &[Rect],
+    pitch_nm: i64,
+) -> Point {
+    for _ in 0..=rings.len() {
+        let rect = Rect::from_center_half_extents(centre, half.0, half.1);
+        let Some(ring) = rings.iter().find(|ring| ring.intersects(&rect)) else {
+            break;
+        };
+        let ring_middle = Point::new(
+            (ring.min.x_nm + ring.max.x_nm) / 2,
+            (ring.min.y_nm + ring.max.y_nm) / 2,
+        );
+        let x = if centre.x_nm >= ring_middle.x_nm {
+            ring.max.x_nm + half.0 + pitch_nm
+        } else {
+            ring.min.x_nm - half.0 - pitch_nm
+        };
+        let y = if centre.y_nm >= ring_middle.y_nm {
+            ring.max.y_nm + half.1 + pitch_nm
+        } else {
+            ring.min.y_nm - half.1 - pitch_nm
+        };
+        if (x - centre.x_nm).abs() <= (y - centre.y_nm).abs() {
+            centre.x_nm = x / pitch_nm * pitch_nm;
+        } else {
+            centre.y_nm = y / pitch_nm * pitch_nm;
+        }
+    }
+    centre
+}
+
+/// Wirelength-driven detailed placement: move each small two-pin part to the
+/// median of the boxes its nets form around the other parts (the spot that
+/// minimises its nets' half-perimeter), snap it to a legal slot nearby, and
+/// keep the move only if total wirelength drops. ICs, connectors and
+/// hard-hinted parts stay where they are, so only passives travel toward the
+/// parts they serve, and a move can never make the wiring longer.
+/// A passive does not move into the keep-out ring around a many-pin part
+/// (see `DENSE_PART_RING_MM`), so a decoupling cap stays about half the ring
+/// away from such a part, not against it. The router needs that room.
+fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
+    let pitch_nm = mm_to_nm(0.5);
+    let mut hpwl = total_hpwl_nm(board, &placement);
+    let mut hits = keepout_hits(board, &placement);
+    // A passive may not move into the ring around a many-pin part. Only
+    // passives move here, so these rings stay where they are.
+    let half_ring_nm = mm_to_nm(DENSE_PART_RING_MM) / 2;
+    let rings: Vec<Rect> = board
+        .components
+        .iter()
+        .filter(|c| is_dense_part(board, c.id))
+        .filter_map(|c| {
+            let placed = placement.components.iter().find(|p| p.id == c.id)?;
+            let r = sidecar_courtyard_rect(board, c, placed);
+            Some(Rect::new(
+                Point::new(r.min.x_nm - half_ring_nm, r.min.y_nm - half_ring_nm),
+                Point::new(r.max.x_nm + half_ring_nm, r.max.y_nm + half_ring_nm),
+            ))
+        })
+        .collect();
+    for _ in 0..HPWL_PASSES {
+        let mut improved = false;
+        for (component_index, component) in board.components.iter().enumerate() {
+            let two_pin = component.part.as_ref().is_some_and(|p| p.pins.len() == 2);
+            if !two_pin || !is_passive(component) || is_hard_hinted(component) {
+                continue;
+            }
+            let Some(current) = placement
+                .components
+                .iter()
+                .find(|p| p.id == component.id)
+                .copied()
+            else {
+                continue;
+            };
+            // Both ends of every other-part box the net would have without
+            // this part: the optimum lies between the two middle values.
+            let (mut xs, mut ys) = (Vec::new(), Vec::new());
+            for net in &board.nets {
+                if !net.endpoints.iter().any(|e| e.component == component.id) {
+                    continue;
+                }
+                let others: Vec<Point> = net
+                    .endpoints
+                    .iter()
+                    .filter(|e| e.component != component.id)
+                    .filter_map(|e| {
+                        placement
+                            .components
+                            .iter()
+                            .find(|p| p.id == e.component)
+                            .map(|p| p.center)
+                    })
+                    .collect();
+                if others.is_empty() || others.len() + 1 > HPWL_MAX_NET_MEMBERS {
+                    continue;
+                }
+                xs.extend(others.iter().map(|p| p.x_nm).min());
+                xs.extend(others.iter().map(|p| p.x_nm).max());
+                ys.extend(others.iter().map(|p| p.y_nm).min());
+                ys.extend(others.iter().map(|p| p.y_nm).max());
+            }
+            if xs.is_empty() {
+                continue;
+            }
+            let middle = |values: &mut Vec<i64>| {
+                values.sort_unstable();
+                // Each net adds its low and high end, so the count is even.
+                let mid = values.len() / 2;
+                (values[mid - 1] + values[mid]) / 2 / pitch_nm * pitch_nm
+            };
+            let half = {
+                let r = sidecar_courtyard_rect(board, component, &current);
+                (r.width_nm() / 2, r.height_nm() / 2)
+            };
+            let target = ComponentPlacement {
+                center: centre_outside_rings(
+                    Point::new(middle(&mut xs), middle(&mut ys)),
+                    half,
+                    &rings,
+                    pitch_nm,
+                ),
+                ..current
+            };
+            let slot = if sidecar_position_is_legal(board, &placement, component_index, target) {
+                Some(target)
+            } else {
+                nearest_local_slot(board, &placement, component_index, target, pitch_nm)
+            };
+            let Some(slot) = slot else { continue };
+            // The legal slot search knows nothing about rings, so it can still
+            // land inside one; then the part stays where it is.
+            let slot_rect = sidecar_courtyard_rect(board, component, &slot);
+            if rings.iter().any(|ring| ring.intersects(&slot_rect)) {
+                continue;
+            }
+            let mut trial = placement.clone();
+            if let Some(placed) = trial.components.iter_mut().find(|p| p.id == component.id) {
+                *placed = slot;
+            }
+            let (trial_hpwl, trial_hits) =
+                (total_hpwl_nm(board, &trial), keepout_hits(board, &trial));
+            if trial_hpwl < hpwl && trial_hits <= hits {
+                hpwl = trial_hpwl;
+                hits = trial_hits;
+                placement = trial;
+                improved = true;
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+    placement
+}
+
+/// Parts whose centre lies inside a keepout circle, the rule the independent
+/// validator enforces (E-SYNTH-PLACE-004).
+fn keepout_hits(board: &Board, placement: &Placement) -> usize {
+    let centre_rect = |id: ComponentId| {
+        placement
+            .components
+            .iter()
+            .find(|placed| placed.id == id)
+            .map(|placed| Rect::new(placed.center, placed.center))
+    };
+    placement
+        .components
+        .iter()
+        .filter(|placed| {
+            intersects_keepout(
+                Rect::new(placed.center, placed.center),
+                placed.id,
+                board,
+                placement.board_outline,
+                centre_rect,
+            )
+        })
+        .count()
+}
+
+fn apply_recommendation<S: ::std::hash::BuildHasher>(
+    board: &Board,
+    placement: &mut Placement,
+    action: &PlacementRecommendation,
+    rotation_overrides: &std::collections::HashMap<ComponentId, Rotation, S>,
+) {
+    let Some(component) = board
+        .components
+        .iter()
+        .find(|component| component.refdes == action.refdes)
+    else {
+        return;
+    };
+    // A hard hint is the author's decision, so the refiner never overrides it.
+    if is_hard_hinted(component) {
+        return;
+    }
+    let id = component.id;
+    let Some(placed) = placement.components.iter_mut().find(|p| p.id == id) else {
+        return;
+    };
+    if let Some(x) = action.suggested_x_mm {
+        placed.center.x_nm = mm_to_nm(x);
+    }
+    if let Some(y) = action.suggested_y_mm {
+        placed.center.y_nm = mm_to_nm(y);
+    }
+    // The router's repair loop chooses these rotations and hands them in.
+    if let Some(degrees) = action.suggested_rotation_deg {
+        if !rotation_overrides.contains_key(&id) {
+            placed.rotation = rotation_from_degrees(degrees);
+        }
+    }
+}
+
+/// Parts that exist to serve another part and can sit anywhere near it.
+/// Connectors, crystals and switches are placed for the board, not the net.
+fn is_passive(component: &synth_ir::Component) -> bool {
+    matches!(
+        component.kind.as_str(),
+        "resistor" | "capacitor" | "inductor" | "diode" | "led" | "fuse"
+    )
+}
+
+fn is_hard_hinted(component: &synth_ir::Component) -> bool {
+    component
+        .placement_hint
+        .as_ref()
+        .is_some_and(|hint| hint.priority == synth_ir::PlacementPriority::Hard)
+}
+
+fn rotation_from_degrees(degrees: u32) -> Rotation {
+    match degrees {
+        90 => Rotation::Ninety,
+        180 => Rotation::OneEighty,
+        270 => Rotation::TwoSeventy,
+        _ => Rotation::Zero,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5029,6 +5445,405 @@ mod tests {
                 action.refdes
             );
         }
+    }
+
+    fn refine(board: &Board, placement: &Placement) -> Placement {
+        refine_placement(board, placement, &std::collections::HashMap::new())
+    }
+
+    const TWO_LOOSE_RESISTORS: &str = r#"
+        component R1: resistor "r_generic_0603" value "10k"
+        component R2: resistor "r_generic_0603" value "10k"
+    "#;
+
+    /// The refiner applies the review's own moves, so a part pushed off the
+    /// board comes back inside it and the review stops firing.
+    #[test]
+    fn refine_placement_pulls_a_part_back_inside_the_outline() {
+        let (board, mut broken) = row_board(TWO_LOOSE_RESISTORS, &[10.0, 50.0]);
+        move_part(&mut broken, &board, "R1", 80.0, 15.0);
+
+        let refined = refine(&board, &broken);
+        let review = describe_placement(&board, &refined).visual_review;
+
+        assert!(
+            !review
+                .findings
+                .iter()
+                .any(|f| f.contains("extends outside the board outline")),
+            "still outside: {:?}",
+            review.findings
+        );
+    }
+
+    /// Two parts stacked on one spot are pulled apart.
+    #[test]
+    fn refine_placement_separates_overlapping_courtyards() {
+        let (board, broken) = row_board(TWO_LOOSE_RESISTORS, &[30.0, 30.0]);
+
+        let refined = refine(&board, &broken);
+        let review = describe_placement(&board, &refined).visual_review;
+
+        assert!(
+            !review
+                .findings
+                .iter()
+                .any(|f| f.contains("courtyard overlap")),
+            "still overlapping: {:?}",
+            review.findings
+        );
+    }
+
+    /// Refining an already-refined placement neither reopens a finding nor
+    /// lengthens the wiring.
+    #[test]
+    fn refining_again_reopens_nothing_and_does_not_lengthen_the_wiring() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let refined = refine(&board, &placement);
+        assert!(
+            !describe_placement(&board, &refined)
+                .visual_review
+                .requires_revision
+        );
+        assert!(total_hpwl_nm(&board, &refined) <= total_hpwl_nm(&board, &placement));
+    }
+
+    #[test]
+    fn refine_placement_is_deterministic() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut broken = place(&board).expect("place");
+        broken.components[1].center = broken.components[0].center;
+        assert_eq!(refine(&board, &broken), refine(&board, &broken));
+    }
+
+    /// Lower `components` into a board on a 60 x 30 mm outline and put them in
+    /// a row at `x_mm`, 15 mm down, in declaration order.
+    fn row_board(components: &str, x_mm: &[f64]) -> (Board, Placement) {
+        let source = format!("board \"row\" {{ layers 2 {components} }}");
+        let file = "row.synth".to_string();
+        let parse = synth_parser::parse(&source, file.clone());
+        let ast = parse.ast.as_ref().expect("parses");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        let board = synth_ir::lower(ast, &registry, &file)
+            .board
+            .expect("lowers");
+        let mut placement = place(&board).expect("place");
+        placement.board_outline =
+            Rect::new(Point::new(0, 0), Point::new(mm_to_nm(60.0), mm_to_nm(30.0)));
+        assert_eq!(board.components.len(), x_mm.len(), "one x per part");
+        for (component, x) in board.components.iter().zip(x_mm) {
+            move_part(&mut placement, &board, &component.refdes, *x, 15.0);
+        }
+        (board, placement)
+    }
+
+    fn move_part(placement: &mut Placement, board: &Board, refdes: &str, x_mm: f64, y_mm: f64) {
+        let id = board
+            .components
+            .iter()
+            .find(|c| c.refdes == refdes)
+            .expect("part exists")
+            .id;
+        let placed = placement
+            .components
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("part placed");
+        placed.center = Point::new(mm_to_nm(x_mm), mm_to_nm(y_mm));
+    }
+
+    fn centre_of(board: &Board, placement: &Placement, refdes: &str) -> Point {
+        let id = board
+            .components
+            .iter()
+            .find(|c| c.refdes == refdes)
+            .expect("part exists")
+            .id;
+        placement
+            .components
+            .iter()
+            .find(|p| p.id == id)
+            .expect("placed")
+            .center
+    }
+
+    const TWO_RESISTORS: &str = r#"
+        component R1: resistor "r_generic_0603" value "10k"
+        component R2: resistor "r_generic_0603" value "10k"
+        connect R1.p2 -> R2.p1
+    "#;
+
+    /// Connected passives drifted far apart are pulled together: that is the
+    /// wirelength objective, and the refiner keeps a move only if it lowers it.
+    #[test]
+    fn refine_placement_shortens_the_wire_between_connected_parts() {
+        let (board, placement) = row_board(TWO_RESISTORS, &[10.0, 50.0]);
+        let refined = refine(&board, &placement);
+        assert!(
+            total_hpwl_nm(&board, &refined) < total_hpwl_nm(&board, &placement) / 2,
+            "wire not shortened"
+        );
+    }
+
+    /// An IC is never moved to shorten a wire: other parts are placed around
+    /// it, so only the small passive travels.
+    #[test]
+    fn refine_placement_never_moves_an_ic() {
+        let components = r#"
+            component U1: mcu "rp2350"
+            component R1: resistor "r_generic_0603" value "1k"
+            connect U1.usb_dp -> R1.p1
+        "#;
+        let (board, placement) = row_board(components, &[15.0, 50.0]);
+        let refined = refine(&board, &placement);
+        assert_eq!(
+            centre_of(&board, &refined, "U1"),
+            centre_of(&board, &placement, "U1")
+        );
+        assert!(total_hpwl_nm(&board, &refined) < total_hpwl_nm(&board, &placement));
+    }
+
+    /// The router's repair loop picks rotations and hands them to the placer;
+    /// a review move must not rotate those parts back.
+    #[test]
+    fn a_review_move_never_rotates_a_part_the_caller_pinned() {
+        let (board, placement) = row_board(TWO_LOOSE_RESISTORS, &[10.0, 50.0]);
+        let r1 = board
+            .components
+            .iter()
+            .find(|c| c.refdes == "R1")
+            .expect("R1")
+            .id;
+        let rotate = PlacementRecommendation {
+            action: "rotate_connector_parallel_to_edge".into(),
+            refdes: "R1".into(),
+            relative_to: None,
+            suggested_x_mm: None,
+            suggested_y_mm: None,
+            suggested_rotation_deg: Some(90),
+            rationale: String::new(),
+        };
+        let rotation_of = |p: &Placement| {
+            p.components
+                .iter()
+                .find(|c| c.id == r1)
+                .expect("placed")
+                .rotation
+        };
+
+        let mut pinned = placement.clone();
+        let overrides = std::collections::HashMap::from([(r1, Rotation::Zero)]);
+        apply_recommendation(&board, &mut pinned, &rotate, &overrides);
+        assert_eq!(rotation_of(&pinned), rotation_of(&placement));
+
+        let mut free = placement.clone();
+        apply_recommendation(
+            &board,
+            &mut free,
+            &rotate,
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(rotation_of(&free), Rotation::Ninety);
+    }
+
+    /// The wirelength pass is dropped when it reopens a review finding, and
+    /// kept when it does not.
+    #[test]
+    fn a_wirelength_result_that_reopens_a_finding_is_dropped() {
+        let (board, clean) = row_board(TWO_LOOSE_RESISTORS, &[10.0, 50.0]);
+        let (_, stacked) = row_board(TWO_LOOSE_RESISTORS, &[30.0, 30.0]);
+        assert!(
+            describe_placement(&board, &stacked)
+                .visual_review
+                .requires_revision,
+            "setup: stacked parts overlap"
+        );
+
+        assert_eq!(
+            keep_unless_worse(&board, clean.clone(), stacked.clone()),
+            clean
+        );
+
+        let (_, closer) = row_board(TWO_LOOSE_RESISTORS, &[10.0, 40.0]);
+        assert_eq!(keep_unless_worse(&board, clean, closer.clone()), closer);
+    }
+
+    /// Swapping one finding for another leaves the count unchanged, and it
+    /// still reopens something the kept placement did not have.
+    #[test]
+    fn a_result_that_swaps_one_finding_for_another_is_dropped() {
+        let (board, mut r1_off) = row_board(TWO_LOOSE_RESISTORS, &[10.0, 50.0]);
+        move_part(&mut r1_off, &board, "R1", 80.0, 15.0);
+        let mut r2_off = r1_off.clone();
+        move_part(&mut r2_off, &board, "R1", 10.0, 15.0);
+        move_part(&mut r2_off, &board, "R2", 80.0, 15.0);
+        let findings_of = |p: &Placement| describe_placement(&board, p).visual_review.findings;
+        assert_eq!(findings_of(&r1_off).len(), findings_of(&r2_off).len());
+        assert_ne!(findings_of(&r1_off), findings_of(&r2_off));
+
+        assert_eq!(keep_unless_worse(&board, r1_off.clone(), r2_off), r1_off);
+    }
+
+    /// A finding whose distance changed is the same finding, so a move that
+    /// only shortens it still counts as an improvement.
+    #[test]
+    fn a_finding_that_only_changes_its_distance_is_the_same_finding() {
+        let review = |finding: &str| VisualPlacementReview {
+            score: 0,
+            requires_revision: true,
+            findings: vec![finding.to_string()],
+            recommended_actions: Vec::new(),
+        };
+        let far = review("dense connector J1 is 9.5 mm from its nearest board edge");
+        let near = review("dense connector J1 is 4.0 mm from its nearest board edge");
+        let other = review("dense connector J2 is 4.0 mm from its nearest board edge");
+        assert!(!introduces_finding(&far, &near));
+        assert!(introduces_finding(&far, &other));
+
+        let hint = |delta: &str| {
+            review(&format!(
+                "hard placement hint not honored: U1 should be left of J1, but its courtyard is right of J1 (delta {delta} mm); revise placement before routing"
+            ))
+        };
+        assert!(!introduces_finding(&hint("4.2, -3.0"), &hint("1.5, -3.0")));
+    }
+
+    /// A two-pin connector is still a connector: it sits where the board edge
+    /// and the cable want it, so only the resistor moves.
+    #[test]
+    fn refine_placement_never_moves_a_two_pin_connector() {
+        let components = r#"
+            component J1: connector "jst_ph_2pin"
+            component R1: resistor "r_generic_0603" value "1k"
+            connect J1.p1 -> R1.p1
+        "#;
+        let (board, placement) = row_board(components, &[10.0, 50.0]);
+        let refined = refine(&board, &placement);
+        assert_eq!(
+            centre_of(&board, &refined, "J1"),
+            centre_of(&board, &placement, "J1")
+        );
+        assert_ne!(
+            centre_of(&board, &refined, "R1"),
+            centre_of(&board, &placement, "R1")
+        );
+    }
+
+    /// A hard hint is the author's decision: the refiner never moves a part
+    /// that carries one, so a hard-hinted pair stays exactly where it is.
+    #[test]
+    fn hard_hinted_parts_are_never_moved_by_the_refiner() {
+        let hard = "{ placement_hint { edge: top priority: hard } }";
+        let components = format!(
+            r#"component R1: resistor "r_generic_0603" value "10k" {hard}
+               component R2: resistor "r_generic_0603" value "10k" {hard}
+               connect R1.p2 -> R2.p1"#
+        );
+        let (board, apart) = row_board(&components, &[10.0, 50.0]);
+        assert_eq!(refine(&board, &apart), apart);
+
+        let (board, stacked) = row_board(&components, &[30.0, 30.0]);
+        assert_eq!(refine(&board, &stacked), stacked);
+    }
+
+    /// With one part hard-hinted and one free, the free one comes to it,
+    /// whichever order the two are declared in.
+    #[test]
+    fn the_free_part_of_a_pair_moves_to_a_hard_hinted_one() {
+        let hard = "{ placement_hint { edge: top priority: hard } }";
+        for (r1_hint, r2_hint, free) in [(hard, "", "R2"), ("", hard, "R1")] {
+            let components = format!(
+                r#"component R1: resistor "r_generic_0603" value "10k" {r1_hint}
+                   component R2: resistor "r_generic_0603" value "10k" {r2_hint}
+                   connect R1.p2 -> R2.p1"#
+            );
+            let (board, placement) = row_board(&components, &[10.0, 50.0]);
+            let refined = refine(&board, &placement);
+            let pinned = if free == "R2" { "R1" } else { "R2" };
+            assert_eq!(
+                centre_of(&board, &refined, pinned),
+                centre_of(&board, &placement, pinned)
+            );
+            assert_ne!(
+                centre_of(&board, &refined, free),
+                centre_of(&board, &placement, free)
+            );
+        }
+    }
+
+    /// A part must not be pulled into a keepout to shorten a wire. The same
+    /// board without the keepout does move R1 into that circle, so the guard
+    /// is what holds it back.
+    #[test]
+    fn the_refiner_never_moves_a_part_into_a_keepout() {
+        let build = |keepout: &str| {
+            let components = format!(
+                r#"{TWO_RESISTORS}
+                   component ANT1: antenna "ant_chip_2g4"
+                   {keepout}"#
+            );
+            let (board, mut placement) = row_board(&components, &[10.0, 50.0, 30.0]);
+            move_part(&mut placement, &board, "ANT1", 35.0, 15.0);
+            (board, placement)
+        };
+        let radius_mm = 14.0;
+        let distance_to_antenna = |board: &Board, p: &Placement| {
+            let (r1, ant) = (centre_of(board, p, "R1"), centre_of(board, p, "ANT1"));
+            nm_to_mm(r1.x_nm - ant.x_nm).hypot(nm_to_mm(r1.y_nm - ant.y_nm))
+        };
+
+        let (open_board, open) = build("");
+        let moved_freely = refine(&open_board, &open);
+        assert!(
+            distance_to_antenna(&open_board, &moved_freely) < radius_mm,
+            "setup: without a keepout R1 should be pulled inside the circle"
+        );
+
+        let (board, placement) = build("keepout antenna { radius 14mm }");
+        assert_eq!(keepout_hits(&board, &placement), 0, "setup is clear");
+        let refined = refine(&board, &placement);
+        assert_eq!(keepout_hits(&board, &refined), 0);
+    }
+
+    /// The router needs room to leave a many-pin part's pins, so the
+    /// wirelength pass does not park a passive inside that part's ring even
+    /// though it would shorten the wire.
+    #[test]
+    fn the_wirelength_pass_keeps_out_of_a_many_pin_part_s_ring() {
+        let components = r#"
+            component U1: mcu "rp2350" { placement_hint { region: top_left priority: hard } }
+            component C1: capacitor "c_generic_0603" value "100n"
+            connect U1.dvdd -> C1.p1
+        "#;
+        let (board, mut loose) = row_board(components, &[0.0; 2]);
+        move_part(&mut loose, &board, "U1", 30.0, 15.0);
+        move_part(&mut loose, &board, "C1", 5.0, 15.0);
+
+        let moved = shorten_wires(&board, loose.clone());
+
+        let rect_of = |p: &Placement, refdes: &str| {
+            let component = board
+                .components
+                .iter()
+                .find(|c| c.refdes == refdes)
+                .expect(refdes);
+            let placed = p.component_by_refdes(&board, refdes).expect(refdes);
+            sidecar_courtyard_rect(&board, component, placed)
+        };
+        let (u1, c1) = (rect_of(&moved, "U1"), rect_of(&moved, "C1"));
+        let gap_nm = (c1.min.x_nm - u1.max.x_nm)
+            .max(u1.min.x_nm - c1.max.x_nm)
+            .max(c1.min.y_nm - u1.max.y_nm)
+            .max(u1.min.y_nm - c1.max.y_nm);
+        assert!(
+            gap_nm >= mm_to_nm(DENSE_PART_RING_MM / 2.0) - mm_to_nm(0.01),
+            "C1 sits {:.1} mm from U1",
+            nm_to_mm(gap_nm)
+        );
+        assert_ne!(moved, loose, "setup: C1 still moves toward U1");
     }
 
     #[test]
