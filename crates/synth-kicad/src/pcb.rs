@@ -3166,6 +3166,7 @@ mod tests {
                 synth_ir::Net {
                     id: synth_ir::NetId(0),
                     name: "VCC".to_string(),
+                    auto_named: false,
                     endpoints: vec![],
                     netclass: None,
                     voltage: None,
@@ -3173,6 +3174,7 @@ mod tests {
                 synth_ir::Net {
                     id: synth_ir::NetId(1),
                     name: "GND".to_string(),
+                    auto_named: false,
                     endpoints: vec![],
                     netclass: None,
                     voltage: None,
@@ -3180,6 +3182,7 @@ mod tests {
                 synth_ir::Net {
                     id: synth_ir::NetId(2),
                     name: "SIG1".to_string(),
+                    auto_named: false,
                     endpoints: vec![],
                     netclass: None,
                     voltage: None,
@@ -3187,6 +3190,7 @@ mod tests {
                 synth_ir::Net {
                     id: synth_ir::NetId(3),
                     name: "MAIN_ANT".to_string(),
+                    auto_named: false,
                     endpoints: vec![],
                     netclass: None,
                     voltage: None,
@@ -3244,6 +3248,7 @@ mod tests {
                 synth_ir::Net {
                     id: synth_ir::NetId(0),
                     name: "+3V3".to_string(),
+                    auto_named: false,
                     endpoints: vec![],
                     netclass: Some("PWR".to_string()),
                     voltage: None,
@@ -3251,6 +3256,7 @@ mod tests {
                 synth_ir::Net {
                     id: synth_ir::NetId(1),
                     name: "SIG".to_string(),
+                    auto_named: false,
                     endpoints: vec![],
                     netclass: None,
                     voltage: None,
