@@ -1,0 +1,31 @@
+// A shift register clocked from a pin header. The clock arrives from off the
+// board, so there is nothing on this board for the validator to recognise as
+// its source — and that is the normal case for a mezzanine or a memory card,
+// not a design error.
+board "clock_002_from_a_connector" {
+  layers 2
+
+  component U1: ic "sn74hc595_shift"
+  component J1: connector "header_1x20"
+  component C1: capacitor "c_generic_0603" value "100nF"
+
+  connect J1.p1 -> U1.vcc
+  connect J1.p2 -> U1.gnd
+  connect J1.p3 -> U1.srclk
+  connect J1.p4 -> U1.rclk
+  connect J1.p5 -> U1.ser
+  connect J1.p6 -> U1.oe
+  connect J1.p7 -> U1.srclr
+  connect J1.p8 -> U1.qa
+  connect J1.p9 -> U1.qb
+  connect J1.p10 -> U1.qc
+  connect J1.p11 -> U1.qd
+  connect J1.p12 -> U1.qe
+  connect J1.p13 -> U1.qf
+  connect J1.p14 -> U1.qg
+  connect J1.p15 -> U1.qh
+  connect J1.p16 -> U1.qh_prime
+
+  connect U1.vcc -> C1.p1
+  connect U1.gnd -> C1.p2
+}
