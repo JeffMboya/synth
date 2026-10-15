@@ -126,6 +126,8 @@ pub enum MemberRole {
     ResetNetwork,
     /// Resistor pulling a signal line to a rail.
     PullUp,
+    /// Resistor in series on an IC signal pin: neither end is a rail.
+    SignalSeries,
     /// Resistor pulling one half of an I²C bus to its rail.
     I2cPullUp,
     /// Second resistor of a rail-to-mid-to-ground divider.
@@ -616,20 +618,25 @@ impl Recognizer {
                     if part_kind(board.component(other.0)) != Some("resistor") {
                         continue;
                     }
-                    if resistor_pulls_to_rail(board, &self.domains, other.0) {
-                        self.claim_member(
-                            &mut members,
-                            ClusterMember {
-                                component: other.0,
-                                role: MemberRole::PullUp,
-                                binding: MemberBinding {
-                                    net,
-                                    anchor_pin,
-                                    member_pin: other.1,
-                                },
+                    // A resistor with no rail on either end sits in series
+                    // on the signal.
+                    let role = if resistor_pulls_to_rail(board, &self.domains, other.0) {
+                        MemberRole::PullUp
+                    } else {
+                        MemberRole::SignalSeries
+                    };
+                    self.claim_member(
+                        &mut members,
+                        ClusterMember {
+                            component: other.0,
+                            role,
+                            binding: MemberBinding {
+                                net,
+                                anchor_pin,
+                                member_pin: other.1,
                             },
-                        );
-                    }
+                        },
+                    );
                 }
             }
 
@@ -1419,6 +1426,49 @@ mod tests {
             "U1 is in another group"
         );
         assert_eq!(member_of(find(&clusters, 1), 2).role, MemberRole::PullUp);
+    }
+
+    /// A resistor in series on an IC signal pin (the other end goes to a
+    /// connector, not a rail) is part of the IC's cluster, bound to the pin
+    /// it sits on, so it can be drawn beside that pin.
+    #[test]
+    fn a_series_resistor_on_a_signal_pin_joins_the_ics_cluster() {
+        let u1 = component(
+            0,
+            "U1",
+            part_with_decoupling(
+                "ic",
+                vec![
+                    pin("dvdd", ElectricalType::PowerInput),
+                    pin("gnd", ElectricalType::GroundReference),
+                    pin("txd", ElectricalType::Bidirectional),
+                ],
+                &[("dvdd", 1)],
+            ),
+        );
+        let r1 = component(
+            1,
+            "R1",
+            part("resistor", vec![passive_pin("p1"), passive_pin("p2")]),
+        );
+        let j1 = component(
+            2,
+            "J1",
+            part("connector", vec![pin("p1", ElectricalType::Passive)]),
+        );
+        let b = plain_board(
+            vec![u1, r1, j1],
+            vec![
+                net(0, "TXD", &[(0, 2), (1, 0)]),
+                net(1, "TXD_OUT", &[(1, 1), (2, 0)]),
+                net(2, "GND", &[(0, 1)]),
+                net(3, "3V3", &[(0, 0)]),
+            ],
+        );
+        let clusters = recognize_clusters(&b);
+        let r = member_of(find(&clusters, 0), 1);
+        assert_eq!(r.role, MemberRole::SignalSeries);
+        assert_eq!(r.binding.anchor_pin, PinId(2), "the pin it sits on, U1.txd");
     }
 
     /// A USB-C connector's CC pins carry Rd pull-downs to ground. They belong

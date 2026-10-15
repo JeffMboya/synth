@@ -2200,17 +2200,19 @@ fn draw_cluster(board: &Board, cluster: &synth_ir::FunctionalCluster) -> Cluster
                 synth_ir::MemberRole::SeriesLimit | synth_ir::MemberRole::I2cPullUp => {
                     MemberSide::Above
                 }
-                // A pull resistor hangs off the side of the pin it pulls, so
-                // its wire is a short run rather than a net label to a
-                // column above the whole part. A pin on the top or bottom
-                // keeps the old column above.
-                synth_ir::MemberRole::PullUp => match anchor_part.map(|part| {
-                    compute_anchor_pin_offset(part, member.binding.anchor_pin.0 as usize).2
-                }) {
-                    Some(PinSide::Left) => MemberSide::Left,
-                    Some(PinSide::Right) => MemberSide::Right,
-                    _ => MemberSide::Above,
-                },
+                // A pull or series resistor hangs off the side of the pin it
+                // sits on, so its wire is a short run rather than a net label
+                // to a column above the whole part. A pin on the top or
+                // bottom keeps the old column above.
+                synth_ir::MemberRole::PullUp | synth_ir::MemberRole::SignalSeries => {
+                    match anchor_part.map(|part| {
+                        compute_anchor_pin_offset(part, member.binding.anchor_pin.0 as usize).2
+                    }) {
+                        Some(PinSide::Left) => MemberSide::Left,
+                        Some(PinSide::Right) => MemberSide::Right,
+                        _ => MemberSide::Above,
+                    }
+                }
                 synth_ir::MemberRole::ResetNetwork => {
                     // The stock symbol's geometry wins over the
                     // synthesized-model convention: STM32F103's NRST
@@ -5879,6 +5881,55 @@ mod patterns_tests {
                 net(1, "MODEM", &[(0, 2), (1, 0)]),
                 net(2, "CLK", &[(0, 3), (2, 0)]),
                 net(3, "RESET", &[(0, 1)]),
+            ],
+        );
+        let clusters = build_clusters(&b);
+        let cluster = find_cluster(&clusters, 0);
+        assert_member(cluster, 1, MemberSide::Left);
+        assert_member(cluster, 2, MemberSide::Right);
+    }
+
+    /// A series resistor on a signal pin sits beside that pin, like a pull.
+    #[test]
+    fn a_series_resistor_sits_on_the_side_of_its_pin() {
+        let ic = component(
+            0,
+            "U1",
+            part(
+                "ic",
+                vec![
+                    pin("vdd", ElectricalType::PowerInput, &[]),
+                    pin("txd", ElectricalType::Bidirectional, &[]),
+                    pin(
+                        "clk",
+                        ElectricalType::Bidirectional,
+                        &[PinCapability::ClockOutput],
+                    ),
+                    pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                ],
+            ),
+        );
+        let resistor = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        let b = board(
+            vec![ic, resistor(1, "R1"), resistor(2, "R2")],
+            vec![
+                net(0, "TXD", &[(0, 1), (1, 0)]),
+                net(1, "TXD_OUT", &[(1, 1)]),
+                net(2, "CLK", &[(0, 2), (2, 0)]),
+                net(3, "CLK_OUT", &[(2, 1)]),
+                net(4, "RESET", &[(0, 3)]),
             ],
         );
         let clusters = build_clusters(&b);
