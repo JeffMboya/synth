@@ -2172,10 +2172,11 @@ pub fn build_clusters(board: &Board) -> Vec<Cluster> {
 /// decides membership.
 ///
 /// The side is a drawing convention, not a connection: a decoupling cap
-/// hangs below its IC, a pull resistor rises above the pin it pulls, a
-/// reset-network part sits on whichever side the anchor's reset pin
-/// occupies, and an ESD diode stands to the connector's left so its
-/// stub to the connector is a short horizontal run.
+/// hangs below its IC, a pull resistor sits beside the pin it pulls (above
+/// it when the pin is on the top or bottom), a reset-network part sits on
+/// whichever side the anchor's reset pin occupies, and an ESD diode stands
+/// to the connector's left so its stub to the connector is a short
+/// horizontal run.
 fn draw_cluster(board: &Board, cluster: &synth_ir::FunctionalCluster) -> Cluster {
     let anchor_part = board
         .component(cluster.anchor)
@@ -2196,9 +2197,20 @@ fn draw_cluster(board: &Board, cluster: &synth_ir::FunctionalCluster) -> Cluster
                 | synth_ir::MemberRole::OrphanRailCap
                 | synth_ir::MemberRole::DividerPartner => MemberSide::Below,
                 synth_ir::MemberRole::EsdDiode => MemberSide::Left,
-                synth_ir::MemberRole::SeriesLimit
-                | synth_ir::MemberRole::PullUp
-                | synth_ir::MemberRole::I2cPullUp => MemberSide::Above,
+                synth_ir::MemberRole::SeriesLimit | synth_ir::MemberRole::I2cPullUp => {
+                    MemberSide::Above
+                }
+                // A pull resistor hangs off the side of the pin it pulls, so
+                // its wire is a short run rather than a net label to a
+                // column above the whole part. A pin on the top or bottom
+                // keeps the old column above.
+                synth_ir::MemberRole::PullUp => match anchor_part.map(|part| {
+                    compute_anchor_pin_offset(part, member.binding.anchor_pin.0 as usize).2
+                }) {
+                    Some(PinSide::Left) => MemberSide::Left,
+                    Some(PinSide::Right) => MemberSide::Right,
+                    _ => MemberSide::Above,
+                },
                 synth_ir::MemberRole::ResetNetwork => {
                     // The stock symbol's geometry wins over the
                     // synthesized-model convention: STM32F103's NRST
@@ -5823,6 +5835,56 @@ mod patterns_tests {
             variants: vec![],
             source_span: Span::new(0, 0),
         }
+    }
+
+    /// A pull resistor on a left pin of the IC hangs off the left, one on a
+    /// right pin off the right: beside the pin it pulls, not in a column above
+    /// the whole part.
+    #[test]
+    fn a_pull_up_sits_on_the_side_of_the_pin_it_pulls() {
+        let ic = component(
+            0,
+            "U1",
+            part(
+                "ic",
+                vec![
+                    pin("vdd", ElectricalType::PowerInput, &[]),
+                    pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                    pin("mdm", ElectricalType::Bidirectional, &[]),
+                    pin(
+                        "clk",
+                        ElectricalType::Bidirectional,
+                        &[PinCapability::ClockOutput],
+                    ),
+                ],
+            ),
+        );
+        let resistor = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        let b = board(
+            vec![ic, resistor(1, "R1"), resistor(2, "R2")],
+            vec![
+                net(0, "3V3", &[(0, 0), (1, 1), (2, 1)]),
+                net(1, "MODEM", &[(0, 2), (1, 0)]),
+                net(2, "CLK", &[(0, 3), (2, 0)]),
+                net(3, "RESET", &[(0, 1)]),
+            ],
+        );
+        let clusters = build_clusters(&b);
+        let cluster = find_cluster(&clusters, 0);
+        assert_member(cluster, 1, MemberSide::Left);
+        assert_member(cluster, 2, MemberSide::Right);
     }
 
     fn find_cluster(clusters: &[Cluster], anchor: u32) -> &Cluster {

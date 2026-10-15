@@ -50,6 +50,7 @@ use std::collections::{HashMap, HashSet};
 use synth_registry::{ElectricalType, PinCapability};
 
 use crate::board::{Board, ComponentId, Net, NetId, PinId};
+use crate::power_domains::{infer_power_domains, PowerDomainMap};
 
 /// The motif a [`FunctionalCluster`] was recognized as.
 ///
@@ -189,7 +190,7 @@ impl FunctionalCluster {
 /// component id before being recorded.
 #[must_use]
 pub fn recognize_clusters(board: &Board) -> Vec<FunctionalCluster> {
-    let mut recognizer = Recognizer::new();
+    let mut recognizer = Recognizer::new(board);
     recognizer.led_indicators(board);
     recognizer.usb_esd(board);
     recognizer.ldo_blocks(board);
@@ -218,13 +219,15 @@ pub fn recognize_clusters(board: &Board) -> Vec<FunctionalCluster> {
 struct Recognizer {
     claimed: HashSet<ComponentId>,
     clusters: Vec<FunctionalCluster>,
+    domains: PowerDomainMap,
 }
 
 impl Recognizer {
-    fn new() -> Self {
+    fn new(board: &Board) -> Self {
         Self {
             claimed: HashSet::new(),
             clusters: Vec::new(),
+            domains: infer_power_domains(board),
         }
     }
 
@@ -331,7 +334,7 @@ impl Recognizer {
     // ----- Pass 2: USB + ESD ----------------------------------------------
 
     /// A connector with `usb_dp`/`usb_dn` capability pins plus the ESD
-    /// diodes clamping those pair nets.
+    /// diodes clamping those pair nets and the CC pull-down resistors.
     fn usb_esd(&mut self, board: &Board) {
         for component in &board.components {
             if self.claimed.contains(&component.id) {
@@ -367,6 +370,33 @@ impl Recognizer {
                             ClusterMember {
                                 component: other.0,
                                 role: MemberRole::EsdDiode,
+                                binding: MemberBinding {
+                                    net,
+                                    anchor_pin,
+                                    member_pin: other.1,
+                                },
+                            },
+                        );
+                    }
+                }
+            }
+            // Rd pull-downs on the connector's CC pins.
+            for (pin_idx, pin) in part.pins.iter().enumerate() {
+                if !pin.capabilities.contains(&PinCapability::UsbCc) {
+                    continue;
+                }
+                let anchor_pin = PinId(u32::try_from(pin_idx).unwrap_or(0));
+                for (net, other) in
+                    passive_endpoints(board, component.id, anchor_pin, &self.claimed)
+                {
+                    if part_kind(board.component(other.0)) == Some("resistor")
+                        && resistor_pulls_to_rail(board, &self.domains, other.0)
+                    {
+                        self.claim_member(
+                            &mut members,
+                            ClusterMember {
+                                component: other.0,
+                                role: MemberRole::PullUp,
                                 binding: MemberBinding {
                                     net,
                                     anchor_pin,
@@ -586,7 +616,7 @@ impl Recognizer {
                     if part_kind(board.component(other.0)) != Some("resistor") {
                         continue;
                     }
-                    if resistor_pulls_to_rail(board, other.0, net) {
+                    if resistor_pulls_to_rail(board, &self.domains, other.0) {
                         self.claim_member(
                             &mut members,
                             ClusterMember {
@@ -1050,13 +1080,27 @@ fn is_side_pin(pin: &synth_registry::Pin) -> bool {
 /// Whether a two-pin resistor is pulling its other net to a rail, making
 /// it a pull-up or pull-down on the signal net that shares this IC pin.
 ///
-/// The rail side is recognized by pin *name*: a design that labels its
-/// rails `3v3`, `5v`, or `vout` is expressing intent that electrical
-/// type alone does not carry — a resistor tied to a mid-voltage divider
-/// node has no power-typed pin on it at all.
-fn resistor_pulls_to_rail(board: &Board, resistor_id: ComponentId, _signal_net: NetId) -> bool {
+/// The rail side is recognized two ways: by the net's inferred power
+/// domain (a rail or ground whatever its pins are called), and by pin
+/// *name*: a design that labels its rails `3v3`, `5v`, or `vout` is
+/// expressing intent that electrical type alone does not carry — a
+/// resistor tied to a mid-voltage divider node has no power-typed pin
+/// on it at all.
+fn resistor_pulls_to_rail(
+    board: &Board,
+    domains: &PowerDomainMap,
+    resistor_id: ComponentId,
+) -> bool {
     for pin_idx in 0..2_u32 {
-        for (_net_id, net) in board.nets_containing(resistor_id, PinId(pin_idx)) {
+        for (net_id, net) in board.nets_containing(resistor_id, PinId(pin_idx)) {
+            // A net that carries a power or ground pin is a rail whatever
+            // its pins are called.
+            if domains
+                .get(net_id)
+                .is_some_and(|d| d.is_rail() || d.is_ground())
+            {
+                return true;
+            }
             for endpoint in &net.endpoints {
                 let Some(pin) = board.pin(endpoint.component, endpoint.pin) else {
                     continue;
@@ -1220,7 +1264,7 @@ pub fn cluster_index_by_component(clusters: &[FunctionalCluster]) -> HashMap<Com
 mod tests {
     use super::*;
     use crate::test_support::{
-        component, net, part, part_with_decoupling, passive_pin, pin, plain_board,
+        component, net, part, part_with_decoupling, passive_pin, pin, pin_with, plain_board,
     };
 
     fn find(clusters: &[FunctionalCluster], anchor: u32) -> &FunctionalCluster {
@@ -1276,6 +1320,87 @@ mod tests {
         assert_eq!(cap.binding.net, NetId(0));
         assert_eq!(cap.binding.anchor_pin, PinId(0), "U1's dvdd pad");
         assert_eq!(cap.binding.member_pin, PinId(0), "C1's rail-side pad");
+    }
+
+    /// A rail is a rail because the design declared it (`power "VIO" 3.3v`),
+    /// not because a pin happens to be named `vcc`: a resistor from a signal
+    /// pin to a declared rail is a pull-up, whatever the rail's pins are
+    /// called.
+    #[test]
+    fn a_pull_resistor_to_a_declared_rail_is_a_pull_up() {
+        let u1 = component(
+            0,
+            "U1",
+            part_with_decoupling(
+                "ic",
+                vec![
+                    pin("dvdd", ElectricalType::PowerInput),
+                    pin("vio_in", ElectricalType::PowerInput),
+                    pin("gnd", ElectricalType::GroundReference),
+                    pin("mdm", ElectricalType::Bidirectional),
+                ],
+                &[("dvdd", 1)],
+            ),
+        );
+        let r1 = component(
+            1,
+            "R1",
+            part("resistor", vec![passive_pin("p1"), passive_pin("p2")]),
+        );
+        let mut vio = net(1, "VIO", &[(0, 1), (1, 1)]);
+        vio.voltage = Some(crate::units::Voltage::from_v(3.3));
+        let b = plain_board(
+            vec![u1, r1],
+            vec![
+                net(0, "MODEM", &[(0, 3), (1, 0)]),
+                vio,
+                net(2, "3V3", &[(0, 0)]),
+                net(3, "GND", &[(0, 2)]),
+            ],
+        );
+        let clusters = recognize_clusters(&b);
+        let ic = find(&clusters, 0);
+        let r = member_of(ic, 1);
+        assert_eq!(r.role, MemberRole::PullUp);
+        assert_eq!(r.binding.anchor_pin, PinId(3), "the pin it pulls, U1.mdm");
+    }
+
+    /// A USB-C connector's CC pins carry Rd pull-downs to ground. They belong
+    /// beside the connector's CC pins, not loose on the sheet.
+    #[test]
+    fn a_cc_pull_down_on_a_usb_connector_joins_the_connectors_cluster() {
+        use synth_registry::PinCapability as Cap;
+        let j1 = component(
+            0,
+            "J1",
+            part(
+                "connector",
+                vec![
+                    pin_with("dp", ElectricalType::Bidirectional, &[Cap::UsbDp]),
+                    pin_with("dn", ElectricalType::Bidirectional, &[Cap::UsbDn]),
+                    pin_with("cc1", ElectricalType::Bidirectional, &[Cap::UsbCc]),
+                    pin("gnd", ElectricalType::GroundReference),
+                ],
+            ),
+        );
+        let r1 = component(
+            1,
+            "R1",
+            part("resistor", vec![passive_pin("p1"), passive_pin("p2")]),
+        );
+        let b = plain_board(
+            vec![j1, r1],
+            vec![
+                net(0, "CC1", &[(0, 2), (1, 0)]),
+                net(1, "GND", &[(0, 3), (1, 1)]),
+            ],
+        );
+        let clusters = recognize_clusters(&b);
+        let usb = find(&clusters, 0);
+        assert_eq!(usb.kind, ClusterKind::UsbEsd);
+        let r = member_of(usb, 1);
+        assert_eq!(r.role, MemberRole::PullUp);
+        assert_eq!(r.binding.anchor_pin, PinId(2), "the CC pin");
     }
 
     /// A part belongs to exactly one cluster. Two `required_decoupling`
