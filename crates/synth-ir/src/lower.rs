@@ -2072,23 +2072,39 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_named_survives_json_and_defaults_to_declared() {
+    fn test_auto_named_survives_json() {
         let board = lower_ok(
             r#"board "b" {
                 component C1: capacitor "c_generic_0603"
                 component C2: capacitor "c_generic_0603"
+                component C3: capacitor "c_generic_0603"
+                component C4: capacitor "c_generic_0603"
                 connect C1.p1 -> C2.p1
+                connect C3.p1 -> C4.p1 as "net_7"
             }"#,
         );
-        let net = &board.nets[0];
-        assert!(net.auto_named);
-        let json = serde_json::to_string(net).unwrap();
-        assert!(json.contains("\"auto_named\":true"), "{json}");
-        let back: Net = serde_json::from_str(&json).unwrap();
-        assert!(back.auto_named);
-        // A declared net omits the field, and JSON without it reads as declared.
-        let declared = json.replace(",\"auto_named\":true", "");
-        assert!(!serde_json::from_str::<Net>(&declared).unwrap().auto_named);
+        for net in &board.nets {
+            let back: Net = serde_json::from_str(&serde_json::to_string(net).unwrap()).unwrap();
+            assert_eq!(&back, net, "{} must round-trip", net.name);
+        }
+        assert!(board
+            .nets
+            .iter()
+            .any(|n| n.name == "net_7" && !n.auto_named));
+    }
+
+    #[test]
+    fn test_legacy_json_without_auto_named_keeps_its_old_meaning() {
+        // Nets serialized before the flag existed were told apart by name:
+        // `net_<n>` was the placeholder.
+        let legacy = |name: &str| format!(r#"{{"id":0,"name":"{name}","endpoints":[]}}"#);
+        let net = |name: &str| serde_json::from_str::<Net>(&legacy(name)).unwrap();
+        assert!(net("net_7").auto_named, "legacy net_7 is the placeholder");
+        assert!(!net("SIG").auto_named);
+        assert!(!net("net_clk").auto_named);
+        // With the flag present it wins over the name.
+        let declared = r#"{"id":0,"name":"net_7","auto_named":false,"endpoints":[]}"#;
+        assert!(!serde_json::from_str::<Net>(declared).unwrap().auto_named);
     }
 
     #[test]
