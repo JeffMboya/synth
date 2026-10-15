@@ -195,6 +195,17 @@ pub fn build_command(
             format!("{:.4}", synth_ir::Length(drill_nm).to_mm()),
             "--escape-via-size".to_string(),
             format!("{:.4}", synth_ir::Length(diameter_nm).to_mm()),
+            // The clearance has to come from the same place as the via, and
+            // for the same reason. Left to itself the adapter uses 0.1 mm,
+            // which is under every tier this engine is run against: the
+            // escape would be squeezed into a channel the board never agreed
+            // to, and the independent gate would then reject copper that the
+            // escape stage had just been told to produce.
+            "--escape-clearance".to_string(),
+            format!(
+                "{:.4}",
+                synth_ir::Length(request.policy.min_clearance_nm).to_mm()
+            ),
         ]);
         for refdes in candidates {
             args.extend(["--fanout-component".to_string(), refdes]);
@@ -568,6 +579,26 @@ mod tests {
         // them under the fabrication minimum.
         assert!(joined.contains("--escape-via-drill 0.3000"), "{joined}");
         assert!(joined.contains("--escape-via-size 0.5600"), "{joined}");
+        // And the clearance, which the adapter would otherwise default to
+        // 0.1 mm — under this board's own 0.127 mm floor.
+        assert!(joined.contains("--escape-clearance 0.1270"), "{joined}");
+    }
+
+    /// The escape clearance is the board's, not a constant. A tier with a
+    /// wider floor than the default has to reach the escape stage, or the
+    /// escape produces copper the independent gate then rejects for being
+    /// inside a clearance the board declared.
+    #[test]
+    fn the_escape_clearance_follows_a_non_default_floor() {
+        let (mut request, dir) = with_baseline(&grid_pads(11, 11, 0.8));
+        request.policy.min_clearance_nm = 200_000;
+        let joined = argv(&request);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(joined.contains("--escape-clearance 0.2000"), "{joined}");
+        assert!(
+            !joined.contains("--escape-clearance 0.1270"),
+            "the floor must not be hard-coded: {joined}"
+        );
     }
 
     /// A board with nothing dense on it must not ask for an escape at all,
@@ -581,6 +612,7 @@ mod tests {
             "--fanout-component",
             "--escape-via-drill",
             "--escape-via-size",
+            "--escape-clearance",
         ] {
             assert!(!joined.contains(flag), "{flag} leaked: {joined}");
         }
