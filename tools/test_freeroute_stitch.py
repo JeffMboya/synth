@@ -99,12 +99,15 @@ def build_board(path, boxed_pad=False):
     pcbnew.SaveBoard(str(path), board)
 
 
-def build_open_board(path, boxed=False, corridor=False, far_size=1.0, far_back=False):
+def build_open_board(
+    path, boxed=False, corridor=False, far_size=1.0, far_back=False, pour_net="GND"
+):
     """A solid 30 mm ground pour on both layers, one via at (2, 2), and SMD
     ground pads at (3, 2) (1 mm from the via) and (22, 20) (far from any tie).
-    With `boxed` the far pad is walled in by signal tracks, 1.5 mm across inside: no room for a via."""
+    With `boxed` the far pad is walled in by signal tracks, 1.5 mm across inside: no room for a via.
+    `pour_net` names the net the pour, the pads and the via are on."""
     board = pcbnew.BOARD()
-    gnd = pcbnew.NETINFO_ITEM(board, "GND")
+    gnd = pcbnew.NETINFO_ITEM(board, pour_net)
     sig = pcbnew.NETINFO_ITEM(board, "SIG")
     board.Add(gnd)
     board.Add(sig)
@@ -275,6 +278,27 @@ class TieDistantGroundPads(unittest.TestCase):
             edge = max(abs(x - 22), abs(y - 20)) - 0.5
             self.assertGreaterEqual(edge, 0.2 + 0.3 - 1e-6)
             self.assertLessEqual(edge, 2.0)
+
+    def test_ground_nets_by_any_common_name_are_tied(self):
+        import freeroute_autoroute as router
+
+        for name in ("GND", "AGND", "DGND", "GNDA", "/GND", "VSS"):
+            with self.subTest(net=name), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "board.kicad_pcb"
+                build_open_board(path, pour_net=name)
+                added, _ = router.tie_distant_ground_pads(str(path))
+                self.assertEqual(len(added), 1)
+
+    def test_a_power_or_signal_pour_is_left_alone(self):
+        import freeroute_autoroute as router
+
+        for name in ("VBUS", "+3V3", "VCC", "SIG", "RXD1"):
+            with self.subTest(net=name), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "board.kicad_pcb"
+                build_open_board(path, pour_net=name)
+                before = path.read_bytes()
+                self.assertEqual(router.tie_distant_ground_pads(str(path)), ([], 0))
+                self.assertEqual(path.read_bytes(), before)
 
     def test_a_second_run_adds_nothing(self):
         import freeroute_autoroute as router

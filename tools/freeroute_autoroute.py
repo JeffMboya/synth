@@ -378,9 +378,17 @@ def _nearest_via_spot(piece, tracks, pads, net, pad, limit):
     return None
 
 
+_GROUND_NET = re.compile(r"[ADPS]?GND[A-Z0-9_]*|VSS[A-Z0-9_]*")
+
+
+def _is_ground_net(name: str) -> bool:
+    """True for a net named like ground, ignoring a sheet path such as `/GND`."""
+    return _GROUND_NET.fullmatch(name.rsplit("/", 1)[-1].upper()) is not None
+
+
 def _distant_ground_pads(board, tracks, pads):
-    """(net, piece, pad) for each outer SMD pad lying on a pour of its net with no
-    tie within `STITCH_TIE_MM`, in a fixed order.
+    """(net, piece, pad) for each outer SMD pad lying on a ground pour with no
+    tie within `STITCH_TIE_MM`, in a fixed order. Pours of other nets are skipped.
 
     A tie is a via or through-hole pad of the net inside the same pour piece: a
     tie in another piece is not reachable through copper.
@@ -390,7 +398,9 @@ def _distant_ground_pads(board, tracks, pads):
     found = []
     for zone in board.Zones():
         layer = zone.GetFirstLayer()
-        if layer not in (pcbnew.F_Cu, pcbnew.B_Cu):
+        if layer not in (pcbnew.F_Cu, pcbnew.B_Cu) or not _is_ground_net(
+            zone.GetNetname()
+        ):
             continue
         net = zone.GetNetCode()
         for piece in _fragments(zone.GetFilledPolysList(layer)):

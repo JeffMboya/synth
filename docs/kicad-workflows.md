@@ -245,7 +245,9 @@ exists.
 After FreeRouting, two steps add ground vias where the pour alone is not enough.
 The first rescues a pour piece that no via ties to the rest of the net (a piece
 holding only SMD pads is cut off). The second gives every outer ground pad a via
-within 2 mm of its edge, in the same pour piece, at the nearest legal spot and
+(only on pours of nets named like ground: `GND`, `AGND`, `DGND`, `PGND`, `SGND`,
+`GNDA`, `VSS`, with or without a sheet path; power and signal pours are left
+alone) within 2 mm of its edge, in the same pour piece, at the nearest legal spot and
 never inside a pad and never inside the disc the release gate reads a pad as
 (its larger half-dimension), which the gate would report as a via-in-pad: a
 decoupling capacitor or protection part whose only ground
