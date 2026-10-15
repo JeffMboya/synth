@@ -1288,6 +1288,37 @@ mod tests {
     }
 
     #[test]
+    fn a_rotated_footprint_keeps_the_pad_angle_as_written() {
+        // KiCad writes a pad's angle as its absolute orientation, so the
+        // footprint's own rotation is not added to it. Footprint at 90
+        // degrees, pad at (-1 0) in its frame with angle 90: the position
+        // turns to (30, 21) and the 2 x 0.6 bar stands vertical there.
+        let hits = |via: (f64, f64)| {
+            let text = format!(
+                r#"(kicad_pcb
+                  (version 20260206)
+                  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
+                  (net 0 "")
+                  (net 1 "GND")
+                  (footprint "a:1" (layer "F.Cu") (at 30 20 90)
+                    (property "Reference" "U1" (at 0 0) (layer "F.SilkS"))
+                    (pad "1" smd rect (at -1 0 90) (size 2 0.6) (layers "F.Cu") (net 1 "GND")))
+                  (via (at {} {}) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))
+                  (gr_line (start 0 0) (end 50 0) (layer "Edge.Cuts") (width 0.1))
+                )"#,
+                via.0, via.1
+            );
+            check_connectivity(&board(&text), &FabricationPolicy::default())
+                .via_in_pad
+                .len()
+        };
+        // Along the bar (vertical): in. Beside it (where a bar turned a
+        // second time to horizontal would reach): out.
+        assert_eq!(hits((30.0, 21.9)), 1);
+        assert_eq!(hits((30.9, 21.0)), 0);
+    }
+
+    #[test]
     fn a_rounded_corner_is_not_copper() {
         // 1 x 1 pad with fully rounded corners (a disc of radius 0.5):
         // a 0.3 mm hole at the square's corner is 0.2 mm off the copper,
