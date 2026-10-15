@@ -4742,20 +4742,46 @@ fn build_route_request(
     // After the floor, so the capability is read from the profile this board
     // actually names.
     //
-    // This warning is the only place an unmet requirement surfaces on these
-    // paths. `synth route` and `synth drc` reach here without running ERC —
+    // This is the only place an unmet requirement surfaces on these paths.
+    // `synth route` and `synth drc` reach here without running ERC —
     // `route_design` writes parse and lower diagnostics only — so
-    // E-SYNTH-PROCESS-002 is not guaranteed upstream and the requirement
-    // would otherwise be granted silently or not at all. The gate below will
-    // still refuse the copper; saying why beats letting it read as an
-    // ordinary routing failure.
-    for unmet in request.use_board_process_requirements(board) {
-        eprintln!(
-            "warning: board requires `{}`, which profile `{}` does not offer \
-             [E-SYNTH-PROCESS-002]",
-            unmet.as_source(),
-            request.profile_name
-        );
+    // E-SYNTH-PROCESS-002 is not guaranteed upstream. `export-kicad` does run
+    // ERC and already refuses there; these two did not.
+    //
+    // It has to refuse rather than warn. The geometry gate downstream only
+    // rejects a via that actually lands in a pad, so a board declaring
+    // `requires via_in_pad` against a tier that cannot fill one would route
+    // and be reported fabrication-ready whenever the router happened not to
+    // need the process — the requirement granted by luck. A declared process
+    // the named profile does not offer is a statement about the panel, and no
+    // routing outcome can satisfy it.
+    //
+    // An operator who passed `--krt-allow-via-in-pad` has promised the panel
+    // themselves, so the run proceeds on that promise and keeps the warning:
+    // the requirement is still unmet by the profile, which is what the
+    // capability reports either way.
+    let unmet = request.use_board_process_requirements(board);
+    if !unmet.is_empty() {
+        let named = unmet
+            .iter()
+            .map(|r| r.as_source())
+            .collect::<Vec<_>>()
+            .join("`, `");
+        if request.policy.allow_via_in_pad {
+            eprintln!(
+                "warning: board requires `{named}`, which profile `{}` does not offer; \
+                 proceeding on the operator override [E-SYNTH-PROCESS-002]",
+                request.profile_name
+            );
+        } else {
+            anyhow::bail!(
+                "board requires `{named}`, which profile `{}` does not offer \
+                 [E-SYNTH-PROCESS-002]. Name a manufacturer profile whose process \
+                 offers it, drop the requirement, or pass --krt-allow-via-in-pad to \
+                 route on your own promise about the panel.",
+                request.profile_name
+            );
+        }
     }
     request.input_hash = sha256_file(&result.pcb_path)?;
     request
