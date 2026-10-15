@@ -4112,10 +4112,10 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
 
 /// Pick a human-meaningful label for a signal net.
 ///
-/// Prefers a semantic function name derived from an active-IC pin's
-/// capabilities (`i2c_scl` → `SCL`, `usb_dp` → `D+`, `spi_mosi` →
-/// `MOSI`, …) so the schematic reads like a hand-drawn one. Falls
-/// back to the active-IC pin's name uppercased (MCU, sensor, memory
+/// A net the author named renders that name. Otherwise it prefers a
+/// semantic function name derived from an active-IC pin's capabilities
+/// (`i2c_scl` → `SCL`, `usb_dp` → `D+`, `spi_mosi` → `MOSI`, …) so the
+/// schematic reads like a hand-drawn one. Falls back to the active-IC pin's name uppercased (MCU, sensor, memory
 /// chip, regulator), then to whatever endpoint is first if no
 /// active-IC pin is available.
 ///
@@ -4136,27 +4136,17 @@ pub(crate) fn pick_net_label_with_source(
     net: &synth_ir::Net,
 ) -> Option<(String, ComponentId)> {
     use synth_registry::PinCapability;
-    // A net that is a member of a declared bus renders its full
-    // `<bus>.<member>` name. This is the second exception to the
-    // pin-derived-token policy (the first is `declared_rail_name`):
-    // the name is what the exporter's `bus_alias` associates with, and
-    // what a hand-drawn bus schematic shows, so a guessed `SDA` would
-    // both hide the bus and collide across two buses with the same
-    // member names.
-    if let Some(label) = declared_bus_member_label(board, &net.name) {
+    // A net the author named (`net "X"`, `connect ... as "X"`) renders
+    // that name, so the schematic and the PCB agree on net names and the
+    // `.kicad_pro` net classes match the PCB's nets. Auto-named nets
+    // (`net_<n>`) carry no identity and keep the pin-derived tokens
+    // below (`SDA`, `D+`, ...). Power rails get their name from
+    // their power symbols (`declared_rail_name`).
+    if !is_auto_net_name(&net.name) {
         if let Some(ep) = net.endpoints.first() {
-            return Some((label, ep.component));
+            return Some((net.name.clone(), ep.component));
         }
     }
-    // NOTE: signal-net labels stay pin-derived (capability tokens
-    // like `SDA`, else the active-IC pin name) even when the net
-    // carries a user-declared name: the declared name already shows
-    // in the netlist, the PCB, and (for rails) the power-flag
-    // labels, while schematic local labels keep the hand-drawn
-    // semantic tokens this function exists to produce. Power rails
-    // are the exception — see `declared_rail_name`, which prefers
-    // the declared name so `power "+3V3"` renders `+3V3`, never a
-    // guessed `VCC`.
     let active_kinds: &[&str] = &[
         "mcu",
         "ic",
@@ -4215,25 +4205,6 @@ pub(crate) fn pick_net_label_with_source(
     Some((pin.name.to_ascii_uppercase(), ep.component))
 }
 
-/// The full `<bus>.<member>` name when `net_name` is a member of a
-/// declared bus, else `None`. Mirrors [`declared_rail_name`]: a
-/// declared name beats the pin-derived heuristic so the schematic
-/// label matches the bus the design actually declared.
-fn declared_bus_member_label(board: &Board, net_name: &str) -> Option<String> {
-    for bus in &board.buses {
-        let Some(member) = net_name
-            .strip_prefix(bus.name.as_str())
-            .and_then(|rest| rest.strip_prefix('.'))
-        else {
-            continue;
-        };
-        if bus.members.iter().any(|m| m == member) {
-            return Some(net_name.to_string());
-        }
-    }
-    None
-}
-
 /// Refdes of the component that supplied `expected` as `net`'s label
 /// token, or `None` when the string cannot be re-derived (the
 /// caller-side `NET_<id>` fallback, or a net with no resolvable
@@ -4261,7 +4232,8 @@ fn label_supplier_refdes(board: &Board, net: NetId, expected: &str) -> Option<St
 ///
 /// - A string used by only one net is left byte-identical — boards
 ///   without collisions keep exactly the labels they had before.
-/// - Within a collision group the bare token stays on the net whose
+/// - Within a collision group the bare token stays on a net with a
+///   declared name if there is one, else on the net whose
 ///   token-supplying endpoint carries the lexicographically lowest
 ///   refdes; every other member gains a `_<REFDES>` suffix
 ///   (`SDA_U4`). Ties — one component supplying several colliding
@@ -4332,11 +4304,14 @@ pub(crate) fn uniquify_net_labels(board: &Board, labels: &mut [NetLabel]) {
             .iter()
             .map(|&net| (net, label_supplier_refdes(board, net, text)))
             .collect();
+        // A declared name outranks a pin-derived token: it has to stay
+        // bare to match the PCB's net name.
+        let declared = |net: &NetId| board.net(*net).is_some_and(|n| !is_auto_net_name(&n.name));
         let mut ranked: Vec<&NetId> = members.iter().collect();
         ranked.sort_by(|&a, &b| {
-            supplier[a]
-                .as_ref()
-                .cmp(&supplier[b].as_ref())
+            declared(b)
+                .cmp(&declared(a))
+                .then(supplier[a].as_ref().cmp(&supplier[b].as_ref()))
                 .then(a.cmp(b))
         });
         let winner = *ranked[0];
