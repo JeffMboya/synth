@@ -76,6 +76,7 @@ fn net(id: u32, name: &str, endpoints: &[(u32, u32)]) -> Net {
     Net {
         id: NetId(id),
         name: name.to_string(),
+        auto_named: name.starts_with("net_"),
         endpoints: endpoints
             .iter()
             .map(|&(c, p)| NetEndpoint {
@@ -235,6 +236,18 @@ fn a_declared_net_name_is_the_schematic_label() {
 }
 
 #[test]
+fn a_declared_name_that_looks_like_the_placeholder_is_still_declared() {
+    // `connect ... as "net_7"` is a name the author chose. It must not be
+    // mistaken for the `net_<n>` lowering gives an unnamed net.
+    let mut b = board(
+        vec![mcu_with_pin("dp", &[PinCapability::UsbDp])],
+        vec![net(0, "net_7", &[(0, 0)])],
+    );
+    b.nets[0].auto_named = false;
+    assert_eq!(pick_net_label(&b, &b.nets[0]).as_deref(), Some("net_7"));
+}
+
+#[test]
 fn an_auto_named_net_keeps_the_pin_derived_label() {
     // Lowering names an undeclared net `net_<n>`; that carries no
     // identity, so the hand-drawn token (`D+`) still applies.
@@ -389,6 +402,7 @@ fn declared_names_reach_the_labels_and_the_class_names() {
         (5, "BUS2_SCL"),
     ] {
         b.nets[id].name = name.to_string();
+        b.nets[id].auto_named = false;
     }
     let layout = synth_layout::layout(&b);
     let names = synth_layout::netclass::kicad_net_names(&layout);
@@ -415,6 +429,7 @@ fn a_declared_name_keeps_the_bare_label_over_a_pin_derived_token() {
     // matches the PCB; the pin-derived one takes the suffix.
     let mut b = two_bus_board();
     b.nets[4].name = "SDA".to_string();
+    b.nets[4].auto_named = false;
     let layout = synth_layout::layout(&b);
     let text_of = |id: u32| {
         layout

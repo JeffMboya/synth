@@ -931,6 +931,7 @@ impl<'a> LowerCtx<'a> {
             nets.push(Net {
                 id,
                 name: orphan.name.clone(),
+                auto_named: false,
                 endpoints: Vec::new(),
                 netclass,
                 voltage,
@@ -1025,6 +1026,7 @@ impl<'a> LowerCtx<'a> {
         let name = distinct_names
             .first()
             .map_or_else(|| format!("net_{idx}"), |(n, _)| n.clone());
+        let auto_named = distinct_names.is_empty();
 
         let (netclass, voltage) =
             self.resolve_joins(&name, &info.classes, &info.voltages, known_classes);
@@ -1045,6 +1047,7 @@ impl<'a> LowerCtx<'a> {
         Net {
             id,
             name,
+            auto_named,
             endpoints: ir_endpoints,
             netclass,
             voltage,
@@ -2040,6 +2043,52 @@ mod tests {
         let net = &board.nets[0];
         assert_eq!(net.name, "+3V3");
         assert_eq!(net.endpoints.len(), 4);
+    }
+
+    #[test]
+    fn test_only_an_unnamed_net_is_auto_named() {
+        let board = lower_ok(
+            r#"board "b" {
+                component C1: capacitor "c_generic_0603"
+                component C2: capacitor "c_generic_0603"
+                component C3: capacitor "c_generic_0603"
+                component C4: capacitor "c_generic_0603"
+                connect C1.p1 -> C2.p1 as "net_7"
+                connect C3.p1 -> C4.p1
+            }"#,
+        );
+        let net_named = |name: &str| board.nets.iter().find(|n| n.name == name).unwrap();
+        assert!(
+            !net_named("net_7").auto_named,
+            "a declared net_7 is declared"
+        );
+        let unnamed = board
+            .nets
+            .iter()
+            .find(|n| n.auto_named)
+            .expect("one net the author never named");
+        assert!(unnamed.name.starts_with("net_"));
+        assert_eq!(board.nets.iter().filter(|n| n.auto_named).count(), 1);
+    }
+
+    #[test]
+    fn test_auto_named_survives_json_and_defaults_to_declared() {
+        let board = lower_ok(
+            r#"board "b" {
+                component C1: capacitor "c_generic_0603"
+                component C2: capacitor "c_generic_0603"
+                connect C1.p1 -> C2.p1
+            }"#,
+        );
+        let net = &board.nets[0];
+        assert!(net.auto_named);
+        let json = serde_json::to_string(net).unwrap();
+        assert!(json.contains("\"auto_named\":true"), "{json}");
+        let back: Net = serde_json::from_str(&json).unwrap();
+        assert!(back.auto_named);
+        // A declared net omits the field, and JSON without it reads as declared.
+        let declared = json.replace(",\"auto_named\":true", "");
+        assert!(!serde_json::from_str::<Net>(&declared).unwrap().auto_named);
     }
 
     #[test]

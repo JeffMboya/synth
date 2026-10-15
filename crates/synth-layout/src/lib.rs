@@ -1175,7 +1175,7 @@ fn place_connector_legends(board: &Board, layout: &mut Layout) {
             let Some((_, net)) = board.nets_containing(component.id, pid).next() else {
                 continue;
             };
-            if is_auto_net_name(&net.name) {
+            if net.auto_named {
                 continue;
             }
             lines.push((pin.name.clone(), net.name.clone()));
@@ -1212,13 +1212,6 @@ fn place_connector_legends(board: &Board, layout: &mut Layout) {
             });
         }
     }
-}
-
-/// Whether a net name is an auto-generated `net_<idx>` placeholder
-/// rather than a human name. Legends only list named nets.
-fn is_auto_net_name(name: &str) -> bool {
-    name.strip_prefix("net_")
-        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Render `notes` blocks as titled text (§21.1).
@@ -3781,17 +3774,18 @@ pub fn sheet_needs(min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> (f64, f64)
 /// strongest available signal of rail intent — stronger than any
 /// pin-name heuristic — because distinct declared grounds/rails must
 /// stay distinct after export (power symbols connect globally by
-/// Value in KiCad). Generic tokens (`gnd`, `vcc`, ...) and the
-/// auto-generated `net_N` names carry no such identity and return
-/// `None` so the pre-existing pin-name/regulator derivation applies,
-/// keeping legacy single-domain designs byte-identical.
+/// Value in KiCad). Generic tokens (`gnd`, `vcc`, ...) carry no such
+/// identity and return `None` so the pre-existing pin-name/regulator
+/// derivation applies, keeping legacy single-domain designs
+/// byte-identical. The caller leaves out auto-named nets
+/// (`Net::auto_named`), whose `net_N` name was never chosen.
 #[must_use]
 pub fn declared_rail_name(net_name: &str) -> Option<String> {
     let lower = net_name.to_ascii_lowercase();
     let generic = matches!(
         lower.as_str(),
         "gnd" | "ground" | "vcc" | "vdd" | "vss" | "vdda" | "vssa"
-    ) || lower.starts_with("net_");
+    );
     if generic {
         return None;
     }
@@ -3920,7 +3914,11 @@ pub(crate) fn classify_power_net(
         }
     }
 
-    let declared = declared_rail_name(&net.name);
+    let declared = if net.auto_named {
+        None
+    } else {
+        declared_rail_name(&net.name)
+    };
     if gnd_pin_count >= 1 {
         // Any net touching a gnd-named power pin is ground. One
         // endpoint is enough — even a 2-endpoint `U1.gnd → C2.p2` net
@@ -4142,7 +4140,7 @@ pub(crate) fn pick_net_label_with_source(
     // (`net_<n>`) carry no identity and keep the pin-derived tokens
     // below (`SDA`, `D+`, ...). Power rails get their name from
     // their power symbols (`declared_rail_name`).
-    if !is_auto_net_name(&net.name) {
+    if !net.auto_named {
         if let Some(ep) = net.endpoints.first() {
             return Some((net.name.clone(), ep.component));
         }
@@ -4306,7 +4304,7 @@ pub(crate) fn uniquify_net_labels(board: &Board, labels: &mut [NetLabel]) {
             .collect();
         // A declared name outranks a pin-derived token: it has to stay
         // bare to match the PCB's net name.
-        let declared = |net: &NetId| board.net(*net).is_some_and(|n| !is_auto_net_name(&n.name));
+        let declared = |net: &NetId| board.net(*net).is_some_and(|n| !n.auto_named);
         let mut ranked: Vec<&NetId> = members.iter().collect();
         ranked.sort_by(|&a, &b| {
             declared(b)
@@ -4806,6 +4804,7 @@ mod barycenter_tests {
         Net {
             id: NetId(id),
             name: name.to_string(),
+            auto_named: name.starts_with("net_"),
             endpoints: endpoints
                 .iter()
                 .map(|&(c, p)| NetEndpoint {
@@ -5036,6 +5035,7 @@ mod semantic_weights_tests {
         Net {
             id: NetId(id),
             name: name.to_string(),
+            auto_named: name.starts_with("net_"),
             endpoints: endpoints
                 .iter()
                 .map(|&(c, p)| NetEndpoint {
@@ -5368,6 +5368,7 @@ mod soft_pin_swap_tests {
         Net {
             id: NetId(id),
             name: name.to_string(),
+            auto_named: name.starts_with("net_"),
             endpoints: endpoints
                 .iter()
                 .map(|&(c, p)| NetEndpoint {
@@ -5614,6 +5615,7 @@ mod patterns_tests {
         Net {
             id: NetId(id),
             name: name.to_string(),
+            auto_named: name.starts_with("net_"),
             endpoints: endpoints
                 .iter()
                 .map(|&(c, p)| NetEndpoint {
@@ -6468,8 +6470,10 @@ mod naming_tests {
             "a declared analog-ground name must survive to export"
         );
         assert_eq!(declared_rail_name("+5V_USB").as_deref(), Some("+5V_USB"));
-        // Generics and auto-generated names carry no identity.
-        for generic in ["gnd", "GND", "ground", "vcc", "vdd", "net_7"] {
+        // Generics carry no identity. A `net_7` is a name like any other
+        // here; the caller skips nets the author never named.
+        assert_eq!(declared_rail_name("net_7").as_deref(), Some("net_7"));
+        for generic in ["gnd", "GND", "ground", "vcc", "vdd"] {
             assert!(
                 declared_rail_name(generic).is_none(),
                 "{generic} must fall through to the legacy derivation"
@@ -6542,6 +6546,7 @@ mod naming_tests {
         Net {
             id: NetId(id),
             name: name.to_string(),
+            auto_named: name.starts_with("net_"),
             endpoints: endpoints
                 .iter()
                 .map(|&(c, p)| NetEndpoint {
@@ -6842,6 +6847,7 @@ mod documentation_tests {
         Net {
             id: NetId(id),
             name: name.to_string(),
+            auto_named: name.starts_with("net_"),
             endpoints: endpoints
                 .iter()
                 .map(|&(c, p)| NetEndpoint {
@@ -7056,6 +7062,43 @@ mod documentation_tests {
             .at_mm
             .1;
         assert!(title_y > j_center);
+    }
+
+    #[test]
+    fn connector_legend_keeps_a_declared_name_that_looks_like_the_placeholder() {
+        let j = component(
+            0,
+            "J1",
+            part(
+                "connector",
+                vec![pin("p1"), pin("p2"), pin("p3"), pin("p4"), pin("p5")],
+            ),
+            None,
+        );
+        let r = || part("resistor", vec![pin("p1"), pin("p2")]);
+        let mut b = board_with_notes(
+            vec![
+                j,
+                component(1, "R1", r(), None),
+                component(2, "R2", r(), None),
+                component(3, "R3", r(), None),
+            ],
+            vec![
+                net(0, "net_7", &[(0, 0), (1, 0)]),
+                net(1, "net_8", &[(0, 1), (1, 1)]),
+                net(2, "RST", &[(0, 2), (2, 0)]),
+                net(3, "EN", &[(0, 3), (2, 1)]),
+                net(4, "CLK", &[(0, 4), (3, 0)]),
+            ],
+            vec![],
+        );
+        b.legends = true;
+        // `net_7` was declared by the author; `net_8` is a placeholder.
+        b.nets[0].auto_named = false;
+        let layout = layout(&b);
+        let labels = texts(&layout);
+        assert!(labels.contains(&"p1: net_7"), "{labels:?}");
+        assert!(!labels.iter().any(|t| t.contains("net_8")), "{labels:?}");
     }
 
     #[test]

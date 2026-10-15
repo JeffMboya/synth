@@ -353,6 +353,7 @@ expression: board
     {
       "id": 1,
       "name": "net_1",
+      "auto_named": true,
       "endpoints": [
         {
           "component": 0,

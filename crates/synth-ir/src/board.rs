@@ -319,6 +319,11 @@ pub struct Net {
     /// Declared via `net "NAME" { … }`, `power "NAME" …`, or
     /// `connect … as "NAME"`.
     pub name: String,
+    /// True when `name` is the `net_<n>` placeholder lowering gave a net the
+    /// author never named. A declared name that happens to look like that
+    /// placeholder (`as "net_7"`) has this false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_named: bool,
     pub endpoints: Vec<NetEndpoint>,
     /// Netclass this net is joined to (`class "PWR"` on the `net`,
     /// `power`, or `connect` statement). Must name a declared
