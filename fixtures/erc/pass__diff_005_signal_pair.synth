@@ -1,5 +1,6 @@
 board "diff_005_pass" {
   layers 2
+  component J1: connector "jst_ph_2pin"
   component U1: regulator "ams1117_3v3"
   component C1: capacitor "c_generic_0805" value "10uF"
   component C2: capacitor "c_generic_0805" value "10uF"
@@ -8,6 +9,10 @@ board "diff_005_pass" {
   component R3: resistor "r_generic_0603" value "10k"
   component R4: resistor "r_generic_0603" value "10k"
 
+  // The rail comes in on the connector. Without it U1.vin sits on a net
+  // whose only other endpoint is a capacitor plate, which supplies nothing.
+  connect J1.p1 -> U1.vin
+  connect J1.p2 -> U1.gnd
   connect U1.vin -> C1.p1
   connect U1.gnd -> C1.p2
   connect U1.vout -> C2.p1

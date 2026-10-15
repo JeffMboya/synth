@@ -9,6 +9,7 @@ board "named_rail" {
     clearance 0.2mm
   }
 
+  component J1: connector "jst_ph_2pin"
   component U1: regulator "ams1117_3v3"
   component C1: capacitor "c_generic_0805" value "10u"
   component C2: capacitor "c_generic_0805" value "10u"
@@ -21,8 +22,9 @@ board "named_rail" {
   connect U1.gnd -> C1.p2
   connect U1.gnd -> C2.p2
 
-  net "VIN" { U1.vin, C3.p1 }
+  net "VIN" { U1.vin, C3.p1, J1.p1 }
   connect U1.vin -> C4.p1 as "VIN"
+  connect J1.p2 -> U1.gnd
   connect U1.gnd -> C3.p2
   connect U1.gnd -> C4.p2
 }
