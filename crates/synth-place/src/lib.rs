@@ -4580,6 +4580,33 @@ fn physical_defects(review: &VisualPlacementReview) -> usize {
         .count()
 }
 
+/// A finding with its measurements dropped, so one that only changed a
+/// distance is still the same finding.
+fn finding_identity(finding: &str) -> String {
+    finding
+        .split_whitespace()
+        .filter(|word| {
+            let bare = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+            bare.is_empty()
+                || !bare
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || "-.x".contains(c))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether `candidate` has a finding that `kept` does not. A count cannot
+/// tell, because a move can close one finding and open another.
+fn introduces_finding(kept: &VisualPlacementReview, candidate: &VisualPlacementReview) -> bool {
+    let known: std::collections::HashSet<String> =
+        kept.findings.iter().map(|f| finding_identity(f)).collect();
+    candidate
+        .findings
+        .iter()
+        .any(|f| !known.contains(&finding_identity(f)))
+}
+
 /// The wirelength pass only checks overlap, outline and keepouts, so a move
 /// can still reopen a review finding (decoupling distance, breakout
 /// corridor). Keep its result only when the review does not get worse.
@@ -4587,7 +4614,7 @@ fn keep_unless_worse(board: &Board, kept: Placement, candidate: Placement) -> Pl
     let review_of = |placement: &Placement| describe_placement(board, placement).visual_review;
     let (kept_review, candidate_review) = (review_of(&kept), review_of(&candidate));
     if physical_defects(&candidate_review) <= physical_defects(&kept_review)
-        && candidate_review.findings.len() <= kept_review.findings.len()
+        && !introduces_finding(&kept_review, &candidate_review)
     {
         candidate
     } else {
@@ -4626,6 +4653,7 @@ fn refine_placement<S: ::std::hash::BuildHasher>(
         review = review_of(&current);
         if physical_defects(&review) <= physical_defects(&best_review)
             && review.findings.len() < best_review.findings.len()
+            && !introduces_finding(&best_review, &review)
         {
             best = current.clone();
             best_review = review.clone();
@@ -6966,6 +6994,46 @@ mod tests {
             compact_placement(&board, loose.clone()),
             compact_placement(&board, loose)
         );
+    }
+
+    /// Swapping one finding for another leaves the count unchanged, and it
+    /// still reopens something the kept placement did not have.
+    #[test]
+    fn a_result_that_swaps_one_finding_for_another_is_dropped() {
+        let (board, mut r1_off) = row_board(TWO_LOOSE_RESISTORS, &[10.0, 50.0]);
+        move_part(&mut r1_off, &board, "R1", 80.0, 15.0);
+        let mut r2_off = r1_off.clone();
+        move_part(&mut r2_off, &board, "R1", 10.0, 15.0);
+        move_part(&mut r2_off, &board, "R2", 80.0, 15.0);
+        let findings_of = |p: &Placement| describe_placement(&board, p).visual_review.findings;
+        assert_eq!(findings_of(&r1_off).len(), findings_of(&r2_off).len());
+        assert_ne!(findings_of(&r1_off), findings_of(&r2_off));
+
+        assert_eq!(keep_unless_worse(&board, r1_off.clone(), r2_off), r1_off);
+    }
+
+    /// A finding whose distance changed is the same finding, so a move that
+    /// only shortens it still counts as an improvement.
+    #[test]
+    fn a_finding_that_only_changes_its_distance_is_the_same_finding() {
+        let review = |finding: &str| VisualPlacementReview {
+            score: 0,
+            requires_revision: true,
+            findings: vec![finding.to_string()],
+            recommended_actions: Vec::new(),
+        };
+        let far = review("dense connector J1 is 9.5 mm from its nearest board edge");
+        let near = review("dense connector J1 is 4.0 mm from its nearest board edge");
+        let other = review("dense connector J2 is 4.0 mm from its nearest board edge");
+        assert!(!introduces_finding(&far, &near));
+        assert!(introduces_finding(&far, &other));
+
+        let hint = |delta: &str| {
+            review(&format!(
+                "hard placement hint not honored: U1 should be left of J1, but its courtyard is right of J1 (delta {delta} mm); revise placement before routing"
+            ))
+        };
+        assert!(!introduces_finding(&hint("4.2, -3.0"), &hint("1.5, -3.0")));
     }
 
     /// A two-pin connector is still a connector: it sits where the board edge
