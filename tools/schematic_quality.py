@@ -29,6 +29,14 @@ The numbers say how much of the page is collisions and how much is wasted:
                                   netlist`; a rail pin counts, so a part on a
                                   rail next to any pin of that rail reads near;
                                   0.0 when no passive could be measured)
+  labels_repeating_pin_name       labels whose text is the name of the pin they
+                                  stand beside
+  label_columns_misaligned        symbol sides whose labels do not line up: more
+                                  than one distinct x on a left or right side,
+                                  more than one distinct y on a top or bottom
+                                  side (a label belongs to a pin when it sits on
+                                  the pin's row or column, on the outward side,
+                                  within LABEL_REACH_MM)
 
 KiCad draws some strings twice in one place; each such string counts once.
 Wires in Synth's schematics are axis aligned, so a wire is tested against a text
@@ -55,6 +63,9 @@ DUPLICATE_MM = 0.1
 CONTENT_MARGIN_MM = 5.0
 # Cell size for the content density, in mm.
 CELL_MM = 10.0
+# A label this far or less from a pin's end, along the pin's axis and on its
+# outward side, stands beside that pin: a stub is 5.08 mm.
+LABEL_REACH_MM = 6.0
 # Longest kicad-cli may take to plot one schematic.
 PLOT_TIMEOUT_S = 300
 
@@ -135,8 +146,8 @@ def region_coverage(boxes):
 
 
 def _lib_pins(sch_text):
-    """Pin positions per library symbol as {lib_id: {pin number: (x, y)}}, in
-    the symbol's own frame (y up)."""
+    """Pins per library symbol as {lib_id: {pin number: (x, y, angle, name)}}, in
+    the symbol's own frame (y up). A name that is empty or `~` is None."""
     pins = {}
     start = sch_text.find("(lib_symbols")
     if start < 0:
@@ -147,10 +158,13 @@ def _lib_pins(sch_text):
         found = {}
         for pin in re.finditer(r"\(pin\b", block):
             body = _balanced(block, pin.start())
-            at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER})", body)
+            at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER}) ({_NUMBER})", body)
             number = re.search(r'\(number\s+"([^"]*)"', body)
+            name = re.search(r'\(name\s+"([^"]*)"', body)
             if at and number:
-                found[number.group(1)] = (float(at.group(1)), float(at.group(2)))
+                x, y, angle = (float(v) for v in at.groups())
+                label = name.group(1) if name and name.group(1) not in ("", "~") else None
+                found[number.group(1)] = (x, y, angle, label)
         pins[opening.group(1)] = found
     return pins
 
@@ -173,7 +187,7 @@ def _placed_pins(sch_text):
         mirror = re.search(r"\(mirror (\w)\)", block)
         cos, sin = {0: (1, 0), 90: (0, 1), 180: (-1, 0), 270: (0, -1)}[round(angle) % 360]
         pins = {}
-        for number, (lx, ly) in lib[lib_id.group(1)].items():
+        for number, (lx, ly, _, _) in lib[lib_id.group(1)].items():
             if mirror and mirror.group(1) == "x":
                 ly = -ly
             elif mirror and mirror.group(1) == "y":
@@ -181,6 +195,59 @@ def _placed_pins(sch_text):
             pins[number] = (x0 + lx * cos - ly * sin, y0 - (lx * sin + ly * cos))
         placed[ref.group(1)] = (lib_id.group(1), pins)
     return placed
+
+
+def _pin_facings(sch_text):
+    """Per placed pin, which way it faces on the sheet and what it is called, as
+    {ref: {pin number: ((dx, dy), name)}}, with (dx, dy) the unit step out of
+    the symbol (y down). Same turn as `_placed_pins`."""
+    facings = {}
+    pins = _lib_pins(sch_text)
+    for opening in re.finditer(r"\n\t\(symbol\s+\(lib_id", sch_text):
+        block = _balanced(sch_text, opening.start() + 2)
+        lib_id = re.search(r'\(lib_id "([^"]*)"', block)
+        at = re.search(rf"\(at {_NUMBER} {_NUMBER} ({_NUMBER})", block)
+        ref = re.search(r'\(property\s+"Reference"\s+"([^"]*)"', block)
+        if not (lib_id and at and ref and lib_id.group(1) in pins):
+            continue
+        cos, sin = {0: (1, 0), 90: (0, 1), 180: (-1, 0), 270: (0, -1)}[round(float(at.group(1))) % 360]
+        mirror = re.search(r"\(mirror (\w)\)", block)
+        turned = {}
+        for number, (_, _, pin_angle, name) in pins[lib_id.group(1)].items():
+            # A pin at angle 0 sits left of its body, so it faces left.
+            dx, dy = -math.cos(math.radians(pin_angle)), -math.sin(math.radians(pin_angle))
+            if mirror and mirror.group(1) == "x":
+                dy = -dy
+            elif mirror and mirror.group(1) == "y":
+                dx = -dx
+            turned[number] = ((round(dx * cos - dy * sin), -round(dx * sin + dy * cos)), name)
+        facings[ref.group(1)] = turned
+    return facings
+
+
+def label_pin_pairs(sch_text):
+    """Every label that stands beside a pin, as (ref, facing, text, coordinate,
+    pin name): facing is the pin's (dx, dy) and coordinate the label's x when the
+    pin faces left or right, its y when it faces up or down. `label`,
+    `global_label` and `hierarchical_label` all count."""
+    placed = _placed_pins(sch_text)
+    facings = _pin_facings(sch_text)
+    pairs = []
+    for opening in re.finditer(r'\((?:global_|hierarchical_)?label\s+"([^"]*)"', sch_text):
+        block = _balanced(sch_text, opening.start())
+        at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER})", block)
+        if not at:
+            continue
+        lx, ly = float(at.group(1)), float(at.group(2))
+        for ref, (_, pins) in placed.items():
+            for number, (px, py) in pins.items():
+                facing, name = facings[ref][number]
+                dx, dy = facing
+                along = (lx - px) * dx + (ly - py) * dy
+                across = abs((lx - px) * dy) + abs((ly - py) * dx)
+                if across < TOLERANCE_MM and 0 < along <= LABEL_REACH_MM:
+                    pairs.append((ref, facing, opening.group(1), ly if dx == 0 else lx, name))
+    return pairs
 
 
 def _is_passive(lib_id):
@@ -286,11 +353,14 @@ def _segments_cross(s, t):
     )
 
 
-def score(wires, texts, page, content_points=(), group_boxes=(), passive_distances=None):
+def score(
+    wires, texts, page, content_points=(), group_boxes=(), passive_distances=None, label_pairs=()
+):
     """The numbers in the module doc for `wires`, `texts` and `page` (w, h).
 
     `content_points` are anchors of symbols and corners of group boxes; with
-    the wires they say where the schematic is, so page furniture is ignored."""
+    the wires they say where the schematic is, so page furniture is ignored.
+    `label_pairs` are the labels beside pins, from `label_pin_pairs`."""
     overlapping = 0
     for i, a in enumerate(texts):
         for b in texts[i + 1 :]:
@@ -310,6 +380,10 @@ def score(wires, texts, page, content_points=(), group_boxes=(), passive_distanc
 
     measured = list((passive_distances or {}).values())
 
+    columns = {}
+    for ref, facing, _, coordinate, _ in label_pairs:
+        columns.setdefault((ref, facing), set()).add(round(coordinate / TOLERANCE_MM))
+
     length = sum(
         ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 for a, b in wires
     )
@@ -323,6 +397,8 @@ def score(wires, texts, page, content_points=(), group_boxes=(), passive_distanc
         "content_density": _content_density(wires, texts, content_points),
         "passive_to_pin_mean_mm": round(sum(measured) / len(measured), 1) if measured else 0.0,
         "passive_to_pin_max_mm": round(max(measured), 1) if measured else 0.0,
+        "labels_repeating_pin_name": sum(1 for p in label_pairs if p[2] == p[4]),
+        "label_columns_misaligned": sum(1 for c in columns.values() if len(c) > 1),
     }
 
 
@@ -422,6 +498,7 @@ def score_file(sch_path):
         parse_content_points(sch_text),
         parse_group_boxes(sch_text),
         passive_pin_distances(sch_text, netlist_text),
+        label_pin_pairs(sch_text),
     )
 
 

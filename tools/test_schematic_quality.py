@@ -356,5 +356,110 @@ class PassiveDistance(unittest.TestCase):
         self.assertEqual((got["passive_to_pin_mean_mm"], got["passive_to_pin_max_mm"]), (0.0, 0.0))
 
 
+def labels_sch(*labels, angle=0, kind="label"):
+    """A `.kicad_sch` with the IC `synth:U` placed as U1 at (50, 50) turned by `angle`.
+    Its pins are 1 "A" at (-10, 0), 2 "B" at (-10, -5) (both facing left once
+    unturned), 3 "C" at (10, 0) (facing right) and 4 "~" at (10, -5), and `labels`
+    given as (text, x, y)."""
+    out = [
+        "(kicad_sch",
+        "\t(lib_symbols",
+        "\t\t(symbol\n\t\t\t\"synth:U\"",
+        '\t\t\t(symbol "U_1_1"',
+    ]
+    for at, number, name in [
+        ("-10 0 0", "1", "A"),
+        ("-10 -5 0", "2", "B"),
+        ("10 0 180", "3", "C"),
+        ("10 -5 180", "4", "~"),
+    ]:
+        out.append(
+            f"\t\t\t\t(pin input line\n\t\t\t\t\t(at {at})\n\t\t\t\t\t(length 3.81)\n"
+            f'\t\t\t\t\t(name\n\t\t\t\t\t\t"{name}"\n\t\t\t\t\t)\n'
+            f'\t\t\t\t\t(number\n\t\t\t\t\t\t"{number}"\n\t\t\t\t\t)\n\t\t\t\t)'
+        )
+    out += ["\t\t\t)", "\t\t)", "\t)"]
+    out.append(
+        f'\t(symbol\n\t\t(lib_id "synth:U")\n\t\t(at 50 50 {angle})\n'
+        '\t\t(property\n\t\t\t"Reference"\n\t\t\t"U1"\n\t\t\t(at 0 0 0)\n\t\t)\n\t)'
+    )
+    for text, x, y in labels:
+        out.append(f'\t({kind}\n\t\t"{text}"\n\t\t(at {x} {y} 0)\n\t\t(effects)\n\t)')
+    out.append(")")
+    return "\n".join(out)
+
+
+def label_numbers(sch_text):
+    got = sq.score([], [], (100.0, 80.0), (), label_pairs=sq.label_pin_pairs(sch_text))
+    return got["labels_repeating_pin_name"], got["label_columns_misaligned"]
+
+
+class LabelAlignment(unittest.TestCase):
+    """Labels beside a symbol side: one column per side, and no label that only
+    repeats the name of the pin beside it. Left pins are at x 40, right pins at x 60."""
+
+    def test_labels_in_one_column_on_a_side_are_aligned(self):
+        got = label_numbers(labels_sch(("SIG1", 34.92, 50), ("SIG2", 34.92, 55)))
+        self.assertEqual(got, (0, 0))
+
+    def test_labels_in_two_columns_on_a_side_are_misaligned(self):
+        got = label_numbers(labels_sch(("SIG1", 34.92, 50), ("SIG2", 37.0, 55)))
+        self.assertEqual(got, (0, 1))
+
+    def test_a_column_per_side_is_aligned(self):
+        got = label_numbers(labels_sch(("SIG1", 34.92, 50), ("SIG2", 65.08, 50)))
+        self.assertEqual(got, (0, 0))
+
+    def test_two_misaligned_sides_count_twice(self):
+        got = label_numbers(
+            labels_sch(
+                ("S1", 34.92, 50), ("S2", 37.0, 55), ("S3", 65.08, 50), ("S4", 65.5, 55)
+            )
+        )
+        self.assertEqual(got, (0, 2))
+
+    def test_a_label_that_repeats_the_pin_name_is_counted(self):
+        got = label_numbers(labels_sch(("A", 34.92, 50), ("SIG2", 34.92, 55)))
+        self.assertEqual(got, (1, 0))
+
+    def test_a_label_with_the_name_of_another_pin_is_not(self):
+        got = label_numbers(labels_sch(("B", 34.92, 50)))
+        self.assertEqual(got, (0, 0))
+
+    def test_a_pin_without_a_name_repeats_nothing(self):
+        got = label_numbers(labels_sch(("~", 65.08, 55)))
+        self.assertEqual(got, (0, 0))
+
+    def test_a_global_label_counts_like_a_label(self):
+        got = label_numbers(
+            labels_sch(("A", 34.92, 50), ("SIG2", 37.0, 55), kind="global_label")
+        )
+        self.assertEqual(got, (1, 1))
+
+    def test_a_hierarchical_label_counts_like_a_label(self):
+        got = label_numbers(
+            labels_sch(("A", 34.92, 50), ("SIG2", 37.0, 55), kind="hierarchical_label")
+        )
+        self.assertEqual(got, (1, 1))
+
+    def test_a_label_on_no_pin_row_is_ignored(self):
+        got = label_numbers(labels_sch(("A", 34.92, 52), ("SIG2", 20.0, 50), ("SIG3", 34.92, 55)))
+        self.assertEqual(got, (0, 0))
+
+    def test_a_label_inside_the_symbol_is_not_beside_the_pin(self):
+        got = label_numbers(labels_sch(("A", 45.0, 50), ("SIG2", 34.92, 55)))
+        self.assertEqual(got, (0, 0))
+
+    def test_a_turned_symbol_is_aligned_along_the_other_axis(self):
+        # Turned 90 degrees, the left pins face down: pin 1 at (50, 60), pin 2 at (55, 60).
+        aligned = labels_sch(("S1", 50, 65.08), ("S2", 55, 65.08), angle=90)
+        stepped = labels_sch(("S1", 50, 65.08), ("S2", 55, 65.5), angle=90)
+        self.assertEqual(label_numbers(aligned), (0, 0))
+        self.assertEqual(label_numbers(stepped), (0, 1))
+
+    def test_a_schematic_without_labels_scores_zero(self):
+        self.assertEqual(label_numbers(labels_sch()), (0, 0))
+
+
 if __name__ == "__main__":
     unittest.main()
