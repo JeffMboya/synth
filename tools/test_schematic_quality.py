@@ -48,6 +48,7 @@ def score(sch_text, svg_text):
         sq.parse_texts(svg_text),
         sq.page_size(svg_text),
         sq.parse_content_points(sch_text),
+        sq.parse_group_boxes(sch_text),
     )
 
 
@@ -111,6 +112,39 @@ class WireAndTextShapes(unittest.TestCase):
     def test_overlapping_collinear_wires_do_not_cross(self):
         got = score(sch((0, 5, 10, 5), (5, 5, 15, 5)), svg())
         self.assertEqual(got["wire_crossings"], 0)
+
+
+def sch_with_boxes(*boxes):
+    """A `.kicad_sch` with group boxes as (x1, y1, x2, y2), plus one rectangle
+    inside a symbol definition, which is not a group box."""
+    out = ["(kicad_sch", "\t(lib_symbols", '\t\t(symbol "Device:R"',
+           "\t\t\t(rectangle (start -1 -2) (end 1 2))", "\t\t)", "\t)"]
+    for x1, y1, x2, y2 in boxes:
+        out.append(f"\t(rectangle\n\t\t(start {x1} {y1})\n\t\t(end {x2} {y2})\n\t)")
+    out.append(")")
+    return "\n".join(out)
+
+
+class RegionCoverage(unittest.TestCase):
+    def cover(self, *boxes):
+        return sq.region_coverage(sq.parse_group_boxes(sch_with_boxes(*boxes)))
+
+    def test_boxes_that_tile_a_rectangle_cover_all_of_it(self):
+        self.assertAlmostEqual(self.cover((0, 0, 10, 20), (10, 0, 30, 20)), 1.0)
+
+    def test_a_short_box_beside_a_tall_one_leaves_a_hole(self):
+        # Bounding rectangle 30 x 20 = 600; the boxes cover 200 + 200.
+        self.assertAlmostEqual(self.cover((0, 0, 10, 20), (10, 0, 30, 10)), 400.0 / 600.0, places=4)
+
+    def test_a_rectangle_inside_a_symbol_is_not_a_group_box(self):
+        self.assertEqual(len(sq.parse_group_boxes(sch_with_boxes((0, 0, 10, 20)))), 1)
+
+    def test_no_group_boxes_is_zero(self):
+        self.assertEqual(self.cover(), 0.0)
+
+    def test_score_carries_it(self):
+        got = sq.score([], [], (100.0, 80.0), (), group_boxes=[(0, 0, 10, 20), (10, 0, 30, 10)])
+        self.assertAlmostEqual(got["region_coverage"], 400.0 / 600.0, places=4)
 
 
 class PickPlot(unittest.TestCase):

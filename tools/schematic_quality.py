@@ -16,6 +16,9 @@ The numbers say how much of the page is collisions and how much is wasted:
   texts_with_a_wire_through_them  texts with a wire running across them
   wire_crossings                  places two wires cross (a T is not one)
   wire_length_mm                  total wire
+  region_coverage                 how much of the rectangle the group boxes span
+                                  they cover (1.0 means they tile it, low means
+                                  holes between and beside them)
   content_density                 share of 10 mm cells in the content box that
                                   hold a wire or text (low means wasted space;
                                   symbol outlines are not read, so it reads low)
@@ -93,6 +96,36 @@ def parse_content_points(sch_text):
     return points
 
 
+def parse_group_boxes(sch_text):
+    """The group boxes of a `.kicad_sch` as (x1, y1, x2, y2).
+
+    They are the rectangles directly under the sheet; the rectangles inside a
+    symbol definition are one level deeper and are not boxes."""
+    boxes = []
+    for opening in re.finditer(r"\n\t\(rectangle\b", sch_text):
+        block = _balanced(sch_text, opening.start() + 2)
+        corners = [
+            (float(x), float(y))
+            for x, y in re.findall(rf"\((?:start|end) ({_NUMBER}) ({_NUMBER})\)", block)
+        ]
+        if len(corners) == 2:
+            (x1, y1), (x2, y2) = corners
+            boxes.append((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
+    return boxes
+
+
+def region_coverage(boxes):
+    """Sum of the box areas over the area of the rectangle that holds them all.
+
+    Group boxes do not overlap, so the sum is the covered area."""
+    if not boxes:
+        return 0.0
+    covered = sum((x2 - x1) * (y2 - y1) for x1, y1, x2, y2 in boxes)
+    width = max(b[2] for b in boxes) - min(b[0] for b in boxes)
+    height = max(b[3] for b in boxes) - min(b[1] for b in boxes)
+    return round(covered / (width * height), 4) if width > 0 and height > 0 else 0.0
+
+
 def parse_texts(svg_text):
     """Every plotted string as (text, x0, y0, x1, y1)."""
     texts = []
@@ -159,7 +192,7 @@ def _segments_cross(s, t):
     )
 
 
-def score(wires, texts, page, content_points=()):
+def score(wires, texts, page, content_points=(), group_boxes=()):
     """The numbers in the module doc for `wires`, `texts` and `page` (w, h).
 
     `content_points` are anchors of symbols and corners of group boxes; with
@@ -190,6 +223,7 @@ def score(wires, texts, page, content_points=()):
         "texts_with_a_wire_through_them": through,
         "wire_crossings": crossings,
         "wire_length_mm": round(length, 1),
+        "region_coverage": region_coverage(group_boxes),
         "content_density": _content_density(wires, texts, content_points),
     }
 
@@ -273,6 +307,7 @@ def score_file(sch_path):
         parse_texts(plot),
         page_size(plot),
         parse_content_points(sch_text),
+        parse_group_boxes(sch_text),
     )
 
 

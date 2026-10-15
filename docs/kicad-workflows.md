@@ -367,9 +367,10 @@ production approval.
 `python3 tools/schematic_quality.py board.kicad_sch` (needs `kicad-cli`)
 counts what the checklist above asks you to look for. It plots the schematic,
 takes the text boxes from the plot and the wires from the `.kicad_sch`, and
-prints: distinct text pairs that overlap, texts with a wire through them, wire
-crossings, total wire length, and the share of 10 mm cells in the used area
-that hold a wire or text. `--json` prints the same as JSON.
+prints: text pairs that overlap, texts with a wire through them, wire
+crossings, total wire length, how much of the rectangle the group boxes span
+they cover, and the share of 10 mm cells in the used area that hold a wire or
+text. `--json` prints the same as JSON.
 
 It is a floor, not a grade. A schematic can score zero on every count and still
 be badly grouped: it does not measure grouping, alignment, how far a part sits
