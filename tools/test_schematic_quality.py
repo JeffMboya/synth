@@ -209,5 +209,152 @@ class WireLengthAndFill(unittest.TestCase):
         )
 
 
+def parts_sch(*placed):
+    """A `.kicad_sch` with a two-pin passive symbol `Device:R` (pins at 0,+3.81
+    and 0,-3.81) and an IC symbol `synth:U` (pins 1, 2 and 3 at 10,0, 10,-5 and 10,-10),
+    and `placed` instances given as (lib_id, ref, x, y, angle, mirror)."""
+    out = [
+        "(kicad_sch",
+        "\t(lib_symbols",
+        '\t\t(symbol "Device:R"',
+        '\t\t\t(symbol "R_1_1"',
+        '\t\t\t\t(pin passive line\n\t\t\t\t\t(at 0 3.81 270)\n\t\t\t\t\t(number "1")\n\t\t\t\t)',
+        '\t\t\t\t(pin passive line\n\t\t\t\t\t(at 0 -3.81 90)\n\t\t\t\t\t(number "2")\n\t\t\t\t)',
+        "\t\t\t)",
+        "\t\t)",
+        '\t\t(symbol "Device:D"',
+        '\t\t\t(symbol "D_1_1"',
+        '\t\t\t\t(pin passive line\n\t\t\t\t\t(at 0 3.81 270)\n\t\t\t\t\t(number "1")\n\t\t\t\t)',
+        '\t\t\t\t(pin passive line\n\t\t\t\t\t(at 0 -3.81 90)\n\t\t\t\t\t(number "2")\n\t\t\t\t)',
+        "\t\t\t)",
+        "\t\t)",
+        '\t\t(symbol\n\t\t\t"synth:U"',
+        '\t\t\t(symbol "U_1_1"',
+        '\t\t\t\t(pin input line\n\t\t\t\t\t(at 10 0 180)\n\t\t\t\t\t(number\n\t\t\t\t\t\t"1"\n\t\t\t\t\t)\n\t\t\t\t)',
+        '\t\t\t\t(pin input line\n\t\t\t\t\t(at 10 -5 180)\n\t\t\t\t\t(number\n\t\t\t\t\t\t"2"\n\t\t\t\t\t)\n\t\t\t\t)',
+        '\t\t\t\t(pin input line\n\t\t\t\t\t(at 10 -10 180)\n\t\t\t\t\t(number\n\t\t\t\t\t\t"3"\n\t\t\t\t\t)\n\t\t\t\t)',
+        "\t\t\t)",
+        "\t\t)",
+        "\t)",
+    ]
+    for lib_id, ref, x, y, angle, mirror in placed:
+        m = f"\n\t\t(mirror {mirror})" if mirror else ""
+        out.append(
+            f'\t(symbol\n\t\t(lib_id "{lib_id}")\n\t\t(at {x} {y} {angle}){m}\n'
+            f'\t\t(property\n\t\t\t"Reference"\n\t\t\t"{ref}"\n\t\t\t(at 0 0 0)\n\t\t)\n\t)'
+        )
+    out.append(")")
+    return "\n".join(out)
+
+
+def netlist(*nets):
+    """A kicad-cli netlist with nets given as (name, [(ref, pin), ...])."""
+    out = ["(export", "\t(nets"]
+    for code, (name, nodes) in enumerate(nets, 1):
+        out.append(f'\t\t(net\n\t\t\t(code "{code}")\n\t\t\t(name "{name}")')
+        for ref, pin in nodes:
+            out.append(
+                f'\t\t\t(node\n\t\t\t\t(ref "{ref}")\n\t\t\t\t(pin "{pin}")\n'
+                '\t\t\t\t(pintype "passive")\n\t\t\t)'
+            )
+        out.append("\t\t)")
+    out += ["\t)", ")"]
+    return "\n".join(out)
+
+
+R, D, U = "Device:R", "Device:D", "synth:U"
+
+
+class PassiveDistance(unittest.TestCase):
+    """How far a resistor or capacitor sits from the IC pin it is wired to."""
+
+    def dist(self, sch_text, net_text):
+        return sq.passive_pin_distances(sch_text, net_text)
+
+    def test_the_distance_is_from_the_pad_to_the_ic_pin_on_its_net(self):
+        # U1 pin 1 is at (10, 0). R1 at (20, 0): pad 1 at (20, -3.81).
+        got = self.dist(
+            parts_sch((U, "U1", 0, 0, 0, None), (R, "R1", 20, 0, 0, None)),
+            netlist(("SIG", [("R1", 1), ("U1", 1)])),
+        )
+        self.assertAlmostEqual(got["R1"], (100 + 3.81**2) ** 0.5, places=3)
+
+    def test_a_rotated_passive_moves_its_pads(self):
+        # Turned 90 degrees counter-clockwise, pad 1 is at (16.19, 0).
+        got = self.dist(
+            parts_sch((U, "U1", 0, 0, 0, None), (R, "R1", 20, 0, 90, None)),
+            netlist(("SIG", [("R1", 1), ("U1", 1)])),
+        )
+        self.assertAlmostEqual(got["R1"], 6.19, places=3)
+
+    def test_a_mirrored_ic_moves_its_pins(self):
+        # Mirrored about the y axis, U1 pin 1 is at (-10, 0).
+        got = self.dist(
+            parts_sch((U, "U1", 0, 0, 0, "y"), (R, "R1", -20, 0, 0, None)),
+            netlist(("SIG", [("R1", 1), ("U1", 1)])),
+        )
+        self.assertAlmostEqual(got["R1"], (100 + 3.81**2) ** 0.5, places=3)
+
+    def test_the_nearest_ic_pin_on_the_net_counts(self):
+        # Both IC pins are on the net; pin 2 at (10, 5) is nearer pad 2 (20, 3.81).
+        got = self.dist(
+            parts_sch((U, "U1", 0, 0, 0, None), (R, "R1", 20, 0, 0, None)),
+            netlist(("SIG", [("R1", 2), ("U1", 1), ("U1", 2)])),
+        )
+        self.assertAlmostEqual(got["R1"], (100 + 1.19**2) ** 0.5, places=3)
+
+    def test_a_passive_with_no_ic_pin_on_its_nets_is_not_measured(self):
+        got = self.dist(
+            parts_sch((U, "U1", 0, 0, 0, None), (R, "R1", 20, 0, 0, None), (R, "R2", 40, 0, 0, None)),
+            netlist(("A", [("R1", 1), ("R2", 1)]), ("B", [("U1", 1)])),
+        )
+        self.assertEqual(got, {})
+
+    def test_the_ic_itself_is_not_a_passive(self):
+        got = self.dist(
+            parts_sch((U, "U1", 0, 0, 0, None), (R, "R1", 20, 0, 0, None)),
+            netlist(("SIG", [("R1", 1), ("U1", 1)])),
+        )
+        self.assertEqual(set(got), {"R1"})
+
+    def test_a_diode_or_led_counts_as_the_part_a_resistor_serves(self):
+        # R1 limits the current of the LED D1 and shares a supply rail with the far-off U1.
+        # R1 pad 1 is at (30, -3.81) and D1 pad 1 at (20, -3.81): 10 mm.
+        got = self.dist(
+            parts_sch(
+                (U, "U1", 0, 0, 0, None),
+                (D, "D1", 20, 0, 0, None),
+                (R, "R1", 30, 0, 0, None),
+            ),
+            netlist(("LED", [("R1", 1), ("D1", 1)]), ("VIO", [("R1", 2), ("U1", 1)])),
+        )
+        self.assertAlmostEqual(got["R1"], 10.0, places=3)
+
+    def test_a_resistor_named_like_a_connector_prefix_is_judged_by_its_symbol(self):
+        # R_TNOW is a resistor (Device:R); CONN1 is not a capacitor although its
+        # reference starts with C. Both are two-pin parts.
+        got = self.dist(
+            parts_sch(
+                (U, "U1", 0, 0, 0, None),
+                (D, "CONN1", 20, 0, 0, None),
+                (R, "R_TNOW", 30, 0, 0, None),
+            ),
+            netlist(("SIG", [("R_TNOW", 1), ("CONN1", 1)]), ("X", [("U1", 1), ("CONN1", 2)])),
+        )
+        self.assertEqual(set(got), {"R_TNOW"})
+        self.assertAlmostEqual(got["R_TNOW"], 10.0, places=3)
+
+    def test_score_carries_the_mean_and_the_worst(self):
+        got = sq.score(
+            [], [], (100.0, 80.0), (), passive_distances={"R1": 4.0, "R2": 10.0}
+        )
+        self.assertEqual(got["passive_to_pin_mean_mm"], 7.0)
+        self.assertEqual(got["passive_to_pin_max_mm"], 10.0)
+
+    def test_no_measured_passives_scores_zero(self):
+        got = sq.score([], [], (100.0, 80.0), ())
+        self.assertEqual((got["passive_to_pin_mean_mm"], got["passive_to_pin_max_mm"]), (0.0, 0.0))
+
+
 if __name__ == "__main__":
     unittest.main()

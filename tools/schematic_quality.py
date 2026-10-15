@@ -22,16 +22,24 @@ The numbers say how much of the page is collisions and how much is wasted:
   content_density                 share of 10 mm cells in the content box that
                                   hold a wire or text (low means wasted space;
                                   symbol outlines are not read, so it reads low)
+  passive_to_pin_mean_mm          mean distance from a two-pin resistor or
+  passive_to_pin_max_mm           capacitor (nearer pad) to the closest pin of
+                                  another part on the same net, and the worst one
+                                  (nets come from `kicad-cli sch export
+                                  netlist`; a rail pin counts, so a part on a
+                                  rail next to any pin of that rail reads near;
+                                  0.0 when no passive could be measured)
 
 KiCad draws some strings twice in one place; each such string counts once.
 Wires in Synth's schematics are axis aligned, so a wire is tested against a text
 box by its bounding box.
 
 They are a floor, not a grade: a schematic can score zero on all of them and
-still be badly grouped. Lower is better for all but `content_density`.
+still be badly grouped. Lower is better for all but `content_density` and `region_coverage`.
 """
 
 import json
+import math
 import re
 import subprocess
 import sys
@@ -126,6 +134,92 @@ def region_coverage(boxes):
     return round(covered / (width * height), 4) if width > 0 and height > 0 else 0.0
 
 
+def _lib_pins(sch_text):
+    """Pin positions per library symbol as {lib_id: {pin number: (x, y)}}, in
+    the symbol's own frame (y up)."""
+    pins = {}
+    start = sch_text.find("(lib_symbols")
+    if start < 0:
+        return pins
+    lib = _balanced(sch_text, start)
+    for opening in re.finditer(r'\n\t\t\(symbol\s+"([^"]+)"', lib):
+        block = _balanced(lib, opening.start() + 3)
+        found = {}
+        for pin in re.finditer(r"\(pin\b", block):
+            body = _balanced(block, pin.start())
+            at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER})", body)
+            number = re.search(r'\(number\s+"([^"]*)"', body)
+            if at and number:
+                found[number.group(1)] = (float(at.group(1)), float(at.group(2)))
+        pins[opening.group(1)] = found
+    return pins
+
+
+def _placed_pins(sch_text):
+    """Where each pin of each placed symbol is on the sheet, as
+    {ref: (lib_id, {pin number: (x, y)})}. Mirror, turn counter-clockwise by
+    the symbol's angle, then flip y: the sheet has y down. The mirror-then-turn
+    order is only checked at angle 0; Synth's exporter writes no mirror."""
+    lib = _lib_pins(sch_text)
+    placed = {}
+    for opening in re.finditer(r"\n\t\(symbol\s+\(lib_id", sch_text):
+        block = _balanced(sch_text, opening.start() + 2)
+        lib_id = re.search(r'\(lib_id "([^"]*)"', block)
+        at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER}) ({_NUMBER})", block)
+        ref = re.search(r'\(property\s+"Reference"\s+"([^"]*)"', block)
+        if not (lib_id and at and ref and lib_id.group(1) in lib):
+            continue
+        x0, y0, angle = (float(v) for v in at.groups())
+        mirror = re.search(r"\(mirror (\w)\)", block)
+        cos, sin = {0: (1, 0), 90: (0, 1), 180: (-1, 0), 270: (0, -1)}[round(angle) % 360]
+        pins = {}
+        for number, (lx, ly) in lib[lib_id.group(1)].items():
+            if mirror and mirror.group(1) == "x":
+                ly = -ly
+            elif mirror and mirror.group(1) == "y":
+                lx = -lx
+            pins[number] = (x0 + lx * cos - ly * sin, y0 - (lx * sin + ly * cos))
+        placed[ref.group(1)] = (lib_id.group(1), pins)
+    return placed
+
+
+def _is_passive(lib_id):
+    """A resistor or capacitor symbol from the Device library."""
+    return re.match(r"Device:[RC](_|$)", lib_id) is not None
+
+
+def passive_pin_distances(sch_text, netlist_text):
+    """For each two-pin resistor or capacitor, the distance in mm from its
+    nearer pad to the closest pin of another part on the same net (not a
+    resistor, capacitor or power symbol; the symbol decides, not the
+    reference, so `R_TNOW` is a resistor and `CONN1` is not a capacitor).
+
+    A passive with no such pin on its nets is left out. `netlist_text` is the
+    output of `kicad-cli sch export netlist`, which is where the nets come
+    from: wires, labels and power symbols all end up in it."""
+    placed = _placed_pins(sch_text)
+    distances = {}
+    for opening in re.finditer(r"\(net\b", netlist_text):
+        block = _balanced(netlist_text, opening.start())
+        nodes = re.findall(r'\(ref "([^"]+)"\)\s*\(pin "([^"]+)"\)', block)
+        points = {
+            (ref, pin): placed[ref][1][pin]
+            for ref, pin in nodes
+            if ref in placed and pin in placed[ref][1]
+        }
+        partners = [
+            p for (ref, _), p in points.items()
+            if not _is_passive(placed[ref][0]) and not ref.startswith("#")
+        ]
+        for (ref, _), pad in points.items():
+            lib_id, pins = placed[ref]
+            if len(pins) != 2 or not _is_passive(lib_id) or not partners:
+                continue
+            nearest = min(math.dist(pad, p) for p in partners)
+            distances[ref] = min(nearest, distances.get(ref, nearest))
+    return distances
+
+
 def parse_texts(svg_text):
     """Every plotted string as (text, x0, y0, x1, y1)."""
     texts = []
@@ -192,7 +286,7 @@ def _segments_cross(s, t):
     )
 
 
-def score(wires, texts, page, content_points=(), group_boxes=()):
+def score(wires, texts, page, content_points=(), group_boxes=(), passive_distances=None):
     """The numbers in the module doc for `wires`, `texts` and `page` (w, h).
 
     `content_points` are anchors of symbols and corners of group boxes; with
@@ -214,6 +308,8 @@ def score(wires, texts, page, content_points=(), group_boxes=()):
         if _segments_cross(s, t)
     )
 
+    measured = list((passive_distances or {}).values())
+
     length = sum(
         ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 for a, b in wires
     )
@@ -225,6 +321,8 @@ def score(wires, texts, page, content_points=(), group_boxes=()):
         "wire_length_mm": round(length, 1),
         "region_coverage": region_coverage(group_boxes),
         "content_density": _content_density(wires, texts, content_points),
+        "passive_to_pin_mean_mm": round(sum(measured) / len(measured), 1) if measured else 0.0,
+        "passive_to_pin_max_mm": round(max(measured), 1) if measured else 0.0,
     }
 
 
@@ -302,12 +400,28 @@ def score_file(sch_path):
         except subprocess.TimeoutExpired:
             raise SystemExit(f"kicad-cli took over {PLOT_TIMEOUT_S} s to plot {sch_path}")
         plot = pick_plot(list(Path(tmp).glob("*.svg")), sch_path.stem).read_text()
+        net_path = Path(tmp) / "nets.net"
+        try:
+            subprocess.run(
+                ["kicad-cli", "sch", "export", "netlist", "--format", "kicadsexpr",
+                 "-o", str(net_path), str(sch_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=PLOT_TIMEOUT_S,
+            )
+        except subprocess.CalledProcessError as error:
+            raise SystemExit(f"kicad-cli netlist failed on {sch_path}:\n{error.stderr or error.stdout}")
+        except subprocess.TimeoutExpired:
+            raise SystemExit(f"kicad-cli took over {PLOT_TIMEOUT_S} s to write the netlist of {sch_path}")
+        netlist_text = net_path.read_text()
     return score(
         parse_wires(sch_text),
         parse_texts(plot),
         page_size(plot),
         parse_content_points(sch_text),
         parse_group_boxes(sch_text),
+        passive_pin_distances(sch_text, netlist_text),
     )
 
 
