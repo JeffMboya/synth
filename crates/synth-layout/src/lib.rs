@@ -430,10 +430,19 @@ const GROUP_TILE_GAP: f64 = 2.54;
 /// component labels (1.27 mm) and captions (2.0 mm bold).
 const NOTE_TITLE_SIZE: f64 = 2.0;
 const NOTE_LINE_SIZE: f64 = 1.0;
+/// Width of one caption or note character, as a share of its font
+/// size. KiCad plots about 0.8 of it; the rest is slack so a box sized
+/// from it never clips the text.
+pub const NOTE_CHAR_WIDTH: f64 = 0.95;
 /// Baseline step between note/legend lines, and the gap between a
 /// title baseline and its first line.
 const NOTE_LINE_PITCH: f64 = 2.54;
 const NOTE_TITLE_GAP: f64 = 4.0;
+/// Length of the wire stub between a pin end and its power symbol, and
+/// the half side of the square that symbol covers, in mm. Same figures
+/// the router reserves for a power flag.
+const POWER_STUB_LEN: f64 = 2.54;
+const POWER_SYMBOL_HALF: f64 = 2.54;
 /// Gap below a group box, connector body, or content bottom before a
 /// notes block or pin legend starts.
 const BELOW_GAP: f64 = 8.0;
@@ -1221,6 +1230,32 @@ fn group_box_overhang(board: &Board, group: Option<&str>) -> (f64, f64) {
     (GROUP_BOX_PAD, GROUP_BOX_PAD + notes)
 }
 
+/// Width of a note block's widest run, title included, in mm.
+fn note_text_width(note: &synth_ir::Note) -> f64 {
+    let title = note.title.chars().count() as f64 * NOTE_TITLE_SIZE;
+    let line = note
+        .lines
+        .iter()
+        .map(|l| l.chars().count() as f64 * NOTE_LINE_SIZE)
+        .fold(0.0, f64::max);
+    title.max(line) * NOTE_CHAR_WIDTH
+}
+
+/// Width (mm) a group's box needs to hold its widest note run between
+/// the box padding on both sides.
+fn group_note_box_width(board: &Board, group: Option<&str>) -> f64 {
+    let Some(group) = group else {
+        return 0.0;
+    };
+    let widest = board
+        .notes
+        .iter()
+        .filter(|n| n.group.as_deref() == Some(group))
+        .map(note_text_width)
+        .fold(0.0, f64::max);
+    widest + 2.0 * GROUP_BOX_PAD
+}
+
 /// Dark-band hues for group boxes, distinct from the net-class
 /// brights (`synth_kicad::netclass_colors`): boxes are large areas,
 /// so they take muted tones with a translucent fill while nets take
@@ -1436,20 +1471,68 @@ fn place_design_notes(board: &Board, layout: &mut Layout) {
                 continue;
             };
             // Strip below the current box bottom edge, inside the
-            // grown box: title first, lines beneath it.
-            let title_y = layout.group_boxes[box_idx].max_mm.1 + NOTE_STRIP_GAP + NOTE_TITLE_SIZE;
+            // grown box: title first, lines beneath it. Power symbols
+            // and net labels hang below the parts, past the box edge,
+            // so the strip also starts below them.
             let x = layout.group_boxes[box_idx].min_mm.0 + GROUP_BOX_PAD;
+            let note_w = note_text_width(note);
+            let strip_top = layout.group_boxes[box_idx].max_mm.1.max(group_hang_bottom(
+                board,
+                layout,
+                group,
+                x,
+                x + note_w,
+            ));
+            let title_y = strip_top + NOTE_STRIP_GAP + NOTE_TITLE_SIZE;
             push_note_runs(layout, note, x, title_y);
             let last_y = title_y
                 + NOTE_TITLE_GAP
                 + note.lines.len().saturating_sub(1) as f64 * NOTE_LINE_PITCH;
             layout.group_boxes[box_idx].max_mm.1 = last_y + GROUP_BOX_PAD;
+            let right = &mut layout.group_boxes[box_idx].max_mm.0;
+            *right = right.max(x + note_w + GROUP_BOX_PAD);
         } else {
             let y = board_cursor;
             board_cursor += NOTE_TITLE_GAP + note.lines.len() as f64 * NOTE_LINE_PITCH;
             push_note_runs(layout, note, PAGE_MARGIN, y);
         }
     }
+}
+
+/// Lowest y that a part of `group` draws below its body between `x0`
+/// and `x1`: the pin ends, the power symbol on each pin stub and the net
+/// label text. The group box is sized from the bodies alone, so these
+/// reach past its bottom edge. `NEG_INFINITY` when nothing hangs there.
+fn group_hang_bottom(board: &Board, layout: &Layout, group: &str, x0: f64, x1: f64) -> f64 {
+    let placements: std::collections::HashMap<ComponentId, &ComponentPlacement> =
+        layout.components.iter().map(|p| (p.id, p)).collect();
+    let in_group = |id: ComponentId| effective_group(board, id) == Some(group);
+    let mut bottom = f64::NEG_INFINITY;
+    let mut reach = |x_min: f64, x_max: f64, y: f64| {
+        if x_max >= x0 && x_min <= x1 {
+            bottom = bottom.max(y);
+        }
+    };
+    for flag in layout.power_flags.iter().filter(|f| in_group(f.component)) {
+        if let Some((x, y, dx, dy)) =
+            route::pin_terminal_xy(board, flag.component, flag.pin, &placements)
+        {
+            let (sx, sy) = (x + dx * POWER_STUB_LEN, y + dy * POWER_STUB_LEN);
+            reach(
+                sx - POWER_SYMBOL_HALF,
+                sx + POWER_SYMBOL_HALF,
+                sy + POWER_SYMBOL_HALF,
+            );
+        }
+    }
+    for label in layout.net_labels.iter().filter(|l| in_group(l.component)) {
+        if let Some((x_min, _, x_max, y_max)) =
+            route::net_label_rect(board, &label.label, label.component, label.pin, &placements)
+        {
+            reach(x_min, x_max, y_max);
+        }
+    }
+    bottom
 }
 
 /// Push one titled note block's runs: the title at `(x, y)`, one run
@@ -3323,6 +3406,7 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                     placements: local,
                     bbox,
                     box_overhang: group_box_overhang(board, group_name),
+                    min_box_width: group_note_box_width(board, group_name),
                 });
             }
 
@@ -3368,7 +3452,8 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                     // overlap (`E-SYNTH-SCHEM-013`) even with a generous
                     // gap between the parts themselves.
                     (
-                        region.bbox.1 - region.bbox.0 + 2.0 * GROUP_BOX_PAD,
+                        (region.bbox.1 - region.bbox.0 + 2.0 * GROUP_BOX_PAD)
+                            .max(region.min_box_width),
                         region.bbox.3 - region.bbox.2
                             + region.box_overhang.0
                             + region.box_overhang.1,
@@ -3604,6 +3689,8 @@ struct RegionLayout {
     /// Extra height its group box needs beyond the body bounds:
     /// padding above, plus padding and the note block below.
     box_overhang: (f64, f64),
+    /// Narrowest its group box can be and still hold the widest note run.
+    min_box_width: f64,
 }
 
 /// Body bounding box of a set of placements, in the same frame as
@@ -7254,6 +7341,115 @@ mod documentation_tests {
         assert!(title_y > box_.min_mm.1, "title inside box top: {title_y}");
         assert!(title_y < box_.max_mm.1, "title above box bottom: {title_y}");
         assert!(line_y < box_.max_mm.1, "line inside box: {line_y}");
+    }
+
+    fn note(group: &str, lines: &[&str]) -> Note {
+        Note {
+            title: "Notes".to_string(),
+            lines: lines.iter().map(|l| (*l).to_string()).collect(),
+            group: Some(group.to_string()),
+            sheet: None,
+            source_span: Span::new(0, 0),
+        }
+    }
+
+    #[test]
+    fn group_note_clears_power_symbols_hanging_below_the_parts() {
+        let gnd = RegPin {
+            electrical_type: ElectricalType::PowerInput,
+            ..pin("gnd")
+        };
+        let b = board_with_notes(
+            vec![
+                component(
+                    0,
+                    "J1",
+                    part("connector", vec![pin("sig"), gnd.clone()]),
+                    Some("Input"),
+                ),
+                component(
+                    1,
+                    "J2",
+                    part("connector", vec![pin("sig"), gnd]),
+                    Some("Input"),
+                ),
+            ],
+            vec![
+                net(0, "SIG", &[(0, 0), (1, 0)]),
+                net(1, "GND", &[(0, 1), (1, 1)]),
+            ],
+            vec![note("Input", &["Keep the ground returns short here."])],
+        );
+        let layout = layout(&b);
+        let placements: std::collections::HashMap<_, _> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let title = layout
+            .annotations
+            .iter()
+            .find(|a| a.kind == TextKind::NoteTitle)
+            .expect("note title");
+        let note_top = title.at_mm.1 - NOTE_TITLE_SIZE;
+        assert!(!layout.power_flags.is_empty());
+        for flag in &layout.power_flags {
+            let (x, y, _, dy) =
+                route::pin_terminal_xy(&b, flag.component, flag.pin, &placements).expect("pin");
+            let symbol_bottom = y + dy.max(0.0) * 2.54 + 2.54;
+            assert!(
+                symbol_bottom < note_top,
+                "power symbol at x={x} reaches y={symbol_bottom}, note starts at y={note_top}"
+            );
+        }
+    }
+
+    #[test]
+    fn group_box_is_wide_enough_for_its_widest_note_line() {
+        let r = || part("resistor", vec![pin("p1"), pin("p2")]);
+        let long = "Jumper 1-2: 3.3 V. Jumper 2-3: 5 V. No jumper: VIO off.";
+        let b = board_with_notes(
+            vec![component(0, "R1", r(), Some("Input"))],
+            vec![net(0, "sig", &[(0, 0)])],
+            vec![note("Input", &[long, "Short."])],
+        );
+        let layout = layout(&b);
+        let box_ = &layout.group_boxes[0];
+        let line = layout
+            .annotations
+            .iter()
+            .find(|a| a.text == long)
+            .expect("long line");
+        let right = line.at_mm.0 + long.chars().count() as f64 * NOTE_LINE_SIZE * NOTE_CHAR_WIDTH;
+        assert!(
+            right + GROUP_BOX_PAD <= box_.max_mm.0 + 1e-6,
+            "line ends at {right}, box ends at {}",
+            box_.max_mm.0
+        );
+    }
+
+    #[test]
+    fn wide_note_boxes_do_not_overlap_their_neighbour() {
+        let r = || part("resistor", vec![pin("p1"), pin("p2")]);
+        let long = "A note line far wider than the single resistor it describes, by design.";
+        let b = board_with_notes(
+            vec![
+                component(0, "R1", r(), Some("One")),
+                component(1, "R2", r(), Some("Two")),
+            ],
+            vec![net(0, "sig", &[(0, 0), (1, 0)])],
+            vec![note("One", &[long]), note("Two", &[long])],
+        );
+        let layout = layout(&b);
+        assert_eq!(layout.group_boxes.len(), 2);
+        let (a, c) = (&layout.group_boxes[0], &layout.group_boxes[1]);
+        let apart = a.max_mm.0 <= c.min_mm.0
+            || c.max_mm.0 <= a.min_mm.0
+            || a.max_mm.1 <= c.min_mm.1
+            || c.max_mm.1 <= a.min_mm.1;
+        assert!(
+            apart,
+            "boxes overlap: {:?} {:?}",
+            (a.min_mm, a.max_mm),
+            (c.min_mm, c.max_mm)
+        );
     }
 
     #[test]
