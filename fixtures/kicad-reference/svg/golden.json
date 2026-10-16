@@ -56,10 +56,10 @@
     "texts": 267
   },
   "secure_tracker": {
-    "sha256": "e1c953f4fb8a56d09f632ecfdfa9a6ede4be1da67edecb6a2ec567589888405f",
+    "sha256": "3b586911ee60b7fd5df310608e4ec26cce41ea814278f9ae6ca341c702122deb",
     "width": "594.0044mm",
     "height": "419.9890mm",
-    "paths": 25005,
+    "paths": 25007,
     "texts": 649
   },
   "sensor_logger": {
