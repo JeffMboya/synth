@@ -2965,6 +2965,7 @@ mod tests {
             placement_hint: None,
             group: None,
             sheet: None,
+            escape: None,
             source_span: Span::new(0, 0),
         };
         let placement = ComponentPlacement {
@@ -3400,6 +3401,7 @@ mod tests {
         board.nets = vec![synth_ir::Net {
             id: synth_ir::NetId(0),
             name: "TMDS0_P".to_string(),
+            auto_named: false,
             endpoints: vec![],
             netclass: Some("ESCAPE".to_string()),
             voltage: None,
