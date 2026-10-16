@@ -611,6 +611,8 @@ impl From<NetWire> for Net {
             netclass: w.netclass,
             voltage: w.voltage,
         }
+    }
+}
 
 impl NetClass {
     /// Via geometry a class that declares none is exported with.
