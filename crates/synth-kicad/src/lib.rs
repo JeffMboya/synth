@@ -50,6 +50,7 @@ mod erc_validate;
 mod export;
 mod fab;
 pub mod import;
+pub mod manufacturing;
 pub mod multisheet;
 mod pcb;
 pub mod pin_reconcile;
@@ -81,6 +82,10 @@ pub fn set_worker_threads(_n: usize) {}
 
 pub use fab::{run as run_fab, FabArtifacts, FabError, FabRequest};
 pub use import::{import_project, ImportError, NormalisedRecord, IMPORTER_VERSION};
+pub use manufacturing::{
+    build_bundle_manifest, build_jlcpcb_bom_csv, build_jlcpcb_cpl_csv, AppliedCorrection,
+    BundleManifest, CplResult, ManufacturingError, PlacementCorrection,
+};
 pub use pin_reconcile::physical_terminal;
 pub use pnp::build_pnp_csv;
 pub use schem_erc::{

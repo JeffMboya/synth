@@ -125,6 +125,12 @@ enum Command {
         /// Target manufacturer profile name (e.g. jlc, pcbway, oshpark).
         #[arg(long)]
         profile: Option<String>,
+        /// Frozen `synth.cost-report.v1` JSON to include in a JLCPCB bundle.
+        #[arg(long, value_name = "FILE")]
+        cost_report: Option<PathBuf>,
+        /// Reviewed placement correction rules in JSON format.
+        #[arg(long, value_name = "FILE")]
+        corrections: Option<PathBuf>,
         /// Run KiCad schematic ERC (`kicad-cli sch erc`) on the exported schematic.
         #[arg(long)]
         validate_erc: bool,
@@ -933,7 +939,9 @@ fn main() -> ExitCode {
             drill,
             step,
             pnp: _,
-            profile: _,
+            profile,
+            cost_report,
+            corrections,
             validate_erc,
             verification_report,
             force,
@@ -961,6 +969,9 @@ fn main() -> ExitCode {
             user_registry.as_deref(),
             strict_registry,
             &out,
+            profile.as_deref(),
+            cost_report.as_deref(),
+            corrections.as_deref(),
             synth_kicad::FabRequest {
                 gerbers,
                 drill,
@@ -3896,6 +3907,9 @@ fn export_kicad(
     user_registry: Option<&Path>,
     strict_registry: bool,
     out_dir: &Path,
+    manufacturer_profile: Option<&str>,
+    cost_report_path: Option<&Path>,
+    corrections_path: Option<&Path>,
     fab: synth_kicad::FabRequest,
     validate_erc: bool,
     verification_report: Option<&Path>,
@@ -4148,6 +4162,19 @@ fn export_kicad(
              fix the routing or use --force to export anyway."
         );
         return Ok(1);
+    }
+
+    if manufacturer_profile.is_some_and(|profile| {
+        profile.eq_ignore_ascii_case("jlcpcb") || profile.eq_ignore_ascii_case("jlc")
+    }) {
+        write_jlcpcb_bundle(
+            board,
+            &result,
+            chosen_placement.as_ref(),
+            &sidecars,
+            cost_report_path,
+            corrections_path,
+        )?;
     }
 
     eprintln!("wrote {}", result.project_path.display());
@@ -4415,6 +4442,126 @@ fn export_kicad(
     } else {
         EXIT_SUCCESS
     })
+}
+
+fn sanitize_bundle_name(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "variant".into()
+    } else {
+        sanitized
+    }
+}
+
+fn write_jlcpcb_bundle(
+    board: &synth_ir::Board,
+    result: &synth_kicad::ExportResult,
+    chosen_placement: Option<&synth_place::Placement>,
+    sidecars: &synth_kicad::Sidecars,
+    cost_report_path: Option<&Path>,
+    corrections_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let cost_report = cost_report_path.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--profile jlcpcb requires --cost-report with a frozen synth.cost-report.v1 JSON"
+        )
+    })?;
+    let cost_report_bytes = std::fs::read(cost_report)?;
+    let corrections: Vec<synth_kicad::PlacementCorrection> = corrections_path
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .map(|source| serde_json::from_str(&source))
+        .transpose()?
+        .unwrap_or_default();
+    let placement = match chosen_placement {
+        Some(placement) => (*placement).clone(),
+        None => synth_kicad::placement_for_export(board, sidecars).map_err(|error| {
+            anyhow::anyhow!("could not resolve placement for JLCPCB bundle: {error}")
+        })?,
+    };
+    let mut files = std::collections::BTreeMap::<String, Vec<u8>>::new();
+    files.insert("cost-report.json".into(), cost_report_bytes);
+    let variants: Vec<(String, Option<&synth_ir::Variant>)> = if board.variants.is_empty() {
+        vec![("base".into(), None)]
+    } else {
+        board
+            .variants
+            .iter()
+            .map(|variant| (variant.name.clone(), Some(variant)))
+            .collect()
+    };
+    for (name, variant) in variants {
+        let lock = match variant {
+            Some(variant) => synth_ir::lock_board(board, Some(variant)),
+            None => synth_ir::lock_board(board, None),
+        }
+        .map_err(|error| anyhow::anyhow!("JLCPCB procurement lock rejected for {name}: {error}"))?;
+        let bom = synth_kicad::build_jlcpcb_bom_csv(board, &lock)
+            .map_err(|error| anyhow::anyhow!("JLCPCB BOM rejected for {name}: {error}"))?;
+        let cpl = synth_kicad::build_jlcpcb_cpl_csv(board, &placement, &lock, &corrections)
+            .map_err(|error| anyhow::anyhow!("JLCPCB CPL rejected for {name}: {error}"))?;
+        let suffix = if name == "base" {
+            String::new()
+        } else {
+            format!(".{}", sanitize_bundle_name(&name))
+        };
+        files.insert(format!("bom-jlcpcb{suffix}.csv"), bom.into_bytes());
+        files.insert(format!("cpl-jlcpcb{suffix}.csv"), cpl.csv.into_bytes());
+        files.insert(
+            format!("procurement{suffix}.json"),
+            serde_json::to_vec_pretty(&lock)?,
+        );
+        files.insert(
+            format!("assembly-review{suffix}.json"),
+            serde_json::to_vec_pretty(&cpl.corrections)?,
+        );
+    }
+    for (name, bytes) in &files {
+        std::fs::write(result.out_dir.join(name), bytes)?;
+    }
+    let mut manifest_files = std::collections::BTreeMap::new();
+    collect_bundle_files(&result.out_dir, &result.out_dir, &mut manifest_files)?;
+    manifest_files.remove("manifest.json");
+    let manifest = synth_kicad::build_bundle_manifest(&manifest_files, env!("CARGO_PKG_VERSION"));
+    std::fs::write(
+        result.out_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    eprintln!(
+        "wrote JLCPCB manufacturing bundle to {}",
+        result.out_dir.display()
+    );
+    Ok(())
+}
+
+fn collect_bundle_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut std::collections::BTreeMap<String, Vec<u8>>,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_bundle_files(root, &path, files)?;
+        } else {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| anyhow::anyhow!("bundle path error: {error}"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.insert(relative, std::fs::read(path)?);
+        }
+    }
+    Ok(())
 }
 
 const FAB_STAGE: &str = "kicad_fab";
