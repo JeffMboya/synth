@@ -474,6 +474,20 @@ enum Command {
         format: Format,
     },
 
+    /// Freeze exact per-instance part assignments for a manufacturing variant.
+    ProcurementLock {
+        /// Path to a `.synth` source file.
+        input: PathBuf,
+        #[arg(long, value_name = "DIR")]
+        registry: Option<PathBuf>,
+        /// Variant to lock; defaults to the base population.
+        #[arg(long)]
+        variant: Option<String>,
+        /// JSON file to write. Defaults to stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
+
     /// Compile, place, route, and render 3D PNG (+ optional 2D SVG) of the PCB via `kicad-cli`.
     Render {
         /// Path to a `.synth` source file.
@@ -1102,6 +1116,17 @@ fn main() -> ExitCode {
             registry,
             format,
         } => supply_chain(&input, registry.as_deref(), format),
+        Command::ProcurementLock {
+            input,
+            registry,
+            variant,
+            out,
+        } => procurement_lock(
+            &input,
+            registry.as_deref(),
+            variant.as_deref(),
+            out.as_deref(),
+        ),
         Command::Render {
             input,
             out,
@@ -1144,7 +1169,7 @@ fn main() -> ExitCode {
     }
 }
 
-const CAPABILITY_COMMANDS: [&str; 17] = [
+const CAPABILITY_COMMANDS: [&str; 18] = [
     "validate",
     "dump-ast",
     "dump-ir",
@@ -1158,6 +1183,7 @@ const CAPABILITY_COMMANDS: [&str; 17] = [
     "check",
     "mcp",
     "supply-chain",
+    "procurement-lock",
     "render",
     "capability",
     "registry",
@@ -5279,6 +5305,52 @@ fn supply_chain(input: &Path, registry_dir: Option<&Path>, format: Format) -> an
         }
     }
 
+    Ok(EXIT_SUCCESS)
+}
+
+fn procurement_lock(
+    input: &Path,
+    registry_dir: Option<&Path>,
+    variant_name: Option<&str>,
+    out: Option<&Path>,
+) -> anyhow::Result<u8> {
+    let (source, file) = read_source(input)?;
+    let parse = synth_parser::parse(&source, file.clone());
+    let ast = parse
+        .ast
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("parse failed; cannot create procurement lock"))?;
+    let import_root = input
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let loader = synth_ir::FsImportLoader { root: import_root };
+    let resolved = synth_ir::resolve_imports(ast, &loader, &file);
+    let registry = load_registry(registry_dir)
+        .ok_or_else(|| anyhow::anyhow!("registry could not be loaded"))?;
+    let lowered = synth_ir::lower(&resolved.program, &registry, &file);
+    let board = lowered.board.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("lowering produced no IR; cannot create procurement lock")
+    })?;
+    let variant = match variant_name {
+        Some(name) => Some(
+            board
+                .variants
+                .iter()
+                .find(|variant| variant.name == name)
+                .ok_or_else(|| anyhow::anyhow!("unknown variant `{name}`"))?,
+        ),
+        None => None,
+    };
+    let lock = synth_ir::lock_board(board, variant)
+        .map_err(|error| anyhow::anyhow!("procurement lock rejected: {error}"))?;
+    let json = serde_json::to_string_pretty(&lock)? + "\n";
+    if let Some(path) = out {
+        let temporary = path.with_extension("tmp");
+        std::fs::write(&temporary, json)?;
+        std::fs::rename(temporary, path)?;
+    } else {
+        print!("{json}");
+    }
     Ok(EXIT_SUCCESS)
 }
 
