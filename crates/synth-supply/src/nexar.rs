@@ -4,7 +4,10 @@
 
 use crate::cache::load_env_file;
 use crate::distributor::Distributor;
-use crate::types::{LifecycleStatus, SupplyError, SupplyStatus};
+use crate::types::{
+    normalize_part_number, AssemblyEligibility, LifecycleStatus, PriceTier, PurchaseConstraints,
+    StockStatus, SupplyError, SupplyStatus,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::Client;
@@ -119,6 +122,7 @@ impl Distributor for NexarDistributor {
         "Nexar"
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn query(&self, part_number: &str) -> Result<Option<SupplyStatus>, SupplyError> {
         let token = match &self.token {
             Some(t) if !t.trim().is_empty() => t.trim(),
@@ -163,18 +167,42 @@ impl Distributor for NexarDistributor {
             .await?;
 
         if !resp.status().is_success() {
-            return Ok(None);
+            return Err(SupplyError::ProviderUnavailable {
+                distributor: "Nexar".to_string(),
+                reason: format!("HTTP {}", resp.status()),
+            });
         }
 
         let gql: NexarGqlResponse = resp.json().await?;
         let results = match gql.data.and_then(|d| d.sup_search).and_then(|s| s.results) {
             Some(r) if !r.is_empty() => r,
-            _ => return Ok(None),
+            _ => {
+                return Err(SupplyError::NoExactMatch {
+                    distributor: "Nexar".to_string(),
+                    part_number: pn.to_string(),
+                })
+            }
         };
 
         let Some(item) = results.first().and_then(|r| r.item.as_ref()) else {
-            return Ok(None);
+            return Err(SupplyError::NoExactMatch {
+                distributor: "Nexar".to_string(),
+                part_number: pn.to_string(),
+            });
         };
+
+        let Some(item_mpn) = item.mpn.as_deref() else {
+            return Err(SupplyError::NoExactMatch {
+                distributor: "Nexar".to_string(),
+                part_number: pn.to_string(),
+            });
+        };
+        if normalize_part_number(item_mpn) != normalize_part_number(pn) {
+            return Err(SupplyError::NoExactMatch {
+                distributor: "Nexar".to_string(),
+                part_number: pn.to_string(),
+            });
+        }
 
         let offers = match &item.offers {
             Some(o) if !o.is_empty() => o,
@@ -188,7 +216,12 @@ impl Distributor for NexarDistributor {
             .unwrap_or(&offers[0]);
 
         let stock_qty = best_offer.inventory_level.unwrap_or(0);
-        let moq = best_offer.moq.unwrap_or(1);
+        let stock_status = match best_offer.inventory_level {
+            Some(quantity) if quantity > 0 => StockStatus::InStock,
+            Some(_) => StockStatus::OutOfStock,
+            None => StockStatus::Unknown,
+        };
+        let moq = best_offer.moq.unwrap_or(0);
         let unit_price_usd = best_offer
             .prices
             .as_ref()
@@ -204,12 +237,28 @@ impl Distributor for NexarDistributor {
         Ok(Some(SupplyStatus {
             part_number: item.mpn.clone().unwrap_or_else(|| pn.to_string()),
             distributor: format!("Nexar ({seller_name})"),
-            in_stock: stock_qty > 0,
+            in_stock: matches!(stock_status, StockStatus::InStock),
             stock_qty,
+            stock_status,
+            assembly_eligibility: AssemblyEligibility::Unknown,
             moq,
+            purchase: PurchaseConstraints {
+                moq: best_offer.moq,
+                order_multiple: None,
+                price_tiers: unit_price_usd
+                    .map(|price| {
+                        vec![PriceTier {
+                            minimum_quantity: best_offer.moq.unwrap_or(1),
+                            maximum_quantity: None,
+                            unit_price_usd: price,
+                        }]
+                    })
+                    .unwrap_or_default(),
+            },
             unit_price_usd,
             lifecycle: LifecycleStatus::Active,
             fetched_at: Utc::now().to_rfc3339(),
+            snapshot_id: None,
         }))
     }
 }
