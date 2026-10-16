@@ -488,6 +488,15 @@ enum Command {
         out: Option<PathBuf>,
     },
 
+    /// Calculate a reproducible report from a frozen `synth-cost` input JSON.
+    Cost {
+        /// JSON file containing a `synth-cost::CostInput`.
+        input: PathBuf,
+        /// JSON file to write. Defaults to stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
+
     /// Compile, place, route, and render 3D PNG (+ optional 2D SVG) of the PCB via `kicad-cli`.
     Render {
         /// Path to a `.synth` source file.
@@ -1127,6 +1136,7 @@ fn main() -> ExitCode {
             variant.as_deref(),
             out.as_deref(),
         ),
+        Command::Cost { input, out } => cost_report(&input, out.as_deref()),
         Command::Render {
             input,
             out,
@@ -1169,7 +1179,7 @@ fn main() -> ExitCode {
     }
 }
 
-const CAPABILITY_COMMANDS: [&str; 18] = [
+const CAPABILITY_COMMANDS: [&str; 19] = [
     "validate",
     "dump-ast",
     "dump-ir",
@@ -1184,6 +1194,7 @@ const CAPABILITY_COMMANDS: [&str; 18] = [
     "mcp",
     "supply-chain",
     "procurement-lock",
+    "cost",
     "render",
     "capability",
     "registry",
@@ -5344,6 +5355,24 @@ fn procurement_lock(
     let lock = synth_ir::lock_board(board, variant)
         .map_err(|error| anyhow::anyhow!("procurement lock rejected: {error}"))?;
     let json = serde_json::to_string_pretty(&lock)? + "\n";
+    if let Some(path) = out {
+        let temporary = path.with_extension("tmp");
+        std::fs::write(&temporary, json)?;
+        std::fs::rename(temporary, path)?;
+    } else {
+        print!("{json}");
+    }
+    Ok(EXIT_SUCCESS)
+}
+
+fn cost_report(input: &Path, out: Option<&Path>) -> anyhow::Result<u8> {
+    let source = std::fs::read_to_string(input)
+        .map_err(|error| anyhow::anyhow!("cannot read cost input {}: {error}", input.display()))?;
+    let cost_input: synth_cost::CostInput = serde_json::from_str(&source)
+        .map_err(|error| anyhow::anyhow!("invalid cost input {}: {error}", input.display()))?;
+    let report = synth_cost::calculate(&cost_input)
+        .map_err(|error| anyhow::anyhow!("cost calculation failed: {error}"))?;
+    let json = serde_json::to_string_pretty(&report)? + "\n";
     if let Some(path) = out {
         let temporary = path.with_extension("tmp");
         std::fs::write(&temporary, json)?;

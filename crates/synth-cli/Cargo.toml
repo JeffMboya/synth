@@ -31,6 +31,7 @@ synth-drc = { workspace = true }
 synth-mcp = { workspace = true }
 synth-smt = { workspace = true }
 synth-supply = { workspace = true }
+synth-cost = { workspace = true }
 clap = { workspace = true }
 rayon = { workspace = true }
 serde_json = { workspace = true }
