@@ -6,7 +6,7 @@ use crate::cache::SupplyCache;
 use crate::distributor::Distributor;
 use crate::lcsc::LcscDistributor;
 use crate::nexar::NexarDistributor;
-use crate::types::{BomQueryEntry, SupplyError, SupplyStatus};
+use crate::types::{normalize_part_number, BomQueryEntry, SupplyError, SupplyStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -51,28 +51,42 @@ impl SupplyEngine {
     /// Query supply status for a single part number (LCSC PN or MPN).
     /// Returns one status per distributor that found a match.
     pub async fn query_part(&self, pn: &str) -> Result<Vec<SupplyStatus>, SupplyError> {
-        let clean_pn = pn.trim();
+        let clean_pn = normalize_part_number(pn);
         if clean_pn.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut results = Vec::new();
+        let mut first_error = None;
 
         for dist in &self.distributors {
             let dist_name = dist.name();
             // Check cache first
-            if let Some(cached) = self.cache.get(dist_name, clean_pn) {
+            if let Some(cached) = self.cache.get(dist_name, &clean_pn) {
                 results.push(cached);
                 continue;
             }
 
             // Cache miss: query distributor API
-            if let Ok(Some(status)) = dist.query(clean_pn).await {
-                let _ = self.cache.put(&status);
-                results.push(status);
+            match dist.query(&clean_pn).await {
+                Ok(Some(status)) => {
+                    self.cache.put(&status)?;
+                    results.push(status);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
             }
         }
 
+        if results.is_empty() {
+            if let Some(error) = first_error {
+                return Err(error);
+            }
+        }
         Ok(results)
     }
 
@@ -83,6 +97,7 @@ impl SupplyEngine {
         entries: &[BomQueryEntry],
     ) -> Result<HashMap<String, Vec<SupplyStatus>>, SupplyError> {
         let mut map = HashMap::new();
+        let mut queried = HashMap::<String, Vec<SupplyStatus>>::new();
 
         for entry in entries {
             let mut statuses = Vec::new();
@@ -94,9 +109,14 @@ impl SupplyEngine {
                 .or(entry.mpn.as_deref())
                 .unwrap_or("");
 
-            if !target_pn.is_empty() {
-                if let Ok(res) = self.query_part(target_pn).await {
-                    statuses.extend(res);
+            let normalized = normalize_part_number(target_pn);
+            if !normalized.is_empty() {
+                if let Some(cached_result) = queried.get(&normalized) {
+                    statuses.extend(cached_result.iter().cloned());
+                } else {
+                    let result = self.query_part(&normalized).await?;
+                    queried.insert(normalized, result.clone());
+                    statuses.extend(result);
                 }
             }
 
