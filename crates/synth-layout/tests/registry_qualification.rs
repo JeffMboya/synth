@@ -43,9 +43,29 @@ fn qualify(dir: &str, id: &str) -> PartQualification {
 #[test]
 fn fixtures_qualify_and_every_mutation_is_caught() {
     std::env::set_var("KICAD_FOOTPRINT_DIR", fixture_root().join("footprints"));
+    three_d_models_are_looked_up_on_disk();
     representative_parts_qualify();
     every_mutation_is_caught();
     structural_classification_matches_the_export_gate();
+}
+
+fn three_d_models_are_looked_up_on_disk() {
+    use synth_registry::qualify::{FootprintFacts, ModelFacts};
+    let facts = InstalledKicad;
+    assert_eq!(
+        facts.model("Qual:Model-Missing"),
+        Some(ModelFacts::FileMissing("Absent.step".into())),
+        "a footprint that names a model file which is not installed"
+    );
+    assert_eq!(
+        facts.model("Qual:SOT-223-3"),
+        Some(ModelFacts::NoneDeclared),
+        "a footprint that names no model, with none installed under its name"
+    );
+    assert_eq!(
+        facts.model("Qual:No-Such-Footprint"),
+        Some(ModelFacts::NoFootprint)
+    );
 }
 
 fn representative_parts_qualify() {
