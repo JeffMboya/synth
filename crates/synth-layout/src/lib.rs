@@ -474,6 +474,10 @@ const REGION_GAP: f64 = 20.32;
 /// Gap (mm) between two clusters stacked in one column of a region, on top of
 /// the taller cluster's own height.
 const REGION_ROW_GAP: f64 = 20.0;
+/// Distance (mm) between two parts of a mechanical region (mounting holes,
+/// fiducials): six grid steps, enough for the widest reference or value label
+/// to clear its neighbour's.
+const MECHANICAL_PITCH: f64 = 15.24;
 /// Candidate shelf widths (mm) for region packing, one per sheet the
 /// exporter can declare (A4/A3/A2 content width). The fitting loop
 /// tries each and keeps whichever lands on the smallest page.
@@ -950,8 +954,18 @@ pub fn layout_with_overrides(
     place_design_notes(board, &mut layout);
     // Notes sit under their box's bottom edge, so the boxes are stretched to
     // meet each other only once the notes are placed.
-    let ungrouped = ungrouped_blocks(board, &layout);
-    tile_group_boxes(&mut layout.group_boxes, &ungrouped, GROUP_TILE_GAP);
+    let mut fixed = ungrouped_blocks(board, &layout);
+    // A mechanical region keeps the size its content gave it: it stops the
+    // boxes beside it like an ungrouped block does, but does not stretch.
+    let mechanical = mechanical_groups(board);
+    let (rigid, mut flexible): (Vec<GroupBox>, Vec<GroupBox>) =
+        std::mem::take(&mut layout.group_boxes)
+            .into_iter()
+            .partition(|b| mechanical.contains(b.group.as_str()));
+    fixed.extend(rigid.iter().map(|b| (b.min_mm, b.max_mm)));
+    tile_group_boxes(&mut flexible, &fixed, GROUP_TILE_GAP);
+    layout.group_boxes = flexible;
+    layout.group_boxes.extend(rigid);
     resolve_text_overlaps(board, &mut layout);
     grow_sheet_to_fit(board, &mut layout);
     compact_sheet_to_fit(board, &mut layout);
@@ -1008,6 +1022,33 @@ pub fn effective_group(board: &Board, id: ComponentId) -> Option<&str> {
     }
     let kind = component.part.as_ref().map(|p| p.kind.as_str())?;
     is_board_feature_kind(kind).then_some(MOUNTING_REGION)
+}
+
+/// Groups made only of parts with no pins (mounting holes, fiducials, logos).
+///
+/// Such a part has no net, so its region carries no connectivity and is laid
+/// out apart from the circuit regions: [`MECHANICAL_PITCH`] apart in one row,
+/// packed last, and never stretched to fill free area.
+fn mechanical_groups(board: &Board) -> std::collections::HashSet<&str> {
+    let pinless = |id: ComponentId| {
+        board
+            .component(id)
+            .and_then(|c| c.part.as_ref())
+            .is_some_and(|part| part.pins.is_empty())
+    };
+    let mut circuit: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut mechanical: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for component in &board.components {
+        if let Some(group) = effective_group(board, component.id) {
+            if pinless(component.id) {
+                mechanical.insert(group);
+            } else {
+                circuit.insert(group);
+            }
+        }
+    }
+    mechanical.retain(|group| !circuit.contains(group));
+    mechanical
 }
 
 /// Caption every declared `group` on the sheet, and draw its titled
@@ -1199,6 +1240,9 @@ const GROUP_PALETTE: [[u8; 3]; 8] = [
 /// groups sit in the middle of the shelf order, keeping declaration
 /// order among themselves.
 const QUADRANT_NEUTRAL: u8 = 4;
+/// Packing key for an unhinted mechanical region: after every quadrant, so
+/// the circuit regions get the first and best spots.
+const QUADRANT_MECHANICAL: u8 = 9;
 
 /// Packing key for a pinned page quadrant (Phase D1). Lower sorts
 /// earlier in the shelf flow, so `top_left` packs first and
@@ -3050,14 +3094,21 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
         // band. A stable sort means hints can never reorder two
         // unhinted groups relative to each other, and packing (which
         // follows this order) can never produce overlapping boxes.
+        let mechanical = mechanical_groups(board);
         region_runs.sort_by_key(|&(band, _, _)| {
-            let hinted = usize::try_from(band)
+            let name = usize::try_from(band)
                 .ok()
                 .and_then(|b| group_bands.get(b))
+                .copied();
+            let hinted = name
                 .and_then(|name| board.group(name))
                 .and_then(|g| g.region.as_ref())
                 .map(quadrant_key);
-            hinted.unwrap_or(QUADRANT_NEUTRAL)
+            hinted.unwrap_or(if name.is_some_and(|n| mechanical.contains(n)) {
+                QUADRANT_MECHANICAL
+            } else {
+                QUADRANT_NEUTRAL
+            })
         });
 
         // Local x offsets *within* a region, reset at each region
@@ -3208,6 +3259,10 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                 // below its anchor by different amounts, so the pitch is the
                 // largest reach above plus the largest reach below, which is
                 // what two neighbours in a column can need in the worst case.
+                let group_name = usize::try_from(band)
+                    .ok()
+                    .and_then(|b| group_bands.get(b))
+                    .copied();
                 let (reach_above, reach_below) = (start..end)
                     .flat_map(|col| col_groups[col].iter().copied())
                     .map(|cluster_idx| {
@@ -3227,27 +3282,43 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                         (above.max(a), below.max(b))
                     });
                 let row_pitch = snap_grid(reach_above + reach_below + REGION_ROW_GAP);
-                for col in start..end {
-                    for &cluster_idx in &col_groups[col] {
-                        let anchor_x = snap_grid(col_x_local[col]);
-                        let anchor_y = snap_grid((bk_units[cluster_idx] - bk_min) * row_pitch);
+                if group_name.is_some_and(|n| mechanical.contains(n)) {
+                    // A mechanical region lays its parts in one tight row, in
+                    // declaration order, instead of on the circuit grid.
+                    let mut in_region: Vec<usize> = (start..end)
+                        .flat_map(|col| col_groups[col].iter().copied())
+                        .collect();
+                    in_region.sort_by_key(|&idx| clusters[idx].anchor.0);
+                    for (slot, cluster_idx) in in_region.into_iter().enumerate() {
                         place_cluster_into(
                             board,
                             &clusters[cluster_idx],
-                            anchor_x,
-                            anchor_y,
+                            snap_grid(slot as f64 * MECHANICAL_PITCH),
+                            0.0,
                             grid_w,
                             &mut local,
                             &mut occupied,
                         );
                     }
+                } else {
+                    for col in start..end {
+                        for &cluster_idx in &col_groups[col] {
+                            let anchor_x = snap_grid(col_x_local[col]);
+                            let anchor_y = snap_grid((bk_units[cluster_idx] - bk_min) * row_pitch);
+                            place_cluster_into(
+                                board,
+                                &clusters[cluster_idx],
+                                anchor_x,
+                                anchor_y,
+                                grid_w,
+                                &mut local,
+                                &mut occupied,
+                            );
+                        }
+                    }
                 }
                 local.sort_by_key(|p| p.id.0);
                 let bbox = body_bbox_of(board, &local).unwrap_or((0.0, grid_w, 0.0, grid_h));
-                let group_name = usize::try_from(band)
-                    .ok()
-                    .and_then(|b| group_bands.get(b))
-                    .copied();
                 region_layouts.push(RegionLayout {
                     placements: local,
                     bbox,
