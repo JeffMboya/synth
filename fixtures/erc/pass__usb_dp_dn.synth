@@ -5,11 +5,15 @@
 board "usb_dp_dn_pass" {
   layers 4
 
+  component J1: connector "jst_ph_2pin"
   component U1: mcu "rp2350"
   component U2: mcu "rp2350"
   component C1: capacitor "c_generic_0402" value "100nF"
 
-  // Power up both MCUs minimally.
+  // Power up both MCUs minimally, from the connector: a capacitor plate is
+  // decoupling, not a feed.
+  connect J1.p1 -> C1.p1
+  connect J1.p2 -> C1.p2
   connect U1.iovdd -> C1.p1
   connect U1.dvdd3 -> C1.p1
   connect U1.gnd -> C1.p2
