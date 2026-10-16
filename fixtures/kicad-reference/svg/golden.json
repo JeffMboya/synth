@@ -1,9 +1,9 @@
 {
   "ref_battery_charger": {
-    "sha256": "95b181147ff7ecafef1a7c5b67f18f829e10d4fb2e4f09a86de76064b9679229",
+    "sha256": "fff09d25f1a431477e1925c3038837ff7a3e6dd374e49990469de504ffe9e8d9",
     "width": "297.0022mm",
     "height": "210.0072mm",
-    "paths": 6115,
+    "paths": 6117,
     "texts": 193
   },
   "ref_crystal_mcu": {
