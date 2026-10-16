@@ -1,0 +1,17 @@
+{
+  "schema": "synth.jlcpcb.phase0.fixture-manifest.v1",
+  "status": "deterministic-contract-fixtures",
+  "live_network_required": false,
+  "cases": [
+    {"id": "small-passive", "purpose": "group identical exact LCSC assignments and quantity", "expected": "bom-and-cpl-set-equality"},
+    {"id": "rp2350-board", "purpose": "exercise existing real-part registry assignments", "source": "examples/rp2350"},
+    {"id": "dnp-variant", "purpose": "exclude DNP references from BOM and CPL", "expected": "C1-excluded"},
+    {"id": "bottom-side-polarized", "purpose": "verify side and rotation contract", "expected": "R2-bottom-fixture"},
+    {"id": "missing-placement", "purpose": "strict exporter must report, not silently omit, a supplier-assembled part", "expected": "error-required"},
+    {"id": "incompatible-package", "purpose": "part identity and footprint review remain separate gates", "expected": "unresolved"},
+    {"id": "unavailable-part", "purpose": "provider outage is unknown, not zero stock", "source": "crates/synth-supply/tests/fixtures/lcsc-phase0/provider-unavailable.json"},
+    {"id": "manual-assembly-connector", "purpose": "purchase item stays out of supplier CPL", "expected": "J1-excluded"}
+  ],
+  "supplier_response_fixtures": "crates/synth-supply/tests/fixtures/lcsc-phase0",
+  "manufacturing_expected_files": "fixtures/lcsc-phase0/manufacturing"
+}
