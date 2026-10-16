@@ -32,7 +32,13 @@ courtyard_margin_mm = 0.25
 [operating_conditions]
 min_voltage_v = 3.0
 max_voltage_v = 3.6
-max_current_ma = 180.0
+# ICC1, the operating supply current the datasheet gives for the -7 grade.
+# `max_current_ma` is summed across the loads on a rail and checked against
+# the regulator feeding it, so it has to be what this part draws from that
+# rail and not a worst case assembled from several specs. VDD and VDDQ are
+# separate supplies on the package but sit on one 3.3 V rail on any board
+# that uses it, so one figure covers both.
+max_current_ma = 90.0
 
 
 [[pins]]
