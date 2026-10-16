@@ -942,6 +942,7 @@ pub fn layout_with_overrides(
     rotate_two_pin_with_power_flags(board, &mut layout);
     rotate_led_chains(board, &clusters, &mut layout);
     rotate_usb_esd_diodes(board, &clusters, &mut layout);
+    rotate_series_resistors(board, &clusters, &mut layout);
     lock_connector_rotations(board, &mut layout);
     overlay(&mut layout);
     route_and_label(board, &mut layout);
@@ -1942,6 +1943,38 @@ fn rotate_usb_esd_diodes(board: &Board, clusters: &[Cluster], layout: &mut Layou
     }
 }
 
+/// A series resistor beside its anchor's pin is turned so the pin on the
+/// anchor's net faces the anchor: a resistor left of the anchor shows that
+/// pin on its right, one right of the anchor on its left. Without this the
+/// wire to the anchor runs back over the resistor body.
+fn rotate_series_resistors(board: &Board, clusters: &[Cluster], layout: &mut Layout) {
+    use std::collections::HashMap;
+    let mut rot: HashMap<ComponentId, Rotation> = HashMap::new();
+    for member in clusters.iter().flat_map(|c| &c.members) {
+        let (Some(facing), Some(part)) = (
+            member.anchor_facing_pin,
+            board
+                .component(member.id)
+                .and_then(|c| c.part.as_ref())
+                .filter(|p| p.pins.len() == 2),
+        ) else {
+            continue;
+        };
+        let facing_is_left = pin_is_left_at_zero(part, facing.0 as usize);
+        let rotation = match (member.side, facing_is_left) {
+            (MemberSide::Left, true) | (MemberSide::Right, false) => Rotation::OneEighty,
+            (MemberSide::Left, false) | (MemberSide::Right, true) => Rotation::Zero,
+            _ => continue,
+        };
+        rot.insert(member.id, rotation);
+    }
+    for placement in &mut layout.components {
+        if let Some(&r) = rot.get(&placement.id) {
+            placement.rotation = r;
+        }
+    }
+}
+
 /// LED-indicator clusters get rendered as a vertical chain
 /// (current-limit resistor on top, LED below), with the LED's
 /// anode and the resistor's signal-side pin on top.
@@ -2101,6 +2134,9 @@ impl Cluster {
 pub struct ClusterMember {
     pub id: ComponentId,
     pub side: MemberSide,
+    /// For a series resistor, the member's pin on the anchor's net: the
+    /// one that must face the anchor. `None` for every other member.
+    pub anchor_facing_pin: Option<PinId>,
 }
 
 /// Where to place a cluster member relative to its anchor.
@@ -2190,6 +2226,8 @@ fn draw_cluster(board: &Board, cluster: &synth_ir::FunctionalCluster) -> Cluster
         .into_iter()
         .map(|member| ClusterMember {
             id: member.component,
+            anchor_facing_pin: (member.role == synth_ir::MemberRole::SignalSeries)
+                .then_some(member.binding.member_pin),
             side: match member.role {
                 synth_ir::MemberRole::DecouplingCap
                 | synth_ir::MemberRole::RailCap
@@ -5936,6 +5974,118 @@ mod patterns_tests {
         let cluster = find_cluster(&clusters, 0);
         assert_member(cluster, 1, MemberSide::Left);
         assert_member(cluster, 2, MemberSide::Right);
+    }
+
+    /// A series resistor on a connector pin sits beside that pin: on the
+    /// left of a pin the symbol draws on the left, on the right of one drawn
+    /// on the right.
+    #[test]
+    fn a_series_resistor_sits_on_the_side_of_its_connector_pin() {
+        let connector = component(
+            0,
+            "J1",
+            part(
+                "connector",
+                vec![
+                    pin("rx", ElectricalType::Passive, &[]),
+                    pin("tx", ElectricalType::Output, &[]),
+                ],
+            ),
+        );
+        let resistor = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        let b = board(
+            vec![connector, resistor(1, "R1"), resistor(2, "R2")],
+            vec![
+                net(0, "RX", &[(0, 0), (1, 0)]),
+                net(1, "RX_MCU", &[(1, 1)]),
+                net(2, "TX", &[(0, 1), (2, 0)]),
+                net(3, "TX_MCU", &[(2, 1)]),
+            ],
+        );
+        let clusters = build_clusters(&b);
+        let cluster = find_cluster(&clusters, 0);
+        assert_eq!(cluster.kind, ClusterKind::ConnectorBlock);
+        assert_member(cluster, 1, MemberSide::Left);
+        assert_member(cluster, 2, MemberSide::Right);
+    }
+
+    /// A series resistor beside a connector pin is turned so the pin tied to
+    /// the connector faces it, whichever side it sits on.
+    #[test]
+    fn a_series_resistor_faces_its_connector_pin() {
+        let connector = component(
+            0,
+            "J1",
+            part(
+                "connector",
+                vec![
+                    pin("rx", ElectricalType::Passive, &[]),
+                    pin("tx", ElectricalType::Output, &[]),
+                    pin("aux", ElectricalType::Passive, &[]),
+                    pin("tx2", ElectricalType::Output, &[]),
+                ],
+            ),
+        );
+        let resistor = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        // R1 sits left of J1 with its pin 0 on the connector net, so that
+        // pin must end up on its right; R2 sits right of J1 with pin 0 on
+        // the connector net, which is already on its left. R3 and R4 are the
+        // same with the connector on pin 1.
+        let b = board(
+            vec![
+                connector,
+                resistor(1, "R1"),
+                resistor(2, "R2"),
+                resistor(3, "R3"),
+                resistor(4, "R4"),
+            ],
+            vec![
+                net(0, "RX", &[(0, 0), (1, 0)]),
+                net(1, "RX_MCU", &[(1, 1)]),
+                net(2, "TX", &[(0, 1), (2, 0)]),
+                net(3, "TX_MCU", &[(2, 1)]),
+                net(4, "AUX", &[(0, 2), (3, 1)]),
+                net(5, "AUX_MCU", &[(3, 0)]),
+                net(6, "TX2", &[(0, 3), (4, 1)]),
+                net(7, "TX2_MCU", &[(4, 0)]),
+            ],
+        );
+        let placed = layout(&b);
+        let rotation = |id: u32| {
+            placed
+                .components
+                .iter()
+                .find(|p| p.id.0 == id)
+                .map(|p| p.rotation)
+        };
+        assert_eq!(rotation(1), Some(Rotation::OneEighty));
+        assert_eq!(rotation(2), Some(Rotation::Zero));
+        assert_eq!(rotation(3), Some(Rotation::Zero));
+        assert_eq!(rotation(4), Some(Rotation::OneEighty));
     }
 
     fn find_cluster(clusters: &[Cluster], anchor: u32) -> &Cluster {

@@ -64,6 +64,8 @@ pub enum ClusterKind {
     I2cBus,
     Crystal,
     IcBlock,
+    /// A general-purpose connector with the series resistors on its pins.
+    ConnectorBlock,
     Divider,
     /// Antenna plus its impedance-matching network.
     ///
@@ -90,6 +92,7 @@ impl ClusterKind {
             Self::I2cBus => Some("I2C bus"),
             Self::Crystal => Some("crystal"),
             Self::IcBlock => Some("IC block"),
+            Self::ConnectorBlock => Some("connector"),
             Self::Divider => Some("divider"),
             Self::RfMatching => Some("RF matching network"),
             Self::Singleton => None,
@@ -126,7 +129,8 @@ pub enum MemberRole {
     ResetNetwork,
     /// Resistor pulling a signal line to a rail.
     PullUp,
-    /// Resistor in series on an IC signal pin: neither end is a rail.
+    /// Resistor in series on an IC or connector signal pin: neither end is
+    /// a rail.
     SignalSeries,
     /// Resistor pulling one half of an I²C bus to its rail.
     I2cPullUp,
@@ -205,6 +209,7 @@ pub fn recognize_clusters(board: &Board) -> Vec<FunctionalCluster> {
     recognizer.i2c_buses(board);
     recognizer.dividers(board);
     recognizer.rf_matching_networks(board);
+    recognizer.connector_blocks(board);
     // Second sweep, after every structural pass: a decoupling cap on a
     // *shared* rail is reachable from no single anchor's
     // `required_decoupling`, so it would otherwise fall through to
@@ -783,6 +788,58 @@ impl Recognizer {
                 }
             }
             self.push(ClusterKind::RfMatching, component.id, members);
+        }
+    }
+
+    // ----- Pass 8b: connector series resistors ------------------------------
+
+    /// A general-purpose connector with a resistor in series on one of its
+    /// pins: the other end is not a rail, so the resistor is a series
+    /// element of a signal leaving the connector (a UART series resistor,
+    /// a bus terminator). A connector the USB pass claimed keeps that
+    /// cluster, and one with no such resistor falls through to
+    /// `Singleton`.
+    fn connector_blocks(&mut self, board: &Board) {
+        for component in &board.components {
+            if self.claimed.contains(&component.id) {
+                continue;
+            }
+            let Some(part) = component.part.as_ref() else {
+                continue;
+            };
+            if part.kind != "connector" {
+                continue;
+            }
+            let mut members = Vec::new();
+            for (pin_idx, pin) in part.pins.iter().enumerate() {
+                if !is_side_pin(pin) {
+                    continue;
+                }
+                let anchor_pin = PinId(u32::try_from(pin_idx).unwrap_or(0));
+                for (net, other) in
+                    passive_endpoints(board, component.id, anchor_pin, &self.claimed)
+                {
+                    if part_kind(board.component(other.0)) == Some("resistor")
+                        && !resistor_pulls_to_rail(board, &self.domains, other.0)
+                    {
+                        self.claim_member(
+                            &mut members,
+                            ClusterMember {
+                                component: other.0,
+                                role: MemberRole::SignalSeries,
+                                binding: MemberBinding {
+                                    net,
+                                    anchor_pin,
+                                    member_pin: other.1,
+                                },
+                            },
+                        );
+                    }
+                }
+            }
+            if !members.is_empty() {
+                self.push(ClusterKind::ConnectorBlock, component.id, members);
+            }
         }
     }
 
@@ -1469,6 +1526,98 @@ mod tests {
         let r = member_of(find(&clusters, 0), 1);
         assert_eq!(r.role, MemberRole::SignalSeries);
         assert_eq!(r.binding.anchor_pin, PinId(2), "the pin it sits on, U1.txd");
+    }
+
+    /// A resistor in series on a connector pin (the other end goes to an IC,
+    /// not a rail) is part of the connector's cluster, bound to the pin it
+    /// sits on, so it can be drawn beside that pin.
+    #[test]
+    fn a_series_resistor_on_a_connector_pin_joins_the_connectors_cluster() {
+        let j1 = component(
+            0,
+            "J1",
+            part(
+                "connector",
+                vec![passive_pin("p1"), passive_pin("p2"), passive_pin("p3")],
+            ),
+        );
+        let r1 = component(
+            1,
+            "R1",
+            part("resistor", vec![passive_pin("p1"), passive_pin("p2")]),
+        );
+        let u1 = component(
+            2,
+            "U1",
+            part("ic", vec![pin("rxd", ElectricalType::Bidirectional)]),
+        );
+        let b = plain_board(
+            vec![j1, r1, u1],
+            vec![
+                net(0, "RXD", &[(0, 2), (1, 1)]),
+                net(1, "RXD_MCU", &[(1, 0), (2, 0)]),
+            ],
+        );
+        let clusters = recognize_clusters(&b);
+        let j = find(&clusters, 0);
+        assert_eq!(j.kind, ClusterKind::ConnectorBlock);
+        let r = member_of(j, 1);
+        assert_eq!(r.role, MemberRole::SignalSeries);
+        assert_eq!(r.binding.anchor_pin, PinId(2), "the pin it sits on, J1.p3");
+        assert_eq!(r.binding.member_pin, PinId(1));
+    }
+
+    /// A resistor that pulls a connector pin to a rail is not in series on
+    /// the signal, so the connector pass leaves it alone.
+    #[test]
+    fn a_pull_resistor_on_a_connector_pin_is_not_a_series_member() {
+        let j1 = component(
+            0,
+            "J1",
+            part("connector", vec![passive_pin("p1"), passive_pin("p2")]),
+        );
+        let r1 = component(
+            1,
+            "R1",
+            part("resistor", vec![passive_pin("p1"), passive_pin("p2")]),
+        );
+        let u1 = component(
+            2,
+            "U1",
+            part("ic", vec![pin("gnd", ElectricalType::GroundReference)]),
+        );
+        let b = plain_board(
+            vec![j1, r1, u1],
+            vec![
+                net(0, "SIG", &[(0, 0), (1, 0)]),
+                net(1, "GND", &[(1, 1), (2, 0)]),
+            ],
+        );
+        let clusters = recognize_clusters(&b);
+        assert_eq!(find(&clusters, 0).kind, ClusterKind::Singleton);
+        assert!(clusters
+            .iter()
+            .flat_map(|c| &c.members)
+            .all(|m| m.role != MemberRole::SignalSeries));
+    }
+
+    /// A connector with no series resistor on it stays a singleton, so a
+    /// small board with only plain headers is not regrouped.
+    #[test]
+    fn a_connector_with_no_series_resistor_stays_a_singleton() {
+        let j1 = component(
+            0,
+            "J1",
+            part("connector", vec![passive_pin("p1"), passive_pin("p2")]),
+        );
+        let u1 = component(
+            1,
+            "U1",
+            part("ic", vec![pin("io", ElectricalType::Bidirectional)]),
+        );
+        let b = plain_board(vec![j1, u1], vec![net(0, "IO", &[(0, 0), (1, 0)])]);
+        let clusters = recognize_clusters(&b);
+        assert_eq!(find(&clusters, 0).kind, ClusterKind::Singleton);
     }
 
     /// A USB-C connector's CC pins carry Rd pull-downs to ground. They belong
