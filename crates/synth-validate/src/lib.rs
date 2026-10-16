@@ -1630,6 +1630,13 @@ impl ErcRule for ClockSourceCollisionRule {
 // E-SYNTH-CLOCK-002 — clock_input pin has no clock_output or oscillator
 // -----------------------------------------------------------------------------
 
+/// Part kinds that put a net on the edge of the board.
+///
+/// A net that reaches one of these leaves the design, and what drives it on
+/// the other side is not in the source Synth is reading. `E-SYNTH-ESD-001`
+/// already uses this notion for its own reason, in `deep_erc`.
+const BOARD_EDGE_KINDS: [&str; 3] = ["connector", "jack", "receptacle"];
+
 struct ClockInputNoSourceRule;
 
 impl ErcRule for ClockInputNoSourceRule {
@@ -1650,6 +1657,12 @@ impl ErcRule for ClockInputNoSourceRule {
             if !has_input {
                 continue;
             }
+            // A connector counts, and not as a courtesy: a mezzanine, a
+            // memory card and a daughterboard are all clocked by whatever
+            // they plug into, so the source is real and simply off the board.
+            // Without this the rule asks a correct design to add an
+            // oscillator, which would make it wrong — a card that generates
+            // its own clock is not synchronous with the host reading it.
             let has_output = net.endpoints.iter().any(|e| {
                 endpoint_has_any_capability(
                     board,
@@ -1659,7 +1672,11 @@ impl ErcRule for ClockInputNoSourceRule {
                 ) || board
                     .component(e.component)
                     .and_then(|c| c.part.as_ref())
-                    .is_some_and(|p| p.kind == "crystal" || p.kind == "oscillator")
+                    .is_some_and(|p| {
+                        p.kind == "crystal"
+                            || p.kind == "oscillator"
+                            || BOARD_EDGE_KINDS.contains(&p.kind.as_str())
+                    })
             });
             if !has_output {
                 let first = &net.endpoints[0];
