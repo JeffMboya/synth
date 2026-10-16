@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use chrono::Utc;
-use synth_supply::{AssemblyEligibility, LifecycleStatus, StockStatus, SupplyCache, SupplyStatus};
+use synth_supply::{
+    AssemblyEligibility, LifecycleStatus, PurchaseConstraints, StockStatus, SupplyCache,
+    SupplyStatus,
+};
 
 #[test]
 fn test_w_synth_supply_001_fires_on_obsolete_component_in_cache() {
@@ -14,7 +17,7 @@ fn test_w_synth_supply_001_fires_on_obsolete_component_in_cache() {
         stock_status: StockStatus::OutOfStock,
         assembly_eligibility: AssemblyEligibility::Unknown,
         moq: 1,
-        purchase: Default::default(),
+        purchase: PurchaseConstraints::default(),
         unit_price_usd: None,
         lifecycle: LifecycleStatus::Obsolete,
         fetched_at: Utc::now().to_rfc3339(),
