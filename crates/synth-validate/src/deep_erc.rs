@@ -397,6 +397,19 @@ impl ErcRule for PullupRailMismatchRule {
                 ) {
                     continue;
                 }
+                // A regulator's feedback pin is not a bus device being pulled
+                // up. The divider from the output rail to `fb` is how an
+                // adjustable regulator is told what to produce, so the two
+                // voltages this rule compares are the divider's own two ends:
+                // on a 5 V buck with a 1.2 V reference it reads as "a 5.0 V
+                // pull-up on a 1.2 V device" and condemns the circuit that
+                // sets the rail it is measuring against.
+                if pin
+                    .capabilities
+                    .contains(&synth_registry::PinCapability::Feedback)
+                {
+                    continue;
+                }
                 let Some(device_v) = component_supply_v(board, &domains, component) else {
                     continue;
                 };
