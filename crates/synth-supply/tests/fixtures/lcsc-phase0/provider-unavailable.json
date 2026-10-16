@@ -1,0 +1,8 @@
+{
+  "provider": "LCSC",
+  "request": "C14663",
+  "error": {
+    "kind": "timeout",
+    "message": "fixture: provider did not respond within the configured deadline"
+  }
+}
