@@ -669,5 +669,47 @@ class FlagOverlap(unittest.TestCase):
         self.assertEqual(flag_pairs(), 0)
 
 
+def flags_over_bodies(symbols, *flags):
+    """The count for resistors placed at `symbols` (x, y), each box 2 mm wide and
+    7.62 mm tall, and flags given as (text, x, y, angle)."""
+    sch_text = contain_sch(symbols=symbols)
+    sch_text = sch_text[: sch_text.rindex(")")] + flags_sch(*flags)[len("(kicad_sch") :]
+    return sq.score(
+        [],
+        [],
+        (0.0, 0.0),
+        symbol_boxes=sq.parse_symbol_boxes(sch_text),
+        flags=sq.parse_flags(sch_text),
+    )["flags_over_bodies"]
+
+
+class FlagOverBody(unittest.TestCase):
+    """A flag that covers part of a symbol's box (its pins and drawn outline) hides
+    it, or reads as part of it."""
+
+    def test_a_flag_across_a_body_is_counted(self):
+        self.assertEqual(flags_over_bodies([(20, 20)], ("SIG", 15, 20, 0)), 1)
+
+    def test_a_flag_beside_a_body_is_clear(self):
+        self.assertEqual(flags_over_bodies([(20, 20)], ("SIG", 22, 20, 0)), 0)
+
+    def test_a_flag_past_the_end_of_a_pin_is_clear(self):
+        self.assertEqual(flags_over_bodies([(20, 20)], ("SIG", 15, 26, 0)), 0)
+
+    def test_a_flag_that_only_touches_a_body_is_clear(self):
+        self.assertEqual(flags_over_bodies([(20, 20)], ("SIG", 20.9, 20, 0)), 0)
+
+    def test_every_flag_over_a_body_counts(self):
+        got = flags_over_bodies([(20, 20)], ("SIG", 15, 20, 0), ("SIG", 15, 22, 0))
+        self.assertEqual(got, 2)
+
+    def test_a_flag_over_each_of_two_bodies_counts_twice(self):
+        got = flags_over_bodies([(20, 20), (20, 24)], ("SIG", 15, 22, 0))
+        self.assertEqual(got, 2)
+
+    def test_a_schematic_without_flags_scores_zero(self):
+        self.assertEqual(flags_over_bodies([(20, 20)]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

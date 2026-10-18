@@ -47,6 +47,11 @@ The numbers say how much of the page is collisions and how much is wasted:
                                   from its anchor away from its stub; boxes
                                   that overlap by less than FLAG_TOUCH_MM only
                                   touch, as flags on a 2.54 mm pin pitch do)
+  flags_over_bodies               flags whose box overlaps the box of a placed
+                                  symbol (its pin ends and drawn outline), by
+                                  the same FLAG_TOUCH_MM; a flag runs out from
+                                  its own pin's stub, so a part is only covered
+                                  by the flag of another pin
   label_columns_misaligned        symbol sides whose labels do not line up: more
                                   than one distinct x on a left or right side,
                                   more than one distinct y on a top or bottom
@@ -570,6 +575,13 @@ def score(
         if _boxes_overlap(a, b, FLAG_TOUCH_MM)
     )
 
+    flags_over_bodies = sum(
+        1
+        for f in flags
+        for b in symbol_boxes
+        if _boxes_overlap(f, ("", *b), FLAG_TOUCH_MM)
+    )
+
     through = sum(
         1 for t in texts if any(_segment_hits_box(w, t) for w in wires)
     )
@@ -606,6 +618,7 @@ def score(
         "title_gap_min_mm": smallest_title_gap(group_boxes, titles, texts, symbol_boxes, wires),
         "labels_repeating_pin_name": sum(1 for p in label_pairs if p[2] == p[4]),
         "flag_pairs_overlapping": flag_pairs,
+        "flags_over_bodies": flags_over_bodies,
         "label_columns_misaligned": sum(1 for c in columns.values() if len(c) > 1),
     }
 
