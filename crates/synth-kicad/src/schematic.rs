@@ -417,11 +417,19 @@ pub(crate) fn build_sheet_schematic(
         &reconciled_pins,
         leg_rail,
     ));
+    let bounds = field_bounds(board, layout);
     let mut power_names = Vec::new();
     for component in &board.components {
         if let Some(placement) = placements.get(&component.id) {
             let overrides = variant_dnp.get(component.refdes.as_str());
-            for s in build_symbol_instance(component, placement, project, board, &mut obstacles) {
+            for s in build_symbol_instance(
+                component,
+                placement,
+                project,
+                board,
+                &mut obstacles,
+                bounds.get(&component.id).copied(),
+            ) {
                 let path = render
                     .symbol_path
                     .clone()
@@ -545,6 +553,7 @@ pub(crate) fn build_sheet_schematic(
             &mut *power_refs,
             &mut obstacles,
             &mut power_names,
+            bounds.get(&flag.component).copied(),
         ) {
             children.append(&mut sexps);
         }
@@ -717,6 +726,7 @@ pub(crate) fn build_sheet_schematic(
                     &mut *power_refs,
                     &mut obstacles,
                     &mut power_names,
+                    bounds.get(&leg.component).copied(),
                 ) {
                     children.extend(sexps);
                 }
@@ -959,6 +969,7 @@ fn build_fanned_power_symbol(
     power_refs: &mut PowerRefAllocator,
     obstacles: &mut Vec<FieldObstacle>,
     power_names: &mut Vec<PowerName>,
+    bounds: Option<field_clear::Rect>,
 ) -> Option<Vec<Sexp>> {
     let rail_label = rail.label.as_str();
     let component = board.component(leg.component)?;
@@ -1009,6 +1020,7 @@ fn build_fanned_power_symbol(
         (flag_x, flag_y),
         obstacles,
         power_names,
+        bounds,
     );
     let sym_sexp = power_symbol_sexp(lib_id_out, flag_x, flag_y, sym_uuid, properties);
 
@@ -1635,6 +1647,7 @@ fn build_power_symbol(
     power_refs: &mut PowerRefAllocator,
     obstacles: &mut Vec<FieldObstacle>,
     power_names: &mut Vec<PowerName>,
+    bounds: Option<field_clear::Rect>,
 ) -> Option<Vec<Sexp>> {
     let component = board.component(flag.component)?;
     // Pre-emission validation: verify net match against source netlist declaration
@@ -1704,6 +1717,7 @@ fn build_power_symbol(
         (flag_x, flag_y),
         obstacles,
         power_names,
+        bounds,
     );
     let sym_sexp = power_symbol_sexp(lib_id, flag_x, flag_y, sym_uuid, properties);
 
@@ -1949,6 +1963,7 @@ fn power_symbol_properties(
     at: (f64, f64),
     obstacles: &mut Vec<FieldObstacle>,
     power_names: &mut Vec<PowerName>,
+    bounds: Option<field_clear::Rect>,
 ) -> Vec<Sexp> {
     // A rail arrow points up the sheet, a ground triangle down.
     let away = match kind {
@@ -1974,7 +1989,11 @@ fn power_symbol_properties(
     let rect_at = |(dx, dy, justify): (f64, f64, Option<&'static str>)| {
         text_rect_at((at.0 + dx, at.1 + dy), justify, chars)
     };
-    let others = obstacles.iter().map(|o| &o.rect);
+    let outside: Vec<field_clear::Rect> = bounds
+        .into_iter()
+        .flat_map(field_clear::outside_strips)
+        .collect();
+    let others = obstacles.iter().map(|o| &o.rect).chain(outside.iter());
     let (dx, dy, justify) = field_clear::pick_clear(&candidates, &rect_at, &others);
     let pos = (at.0 + dx, at.1 + dy);
     if !repeats {
@@ -2047,6 +2066,7 @@ fn build_symbol_instance(
     project: &Uuid,
     board: &Board,
     obstacles: &mut Vec<FieldObstacle>,
+    bounds: Option<field_clear::Rect>,
 ) -> Vec<Sexp> {
     let Some(part) = component.part.as_ref() else {
         return Vec::new();
@@ -2074,6 +2094,7 @@ fn build_symbol_instance(
             project,
             board,
             &mut *obstacles,
+            bounds,
             unit,
             dy,
             &uuid_key,
@@ -2198,6 +2219,29 @@ fn power_flag_rect(x: f64, y: f64) -> field_clear::Rect {
         x1: x + POWER_FLAG_HALF_MM,
         y1: y + POWER_FLAG_HALF_MM,
     }
+}
+
+/// The box of the group each component belongs to, so its text can stay
+/// inside it and out of the title band at its top.
+fn field_bounds(
+    board: &Board,
+    layout: &synth_layout::Layout,
+) -> HashMap<ComponentId, field_clear::Rect> {
+    board
+        .components
+        .iter()
+        .filter_map(|c| {
+            let group = synth_layout::effective_group(board, c.id)?;
+            let b = layout.group_boxes.iter().find(|b| b.group == group)?;
+            let rect = field_clear::Rect {
+                x0: b.min_mm.0,
+                y0: b.min_mm.1 + synth_layout::GROUP_TITLE_BAND_MM,
+                x1: b.max_mm.0,
+                y1: b.max_mm.1,
+            };
+            Some((c.id, rect))
+        })
+        .collect()
 }
 
 /// Every wire, body, pin, net label, power flag and caption on the sheet as an
@@ -2405,6 +2449,7 @@ fn build_symbol_unit(
     project: &Uuid,
     board: &Board,
     obstacles: &mut Vec<FieldObstacle>,
+    bounds: Option<field_clear::Rect>,
     unit: u32,
     dy: f64,
     uuid_key: &str,
@@ -2481,6 +2526,10 @@ fn build_symbol_unit(
     // cannot take its spot. The symbol's own body is skipped, since its text
     // sits against it.
     let (ref_pref, value_pref) = choose_field_sides(counts);
+    let outside: Vec<field_clear::Rect> = bounds
+        .into_iter()
+        .flat_map(field_clear::outside_strips)
+        .collect();
     let mut place_field = |text: &str, first: FieldSide, second: FieldSide| {
         let candidates = field_candidates(first, second, obstacle_reach(obstacles, (x, y)));
         let spot = |(side, ring): (FieldSide, f64)| {
@@ -2494,7 +2543,8 @@ fn build_symbol_unit(
         let others = obstacles
             .iter()
             .filter(|o| o.owner != Some(component.id))
-            .map(|o| &o.rect);
+            .map(|o| &o.rect)
+            .chain(outside.iter());
         let (pos, justify) = spot(field_clear::pick_clear(&candidates, &rect_at, &others));
         let rect = text_rect_at(pos, justify, text.chars().count());
         obstacles.push(FieldObstacle { owner: None, rect });
@@ -3541,6 +3591,43 @@ mod tests {
     }
 
     #[test]
+    fn a_field_moves_inside_its_group_box_when_its_usual_spot_is_outside() {
+        let (mut board, ..) = build_reference("ref_ldo_sensor");
+        let mut layout = synth_layout::layout(&board);
+        let refdes = board.components[0].refdes.clone();
+        let usual = box_of(&field_boxes_for(&board, &layout), &refdes);
+        let (cx, cy) = layout.components[0].center_mm;
+        // A box that takes in the whole sheet except the side of the body
+        // where the field usually sits.
+        let far = 1000.0;
+        let bounds = if usual.0 > cx {
+            (usual.2 + 0.1, -far, far, far)
+        } else if usual.2 < cx {
+            (-far, -far, usual.0 - 0.1, far)
+        } else if usual.1 > cy {
+            (-far, usual.3 + 0.1, far, far)
+        } else {
+            (-far, -far, far, usual.1 - 0.1)
+        };
+        board.components[0].group = Some("G".to_string());
+        layout.group_boxes = vec![synth_layout::GroupBox {
+            group: "G".to_string(),
+            min_mm: (bounds.0, bounds.1),
+            max_mm: (bounds.2, bounds.3),
+            color: [0, 0, 0],
+            caption_inside: true,
+        }];
+        let moved = box_of(&field_boxes_for(&board, &layout), &refdes);
+        assert!(
+            moved.0 >= bounds.0
+                && moved.1 >= bounds.1
+                && moved.2 <= bounds.2
+                && moved.3 <= bounds.3,
+            "{refdes} at {moved:?} is outside {bounds:?}"
+        );
+    }
+
+    #[test]
     fn a_field_moves_off_a_net_label_that_covers_its_usual_spot() {
         const LABEL: &str = "A_VERY_LONG_NET_LABEL_TO_REACH_ACROSS_THE_SHEET";
         let (board, ..) = build_reference("ref_ldo_sensor");
@@ -4413,6 +4500,7 @@ mod tests {
                     (0.0, 0.0),
                     &mut obstacles,
                     &mut Vec::new(),
+                    None,
                 );
                 let placed = &obstacles.last().expect("the name is an obstacle now").rect;
                 assert!(
@@ -4509,6 +4597,100 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_power_name_moves_inside_its_group_box_when_its_usual_spot_is_outside() {
+        let (mut board, ..) = build_reference("ref_ldo_sensor");
+        let mut layout = synth_layout::layout(&board);
+        let project = crate::uuid_v5::project_namespace(&board.name);
+        let shown = |sexp: &Sexp| -> Vec<((f64, f64), (f64, f64))> {
+            power_symbols(sexp)
+                .into_iter()
+                .filter_map(|(at, fields)| {
+                    let value = power_value(&fields);
+                    (!value.4).then_some((at, value.2))
+                })
+                .collect()
+        };
+        let before = shown(&build_schematic_from_layout(&board, &project, &layout));
+        let (at, name) = before[0];
+        // A box that takes in the whole sheet except the band 3.3 mm past the
+        // symbol where its name usually sits.
+        let far = 1000.0;
+        let bounds = if name.1 > at.1 {
+            (-far, -far, far, at.1 + 3.3)
+        } else {
+            (-far, at.1 - 3.3, far, far)
+        };
+        for component in &mut board.components {
+            component.group = Some("G".to_string());
+        }
+        layout.group_boxes = vec![synth_layout::GroupBox {
+            group: "G".to_string(),
+            min_mm: (bounds.0, bounds.1),
+            max_mm: (bounds.2, bounds.3),
+            color: [0, 0, 0],
+            caption_inside: true,
+        }];
+        let after = shown(&build_schematic_from_layout(&board, &project, &layout));
+        let (_, moved) = after
+            .into_iter()
+            .find(|(a, _)| *a == at)
+            .expect("the symbol");
+        assert_ne!(moved, name, "the name did not move");
+        assert!(
+            moved.1 > bounds.1 && moved.1 < bounds.3,
+            "name at y {} is outside {bounds:?}",
+            moved.1
+        );
+    }
+
+    #[test]
+    fn a_power_name_stays_out_of_the_title_band_of_its_group_box() {
+        let (mut board, ..) = build_reference("ref_ldo_sensor");
+        let mut layout = synth_layout::layout(&board);
+        let project = crate::uuid_v5::project_namespace(&board.name);
+        let shown = |sexp: &Sexp| -> Vec<((f64, f64), (f64, f64))> {
+            power_symbols(sexp)
+                .into_iter()
+                .filter_map(|(at, fields)| {
+                    let value = power_value(&fields);
+                    (!value.4).then_some((at, value.2))
+                })
+                .collect()
+        };
+        let before = shown(&build_schematic_from_layout(&board, &project, &layout));
+        // A rail symbol: its name sits above it.
+        let (at, name) = before
+            .into_iter()
+            .find(|(at, name)| name.1 < at.1)
+            .expect("a rail symbol");
+        // The title band ends 3.3 mm above the symbol, so the usual spot of
+        // the name is in the band and a spot beside the symbol is not.
+        let band_end = at.1 - 3.3;
+        let top = band_end - synth_layout::GROUP_TITLE_BAND_MM;
+        for component in &mut board.components {
+            component.group = Some("G".to_string());
+        }
+        layout.group_boxes = vec![synth_layout::GroupBox {
+            group: "G".to_string(),
+            min_mm: (-1000.0, top),
+            max_mm: (1000.0, 1000.0),
+            color: [0, 0, 0],
+            caption_inside: true,
+        }];
+        let after = shown(&build_schematic_from_layout(&board, &project, &layout));
+        let (_, moved) = after
+            .into_iter()
+            .find(|(a, _)| *a == at)
+            .expect("the symbol");
+        assert_ne!(moved, name, "the name stayed in the band");
+        assert!(
+            moved.1 - FIELD_TEXT_HEIGHT_MM / 2.0 >= band_end - 1e-6,
+            "name at y {} is in the band that ends at {band_end}",
+            moved.1
+        );
     }
 
     #[test]

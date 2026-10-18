@@ -38,7 +38,7 @@
     },
     "led_indicator": {
       "crossing_count": 0,
-      "total_wire_length_mm": 198.12,
+      "total_wire_length_mm": 198.11999999999995,
       "label_stub_count": 2,
       "aesthetic_violations": []
     },
@@ -50,7 +50,7 @@
     },
     "multi_pattern_combo": {
       "crossing_count": 0,
-      "total_wire_length_mm": 231.14,
+      "total_wire_length_mm": 231.14000000000004,
       "label_stub_count": 13,
       "aesthetic_violations": []
     },

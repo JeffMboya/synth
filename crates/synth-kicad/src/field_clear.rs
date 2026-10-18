@@ -30,6 +30,38 @@ impl Rect {
     }
 }
 
+/// Four rectangles that cover everything outside `bounds`: as obstacles, they
+/// make text that leaves the bounds cost its overflow like text on a wire.
+pub(crate) fn outside_strips(bounds: Rect) -> [Rect; 4] {
+    const FAR: f64 = 1.0e6;
+    [
+        Rect {
+            x0: -FAR,
+            y0: -FAR,
+            x1: bounds.x0,
+            y1: FAR,
+        },
+        Rect {
+            x0: bounds.x1,
+            y0: -FAR,
+            x1: FAR,
+            y1: FAR,
+        },
+        Rect {
+            x0: bounds.x0,
+            y0: -FAR,
+            x1: bounds.x1,
+            y1: bounds.y0,
+        },
+        Rect {
+            x0: bounds.x0,
+            y0: bounds.y1,
+            x1: bounds.x1,
+            y1: FAR,
+        },
+    ]
+}
+
 /// The first of `candidates` whose text overlaps no obstacle; when every one
 /// does, the one that overlaps least, the earlier winning a tie. `text_rect`
 /// gives the rectangle the text covers at a candidate. The exporter lists
@@ -139,6 +171,66 @@ mod tests {
             &[block(0.0, 4.0), block(10.0, 12.0), block(20.0, 23.0)].iter(),
         );
         assert_eq!(got, "far");
+    }
+
+    #[test]
+    fn text_that_leaves_the_bounds_gives_way_to_text_that_stays_inside() {
+        let bounds = Rect {
+            x0: 8.0,
+            y0: -5.0,
+            x1: 30.0,
+            y1: 5.0,
+        };
+        let strips = outside_strips(bounds);
+        assert_eq!(pick_clear(&CANDIDATES, &text_rect, &strips.iter()), "far");
+    }
+
+    #[test]
+    fn text_across_one_edge_of_the_bounds_counts_as_outside() {
+        // "near" spans x 0 to 4: half of it is past the left edge.
+        let bounds = Rect {
+            x0: 2.0,
+            y0: -5.0,
+            x1: 30.0,
+            y1: 5.0,
+        };
+        let strips = outside_strips(bounds);
+        assert_eq!(pick_clear(&CANDIDATES, &text_rect, &strips.iter()), "far");
+    }
+
+    #[test]
+    fn text_wholly_inside_the_bounds_is_not_moved() {
+        let bounds = Rect {
+            x0: -1.0,
+            y0: -5.0,
+            x1: 30.0,
+            y1: 5.0,
+        };
+        let strips = outside_strips(bounds);
+        assert_eq!(pick_clear(&CANDIDATES, &text_rect, &strips.iter()), "near");
+    }
+
+    #[test]
+    fn every_edge_of_the_bounds_keeps_text_in() {
+        // A text 4 mm wide and 1 mm tall at (x, y).
+        let at = |(x, y): (f64, f64)| Rect {
+            x0: x,
+            y0: y,
+            x1: x + 4.0,
+            y1: y + 1.0,
+        };
+        let bounds = Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 20.0,
+            y1: 20.0,
+        };
+        let strips = outside_strips(bounds);
+        // Each first candidate is past one edge, each second one is inside.
+        for outside in [(-10.0, 5.0), (30.0, 5.0), (5.0, -10.0), (5.0, 30.0)] {
+            let got = pick_clear(&[outside, (5.0, 5.0)], &at, &strips.iter());
+            assert_eq!(got, (5.0, 5.0), "{outside:?} was kept");
+        }
     }
 
     #[test]

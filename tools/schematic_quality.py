@@ -31,6 +31,15 @@ The numbers say how much of the page is collisions and how much is wasted:
                                   0.0 when no passive could be measured)
   labels_repeating_pin_name       labels whose text is the name of the pin they
                                   stand beside
+  items_outside_group_boxes       symbols and texts not wholly inside one group
+                                  box (a symbol is the box round its pins and
+                                  drawn outline; the page ruler and the title
+                                  block are not content; 0 when there are no
+                                  group boxes)
+  title_gap_min_mm                smallest distance from a bold group caption
+                                  down to the symbol, text or wire under it in
+                                  its box (negative when they overlap; None when
+                                  no caption has anything under it)
   label_columns_misaligned        symbol sides whose labels do not line up: more
                                   than one distinct x on a left or right side,
                                   more than one distinct y on a top or bottom
@@ -66,6 +75,17 @@ CELL_MM = 10.0
 # A label this far or less from a pin's end, along the pin's axis and on its
 # outward side, stands beside that pin: a stub is 5.08 mm.
 LABEL_REACH_MM = 6.0
+# A string this short, within this distance of the page edge, is a cell of the
+# page ruler (1 to 8 across, A to F down), not schematic content.
+RULER_CHARS = 2
+RULER_BAND_MM = 12.0
+# KiCad's stock title block: its texts plot up to 119 mm in from the right edge
+# of the page and 40 mm up from the bottom, on A3 and on A2 alike.
+TITLE_BLOCK_MM = (125.0, 45.0)
+TITLE_BLOCK_INSET_MM = 2.0
+# A caption's plotted text starts this close to its `(at)` in x and ends this
+# close to it in y.
+CAPTION_MATCH_MM = 2.5
 # Longest kicad-cli may take to plot one schematic.
 PLOT_TIMEOUT_S = 300
 
@@ -127,6 +147,144 @@ def parse_group_boxes(sch_text):
             (x1, y1), (x2, y2) = corners
             boxes.append((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
     return boxes
+
+
+def parse_titles(sch_text):
+    """The bold group captions of a `.kicad_sch` as (text, x, y); `(at)` is the
+    left end of the baseline."""
+    titles = []
+    for opening in re.finditer(r"\n\t\(text\b", sch_text):
+        block = _balanced(sch_text, opening.start() + 2)
+        text = re.search(r'\(text\s+"([^"]*)"', block)
+        at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER})", block)
+        if text and at and re.search(r"\bbold\b", block):
+            titles.append((text.group(1), float(at.group(1)), float(at.group(2))))
+    return titles
+
+
+def _lib_extents(sch_text):
+    """The points that outline each library symbol, as {lib_id: [(x, y)]} in the
+    symbol's own frame (y up): its pin ends and the corners of its rectangles
+    and polylines."""
+    points = {}
+    start = sch_text.find("(lib_symbols")
+    if start < 0:
+        return points
+    lib = _balanced(sch_text, start)
+    for opening in re.finditer(r'\n\t\t\(symbol\s+"([^"]+)"', lib):
+        block = _balanced(lib, opening.start() + 3)
+        found = []
+        for pin in re.finditer(r"\(pin\b", block):
+            at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER}) {_NUMBER}\)", _balanced(block, pin.start()))
+            if at:
+                found.append((float(at.group(1)), float(at.group(2))))
+        for shape in re.finditer(r"\((?:rectangle|polyline)\b", block):
+            body = _balanced(block, shape.start())
+            found += [
+                (float(x), float(y))
+                for x, y in re.findall(rf"\((?:start|end|xy) ({_NUMBER}) ({_NUMBER})\)", body)
+            ]
+        points[opening.group(1)] = found
+    return points
+
+
+def parse_symbol_boxes(sch_text):
+    """Where each placed symbol is on the sheet, as (x1, y1, x2, y2): the box
+    round its pin ends and its drawn outline, turned the way `_placed_pins`
+    turns pins (the symbol's origin when it has neither)."""
+    extents = _lib_extents(sch_text)
+    boxes = []
+    for opening in re.finditer(r"\n\t\(symbol\s+\(lib_id", sch_text):
+        block = _balanced(sch_text, opening.start() + 2)
+        lib_id = re.search(r'\(lib_id "([^"]*)"', block)
+        at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER}) ({_NUMBER})", block)
+        if not (lib_id and at):
+            continue
+        x0, y0, angle = (float(v) for v in at.groups())
+        mirror = re.search(r"\(mirror (\w)\)", block)
+        cos, sin = {0: (1, 0), 90: (0, 1), 180: (-1, 0), 270: (0, -1)}[round(angle) % 360]
+        placed = []
+        for lx, ly in extents.get(lib_id.group(1), []) or [(0.0, 0.0)]:
+            if mirror and mirror.group(1) == "x":
+                ly = -ly
+            elif mirror and mirror.group(1) == "y":
+                lx = -lx
+            placed.append((x0 + lx * cos - ly * sin, y0 - (lx * sin + ly * cos)))
+        xs, ys = zip(*placed)
+        boxes.append((min(xs), min(ys), max(xs), max(ys)))
+    return boxes
+
+
+def _is_page_furniture(text, page):
+    """The page ruler's cells and the text of the stock title block."""
+    string, x0, y0, x1, y1 = text
+    width, height = page
+    edge = min(x0, y0, width - x1, height - y1)
+    if len(string) <= RULER_CHARS and edge < RULER_BAND_MM:
+        return True
+    block_w, block_h = TITLE_BLOCK_MM
+    return (
+        x0 >= width - block_w
+        and x1 <= width - TITLE_BLOCK_INSET_MM
+        and y0 >= height - block_h
+        and y1 <= height - TITLE_BLOCK_INSET_MM
+    )
+
+
+def items_outside_group_boxes(boxes, texts, symbol_boxes, page):
+    """How many symbols and texts are not wholly inside one group box. With no
+    group boxes there is nothing to be inside, so none count."""
+    if not boxes:
+        return 0
+    items = [(t[1], t[2], t[3], t[4]) for t in texts if not _is_page_furniture(t, page)]
+    items += symbol_boxes
+    return sum(
+        1
+        for x0, y0, x1, y1 in items
+        if not any(
+            x0 >= bx0 - TOLERANCE_MM
+            and y0 >= by0 - TOLERANCE_MM
+            and x1 <= bx1 + TOLERANCE_MM
+            and y1 <= by1 + TOLERANCE_MM
+            for bx0, by0, bx1, by1 in boxes
+        )
+    )
+
+
+def smallest_title_gap(boxes, titles, texts, symbol_boxes, wires):
+    """The smallest distance in mm from a caption's text down to the symbol,
+    text or wire under it, or None when no caption has anything under it.
+
+    A caption is the plotted text with the string and position of a bold
+    `(text)` of the schematic. What is under it lies in the group box that holds
+    the caption, overlaps it in x, and does not end above the caption's top. The
+    distance is from the caption's bottom to the item's top, negative when the
+    item reaches into the caption."""
+    plotted = [(t[0], t[1], t[2], t[3], t[4]) for t in texts]
+    captions = [
+        t
+        for string, x, y in titles
+        for t in plotted
+        if t[0] == string and abs(t[1] - x) < CAPTION_MATCH_MM and abs(t[4] - y) < CAPTION_MATCH_MM
+    ]
+    items = [(t[1], t[2], t[3], t[4]) for t in plotted if t not in captions]
+    items += symbol_boxes
+    items += [(min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1])) for a, b in wires]
+    gaps = []
+    for _, cx0, cy0, cx1, cy1 in captions:
+        box = next(
+            (b for b in boxes if b[0] <= cx0 and cx1 <= b[2] and b[1] <= cy0 and cy1 <= b[3]),
+            None,
+        )
+        if box is None:
+            continue
+        gaps += [
+            iy0 - cy1
+            for ix0, iy0, ix1, iy1 in items
+            if ix0 < cx1 and cx0 < ix1 and iy1 > cy0
+            and ix0 < box[2] and box[0] < ix1 and iy0 < box[3] and box[1] < iy1
+        ]
+    return round(min(gaps), 2) if gaps else None
 
 
 def region_coverage(boxes):
@@ -350,13 +508,22 @@ def _segments_cross(s, t):
 
 
 def score(
-    wires, texts, page, content_points=(), group_boxes=(), passive_distances=None, label_pairs=()
+    wires,
+    texts,
+    page,
+    content_points=(),
+    group_boxes=(),
+    passive_distances=None,
+    label_pairs=(),
+    symbol_boxes=(),
+    titles=(),
 ):
     """The numbers in the module doc for `wires`, `texts` and `page` (w, h).
 
     `content_points` are anchors of symbols and corners of group boxes; with
     the wires they say where the schematic is, so page furniture is ignored.
-    `label_pairs` are the labels beside pins, from `label_pin_pairs`."""
+    `label_pairs` are the labels beside pins, from `label_pin_pairs`;
+    `symbol_boxes` and `titles` come from `parse_symbol_boxes` and `parse_titles`."""
     overlapping = 0
     for i, a in enumerate(texts):
         for b in texts[i + 1 :]:
@@ -393,6 +560,10 @@ def score(
         "content_density": _content_density(wires, texts, content_points),
         "passive_to_pin_mean_mm": round(sum(measured) / len(measured), 1) if measured else 0.0,
         "passive_to_pin_max_mm": round(max(measured), 1) if measured else 0.0,
+        "items_outside_group_boxes": items_outside_group_boxes(
+            group_boxes, texts, symbol_boxes, page
+        ),
+        "title_gap_min_mm": smallest_title_gap(group_boxes, titles, texts, symbol_boxes, wires),
         "labels_repeating_pin_name": sum(1 for p in label_pairs if p[2] == p[4]),
         "label_columns_misaligned": sum(1 for c in columns.values() if len(c) > 1),
     }
@@ -495,6 +666,8 @@ def score_file(sch_path):
         parse_group_boxes(sch_text),
         passive_pin_distances(sch_text, netlist_text),
         label_pin_pairs(sch_text),
+        parse_symbol_boxes(sch_text),
+        parse_titles(sch_text),
     )
 
 
