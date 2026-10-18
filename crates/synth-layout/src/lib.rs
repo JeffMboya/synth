@@ -4544,13 +4544,14 @@ fn place_cluster_into(
                     placed_x = placed_x.max(snap_grid(lx + member_dx));
                 }
             }
-            if let Some(pin_idx) = find_connecting_active_pin(board, cluster.anchor, *id) {
+            // A turned anchor shows its pins on its own centre line, so the
+            // unturned pin offset would only push the member off that line.
+            let aligning_pin = find_connecting_active_pin(board, cluster.anchor, *id)
+                .filter(|_| !cluster.anchor_vertical);
+            if let Some(pin_idx) = aligning_pin {
                 if let Some(anchor) = board.component(cluster.anchor) {
                     if let Some(part) = anchor.part.as_ref() {
-                        let (mut px, _py, _side) = compute_anchor_pin_offset(part, pin_idx);
-                        if cluster.anchor_vertical && !pin_is_left_at_zero(part, pin_idx) {
-                            px = -px;
-                        }
+                        let (px, _py, _side) = compute_anchor_pin_offset(part, pin_idx);
                         let target_x = snap_grid(anchor_x + px);
                         let coord_key = (
                             (target_x * 10.0).round() as i64,

@@ -52,7 +52,7 @@ fn led_board(led: &str) -> Board {
         .unwrap()
 }
 
-fn pin_y(board: &Board, layout: &Layout, refdes: &str, pin_name: &str) -> f64 {
+fn pin_xy(board: &Board, layout: &Layout, refdes: &str, pin_name: &str) -> (f64, f64) {
     let component = board
         .components
         .iter()
@@ -73,8 +73,12 @@ fn pin_y(board: &Board, layout: &Layout, refdes: &str, pin_name: &str) -> f64 {
         PinId(u32::try_from(pin).unwrap()),
         &placements,
     )
+    .map(|(x, y, _, _)| (x, y))
     .unwrap()
-    .1
+}
+
+fn pin_y(board: &Board, layout: &Layout, refdes: &str, pin_name: &str) -> f64 {
+    pin_xy(board, layout, refdes, pin_name).1
 }
 
 /// One led part with its anode listed first, one with its cathode first.
@@ -92,5 +96,41 @@ fn the_anode_is_above_the_cathode_under_its_resistor() {
             resistor < anode && anode < cathode,
             "{led}: resistor pin at {resistor}, anode at {anode}, cathode at {cathode}"
         );
+    }
+}
+
+#[test]
+fn the_resistor_the_led_and_the_wire_between_them_share_one_column() {
+    for led in LEDS {
+        let board = led_board(led);
+        let layout = synth_layout::layout(&board);
+        let resistor_x = pin_xy(&board, &layout, "R1", "p2").0;
+        let anode_x = pin_xy(&board, &layout, "D1", "anode").0;
+        assert!(
+            (resistor_x - anode_x).abs() < 0.01,
+            "{led}: resistor pin at x {resistor_x}, anode at x {anode_x}"
+        );
+        let resistor = board.components.iter().find(|c| c.refdes == "R1").unwrap();
+        let net = board
+            .nets
+            .iter()
+            .find(|n| {
+                n.endpoints
+                    .iter()
+                    .any(|e| e.component == resistor.id && e.pin == PinId(1))
+            })
+            .unwrap()
+            .id;
+        assert!(
+            layout.wires.iter().any(|w| w.net == net),
+            "{led}: no wire joins the resistor and the anode"
+        );
+        for wire in layout.wires.iter().filter(|w| w.net == net) {
+            assert!(
+                wire.points.iter().all(|p| (p.0 - anode_x).abs() < 0.01),
+                "{led}: wire bends: {:?}",
+                wire.points
+            );
+        }
     }
 }
