@@ -429,8 +429,8 @@ board "mech" {
 }
 
 /// Pinless, netless mechanical parts carry no connectivity, so their region
-/// is one tight row sized to its content: not a column spread over several
-/// rows, and not stretched to fill the free area beside the real regions.
+/// is one tight row of holes, not a column spread over several rows. The box
+/// is a cell of the page like any other region's.
 #[test]
 fn mounting_holes_take_a_small_row_of_their_own() {
     let source = r#"
@@ -467,14 +467,6 @@ board "mech" {
         .iter()
         .find(|b| b.group == synth_layout::MOUNTING_REGION)
         .expect("MOUNTING region");
-    let (width, height) = (
-        mounting.max_mm.0 - mounting.min_mm.0,
-        mounting.max_mm.1 - mounting.min_mm.1,
-    );
-    assert!(
-        width <= 90.0 && height <= 30.0,
-        "MOUNTING box {width} x {height} mm is bigger than four holes in a row need"
-    );
     let hole_ys: Vec<f64> = board
         .components
         .iter()

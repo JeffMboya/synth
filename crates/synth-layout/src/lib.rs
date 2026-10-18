@@ -337,7 +337,7 @@ pub struct GroupBox {
     pub max_mm: (f64, f64),
     /// Outline + tint hue, assigned deterministically from the group
     /// name ([`group_color`]). The schematic exporter strokes the box
-    /// dashed in this hue with a translucent fill of the same hue.
+    /// as a thin solid line in this hue with a translucent fill of the same hue.
     #[serde(default = "default_group_color")]
     pub color: [u8; 3],
     /// The caption sits inside the box at the top-left (Phase B2).
@@ -1010,6 +1010,7 @@ pub fn layout_with_overrides(
     route_and_label(board, &mut layout);
     // A layout the overlay moved is a pinned one: its positions are kept.
     let pinned = layout.components != before_overlay;
+    let mut cells = None;
     if !pinned {
         for _ in 0..SEPARATE_ROUNDS {
             if !separate_group_boxes(board, &mut layout) {
@@ -1017,16 +1018,34 @@ pub fn layout_with_overrides(
             }
             route_and_label(board, &mut layout);
         }
+        cells = place_regions_in_floorplan(board, &mut layout);
     }
     annotate_groups(board, &mut layout);
     place_connector_legends(board, &mut layout);
     place_design_notes(board, &mut layout);
-    if !pinned {
+    if !pinned && cells.is_none() {
         shift_into_margin(board, &mut layout);
     }
     // Notes sit under their box's bottom edge, so the boxes are stretched to
-    // meet each other only once the notes are placed.
-    let mut fixed = ungrouped_blocks(board, &layout);
+    // their cells, or to meet each other, only once the notes are placed.
+    let stretched = cells
+        .as_deref()
+        .is_some_and(|cells| stretch_to_cells(&mut layout.group_boxes, cells));
+    if !stretched {
+        tile_boxes_to_content(board, &mut layout);
+    }
+    resolve_text_overlaps(board, &mut layout);
+    grow_sheet_to_fit(board, &mut layout);
+    compact_sheet_to_fit(board, &mut layout);
+    settle_sheet_size(board, &mut layout);
+    clamp_annotations_to_sheet(&mut layout);
+    layout
+}
+
+/// Stretch the region boxes to meet their neighbours, for a layout that has no
+/// floorplan.
+fn tile_boxes_to_content(board: &Board, layout: &mut Layout) {
+    let mut fixed = ungrouped_blocks(board, layout);
     // A mechanical region keeps the size its content gave it: it stops the
     // boxes beside it like an ungrouped block does, but does not stretch.
     let mechanical = mechanical_groups(board);
@@ -1038,12 +1057,6 @@ pub fn layout_with_overrides(
     tile_group_boxes(&mut flexible, &fixed, GROUP_TILE_GAP);
     layout.group_boxes = flexible;
     layout.group_boxes.extend(rigid);
-    resolve_text_overlaps(board, &mut layout);
-    grow_sheet_to_fit(board, &mut layout);
-    compact_sheet_to_fit(board, &mut layout);
-    settle_sheet_size(board, &mut layout);
-    clamp_annotations_to_sheet(&mut layout);
-    layout
 }
 
 /// Pull any caption that overhangs the right edge back onto the page.
@@ -1100,7 +1113,8 @@ pub fn effective_group(board: &Board, id: ComponentId) -> Option<&str> {
 ///
 /// Such a part has no net, so its region carries no connectivity and is laid
 /// out apart from the circuit regions: [`MECHANICAL_PITCH`] apart in one row,
-/// packed last, and never stretched to fill free area.
+/// packed last, and, when the boxes are tiled by their content rather than cut
+/// from a floorplan, never stretched to fill free area.
 fn mechanical_groups(board: &Board) -> std::collections::HashSet<&str> {
     let pinless = |id: ComponentId| {
         board
@@ -1137,7 +1151,7 @@ fn mechanical_groups(board: &Board) -> std::collections::HashSet<&str> {
 ///
 /// The box carries a deterministic hue ([`group_color`], dark band
 /// distinct from the net-class brights); the exporter strokes it
-/// dashed in that hue with a translucent fill. Per-text color is not
+/// as a thin solid line in that hue with a translucent fill. Per-text color is not
 /// expressible in KiCad's schematic grammar (verified against
 /// `kicad-cli`: `(color …)` inside text effects fails to load), so
 /// the caption itself renders bold monochrome — containment in the
@@ -1196,6 +1210,26 @@ fn group_box_rect(caption: &str, (min_x, max_x, min_y, max_y): (f64, f64, f64, f
     (min, (max_x, max_y + GROUP_CONTENT_PAD))
 }
 
+/// The box each region will draw: its content box with the notes strip below
+/// it, as [`annotate_groups`] and [`place_design_notes`] will build it.
+fn region_boxes(board: &Board, layout: &Layout) -> Vec<(String, Rect)> {
+    group_bounds(board, layout)
+        .into_iter()
+        .map(|(group, min_x, max_x, min_y, max_y)| {
+            let (min, max) =
+                group_box_rect(&group_caption(board, &group), (min_x, max_x, min_y, max_y));
+            let notes = board
+                .notes
+                .iter()
+                .filter(|n| n.group.as_deref() == Some(group.as_str()))
+                .map(note_strip_height)
+                .sum::<f64>();
+            let note_w = group_note_box_width(board, Some(&group));
+            (group, (min, (max.0.max(min.0 + note_w), max.1 + notes)))
+        })
+        .collect()
+}
+
 /// Rounds of [`separate_group_boxes`]: a shift moves a region's wires and
 /// labels, which can change what it draws, so the boxes are measured again.
 const SEPARATE_ROUNDS: usize = 3;
@@ -1211,21 +1245,7 @@ const SEPARATE_ROUNDS: usize = 3;
 /// settled top to bottom and left to right, each against those already
 /// settled and the parts that belong to no region.
 fn separate_group_boxes(board: &Board, layout: &mut Layout) -> bool {
-    let mut boxes: Vec<(String, Rect)> = group_bounds(board, layout)
-        .into_iter()
-        .map(|(group, min_x, max_x, min_y, max_y)| {
-            let (min, max) =
-                group_box_rect(&group_caption(board, &group), (min_x, max_x, min_y, max_y));
-            let notes = board
-                .notes
-                .iter()
-                .filter(|n| n.group.as_deref() == Some(group.as_str()))
-                .map(note_strip_height)
-                .sum::<f64>();
-            let note_w = group_note_box_width(board, Some(&group));
-            (group, (min, (max.0.max(min.0 + note_w), max.1 + notes)))
-        })
-        .collect();
+    let mut boxes = region_boxes(board, layout);
     let fixed = ungrouped_blocks(board, layout);
     let mut order: Vec<usize> = (0..boxes.len()).collect();
     order.sort_by(|&a, &b| {
@@ -1357,6 +1377,369 @@ fn tile_group_boxes(boxes: &mut [GroupBox], fixed: &[Rect], gap: f64) {
 
 /// A rectangle as `(min, max)` corners in sheet millimetres.
 type Rect = ((f64, f64), (f64, f64));
+
+/// Rounds of [`place_regions_in_floorplan`]: moving a region re-routes its
+/// wires and labels, which can change the box it needs.
+const FLOORPLAN_ROUNDS: usize = 3;
+/// Room (mm) a floorplan cell keeps beyond its region's box, so the region can
+/// be moved by whole grid steps without leaving the cell.
+const FLOORPLAN_GRID_SLACK: f64 = 2.54;
+
+/// The part of a page the region boxes fill: inside the margin and above the
+/// title block band, the same area [`sheet_needs`] keeps clear.
+fn page_frame(size: SheetSize) -> Rect {
+    let (w, h) = size.dims_mm();
+    (
+        (PAGE_MARGIN, PAGE_MARGIN),
+        (w - PAGE_MARGIN, h - TITLE_BLOCK_H - TEXT_MARGIN_Y),
+    )
+}
+
+/// One way to cut a set of regions into two: which regions go first, how the
+/// sides sit, and which shape of each side it uses.
+#[derive(Clone, Copy)]
+struct Cut {
+    /// The regions of the first side, as a bit set; the rest are the second.
+    first_set: u64,
+    /// True when the sides sit next to each other, false when stacked.
+    side_by_side: bool,
+    /// Indices into the shape lists of the first and the second side.
+    first: usize,
+    second: usize,
+}
+
+/// A size a set of regions can be cut to, and how.
+#[derive(Clone, Copy)]
+struct Shape {
+    w: f64,
+    h: f64,
+    cut: Option<Cut>,
+}
+
+/// Up to this many regions every way of splitting them in two is tried; with
+/// more, only a run of regions in reading order is split from the run after it.
+const FLOORPLAN_FULL_SEARCH_REGIONS: usize = 10;
+/// Most regions a floorplan is cut for.
+const FLOORPLAN_MAX_REGIONS: usize = 64;
+
+/// Cut the first of `frames` that can hold them into one cell per region, every
+/// cut running the full width or height of the cell it cuts, so the cells tile
+/// the frame and neighbours are `gap` apart. `sizes` are the least `(width,
+/// height)` each cell may have, in reading order; the cells come back in the
+/// same order, never smaller than their size, with the index of the frame cut.
+/// `None` when no frame holds a cut tree.
+///
+/// Of the cut trees that fit, the one with the smallest bounding area is taken
+/// (aspect ratio closest to the frame's on a tie, then the cut that keeps the
+/// earlier regions together); room left over is shared down the tree in
+/// proportion to the content area on each side.
+fn slicing_floorplan(
+    sizes: &[(f64, f64)],
+    frames: &[Rect],
+    gap: f64,
+) -> Option<(usize, Vec<Rect>)> {
+    let n = sizes.len();
+    if n == 0 || n > FLOORPLAN_MAX_REGIONS {
+        return None;
+    }
+    let all: u64 = u64::MAX >> (64 - n);
+    // The sets worth a shape, smallest first so each set's halves come before it.
+    let mut sets: Vec<u64> = if n <= FLOORPLAN_FULL_SEARCH_REGIONS {
+        (1..=all).collect()
+    } else {
+        (0..n)
+            .flat_map(|i| (i..n).map(move |j| (u64::MAX >> (63 - j)) & (u64::MAX << i)))
+            .collect()
+    };
+    sets.sort_unstable();
+    let mut shapes: std::collections::HashMap<u64, Vec<Shape>> = std::collections::HashMap::new();
+    for &set in &sets {
+        let mut found = Vec::new();
+        if set.is_power_of_two() {
+            let (w, h) = sizes[set.trailing_zeros() as usize];
+            found.push(Shape { w, h, cut: None });
+        }
+        for first_set in first_sides(set, n <= FLOORPLAN_FULL_SEARCH_REGIONS) {
+            for (a, first) in shapes[&first_set].iter().enumerate() {
+                for (b, second) in shapes[&(set ^ first_set)].iter().enumerate() {
+                    let cut = |side_by_side| Cut {
+                        first_set,
+                        side_by_side,
+                        first: a,
+                        second: b,
+                    };
+                    found.push(Shape {
+                        w: first.w + gap + second.w,
+                        h: first.h.max(second.h),
+                        cut: Some(cut(true)),
+                    });
+                    found.push(Shape {
+                        w: first.w.max(second.w),
+                        h: first.h + gap + second.h,
+                        cut: Some(cut(false)),
+                    });
+                }
+            }
+        }
+        found.sort_by(|p, q| p.w.total_cmp(&q.w).then(p.h.total_cmp(&q.h)));
+        // Keep a shape only when it is shorter than every narrower one.
+        let mut kept: Vec<Shape> = Vec::new();
+        for shape in found {
+            if kept.last().is_none_or(|last| shape.h < last.h - 1e-9) {
+                kept.push(shape);
+            }
+        }
+        shapes.insert(set, kept);
+    }
+    let (which, frame, root) = frames.iter().enumerate().find_map(|(which, frame)| {
+        let (frame_w, frame_h) = (frame.1 .0 - frame.0 .0, frame.1 .1 - frame.0 .1);
+        let aspect_miss = |s: &Shape| ((s.w / s.h).ln() - (frame_w / frame_h).ln()).abs();
+        let root = shapes[&all]
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.w <= frame_w + 1e-9 && s.h <= frame_h + 1e-9)
+            .min_by(|(_, p), (_, q)| {
+                (p.w * p.h)
+                    .total_cmp(&(q.w * q.h))
+                    .then(aspect_miss(p).total_cmp(&aspect_miss(q)))
+            })?
+            .0;
+        Some((which, *frame, root))
+    })?;
+    let content = |set: u64| -> f64 {
+        (0..n)
+            .filter(|i| (set >> i) & 1 == 1)
+            .map(|i| sizes[i].0 * sizes[i].1)
+            .sum()
+    };
+    let mut cells = vec![frame; n];
+    let mut pending = vec![(all, root, frame)];
+    while let Some((set, index, rect)) = pending.pop() {
+        let shape = shapes[&set][index];
+        let Some(cut) = shape.cut else {
+            cells[set.trailing_zeros() as usize] = rect;
+            continue;
+        };
+        let second_set = set ^ cut.first_set;
+        let first = shapes[&cut.first_set][cut.first];
+        let first_share = content(cut.first_set) / content(set);
+        let ((x0, y0), (x1, y1)) = rect;
+        let (first_rect, second_rect) = if cut.side_by_side {
+            let edge = x0 + first.w + (x1 - x0 - shape.w).max(0.0) * first_share;
+            (((x0, y0), (edge, y1)), ((edge + gap, y0), (x1, y1)))
+        } else {
+            let edge = y0 + first.h + (y1 - y0 - shape.h).max(0.0) * first_share;
+            (((x0, y0), (x1, edge)), ((x0, edge + gap), (x1, y1)))
+        };
+        pending.push((cut.first_set, cut.first, first_rect));
+        pending.push((second_set, cut.second, second_rect));
+    }
+    Some((which, cells))
+}
+
+/// The sets that may go first when `set` is cut in two, fewest regions first.
+/// Every set holds the lowest region of `set`, so a cut and its mirror are one
+/// cut; with `any` all such sets are tried, else only those that take the
+/// regions of `set` in reading order from the front.
+fn first_sides(set: u64, any: bool) -> Vec<u64> {
+    let lowest = set & set.wrapping_neg();
+    let rest = set ^ lowest;
+    if !any {
+        let mut sides = Vec::new();
+        let (mut side, mut left) = (lowest, rest);
+        while left != 0 {
+            let next = left & left.wrapping_neg();
+            sides.push(side);
+            side |= next;
+            left ^= next;
+        }
+        return sides;
+    }
+    let mut sides = Vec::new();
+    let mut taken = 0_u64;
+    loop {
+        sides.push(lowest | taken);
+        if taken == rest {
+            break;
+        }
+        taken = taken.wrapping_sub(rest) & rest;
+    }
+    sides.pop();
+    sides.sort_by_key(|s| (s.count_ones(), *s));
+    sides
+}
+
+/// Region indices in reading order of the packing they came out of: rows from
+/// the top, left to right inside a row, and mechanical regions last.
+fn reading_order(board: &Board, boxes: &[(String, Rect)]) -> Vec<usize> {
+    let mut by_top: Vec<usize> = (0..boxes.len()).collect();
+    by_top.sort_by(|&a, &b| boxes[a].1 .0 .1.total_cmp(&boxes[b].1 .0 .1));
+    // A box joins the current row while it starts above the middle of the
+    // row's first box.
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    for i in by_top {
+        let same_row = rows.last().is_some_and(|row| {
+            let first = &boxes[row[0]].1;
+            boxes[i].1 .0 .1 < f64::midpoint(first.0 .1, first.1 .1)
+        });
+        if same_row {
+            rows.last_mut().into_iter().for_each(|row| row.push(i));
+        } else {
+            rows.push(vec![i]);
+        }
+    }
+    let mut order: Vec<usize> = rows
+        .into_iter()
+        .flat_map(|mut row| {
+            row.sort_by(|&a, &b| boxes[a].1 .0 .0.total_cmp(&boxes[b].1 .0 .0));
+            row
+        })
+        .collect();
+    let mechanical = mechanical_groups(board);
+    order.sort_by_key(|&i| mechanical.contains(boxes[i].0.as_str()));
+    order
+}
+
+/// Pages a floorplan may be cut for, smallest first: the one the design asked
+/// for, then each larger standard page the policy allows.
+fn floorplan_sheets(board: &Board) -> Vec<SheetSize> {
+    let requested = requested_sheet(board);
+    let (req_w, req_h) = requested.dims_mm();
+    let (max_w, max_h) = max_single_sheet(board).dims_mm();
+    let larger = [
+        SheetSize::A4,
+        SheetSize::A3,
+        SheetSize::A2,
+        SheetSize::A1,
+        SheetSize::A0,
+    ]
+    .into_iter()
+    .filter(|s| {
+        let (w, h) = s.dims_mm();
+        w * h > req_w * req_h
+    });
+    std::iter::once(requested)
+        .chain(larger)
+        .filter(|s| {
+            let (w, h) = s.dims_mm();
+            w <= max_w && h <= max_h
+        })
+        .collect()
+}
+
+/// True when `inner` lies within `outer`.
+fn rect_within(inner: &Rect, outer: &Rect) -> bool {
+    const EPS: f64 = 1e-6;
+    inner.0 .0 >= outer.0 .0 - EPS
+        && inner.0 .1 >= outer.0 .1 - EPS
+        && inner.1 .0 <= outer.1 .0 + EPS
+        && inner.1 .1 <= outer.1 .1 + EPS
+}
+
+/// Move every region to the top-left of a cell of one floorplan that fills the
+/// page frame, and return the cells by region name. The floorplan is cut for
+/// the smallest page it fits, which becomes the layout's sheet.
+///
+/// Regions only move, in whole grid steps; what they draw is not stretched, so
+/// each stays under its title band at the top-left of its cell. Wires and
+/// labels are routed again afterwards, which can change what a region draws,
+/// so the regions are measured again and the floorplan redone until every one
+/// fits its cell. `None`, with the layout as it was, when a part belongs to no
+/// region (it has no cell), fewer than two regions exist, no allowed page
+/// holds the floorplan, or the rounds do not settle.
+fn place_regions_in_floorplan(board: &Board, layout: &mut Layout) -> Option<Vec<(String, Rect)>> {
+    let before = layout.clone();
+    let placed = floorplan_rounds(board, layout);
+    if placed.is_none() {
+        *layout = before;
+    }
+    placed
+}
+
+fn floorplan_rounds(board: &Board, layout: &mut Layout) -> Option<Vec<(String, Rect)>> {
+    if !ungrouped_blocks(board, layout).is_empty() {
+        return None;
+    }
+    for _ in 0..FLOORPLAN_ROUNDS {
+        let natural = region_boxes(board, layout);
+        if natural.len() < 2 {
+            return None;
+        }
+        let order = reading_order(board, &natural);
+        let sizes: Vec<(f64, f64)> = order
+            .iter()
+            .map(|&i| {
+                let (min, max) = natural[i].1;
+                (
+                    max.0 - min.0 + FLOORPLAN_GRID_SLACK,
+                    max.1 - min.1 + FLOORPLAN_GRID_SLACK,
+                )
+            })
+            .collect();
+        let sheets = floorplan_sheets(board);
+        let frames: Vec<Rect> = sheets.iter().map(|&s| page_frame(s)).collect();
+        let (which, cells) = slicing_floorplan(&sizes, &frames, GROUP_TILE_GAP)?;
+        let sheet = sheets[which];
+        let cells: Vec<(String, Rect)> = order
+            .iter()
+            .zip(cells)
+            .map(|(&i, cell)| (natural[i].0.clone(), cell))
+            .collect();
+        // Whole grid steps that carry `from` to or past `to`.
+        let steps = |from: f64, to: f64| ((to - from) / 2.54 - 1e-9).ceil() * 2.54;
+        let shifts: std::collections::HashMap<&str, (f64, f64)> = cells
+            .iter()
+            .filter_map(|(group, cell)| {
+                let (_, current) = natural.iter().find(|(g, _)| g == group)?;
+                Some((
+                    group.as_str(),
+                    (
+                        steps(current.0 .0, cell.0 .0),
+                        steps(current.0 .1, cell.0 .1),
+                    ),
+                ))
+            })
+            .collect();
+        for placement in &mut layout.components {
+            let Some(&(dx, dy)) = effective_group(board, placement.id).and_then(|g| shifts.get(g))
+            else {
+                continue;
+            };
+            placement.center_mm.0 += dx;
+            placement.center_mm.1 += dy;
+        }
+        layout.sheet_size = sheet;
+        route_and_label(board, layout);
+        let settled = region_boxes(board, layout).iter().all(|(group, rect)| {
+            cells
+                .iter()
+                .any(|(g, cell)| g == group && rect_within(rect, cell))
+        });
+        if settled {
+            return Some(cells);
+        }
+    }
+    None
+}
+
+/// Set every region box to its floorplan cell. False, with the boxes left as
+/// they were, when a box does not fit inside its cell.
+fn stretch_to_cells(boxes: &mut [GroupBox], cells: &[(String, Rect)]) -> bool {
+    let cell_of = |group: &str| cells.iter().find(|(g, _)| g == group).map(|(_, c)| *c);
+    let fits = boxes.len() == cells.len()
+        && boxes.iter().all(|b| {
+            cell_of(&b.group).is_some_and(|cell| rect_within(&(b.min_mm, b.max_mm), &cell))
+        });
+    if fits {
+        for b in boxes.iter_mut() {
+            if let Some((min, max)) = cell_of(&b.group) {
+                b.min_mm = min;
+                b.max_mm = max;
+            }
+        }
+    }
+    fits
+}
 
 /// The parts that belong to no group, with what they draw past their bodies,
 /// padded like a group box. They have no box of their own, so a group box
@@ -9026,6 +9409,165 @@ mod documentation_tests {
         );
     }
 
+    /// Resistors split over groups as `(group, count)`, chained by one signal
+    /// each so the groups are joined across their edges.
+    fn resistor_groups(counts: &[(&str, u32)], ungrouped: u32) -> Board {
+        let r = || part("resistor", vec![pin("p1"), pin("p2")]);
+        let mut components = Vec::new();
+        for (group, count) in counts {
+            for _ in 0..*count {
+                let id = components.len() as u32;
+                components.push(component(id, &format!("R{id}"), r(), Some(group)));
+            }
+        }
+        for _ in 0..ungrouped {
+            let id = components.len() as u32;
+            components.push(component(id, &format!("R{id}"), r(), None));
+        }
+        let nets = (1..components.len() as u32)
+            .map(|i| net(i, &format!("SIG{i}"), &[(i - 1, 1), (i, 0)]))
+            .collect();
+        board_with_notes(components, nets, vec![])
+    }
+
+    const FOUR_REGIONS: [(&str, u32); 4] =
+        [("Input", 3), ("Filter", 5), ("Output", 2), ("Debug", 1)];
+
+    fn area(r: &Rect) -> f64 {
+        (r.1 .0 - r.0 .0) * (r.1 .1 - r.0 .1)
+    }
+
+    #[test]
+    fn regions_of_different_sizes_fill_the_sheet_frame() {
+        let layout = layout(&resistor_groups(&FOUR_REGIONS, 0));
+        let frame = page_frame(layout.sheet_size);
+        let boxes: Vec<Rect> = layout
+            .group_boxes
+            .iter()
+            .map(|b| (b.min_mm, b.max_mm))
+            .collect();
+        assert_eq!(boxes.len(), 4);
+        let covered: f64 = boxes.iter().map(area).sum();
+        assert!(
+            covered >= 0.99 * area(&frame),
+            "boxes cover {covered} of the frame {}",
+            area(&frame)
+        );
+        let (min_x, max_x) = (
+            boxes.iter().map(|b| b.0 .0).fold(f64::MAX, f64::min),
+            boxes.iter().map(|b| b.1 .0).fold(f64::MIN, f64::max),
+        );
+        assert!((min_x - frame.0 .0).abs() < 1e-6 && (max_x - frame.1 .0).abs() < 1e-6);
+        let (min_y, max_y) = (
+            boxes.iter().map(|b| b.0 .1).fold(f64::MAX, f64::min),
+            boxes.iter().map(|b| b.1 .1).fold(f64::MIN, f64::max),
+        );
+        assert!((min_y - frame.0 .1).abs() < 1e-6 && (max_y - frame.1 .1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn region_boxes_that_face_each_other_are_one_line_apart() {
+        let layout = layout(&resistor_groups(&FOUR_REGIONS, 0));
+        for (i, a) in layout.group_boxes.iter().enumerate() {
+            for c in &layout.group_boxes[i + 1..] {
+                let shares_rows = a.min_mm.1 < c.max_mm.1 && c.min_mm.1 < a.max_mm.1;
+                let shares_cols = a.min_mm.0 < c.max_mm.0 && c.min_mm.0 < a.max_mm.0;
+                assert!(
+                    !(shares_rows && shares_cols),
+                    "{} and {} overlap",
+                    a.group,
+                    c.group
+                );
+                let gap_across = (c.min_mm.0 - a.max_mm.0).max(a.min_mm.0 - c.max_mm.0);
+                let gap_down = (c.min_mm.1 - a.max_mm.1).max(a.min_mm.1 - c.max_mm.1);
+                let gap = if shares_rows { gap_across } else { gap_down };
+                let facing = shares_rows || shares_cols;
+                // Only the nearest neighbour is one line away; a box behind
+                // another may be farther.
+                if facing && gap < 2.0 * GROUP_LINE_MM {
+                    assert!(
+                        (gap - GROUP_LINE_MM).abs() < 1e-6,
+                        "{} and {} are {gap} mm apart",
+                        a.group,
+                        c.group
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn region_content_stays_under_the_title_band_at_the_top_left_of_its_cell() {
+        let b = resistor_groups(&FOUR_REGIONS, 0);
+        let layout = layout(&b);
+        for (group, min_x, _, min_y, _) in group_bounds(&b, &layout) {
+            let cell = box_of(&layout, &group);
+            let left = min_x - cell.min_mm.0;
+            let top = min_y - cell.min_mm.1;
+            assert!(
+                (GROUP_CONTENT_PAD - 1e-6..GROUP_CONTENT_PAD + 2.54).contains(&left),
+                "{group}: content starts {left} mm from the left edge"
+            );
+            assert!(
+                (GROUP_TITLE_BAND_MM - 1e-6..GROUP_TITLE_BAND_MM + 2.54).contains(&top),
+                "{group}: content starts {top} mm under the top edge"
+            );
+        }
+    }
+
+    #[test]
+    fn a_page_too_small_for_the_regions_grows_to_hold_them() {
+        let crowded = [
+            ("A", 12),
+            ("B", 12),
+            ("C", 12),
+            ("D", 12),
+            ("E", 12),
+            ("F", 12),
+        ];
+        let layout = layout(&resistor_groups(&crowded, 0));
+        let (w, h) = layout.sheet_size.dims_mm();
+        assert!(w > 297.0 && h > 210.0, "{:?}", layout.sheet_size);
+        let frame = page_frame(layout.sheet_size);
+        let covered: f64 = layout
+            .group_boxes
+            .iter()
+            .map(|b| area(&(b.min_mm, b.max_mm)))
+            .sum();
+        assert!(covered >= 0.99 * area(&frame));
+    }
+
+    #[test]
+    fn a_pinned_layout_keeps_the_boxes_its_content_gave_it() {
+        let b = resistor_groups(&FOUR_REGIONS, 0);
+        let layout = layout_with_overrides(&b, &default_placer(), &|l: &mut Layout| {
+            l.components[0].center_mm.0 += 2.54;
+        });
+        let covered: f64 = layout
+            .group_boxes
+            .iter()
+            .map(|b| area(&(b.min_mm, b.max_mm)))
+            .sum();
+        assert!(
+            covered < 0.9 * area(&page_frame(layout.sheet_size)),
+            "a pinned layout was stretched to the frame"
+        );
+    }
+
+    #[test]
+    fn parts_outside_every_region_keep_the_packed_boxes() {
+        let layout = layout(&resistor_groups(&FOUR_REGIONS, 1));
+        let covered: f64 = layout
+            .group_boxes
+            .iter()
+            .map(|b| area(&(b.min_mm, b.max_mm)))
+            .sum();
+        assert!(
+            covered < 0.9 * area(&page_frame(layout.sheet_size)),
+            "boxes fill the frame although a part belongs to no region"
+        );
+    }
+
     #[test]
     fn a_box_has_room_above_and_below_a_horizontal_part_for_its_fields() {
         let b = board_with_notes(
@@ -9351,6 +9893,167 @@ mod region_packing_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod slicing_floorplan_tests {
+    use super::Rect;
+
+    const GAP: f64 = 0.25;
+
+    fn slicing_floorplan(sizes: &[(f64, f64)], frame: Rect, gap: f64) -> Option<Vec<Rect>> {
+        super::slicing_floorplan(sizes, &[frame], gap).map(|(_, cells)| cells)
+    }
+    const FRAME: Rect = ((10.0, 10.0), (210.0, 110.0));
+    const SIZES: [(f64, f64); 5] = [
+        (40.0, 90.0),
+        (60.0, 30.0),
+        (50.0, 40.0),
+        (30.0, 30.0),
+        (70.0, 20.0),
+    ];
+
+    fn width(r: &Rect) -> f64 {
+        r.1 .0 - r.0 .0
+    }
+
+    fn height(r: &Rect) -> f64 {
+        r.1 .1 - r.0 .1
+    }
+
+    fn overlap(a: &Rect, b: &Rect) -> bool {
+        a.0 .0 < b.1 .0 && b.0 .0 < a.1 .0 && a.0 .1 < b.1 .1 && b.0 .1 < a.1 .1
+    }
+
+    #[test]
+    fn the_cells_never_overlap_or_leave_the_frame() {
+        let cells = slicing_floorplan(&SIZES, FRAME, GAP).expect("fits");
+        assert_eq!(cells.len(), SIZES.len());
+        for (i, a) in cells.iter().enumerate() {
+            assert!(a.0 .0 >= FRAME.0 .0 && a.0 .1 >= FRAME.0 .1);
+            assert!(a.1 .0 <= FRAME.1 .0 + 1e-9 && a.1 .1 <= FRAME.1 .1 + 1e-9);
+            for b in &cells[i + 1..] {
+                assert!(!overlap(a, b), "{a:?} overlaps {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_cell_is_never_smaller_than_its_size() {
+        let cells = slicing_floorplan(&SIZES, FRAME, GAP).expect("fits");
+        for (cell, (w, h)) in cells.iter().zip(SIZES) {
+            assert!(width(cell) >= w - 1e-9 && height(cell) >= h - 1e-9);
+        }
+    }
+
+    #[test]
+    fn the_cells_and_the_lines_between_them_fill_the_frame() {
+        let cells = slicing_floorplan(&SIZES, FRAME, GAP).expect("fits");
+        let covered: f64 = cells.iter().map(|c| width(c) * height(c)).sum();
+        let frame = width(&FRAME) * height(&FRAME);
+        // What is left is the strips between neighbours, one gap wide.
+        assert!(covered <= frame && covered > frame - 4.0 * GAP * 200.0);
+        for edge in [
+            cells.iter().map(|c| c.0 .0).fold(f64::MAX, f64::min) - FRAME.0 .0,
+            cells.iter().map(|c| c.0 .1).fold(f64::MAX, f64::min) - FRAME.0 .1,
+            FRAME.1 .0 - cells.iter().map(|c| c.1 .0).fold(f64::MIN, f64::max),
+            FRAME.1 .1 - cells.iter().map(|c| c.1 .1).fold(f64::MIN, f64::max),
+        ] {
+            assert!(edge.abs() < 1e-9, "a frame edge is not met: {edge}");
+        }
+    }
+
+    #[test]
+    fn every_cut_runs_the_whole_way_across_its_cell() {
+        // Two stacked on the left, one tall on the right: the vertical line
+        // between the columns is one cut, so both left cells end at the same x
+        // and the right cell starts one gap after it.
+        let sizes = [(40.0, 40.0), (40.0, 40.0), (40.0, 90.0)];
+        let cells = slicing_floorplan(&sizes, FRAME, GAP).expect("fits");
+        assert!((cells[0].1 .0 - cells[1].1 .0).abs() < 1e-9);
+        assert!((cells[2].0 .0 - cells[0].1 .0 - GAP).abs() < 1e-9);
+        assert!((height(&cells[2]) - height(&FRAME)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn regions_need_not_stay_in_reading_order_when_that_is_what_fits() {
+        // Only the first and the third stacked beside the second fit 161 mm.
+        let sizes = [(100.0, 40.0), (60.0, 100.0), (100.0, 50.0)];
+        let frame = ((10.0, 10.0), (171.0, 110.0));
+        let cells = slicing_floorplan(&sizes, frame, GAP).expect("fits");
+        assert!((cells[0].1 .0 - cells[2].1 .0).abs() < 1e-9);
+        assert!(cells[1].0 .0 > cells[0].1 .0);
+    }
+
+    #[test]
+    fn the_first_frame_that_holds_the_regions_is_the_one_cut() {
+        let sizes = [(150.0, 40.0), (150.0, 40.0)];
+        let small = ((0.0, 0.0), (100.0, 100.0));
+        let (which, cells) =
+            super::slicing_floorplan(&sizes, &[small, FRAME, ((0.0, 0.0), (1000.0, 1000.0))], GAP)
+                .expect("fits");
+        assert_eq!(which, 1);
+        assert!(cells
+            .iter()
+            .all(|c| c.1 .0 <= FRAME.1 .0 && c.0 .0 >= FRAME.0 .0));
+    }
+
+    #[test]
+    fn ten_differing_regions_are_cut_in_good_time() {
+        let sizes: Vec<(f64, f64)> = (0..10)
+            .map(|i| {
+                (
+                    30.0 + f64::from(i * 7 % 5) * 9.0,
+                    25.0 + f64::from(i * 3 % 7) * 6.0,
+                )
+            })
+            .collect();
+        let frame = ((10.0, 10.0), (410.0, 290.0));
+        assert!(slicing_floorplan(&sizes, frame, GAP).is_some());
+    }
+
+    #[test]
+    fn many_regions_are_cut_in_reading_order() {
+        let sizes = vec![(20.0, 20.0); 14];
+        let cells = slicing_floorplan(&sizes, FRAME, GAP).expect("fits");
+        assert_eq!(cells.len(), 14);
+        for (i, a) in cells.iter().enumerate() {
+            for b in &cells[i + 1..] {
+                assert!(!overlap(a, b), "{a:?} overlaps {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_single_region_takes_the_whole_frame() {
+        let cells = slicing_floorplan(&[(10.0, 10.0)], FRAME, GAP).expect("fits");
+        assert_eq!(cells, vec![FRAME]);
+    }
+
+    #[test]
+    fn extra_room_is_shared_in_proportion_to_content() {
+        let sizes = [(20.0, 100.0), (60.0, 100.0)];
+        let wide = ((0.0, 0.0), (300.0, 100.0));
+        let cells = slicing_floorplan(&sizes, wide, GAP).expect("fits");
+        let extra = 300.0 - 80.0 - GAP;
+        // The second holds three times the content of the first.
+        assert!((width(&cells[0]) - (20.0 + extra / 4.0)).abs() < 1e-9);
+        assert!((width(&cells[1]) - (60.0 + extra * 3.0 / 4.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn no_floorplan_when_the_sizes_cannot_fit() {
+        assert!(slicing_floorplan(&[(150.0, 90.0), (150.0, 90.0)], FRAME, GAP).is_none());
+        assert!(slicing_floorplan(&[], FRAME, GAP).is_none());
+    }
+
+    #[test]
+    fn the_same_sizes_give_the_same_cells() {
+        assert_eq!(
+            slicing_floorplan(&SIZES, FRAME, GAP),
+            slicing_floorplan(&SIZES, FRAME, GAP)
+        );
     }
 }
 

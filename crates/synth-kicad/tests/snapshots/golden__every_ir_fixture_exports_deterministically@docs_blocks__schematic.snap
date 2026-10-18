@@ -1110,7 +1110,7 @@ expression: schematic
 		(end 57.47 58.42)
 		(stroke
 			(width 0.254)
-			(type dash)
+			(type solid)
 			(color 139 69 19 1)
 		)
 		(fill

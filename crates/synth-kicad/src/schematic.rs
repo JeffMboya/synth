@@ -649,11 +649,11 @@ pub(crate) fn build_sheet_schematic(
     // `kicad-cli sch erc` accepts at top level — a bare
     // `(rect … (fill none))` fails to load.
     //
-    // Phase B2 styling: a dashed stroke in the group's deterministic
+    // Phase B2 styling: a thin solid stroke in the group's deterministic
     // hue ([`synth_layout::group_color`]) plus a translucent fill of
     // the same hue, so each region reads as its own block (reference
     // mechanism 2). The grammar was verified against `kicad-cli 10`:
-    // `(stroke (type dash) (color r g b 1))` and
+    // `(stroke (type solid) (color r g b 1))` and
     // `(fill (type color) (color r g b 0.08))` both load.
     for group_box in &layout.group_boxes {
         let uuid = derive_entity_uuid(project, "group_box", &group_box.group);
@@ -673,7 +673,7 @@ pub(crate) fn build_sheet_schematic(
                     "stroke",
                     vec![
                         Sexp::list("width", vec![num(0.254)]),
-                        Sexp::list("type", vec![Sexp::atom("dash")]),
+                        Sexp::list("type", vec![Sexp::atom("solid")]),
                         Sexp::list(
                             "color",
                             vec![
@@ -3271,7 +3271,7 @@ mod tests {
         let project = crate::uuid_v5::project_namespace(&board.name);
         let text = build_schematic(&board, &project).to_string_pretty();
         // Sanity: the styled forms are present before we ask KiCad.
-        assert!(text.contains("(type dash)"), "dashed stroke");
+        assert!(text.contains("(type solid)"), "solid stroke");
         assert!(text.contains("(type color)"), "colour fill");
         assert!(text.contains("bold"), "bold caption");
         assert!(text.contains("Keep leads short."), "in-box note line");
@@ -3310,9 +3310,9 @@ mod tests {
         let text = build_schematic(&board, &project).to_string_pretty();
         assert!(text.contains("(rectangle"), "group outline box must render");
         assert!(text.contains("\"Input\""), "group caption must render");
-        // Phase B2: dashed stroke in the group hue plus a translucent
+        // Phase B2: thin solid stroke in the group hue plus a translucent
         // fill of the same hue.
-        assert!(text.contains("(type dash)"), "box stroke must be dashed");
+        assert!(text.contains("(type solid)"), "box stroke must be solid");
         assert!(
             text.contains("(fill") && text.contains("(type color)"),
             "box must carry a colour fill"
