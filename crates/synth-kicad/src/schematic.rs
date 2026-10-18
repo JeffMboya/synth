@@ -1026,11 +1026,6 @@ fn build_no_connect(
     ))
 }
 
-/// How far (mm) a label on a vertical pin continues out along the pin
-/// before turning sideways — one grid step, enough to lift the label text
-/// off the part's end and away from its side-placed fields.
-const VERTICAL_LABEL_RISE: f64 = 2.54;
-
 /// Text height (mm) of a net label flag. KiCad draws the box twice the text
 /// height plus a 0.15 mm line (about 2.7 mm at 1.27, 2.45 mm at 1.15, measured
 /// in a kicad-cli render), so 1.15 fits the 2.54 mm pin pitch and flags on
@@ -1041,7 +1036,8 @@ const FLAG_FONT_MM: f64 = 1.15;
 /// coordinate. With `global` it is a `(global_label)` whose output shape
 /// draws a boxed flag with its point away from the stub. A global label
 /// joins same-named nets on every sheet, so a design with several sheets
-/// passes `false` and gets a plain local `(label)` instead.
+/// passes `false` and gets a plain local `(label)` instead. Where the stub
+/// runs is `synth_layout::route::net_label_plan`.
 fn build_net_label(
     board: &Board,
     label: &synth_layout::NetLabel,
@@ -1051,23 +1047,15 @@ fn build_net_label(
     global: bool,
 ) -> Option<Vec<Sexp>> {
     let component = board.component(label.component)?;
-    let (x, y, dx, dy) = pin_terminal_xy(board, label.component, label.pin, placements)?;
-    let stub_len = 5.08;
-    // A label on a vertical pin (a resistor or LED turned upright) used to
-    // turn sideways right at the pin end, which drops its text beside the
-    // part's end — in the same column as the part's side-placed
-    // Reference/Value fields. Carry the wire one grid step further out
-    // along the pin first, so the label clears the part's extent.
-    let elbow_y = if dx.abs() < 0.1 && dy.abs() > 0.1 {
-        y + dy.signum() * VERTICAL_LABEL_RISE
-    } else {
-        y
-    };
-    let (stub_x, angle) = if dx >= -0.1 {
-        (x + stub_len, 0.0)
-    } else {
-        (x - stub_len, 180.0)
-    };
+    let plan = synth_layout::route::net_label_plan(
+        board,
+        label.component,
+        label.pin,
+        placements,
+        label.spot,
+    )?;
+    let (stub_x, elbow_y) = plan.anchor;
+    let angle = if plan.faces_right { 0.0 } else { 180.0 };
 
     let key = format!("net_label_{}_{}", component.refdes, label.pin.0);
     let wire_uuid = derive_entity_uuid(project, "net_label_wire", &key);
@@ -1089,12 +1077,16 @@ fn build_net_label(
             ],
         )
     };
-    let mut out = Vec::with_capacity(3);
-    if (elbow_y - y).abs() > f64::EPSILON {
-        let rise_uuid = derive_entity_uuid(project, "net_label_rise", &key);
-        out.push(wire((x, y), (x, elbow_y), rise_uuid));
+    let rise_uuid = derive_entity_uuid(project, "net_label_rise", &key);
+    let mut out = Vec::with_capacity(plan.wire.len());
+    for seg in plan.wire.windows(2) {
+        let uuid = if seg[0].0 == seg[1].0 {
+            rise_uuid
+        } else {
+            wire_uuid
+        };
+        out.push(wire(seg[0], seg[1], uuid));
     }
-    out.push(wire((x, elbow_y), (stub_x, elbow_y), wire_uuid));
 
     // The label text carries the same hue as its wire, so a name and
     // the line it names read as one object (reference sheet
@@ -2226,37 +2218,30 @@ fn field_obstacles(
     let labels = layout
         .net_labels
         .iter()
-        .map(|l| (&l.label, l.component, l.pin, true))
-        .chain(
-            layout
-                .hierarchical_labels
-                .iter()
-                .map(|l| (&l.label, l.component, l.pin, false)),
-        );
-    for (text, component, pin, rises) in labels {
+        .map(|l| (&l.label, l.component, l.pin, l.spot))
+        .chain(layout.hierarchical_labels.iter().map(|l| {
+            (
+                &l.label,
+                l.component,
+                l.pin,
+                synth_layout::LabelSpot::default(),
+            )
+        }));
+    for (text, component, pin, spot) in labels {
         let Some((x0, y0, x1, y1)) =
-            synth_layout::route::net_label_rect(board, text, component, pin, placements)
+            synth_layout::route::net_label_rect(board, text, component, pin, placements, spot)
         else {
             continue;
         };
-        let Some((pin_x, pin_y, dx, dy)) = pin_terminal_xy(board, component, pin, placements)
-        else {
+        let Some((pin_x, ..)) = pin_terminal_xy(board, component, pin, placements) else {
             continue;
-        };
-        let rise = if rises && dx.abs() < 0.1 && dy.abs() > 0.1 {
-            dy.signum() * VERTICAL_LABEL_RISE
-        } else {
-            0.0
         };
         out.push(fixed(field_clear::Rect {
             x0: x0.min(pin_x),
-            y0: y0 + rise,
+            y0,
             x1: x1.max(pin_x),
-            y1: y1 + rise,
+            y1,
         }));
-        if rise != 0.0 {
-            out.push(fixed(wire_rect((pin_x, pin_y), (pin_x, pin_y + rise))));
-        }
     }
     for component in &board.components {
         let Some(part) = component.part.as_ref() else {
@@ -3617,6 +3602,7 @@ mod tests {
                     component.id,
                     pin,
                     &placements,
+                    synth_layout::LabelSpot::default(),
                 ) else {
                     continue;
                 };
@@ -3636,6 +3622,7 @@ mod tests {
             component,
             pin,
             label: LABEL.to_string(),
+            spot: synth_layout::LabelSpot::default(),
         });
         let after = field_boxes_for(&board, &layout);
         let (text, x0, y0, x1, y1) = &after[field];
@@ -3742,6 +3729,7 @@ mod tests {
                     component: c.id,
                     pin: synth_ir::PinId(0),
                     label: "SIG".to_string(),
+                    spot: synth_layout::LabelSpot::default(),
                 };
                 build_net_label(&board, &label, &placements, &project, None, global)
             })

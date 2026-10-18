@@ -40,6 +40,13 @@ The numbers say how much of the page is collisions and how much is wasted:
                                   down to the symbol, text or wire under it in
                                   its box (negative when they overlap; None when
                                   no caption has anything under it)
+  flag_pairs_overlapping          pairs of net label flags whose boxes overlap
+                                  (read from the `global_label` positions: a
+                                  flag is FLAG_CHAR_MM per character plus
+                                  FLAG_PAD_MM wide, FLAG_H_MM tall, and runs
+                                  from its anchor away from its stub; boxes
+                                  that overlap by less than FLAG_TOUCH_MM only
+                                  touch, as flags on a 2.54 mm pin pitch do)
   label_columns_misaligned        symbol sides whose labels do not line up: more
                                   than one distinct x on a left or right side,
                                   more than one distinct y on a top or bottom
@@ -86,6 +93,13 @@ TITLE_BLOCK_INSET_MM = 2.0
 # A caption's plotted text starts this close to its `(at)` in x and ends this
 # close to it in y.
 CAPTION_MATCH_MM = 2.5
+# The box a global label output flag plots: 1.12 mm per character plus 2.9, and
+# 2.65 tall. Flags that overlap by less than FLAG_TOUCH_MM only touch: flags on a
+# 2.54 mm pin pitch are 0.11 mm taller than the pitch.
+FLAG_CHAR_MM = 1.12
+FLAG_PAD_MM = 2.9
+FLAG_H_MM = 2.65
+FLAG_TOUCH_MM = 0.2
 # Longest kicad-cli may take to plot one schematic.
 PLOT_TIMEOUT_S = 300
 
@@ -472,12 +486,29 @@ def page_size(svg_text):
     return (float(box.group(3)), float(box.group(4))) if box else (0.0, 0.0)
 
 
-def _boxes_overlap(a, b):
+def parse_flags(sch_text):
+    """Every global label's flag as (text, x0, y0, x1, y1): the box from the label's
+    anchor away from its stub, to the right at angle 0 and to the left at 180."""
+    flags = []
+    for opening in re.finditer(r'\(global_label\s+"([^"]*)"', sch_text):
+        block = _balanced(sch_text, opening.start())
+        at = re.search(rf"\(at ({_NUMBER}) ({_NUMBER}) ({_NUMBER})", block)
+        if not at:
+            continue
+        x, y, angle = (float(v) for v in at.groups())
+        text = opening.group(1)
+        width = len(text) * FLAG_CHAR_MM + FLAG_PAD_MM
+        x0, x1 = (x - width, x) if angle == 180 else (x, x + width)
+        flags.append((text, x0, y - FLAG_H_MM / 2, x1, y + FLAG_H_MM / 2))
+    return flags
+
+
+def _boxes_overlap(a, b, tolerance=TOLERANCE_MM):
     return (
-        a[1] < b[3] - TOLERANCE_MM
-        and b[1] < a[3] - TOLERANCE_MM
-        and a[2] < b[4] - TOLERANCE_MM
-        and b[2] < a[4] - TOLERANCE_MM
+        a[1] < b[3] - tolerance
+        and b[1] < a[3] - tolerance
+        and a[2] < b[4] - tolerance
+        and b[2] < a[4] - tolerance
     )
 
 
@@ -517,18 +548,27 @@ def score(
     label_pairs=(),
     symbol_boxes=(),
     titles=(),
+    flags=(),
 ):
     """The numbers in the module doc for `wires`, `texts` and `page` (w, h).
 
     `content_points` are anchors of symbols and corners of group boxes; with
     the wires they say where the schematic is, so page furniture is ignored.
     `label_pairs` are the labels beside pins, from `label_pin_pairs`;
-    `symbol_boxes` and `titles` come from `parse_symbol_boxes` and `parse_titles`."""
+    `symbol_boxes` and `titles` come from `parse_symbol_boxes` and `parse_titles`;
+    `flags` come from `parse_flags`."""
     overlapping = 0
     for i, a in enumerate(texts):
         for b in texts[i + 1 :]:
             if _boxes_overlap(a, b):
                 overlapping += 1
+
+    flag_pairs = sum(
+        1
+        for i, a in enumerate(flags)
+        for b in flags[i + 1 :]
+        if _boxes_overlap(a, b, FLAG_TOUCH_MM)
+    )
 
     through = sum(
         1 for t in texts if any(_segment_hits_box(w, t) for w in wires)
@@ -565,6 +605,7 @@ def score(
         ),
         "title_gap_min_mm": smallest_title_gap(group_boxes, titles, texts, symbol_boxes, wires),
         "labels_repeating_pin_name": sum(1 for p in label_pairs if p[2] == p[4]),
+        "flag_pairs_overlapping": flag_pairs,
         "label_columns_misaligned": sum(1 for c in columns.values() if len(c) > 1),
     }
 
@@ -668,6 +709,7 @@ def score_file(sch_path):
         label_pin_pairs(sch_text),
         parse_symbol_boxes(sch_text),
         parse_titles(sch_text),
+        parse_flags(sch_text),
     )
 
 

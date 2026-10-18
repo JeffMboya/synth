@@ -55,6 +55,7 @@ pub mod footprint_resolve;
 pub mod kicad_footprint_loader;
 pub mod kicad_lib_loader;
 pub mod kicad_zip;
+mod label_spots;
 pub mod maxrects;
 pub mod netclass;
 pub mod ops;
@@ -228,6 +229,20 @@ pub struct NetLabel {
     /// Text drawn next to the pin's stub end. Same for every
     /// endpoint of the same net.
     pub label: String,
+    /// Where the flag hangs when the default spot is taken.
+    #[serde(default)]
+    pub spot: LabelSpot,
+}
+
+/// How a net label's flag is moved off its default spot, a 5.08 mm stub
+/// straight out of the pin. All zero is the default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LabelSpot {
+    /// A flag on a pin beside its part rises this many grid steps (2.54 mm;
+    /// negative is up) from the end of its stub.
+    pub lift: i8,
+    /// A flag on a pin above or below its part runs left instead of right.
+    pub flipped: bool,
 }
 
 /// A cross-sheet signal net stub (§P26 multi-sheet).
@@ -1652,16 +1667,16 @@ fn drawn_beyond_bodies(board: &Board, layout: &Layout) -> Vec<(ComponentId, (f64
     let labels = layout
         .net_labels
         .iter()
-        .map(|l| (&l.label, l.component, l.pin))
+        .map(|l| (&l.label, l.component, l.pin, l.spot))
         .chain(
             layout
                 .hierarchical_labels
                 .iter()
-                .map(|l| (&l.label, l.component, l.pin)),
+                .map(|l| (&l.label, l.component, l.pin, LabelSpot::default())),
         );
-    for (text, component, pin) in labels {
+    for (text, component, pin, spot) in labels {
         let Some((x0, y0, x1, y1)) =
-            route::net_label_rect(board, text, component, pin, &placements)
+            route::net_label_rect(board, text, component, pin, &placements, spot)
         else {
             continue;
         };
@@ -2240,6 +2255,7 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
     // Labels are classified AFTER placement so we know each
     // endpoint's coordinates and can measure span.
     layout.net_labels = classify_net_labels(board, layout);
+    label_spots::clear_net_labels(board, layout, 0);
     // Route every signal net over the placed sheet. Both consumers —
     // the browser preview and the KiCad export — share this router.
     let route = route::route_board(board, layout);
@@ -2250,6 +2266,7 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
     // found nothing) or routed but crossing too many other nets
     // (§7.7.3) — get the same escape hatch a human uses when a wire
     // would tangle. Same-named labels connect them electrically.
+    let classified = layout.net_labels.len();
     for net_id in route.nets_truncated_to_labels {
         let Some(net) = board.net(net_id) else {
             continue;
@@ -2261,6 +2278,7 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
                 component: ep.component,
                 pin: ep.pin,
                 label: text.clone(),
+                spot: LabelSpot::default(),
             });
         }
     }
@@ -2268,6 +2286,7 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
     // merges same-named local labels into one net. The uniquify pass
     // is a no-op on collision-free boards.
     uniquify_net_labels(board, &mut layout.net_labels);
+    label_spots::clear_net_labels(board, layout, classified);
 }
 
 /// Connectors must preserve ascending pin numbers (1 → 2 → 3 → 4) top-to-bottom.
@@ -2334,6 +2353,7 @@ pub fn force_net_label(board: &Board, layout: &mut Layout, net: NetId) {
     };
     layout.wires.retain(|w| w.net != net);
     layout.net_labels.retain(|l| l.net != net);
+    let kept = layout.net_labels.len();
     let text = pick_net_label(board, net_ir).unwrap_or_else(|| format!("NET_{}", net.0));
     for ep in &net_ir.endpoints {
         layout.net_labels.push(NetLabel {
@@ -2341,11 +2361,13 @@ pub fn force_net_label(board: &Board, layout: &mut Layout, net: NetId) {
             component: ep.component,
             pin: ep.pin,
             label: text.clone(),
+            spot: LabelSpot::default(),
         });
     }
     // A hand-forced label can collide with labels the last routing pass
     // produced; re-run the uniqueness pass so the sheet-wide guarantee holds.
     uniquify_net_labels(board, &mut layout.net_labels);
+    label_spots::clear_net_labels(board, layout, kept);
 }
 
 /// USB ESD diodes sit in a column to the LEFT of the USB
@@ -4922,6 +4944,7 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
                 component: ep.component,
                 pin: ep.pin,
                 label: label.clone(),
+                spot: LabelSpot::default(),
             });
         }
     }
@@ -8627,6 +8650,7 @@ mod documentation_tests {
             component: ComponentId(0),
             pin: pin_id,
             label: "MODEM_IDLE".to_string(),
+            spot: LabelSpot::default(),
         });
         // The text runs left from the end of the 5.08 mm stub, about 11 mm.
         let stub_end = x - 5.08;
@@ -8752,9 +8776,15 @@ mod documentation_tests {
             out.push((sx - half_w, name_y, sx + half_w, name_y));
         }
         for label in layout.net_labels.iter().filter(|l| in_group(l.component)) {
-            let (x0, y0, x1, y1) =
-                route::net_label_rect(b, &label.label, label.component, label.pin, &placements)
-                    .expect("label");
+            let (x0, y0, x1, y1) = route::net_label_rect(
+                b,
+                &label.label,
+                label.component,
+                label.pin,
+                &placements,
+                label.spot,
+            )
+            .expect("label");
             let (pin_x, ..) =
                 route::pin_terminal_xy(b, label.component, label.pin, &placements).expect("pin");
             out.push((x0.min(pin_x), y0, x1.max(pin_x), y1));

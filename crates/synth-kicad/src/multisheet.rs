@@ -766,6 +766,7 @@ mod tests {
             component: ComponentId(0),
             pin: PinId(0),
             label: "SIG".to_string(),
+            spot: synth_layout::LabelSpot::default(),
         }];
         let project = crate::uuid_v5::project_namespace(&b.name);
         let root_uuid = derive_entity_uuid(&project, "sheet", "root");

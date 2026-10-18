@@ -362,6 +362,7 @@ fn schem_004_stays_silent_on_label_truncated_net() {
             component: ComponentId(0),
             pin: PinId(0),
             label: "LONG_SIG".to_string(),
+            spot: synth_layout::LabelSpot::default(),
         }],
     );
     assert!(rule(check(&layout, &empty_board()), "E-SYNTH-SCHEM-004").is_empty());

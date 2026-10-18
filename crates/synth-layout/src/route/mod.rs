@@ -20,8 +20,8 @@ use synth_ir::{Board, ComponentId, NetId, PinId};
 use synth_registry::{ElectricalType, Part, Pin, PinCapability};
 
 use crate::{
-    body_size_for_part, text_inclusive_half_width, ComponentPlacement, Layout, PinSide, Rotation,
-    WirePath,
+    body_size_for_part, text_inclusive_half_width, ComponentPlacement, LabelSpot, Layout, PinSide,
+    Rotation, WirePath,
 };
 
 use grid::SchematicGrid;
@@ -1346,10 +1346,64 @@ pub struct RouteResult {
     pub nets_truncated_to_labels: Vec<NetId>,
 }
 
+/// Where a net label hangs: the wire from its pin's terminal to the label's
+/// anchor, and which way the flag runs from the anchor.
+#[derive(Debug, Clone)]
+pub struct LabelPlan {
+    /// Corners of the wire, from the terminal to the anchor.
+    pub wire: Vec<(f64, f64)>,
+    pub anchor: (f64, f64),
+    pub faces_right: bool,
+}
+
+/// Where the net label on `pin` hangs, moved off the default spot by `spot`.
+/// By default a `LABEL_STUB_MM` stub runs out of the pin. A pin above or
+/// below its part first carries the wire `VERTICAL_LABEL_RISE` further out
+/// along the pin, so the flag clears the part's end and its side fields.
+/// `None` when the pin has no terminal.
+#[allow(clippy::implicit_hasher)]
+pub fn net_label_plan(
+    board: &Board,
+    component: ComponentId,
+    pin: PinId,
+    placements: &HashMap<ComponentId, &ComponentPlacement>,
+    spot: LabelSpot,
+) -> Option<LabelPlan> {
+    let (x, y, dx, dy) = pin_terminal_xy(board, component, pin, placements)?;
+    let above_or_below = dx.abs() < 0.1 && dy.abs() > 0.1;
+    let faces_right = if above_or_below {
+        !spot.flipped
+    } else {
+        dx >= -0.1
+    };
+    let stub_x = if faces_right {
+        x + LABEL_STUB_MM
+    } else {
+        x - LABEL_STUB_MM
+    };
+    let mut wire = vec![(x, y)];
+    let anchor = if above_or_below {
+        let rise_y = y + dy.signum() * VERTICAL_LABEL_RISE;
+        wire.push((x, rise_y));
+        (stub_x, rise_y)
+    } else {
+        wire.push((stub_x, y));
+        (stub_x, y + f64::from(spot.lift) * LABEL_STEP_MM)
+    };
+    wire.push(anchor);
+    wire.dedup();
+    Some(LabelPlan {
+        wire,
+        anchor,
+        faces_right,
+    })
+}
+
 /// The rectangle `(x_min, y_min, x_max, y_max)` the text `text` of a net label
-/// on `pin` covers on the sheet, past the end of a 5.08 mm stub at the pin.
-/// `None` when the pin has no terminal. The router keeps wires out of it and
-/// the note placer keeps note text off it.
+/// on `pin` covers on the sheet, with the wire that rises to it. The label
+/// hangs at the end of [`net_label_plan`] and runs away from the pin. `None`
+/// when the pin has no terminal. The router keeps wires out of it and the
+/// exporter keeps symbol text out of it.
 #[allow(clippy::implicit_hasher)]
 pub fn net_label_rect(
     board: &Board,
@@ -1357,17 +1411,28 @@ pub fn net_label_rect(
     component: ComponentId,
     pin: PinId,
     placements: &HashMap<ComponentId, &ComponentPlacement>,
+    spot: LabelSpot,
 ) -> Option<(f64, f64, f64, f64)> {
-    let (x, y, dx, _dy) = pin_terminal_xy(board, component, pin, placements)?;
-    let stub_len = LABEL_STUB_MM;
-    let faces_right = dx >= -0.1;
-    let label_x = if faces_right {
-        x + stub_len
-    } else {
-        x - stub_len
-    };
-    Some(net_label_obstacle(text, label_x, y, faces_right))
+    let plan = net_label_plan(board, component, pin, placements, spot)?;
+    let (x0, y0, x1, y1) = net_label_obstacle(text, plan.anchor.0, plan.anchor.1, plan.faces_right);
+    let (low, high) = plan
+        .wire
+        .iter()
+        .fold((y0, y1), |(low, high), p| (low.min(p.1), high.max(p.1)));
+    Some((x0, low, x1, high))
 }
+
+/// One grid step, in mm: how far a label's wire is moved at a time.
+const LABEL_STEP_MM: f64 = 2.54;
+/// How far (mm) a label on a vertical pin continues out along the pin
+/// before turning sideways: one grid step, enough to lift the label text
+/// off the part's end and away from its side-placed fields.
+const VERTICAL_LABEL_RISE: f64 = LABEL_STEP_MM;
+/// The box a global label output flag plots, in mm: 1.12 per character plus
+/// 2.9, and 2.65 tall.
+pub(crate) const FLAG_CHAR_MM: f64 = 1.12;
+pub(crate) const FLAG_PAD_MM: f64 = 2.9;
+pub(crate) const FLAG_H_MM: f64 = 2.65;
 
 /// The routing obstacle for a net label whose stub ends at `label_x`: the
 /// rectangle `(x_min, y_min, x_max, y_max)` the label's text covers.
@@ -1471,9 +1536,14 @@ pub fn route_board(board: &Board, layout: &Layout) -> RouteResult {
 
     // 2. Mark net label (global_label) obstacles.
     for label in &layout.net_labels {
-        if let Some((x_min, y_min, x_max, y_max)) =
-            net_label_rect(board, &label.label, label.component, label.pin, &placements)
-        {
+        if let Some((x_min, y_min, x_max, y_max)) = net_label_rect(
+            board,
+            &label.label,
+            label.component,
+            label.pin,
+            &placements,
+            label.spot,
+        ) {
             grid.mark_obstacle_rect(x_min, y_min, x_max, y_max);
         }
     }
