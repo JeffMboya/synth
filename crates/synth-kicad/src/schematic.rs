@@ -1864,6 +1864,10 @@ const POWER_NAME_SIDE_MM: f64 = 1.9;
 const POWER_NAME_RING_STEP_MM: f64 = 2.54;
 /// How far the tip of the arrow or triangle is from the pin, in mm.
 const POWER_TIP_MM: f64 = 2.54;
+/// How far clear of other things a power name has to be, in mm. Under half
+/// the 1.27 mm between the name and its own symbol's drawing, so the symbol
+/// itself does not count as in the way.
+const POWER_NAME_CLEARANCE_MM: f64 = 0.4;
 
 /// A power symbol's position and the name it prints there.
 type PowerName = ((f64, f64), String);
@@ -1912,8 +1916,14 @@ fn power_symbol_properties(
         .into_iter()
         .flat_map(field_clear::outside_strips)
         .collect();
-    let others = obstacles.iter().map(|o| &o.rect).chain(outside.iter());
-    let (dx, dy, justify) = field_clear::pick_clear(&candidates, &rect_at, &others);
+    // A name next to a pin, wire or text it only just misses reads as part of
+    // it, so a spot is clear when the margin around it is.
+    let others: Vec<field_clear::Rect> = obstacles
+        .iter()
+        .map(|o| o.rect.grown(POWER_NAME_CLEARANCE_MM))
+        .chain(outside)
+        .collect();
+    let (dx, dy, justify) = field_clear::pick_clear(&candidates, &rect_at, &others.iter());
     let pos = (at.0 + dx, at.1 + dy);
     if !repeats {
         power_names.push((at, name.to_string()));
@@ -4481,6 +4491,75 @@ mod tests {
     fn with_nothing_in_the_way_a_field_keeps_its_nearest_spot() {
         let candidates = field_candidates(FieldSide::Right, FieldSide::Left, 0.0);
         assert_eq!(candidates[0], (FieldSide::Right, 0.0));
+    }
+
+    /// The ground symbol of C1 on a board of a regulator and C1, with its
+    /// name as written: the symbol's position, the name's position and
+    /// justify. A horizontal wire runs `gap` mm under the place a name below
+    /// the triangle would end.
+    fn ground_name_over_wire(gap: f64) -> ((f64, f64), (f64, f64), Option<String>) {
+        let board = lower_lenient(
+            r#"board "b" {
+                component U1: regulator "ams1117_3v3"
+                component C1: capacitor "c_generic_0603"
+                connect U1.vin -> C1.p1
+                connect U1.gnd -> C1.p2
+            }"#,
+        );
+        let project = crate::uuid_v5::project_namespace(&board.name);
+        let mut layout = synth_layout::layout(&board);
+        layout.wires.clear();
+        layout.net_labels.clear();
+        let index = |refdes: &str| board.components.iter().position(|c| c.refdes == refdes);
+        layout.components[index("U1").unwrap()].center_mm = (300.0, 100.0);
+        layout.components[index("C1").unwrap()].center_mm = (100.0, 100.0);
+        let ground = |layout: &synth_layout::Layout| {
+            let sexp = build_schematic_from_layout(&board, &project, layout);
+            let (at, fields) = power_symbols(&sexp)
+                .into_iter()
+                .filter(|(_, f)| power_value(f).1 == "GND")
+                .min_by(|(a, _), (b, _)| (a.0 - 100.0).abs().total_cmp(&(b.0 - 100.0).abs()))
+                .expect("C1 has a ground symbol");
+            let value = power_value(&fields).clone();
+            (at, value.2, value.3)
+        };
+        let (at, ..) = ground(&layout);
+        // The wire is as thick as an obstacle wire, so its top edge is `gap`
+        // under the name.
+        let y = at.1 + POWER_NAME_OFFSET_MM + FIELD_TEXT_HEIGHT_MM / 2.0 + gap + WIRE_HALF_WIDTH_MM;
+        layout.wires.push(synth_layout::WirePath {
+            net: board.nets[0].id,
+            points: vec![(at.0 - 5.0, y), (at.0 + 5.0, y)],
+            junctions: Vec::new(),
+        });
+        ground(&layout)
+    }
+
+    #[test]
+    fn a_ground_name_moves_beside_the_triangle_when_a_wire_is_close_below() {
+        // The wire does not touch the name below the triangle, but is only
+        // 0.2 mm from it.
+        let (at, name_at, justify) = ground_name_over_wire(0.2);
+        assert_eq!(
+            justify.as_deref(),
+            Some("left"),
+            "{name_at:?} is not at the side"
+        );
+        assert!(
+            name_at.0 > at.0,
+            "{name_at:?} is not right of the triangle {at:?}"
+        );
+        assert!(
+            (name_at.1 - (at.1 + POWER_TIP_MM)).abs() < 1e-6,
+            "{name_at:?} is not at the level of the tip of the triangle at {at:?}"
+        );
+    }
+
+    #[test]
+    fn a_ground_name_stays_below_the_triangle_when_a_wire_is_further_below() {
+        let (at, name_at, justify) = ground_name_over_wire(0.6);
+        assert_eq!(justify, None, "{name_at:?} left the spot below");
+        assert!((name_at.0 - at.0).abs() < 1e-6 && name_at.1 > at.1 + POWER_TIP_MM);
     }
 
     #[test]
