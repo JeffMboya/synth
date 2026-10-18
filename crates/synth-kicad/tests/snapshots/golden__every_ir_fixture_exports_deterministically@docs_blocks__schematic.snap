@@ -598,7 +598,7 @@ expression: schematic
 		(property
 			"Value"
 			"(no value)"
-			(at 128.27 40.64 0)
+			(at 128.27 41.91 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -671,7 +671,7 @@ expression: schematic
 		(property
 			"Value"
 			"(no value)"
-			(at 100.33 30.48 90)
+			(at 100.33 31.75 90)
 			(effects
 				(font
 					(size 1.27 1.27)
