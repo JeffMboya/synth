@@ -1,11 +1,11 @@
 id = "mp2307_buck"
 kind = "regulator"
 description = "MPS MP2307 3A step-down switching regulator, SO-8"
-kicad_footprint = "Package_SO:SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.4x3.4mm"
+kicad_footprint = "Package_SO:SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.29x3mm"
 
 [footprint_dimensions]
-width_mm = 5.0
-height_mm = 5.0
+width_mm = 6.9
+height_mm = 4.41
 courtyard_margin_mm = 0.25
 
 [operating_conditions]
@@ -61,6 +61,15 @@ required = true
 name = "ss"
 number = "8"
 electrical_type = "passive"
+
+# Pad 9 is the package's exposed pad. The part is a 3 A switcher in an SO-8:
+# the pad is its only thermal path, and it is the device's ground, so unlike a
+# monitor's thermal land there is nothing optional about it.
+[[pins]]
+name = "ep"
+number = "9"
+electrical_type = "power_input"
+required = true
 
 [[required_decoupling]]
 net = "in"
