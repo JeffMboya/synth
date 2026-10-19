@@ -99,7 +99,7 @@ struct LcscPrice {
     #[serde(rename = "startNumber", alias = "qFrom")]
     minimum_quantity: Option<u32>,
     #[serde(rename = "endNumber", alias = "qTo")]
-    maximum_quantity: Option<u32>,
+    maximum_quantity: Option<i64>,
 }
 
 #[async_trait]
@@ -212,7 +212,9 @@ impl Distributor for LcscDistributor {
                     .filter_map(|price| {
                         price.product_price.map(|unit_price_usd| PriceTier {
                             minimum_quantity: price.minimum_quantity.unwrap_or(moq.max(1)),
-                            maximum_quantity: price.maximum_quantity,
+                            maximum_quantity: price
+                                .maximum_quantity
+                                .and_then(|value| u32::try_from(value).ok()),
                             unit_price_usd,
                         })
                     })

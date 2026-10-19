@@ -129,6 +129,31 @@ async fn lcsc_requires_exact_identity_match() {
 }
 
 #[tokio::test]
+async fn lcsc_current_jlcpcb_catalog_contract_uses_post() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/catalog"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"code":200,"data":{"componentPageInfo":{"list":[{"componentCode":"C14663","stockCount":42,"componentPrices":[{"startNumber":1,"endNumber":-1,"productPrice":0.12}],"minPurchaseNum":5,"componentLibraryType":"base"}]}}}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let distributor = LcscDistributor::with_endpoint(format!("{}/catalog", server.uri()));
+    let status = distributor
+        .query("C14663")
+        .await
+        .expect("current JLCPCB response")
+        .expect("exact product");
+
+    assert_eq!(status.part_number, "C14663");
+    assert_eq!(status.stock_qty, 42);
+    assert_eq!(status.purchase.moq, Some(5));
+    assert_eq!(status.unit_price_usd, Some(0.12));
+}
+
+#[tokio::test]
 async fn lcsc_rejects_ambiguous_search_without_fallback() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
