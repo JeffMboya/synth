@@ -4547,12 +4547,15 @@ mod tests {
         let before = shown(&build_schematic_from_layout(&board, &project, &layout));
         let (at, name) = before[0];
         // A box that takes in the whole sheet except the band 3.3 mm past the
-        // symbol where its name usually sits.
+        // symbol where its name usually sits. Text keeps out of the title band
+        // at the top of a box, so a box that ends above the symbol starts that
+        // band's height higher.
         let far = 1000.0;
+        let band = synth_layout::GROUP_TITLE_BAND_MM;
         let bounds = if name.1 > at.1 {
             (-far, -far, far, at.1 + 3.3)
         } else {
-            (-far, at.1 - 3.3, far, far)
+            (-far, at.1 - 3.3 - band, far, far)
         };
         for component in &mut board.components {
             component.group = Some("G".to_string());
@@ -4571,7 +4574,7 @@ mod tests {
             .expect("the symbol");
         assert_ne!(moved, name, "the name did not move");
         assert!(
-            moved.1 > bounds.1 && moved.1 < bounds.3,
+            moved.1 > bounds.1 + band && moved.1 < bounds.3,
             "name at y {} is outside {bounds:?}",
             moved.1
         );

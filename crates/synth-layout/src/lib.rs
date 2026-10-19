@@ -2053,12 +2053,13 @@ fn content_bottom(board: &Board, layout: &Layout) -> f64 {
 }
 
 /// Bounding box of everything drawn on the sheet — component
-/// bodies, wire points, text runs, and group boxes — as
+/// bodies, what parts draw past their bodies (`drawn_beyond_bodies`), wire
+/// points, text runs, and group boxes — as
 /// `(min_x, max_x, min_y, max_y)` in mm page coordinates, or `None`
 /// for an empty layout. Shared by `grow_sheet_to_fit`,
-/// `compact_sheet_to_fit`, and the `E-SYNTH-SCHEM-012` fill rule so
-/// page sizing and the fill measurement can never disagree about
-/// where the content is.
+/// `compact_sheet_to_fit` and `shift_into_margin`, so page sizing and the
+/// margin can never disagree about where the content is. The
+/// `E-SYNTH-SCHEM-012` fill rule measures through [`drawing_bounds`].
 pub fn content_bounds(board: &Board, layout: &Layout) -> Option<(f64, f64, f64, f64)> {
     let mut min_x = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
@@ -2074,6 +2075,13 @@ pub fn content_bounds(board: &Board, layout: &Layout) -> Option<(f64, f64, f64, 
         max_x = max_x.max(cx + bw / 2.0);
         min_y = min_y.min(cy - bh / 2.0);
         max_y = max_y.max(cy + bh / 2.0);
+    }
+    // A part in a group has its box for these, but a part in none does not.
+    for (_, (x0, y0, x1, y1)) in drawn_beyond_bodies(board, layout) {
+        min_x = min_x.min(x0);
+        max_x = max_x.max(x1);
+        min_y = min_y.min(y0);
+        max_y = max_y.max(y1);
     }
     for wire in &layout.wires {
         for &(x, y) in &wire.points {
@@ -5317,8 +5325,9 @@ pub fn fit_sheet_size_any(min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> She
 }
 
 /// [`content_bounds`] widened to cover each component's Reference and
-/// Value fields, which the exporter places around the body after layout
-/// and so `content_bounds` cannot see.
+/// Value fields, which the exporter places around the body after layout.
+/// `content_bounds` reaches them only through the fixed margin
+/// `drawn_beyond_bodies` allows, so this takes their text width as well.
 ///
 /// Page fitting and centring use this rather than the bare bounds: a sheet
 /// sized to bodies and wires alone puts the refdes/value text of the
@@ -8400,6 +8409,43 @@ mod documentation_tests {
             }
         }
         assert!(legs > 0 && markers > 0, "{legs} legs and {markers} markers");
+    }
+
+    /// A part in no group has no box to hold what it draws past its body, so
+    /// the page is fitted to those extents directly: pin ends, fields, power
+    /// symbols, fanned legs and no-connect markers.
+    #[test]
+    fn content_bounds_hold_what_an_ungrouped_part_draws_past_its_body() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = synth_registry::load_dir(&root.join("registry").join("parts")).unwrap();
+        let source = r#"board "ungrouped_mcu" {
+    layers 2
+    manufacturer "jlcpcb"
+    component U2: mcu "stm32f103c8"
+    component J1: connector "header_1x4"
+    component U1: regulator "ams1117_3v3"
+    connect J1.p1 -> U1.vin
+    connect J1.p2 -> U1.gnd
+    connect U1.vout -> U2.vdd
+    connect U1.gnd -> U2.vss
+}"#;
+        let ast = synth_parser::parse(source, "ungrouped_mcu.synth")
+            .ast
+            .unwrap();
+        let b = synth_ir::lower(&ast, &registry, "ungrouped_mcu.synth")
+            .board
+            .unwrap();
+        let layout = layout(&b);
+        let (min_x, max_x, min_y, max_y) = content_bounds(&b, &layout).expect("content");
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        assert!(!drawn.is_empty(), "nothing drawn past a body");
+        for (_, (x0, y0, x1, y1)) in drawn {
+            assert!(
+                min_x <= x0 && min_y <= y0 && x1 <= max_x && y1 <= max_y,
+                "({x0:.2}, {y0:.2}, {x1:.2}, {y1:.2}) is outside the content \
+                 ({min_x:.2}, {min_y:.2}, {max_x:.2}, {max_y:.2})"
+            );
+        }
     }
 
     #[test]
