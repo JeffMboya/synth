@@ -1,0 +1,31 @@
+# Generic 0603 indicator LED.
+#
+# The registry's only other LED is an addressable WS2812B, which is a
+# switching load with a data line — not what a board wants for a power-good or
+# a status light. Colour and forward voltage are the board's choice and are
+# declared with the component's `value`; what the part fixes is the package and
+# the polarity.
+id = "led_0603"
+kind = "led"
+description = "Generic 0603 indicator LED, any colour"
+kicad_symbol = "Device:LED"
+kicad_footprint = "LED_SMD:LED_0603_1608Metric"
+
+[footprint_dimensions]
+width_mm = 2.45
+height_mm = 0.95
+courtyard_margin_mm = 0.25
+
+[operating_conditions]
+max_voltage_v = 5.0
+max_current_ma = 20.0
+
+[[pins]]
+name = "k"
+number = "1"
+electrical_type = "passive"
+
+[[pins]]
+name = "a"
+number = "2"
+electrical_type = "passive"

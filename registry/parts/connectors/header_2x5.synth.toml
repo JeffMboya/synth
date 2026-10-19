@@ -1,0 +1,64 @@
+# 2x5 pin header, 2.54 mm — a debug or programming connector.
+#
+# Ten pins is what an SPI configuration interface and its ground need, which is
+# why this size exists as a convention rather than a 1x10.
+id = "header_2x5"
+kind = "connector"
+description = "2x5 pin header, 2.54 mm pitch, vertical"
+kicad_symbol = "Connector_Generic:Conn_02x05_Odd_Even"
+kicad_footprint = "Connector_PinHeader_2.54mm:PinHeader_2x05_P2.54mm_Vertical"
+
+[footprint_dimensions]
+width_mm = 4.24
+height_mm = 11.86
+courtyard_margin_mm = 0.25
+
+[[pins]]
+name = "p1"
+number = "1"
+electrical_type = "passive"
+
+[[pins]]
+name = "p2"
+number = "2"
+electrical_type = "passive"
+
+[[pins]]
+name = "p3"
+number = "3"
+electrical_type = "passive"
+
+[[pins]]
+name = "p4"
+number = "4"
+electrical_type = "passive"
+
+[[pins]]
+name = "p5"
+number = "5"
+electrical_type = "passive"
+
+[[pins]]
+name = "p6"
+number = "6"
+electrical_type = "passive"
+
+[[pins]]
+name = "p7"
+number = "7"
+electrical_type = "passive"
+
+[[pins]]
+name = "p8"
+number = "8"
+electrical_type = "passive"
+
+[[pins]]
+name = "p9"
+number = "9"
+electrical_type = "passive"
+
+[[pins]]
+name = "p10"
+number = "10"
+electrical_type = "passive"
