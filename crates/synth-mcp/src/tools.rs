@@ -4653,10 +4653,14 @@ electrical_type = "input"
             "budget": null,
             "evaluated_at": "2026-10-16T00:00:00Z"
         });
-        let result = call_tool("synth_cost_report", &serde_json::json!({"input": input}), None)
-            .expect("empty frozen input is a valid complete scenario");
-        assert_eq!(result["review_status"], "complete");
-        assert!(result["unresolved"].as_array().unwrap().is_empty());
+        let result = call_tool(
+            "synth_cost_report",
+            &serde_json::json!({"input": input}),
+            None,
+        )
+        .expect("missing inputs produce an unresolved report");
+        assert_eq!(result["review_status"], "unresolved");
+        assert!(!result["unresolved"].as_array().unwrap().is_empty());
     }
 }
 
