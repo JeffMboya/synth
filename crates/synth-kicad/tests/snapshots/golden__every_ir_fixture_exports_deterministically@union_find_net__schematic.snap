@@ -1883,7 +1883,7 @@ expression: schematic
 		(at 71.12 22.86 0)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 1.15 1.15)
 				(color 0 158 115 1)
 			)
 			(justify left)
@@ -1908,7 +1908,7 @@ expression: schematic
 		(at 86.36 53.34 180)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 1.15 1.15)
 				(color 0 158 115 1)
 			)
 			(justify right)
@@ -1933,7 +1933,7 @@ expression: schematic
 		(at 153.67 60.96 180)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 1.15 1.15)
 				(color 0 158 115 1)
 			)
 			(justify right)

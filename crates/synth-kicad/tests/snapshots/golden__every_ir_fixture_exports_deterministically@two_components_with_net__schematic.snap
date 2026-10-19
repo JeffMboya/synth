@@ -1680,7 +1680,7 @@ expression: schematic
 		(at 71.12 25.4 0)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 1.15 1.15)
 				(color 0 158 115 1)
 			)
 			(justify left)
@@ -1705,7 +1705,7 @@ expression: schematic
 		(at 86.36 55.88 180)
 		(effects
 			(font
-				(size 1.27 1.27)
+				(size 1.15 1.15)
 				(color 0 158 115 1)
 			)
 			(justify right)
