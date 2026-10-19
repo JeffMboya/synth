@@ -1,11 +1,20 @@
 id = "ice40hx4k_bg121"
 kind = "fpga"
 # An FPGA's I/O is soft: every general-purpose pin below can serve either I2C
-# role, so each declares both. The capability list on this part is what a pin
-# *can* be, not what a design made it. That is weaker than a fixed-function
-# part, where a capability pins down one function and a wrong connection is
-# caught; the registry has no way to say "any of these pins, any of these
-# roles, one role at a time".
+# role, either UART direction and any SPI role, so each declares all of them.
+# Not `clock_output`, though a ball can certainly drive one: the registry
+# requires that capability to sit on electrical type `Clock`, and a soft I/O
+# is `Bidirectional`. Saying otherwise would be a lie about every other use of
+# the same ball. The capability list on this part is what a pin *can*
+# be, not what a design made it. That is weaker than a fixed-function part,
+# where a capability pins down one function and a wrong connection is caught;
+# the registry has no way to say "any of these pins, any of these roles, one
+# role at a time".
+#
+# The list is not decoration. Without `uart_tx`/`uart_rx` a console on two
+# balls is reported as a UART wired to non-UART pins, and without
+# `clock_output` a memory clock the fabric generates is reported as a clock
+# with no source: both are correct designs that the narrower list refused.
 description = "Lattice iCE40 HX4K FPGA, 121-ball 0.8mm BGA, open toolchain"
 mpn = "ICE40HX4K-BG121"
 kicad_symbol = "FPGA_Lattice:ICE40HX4K-BG121"
@@ -25,133 +34,133 @@ max_current_ma = 500.0
 name = "iot_225"
 number = "A1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_222"
 number = "A2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_223"
 number = "A3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_211"
 number = "A4"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_207"
 number = "A5"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_206"
 number = "A6"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_192"
 number = "A7"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_190"
 number = "A8"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_178"
 number = "A9"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_170"
 number = "A10"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_168"
 number = "A11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_221"
 number = "B3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_219"
 number = "B4"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_208"
 number = "B5"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_198_gbin0"
 number = "B6"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_197_gbin1"
 number = "B7"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_177"
 number = "B8"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_174"
 number = "B9"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_191"
 number = "C7"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_179"
 number = "C8"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_172"
 number = "C9"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iot_212"
 number = "D5"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "vccio_0"
@@ -163,61 +172,61 @@ required = true
 name = "iot_181"
 number = "D7"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_161"
 number = "B11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_160"
 number = "C11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_147"
 number = "D9"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_154"
 number = "D10"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_152"
 number = "D11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_146"
 number = "E8"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_144"
 number = "E9"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_141_gbin2"
 number = "E10"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_148"
 number = "E11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "vccio_1"
@@ -229,73 +238,73 @@ required = true
 name = "ior_137"
 number = "F9"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_136"
 number = "F10"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_140_gbin3"
 number = "F11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_118"
 number = "G8"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_128"
 number = "G9"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_120"
 number = "G10"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_129"
 number = "G11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_116"
 number = "H10"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_119"
 number = "H11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_117"
 number = "J10"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_114"
 number = "J11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "ior_115"
 number = "K11"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "vccio_2"
@@ -307,73 +316,73 @@ required = true
 name = "iob_87"
 number = "H7"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_104_cbsel1"
 number = "H9"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_57"
 number = "J3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_64"
 number = "J4"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_78"
 number = "J5"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_86"
 number = "J7"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_91"
 number = "J8"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_63"
 number = "K3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_73"
 number = "K4"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_79"
 number = "K5"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_82_gbin4"
 number = "K6"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_89"
 number = "K7"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "cdone"
@@ -385,43 +394,43 @@ required = true
 name = "iob_56"
 number = "L1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_61"
 number = "L2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_71"
 number = "L3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_72"
 number = "L4"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_81_gbin5"
 number = "L5"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_94"
 number = "L7"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iob_103_cbsel0"
 number = "L8"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "creset"
@@ -433,73 +442,73 @@ required = true
 name = "iol_2a"
 number = "B1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_2b"
 number = "B2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_5b"
 number = "C1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_5a"
 number = "C2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_4b"
 number = "C3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_4a"
 number = "C4"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_8b"
 number = "D1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_9a"
 number = "D2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_9b"
 number = "D3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_8a"
 number = "E1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_10a"
 number = "E2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_10b"
 number = "E3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "vccio_3"
@@ -511,43 +520,43 @@ required = true
 name = "iol_12a"
 number = "F1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_12b"
 number = "F2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_13b_gbin7"
 number = "F3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_13a"
 number = "F4"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_14a_gbin6"
 number = "G1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_14b"
 number = "G2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_17a"
 number = "G3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "vccio_3_2"
@@ -559,43 +568,43 @@ required = true
 name = "iol_18a"
 number = "H1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_18b"
 number = "H2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_17b"
 number = "H3"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_23a"
 number = "J1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_25b"
 number = "J2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_23b"
 number = "K1"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "iol_25a"
 number = "K2"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "i2c_scl", "i2c_sda"]
+capabilities = ["gpio", "i2c_scl", "i2c_sda", "uart_tx", "uart_rx", "spi_sck", "spi_mosi", "spi_miso", "spi_cs"]
 
 [[pins]]
 name = "vpp_fast"
