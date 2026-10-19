@@ -19,4 +19,7 @@ pub use distributor::Distributor;
 pub use lcsc::LcscDistributor;
 pub use nexar::NexarDistributor;
 pub use query::SupplyEngine;
-pub use types::{BomQueryEntry, LifecycleStatus, SupplyError, SupplyStatus};
+pub use types::{
+    normalize_part_number, AssemblyEligibility, BomQueryEntry, LifecycleStatus, PriceTier,
+    PurchaseConstraints, StockStatus, SupplyError, SupplyStatus,
+};

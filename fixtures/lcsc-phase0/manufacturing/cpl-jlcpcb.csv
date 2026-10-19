@@ -1,0 +1,4 @@
+Designator,Val,Package,Mid X,Mid Y,Rotation,Layer
+"D1","red LED","LED_SMD:LED_0603_1608Metric",12.500,8.000,0,"Top"
+"R1","10k","Resistor_SMD:R_0603_1608Metric",10.000,8.000,0,"Top"
+"R2","10k","Resistor_SMD:R_0603_1608Metric",10.000,12.000,90,"Bottom"

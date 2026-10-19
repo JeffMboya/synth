@@ -42,8 +42,26 @@ impl PadFacts {
     }
 }
 
+/// Whether a footprint carries a 3D model a render can load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelFacts {
+    /// The footprint names a model and the file is there.
+    Found,
+    /// The footprint names a model file that is not installed.
+    FileMissing(String),
+    /// The footprint names no 3D model.
+    NoneDeclared,
+    /// No such footprint is installed.
+    NoFootprint,
+}
+
 pub trait FootprintFacts {
     fn pads(&self, lib_id: &str) -> Option<Vec<PadFacts>>;
+
+    /// The footprint's 3D model, or `None` when this source cannot tell.
+    fn model(&self, _lib_id: &str) -> Option<ModelFacts> {
+        None
+    }
 }
 
 pub trait SymbolFacts {
@@ -404,6 +422,12 @@ pub fn qualify_part(
         check_declared_dimensions(part),
         check_package_dimensions(part, pads.as_deref()),
         check_pin_classification(part),
+        check_3d_model(
+            part,
+            part.kicad_footprint
+                .as_deref()
+                .and_then(|lib_id| footprints.model(lib_id)),
+        ),
         check_provenance(part),
     ];
 
@@ -429,6 +453,42 @@ pub fn qualify_part(
         reviewed_at: part.provenance.as_ref().and_then(|p| p.reviewed_at.clone()),
         status,
         checks,
+    }
+}
+
+/// Whether the part's footprint has a 3D model a render can load.
+///
+/// Review-level only: a model is not needed to fabricate a board, so a gap
+/// never fails the part. A source that cannot look at models says so rather
+/// than passing.
+fn check_3d_model(part: &Part, model: Option<ModelFacts>) -> Check {
+    const NAME: &str = "three_d_model";
+    const CODE: &str = "E-SYNTH-QUAL-016";
+    const EXPECTED: &str = "a KiCad footprint whose 3D model file is installed";
+    let gap = |message: &str, found: String| {
+        Check::from_findings(NAME, vec![Finding::review(CODE, message, EXPECTED, found)])
+    };
+    let Some(lib_id) = part.kicad_footprint.as_deref() else {
+        return gap(
+            "part has no KiCad footprint, so no 3D model",
+            "no kicad_footprint".to_string(),
+        );
+    };
+    match model {
+        None => Check::not_applicable(NAME, "3D models were not checked"),
+        Some(ModelFacts::Found) => Check::pass(NAME),
+        Some(ModelFacts::FileMissing(file)) => gap(
+            "footprint names a 3D model file that is not installed",
+            format!("`{lib_id}` names `{file}`"),
+        ),
+        Some(ModelFacts::NoneDeclared) => gap(
+            "footprint declares no 3D model",
+            format!("`{lib_id}` has no model"),
+        ),
+        Some(ModelFacts::NoFootprint) => gap(
+            "KiCad footprint is not installed, so its 3D model is unknown",
+            format!("`{lib_id}` not found"),
+        ),
     }
 }
 
@@ -1062,6 +1122,82 @@ mod tests {
 
     fn findings(q: &PartQualification) -> Vec<&str> {
         q.findings().map(|f| f.code.as_str()).collect()
+    }
+
+    /// Footprint facts with a fixed answer about the 3D model.
+    struct Model(Option<ModelFacts>);
+
+    impl FootprintFacts for Model {
+        fn pads(&self, _lib_id: &str) -> Option<Vec<PadFacts>> {
+            Some(two_pads().0)
+        }
+
+        fn model(&self, _lib_id: &str) -> Option<ModelFacts> {
+            self.0.clone()
+        }
+    }
+
+    fn qualify_with_model(model: Option<ModelFacts>) -> PartQualification {
+        let part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        qualify_part(&part, &Model(model), &two_pin_symbol())
+    }
+
+    fn model_check(q: &PartQualification) -> &Check {
+        q.checks
+            .iter()
+            .find(|c| c.name == "three_d_model")
+            .expect("a three_d_model check")
+    }
+
+    #[test]
+    fn a_footprint_with_its_model_installed_passes_the_model_check() {
+        let q = qualify_with_model(Some(ModelFacts::Found));
+        assert_eq!(model_check(&q).status, CheckStatus::Pass);
+        assert!(!findings(&q).contains(&"E-SYNTH-QUAL-016"));
+    }
+
+    #[test]
+    fn a_missing_model_file_is_a_review_finding_that_names_it() {
+        let q = qualify_with_model(Some(ModelFacts::FileMissing("Conn.step".into())));
+        let f = q
+            .findings()
+            .find(|f| f.code == "E-SYNTH-QUAL-016")
+            .expect("a model finding");
+        assert_eq!(f.level, FindingLevel::Review);
+        assert!(f.found.contains("Conn.step"), "{f:?}");
+        assert_eq!(
+            q.status,
+            CheckStatus::Pass,
+            "a model gap must not fail the part"
+        );
+    }
+
+    #[test]
+    fn a_footprint_with_no_model_is_a_review_finding() {
+        for facts in [ModelFacts::NoneDeclared, ModelFacts::NoFootprint] {
+            let q = qualify_with_model(Some(facts.clone()));
+            assert!(findings(&q).contains(&"E-SYNTH-QUAL-016"), "{facts:?}");
+            assert_eq!(q.status, CheckStatus::Pass);
+        }
+    }
+
+    #[test]
+    fn a_part_with_no_kicad_footprint_has_no_model() {
+        let mut part = part_with(vec![pin("a", "1"), pin("b", "2")]);
+        part.kicad_footprint = None;
+        let q = qualify_part(&part, &Model(Some(ModelFacts::Found)), &two_pin_symbol());
+        assert!(
+            findings(&q).contains(&"E-SYNTH-QUAL-016"),
+            "{:#?}",
+            q.checks
+        );
+    }
+
+    #[test]
+    fn a_source_that_cannot_see_models_says_so_instead_of_passing() {
+        let q = qualify_with_model(None);
+        assert_eq!(model_check(&q).status, CheckStatus::NotApplicable);
+        assert!(!findings(&q).contains(&"E-SYNTH-QUAL-016"));
     }
 
     #[test]

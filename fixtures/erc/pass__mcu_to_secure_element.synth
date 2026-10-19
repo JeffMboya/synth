@@ -3,12 +3,16 @@
 board "mcu_to_secure_element" {
   layers 4
 
+  component J1: connector "jst_ph_2pin"
   component U1: mcu "rp2350"
   component U2: secure_element "atecc608"
   component C1: capacitor "c_generic_0402" value "100nF"
   component C2: capacitor "c_generic_0402" value "100nF"
 
   // Connect required power pins to keep E-SYNTH-CONNECT-001 quiet.
+  // The rail comes in on the connector; a capacitor plate supplies nothing.
+  connect J1.p1 -> C1.p1
+  connect J1.p2 -> C1.p2
   connect U1.iovdd -> C1.p1
   connect U1.dvdd3 -> C2.p1
   connect U1.gnd -> C1.p2

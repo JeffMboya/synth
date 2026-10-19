@@ -1,0 +1,740 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Deterministic manufacturing cost calculations.
+//!
+//! The crate is deliberately pure: it performs no network or filesystem I/O.
+//! Callers provide frozen supplier offers, PCB specifications, dated fee
+//! rules, and optional quotes. Replaying the same [`CostInput`] produces the
+//! same [`CostReport`]. Money is accumulated as integer micro-units, never as
+//! floating point totals.
+
+#![forbid(unsafe_code)]
+
+use serde::{Deserialize, Serialize};
+use synth_supply::{PriceTier, PurchaseConstraints, StockStatus, SupplyStatus};
+
+const MICROS_PER_UNIT: i64 = 1_000_000;
+
+/// Integer-scaled money value. `micros` is one-millionth of a currency unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Money {
+    pub currency: Currency,
+    pub micros: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Currency {
+    Usd,
+    Eur,
+    Gbp,
+}
+
+impl Money {
+    #[allow(clippy::cast_precision_loss)]
+    pub fn from_decimal(currency: Currency, value: f64) -> Result<Self, CostError> {
+        if !value.is_finite() || value < 0.0 {
+            return Err(CostError::InvalidMoney);
+        }
+        let micros = (value * MICROS_PER_UNIT as f64).round();
+        if micros > i64::MAX as f64 {
+            return Err(CostError::InvalidMoney);
+        }
+        Ok(Self {
+            currency,
+            micros: micros as i64,
+        })
+    }
+
+    fn zero(currency: Currency) -> Self {
+        Self {
+            currency,
+            micros: 0,
+        }
+    }
+
+    fn checked_add(self, other: Self) -> Result<Self, CostError> {
+        if self.currency != other.currency {
+            return Err(CostError::CurrencyMismatch);
+        }
+        Ok(Self {
+            currency: self.currency,
+            micros: self
+                .micros
+                .checked_add(other.micros)
+                .ok_or(CostError::Overflow)?,
+        })
+    }
+
+    fn checked_mul(self, quantity: u64) -> Result<Self, CostError> {
+        Ok(Self {
+            currency: self.currency,
+            micros: self
+                .micros
+                .checked_mul(i64::try_from(quantity).map_err(|_| CostError::Overflow)?)
+                .ok_or(CostError::Overflow)?,
+        })
+    }
+}
+
+/// A frozen supplier offer used as a costing input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrozenOffer {
+    pub status: SupplyStatus,
+    /// RFC-3339 expiry for the offer, if the provider supplied one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PartCostInput {
+    pub sku: String,
+    pub units_per_board: u32,
+    pub allowance: u32,
+    pub offer: FrozenOffer,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuantityScenario {
+    pub fabricated_boards: u32,
+    pub assembled_boards: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcbSpecification {
+    pub width_mm: f64,
+    pub height_mm: f64,
+    pub layers: u8,
+    pub material: String,
+    pub thickness_mm: f64,
+    pub copper_oz: f64,
+    pub finish: String,
+    pub solder_mask: String,
+    pub panel_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcbEstimateProfile {
+    pub name: String,
+    pub currency: Currency,
+    pub max_width_mm: f64,
+    pub max_height_mm: f64,
+    pub supported_layers: Vec<u8>,
+    pub setup_fee: Money,
+    pub per_board_fee: Money,
+    pub per_cm2_fee: Money,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PcbQuote {
+    pub quote_id: String,
+    pub source: String,
+    pub specification_hash: String,
+    pub amount: Money,
+    pub quoted_at: String,
+    pub valid_until: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssemblyFeeRule {
+    pub name: String,
+    pub process: String,
+    pub effective_from: String,
+    pub expires_at: Option<String>,
+    pub currency: Currency,
+    pub setup_fee: Money,
+    pub stencil_fee: Money,
+    pub per_placement: Money,
+    pub per_solder_joint: Money,
+    pub manual_fee: Money,
+    pub inspection_fee: Money,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssemblyInput {
+    pub process: String,
+    pub placements_per_board: u32,
+    pub solder_joints_per_board: u32,
+    pub manual_operations: u32,
+    pub inspection_boards: u32,
+    pub rule: AssemblyFeeRule,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryInput {
+    pub shipping: Option<Money>,
+    pub duties: Option<Money>,
+    pub taxes: Option<Money>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostInput {
+    pub schema_version: String,
+    pub snapshot_id: String,
+    pub scenario: QuantityScenario,
+    pub currency: Currency,
+    pub parts: Vec<PartCostInput>,
+    pub pcb_specification: Option<PcbSpecification>,
+    /// Hash of the exact PCB specification used when importing a quote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pcb_specification_hash: Option<String>,
+    pub pcb_profile: Option<PcbEstimateProfile>,
+    pub pcb_quote: Option<PcbQuote>,
+    pub assembly: Option<AssemblyInput>,
+    pub delivery: Option<DeliveryInput>,
+    pub budget: Option<Money>,
+    /// RFC-3339 timestamp at which the report is evaluated.
+    pub evaluated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostSource {
+    FrozenOffer,
+    Estimate,
+    Quote,
+    UserSupplied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostLineStatus {
+    Known,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostLine {
+    pub category: String,
+    pub item: String,
+    pub quantity: u64,
+    pub amount: Option<Money>,
+    pub source: CostSource,
+    pub status: CostLineStatus,
+    pub uncertain: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetOutcome {
+    WithinBudget,
+    OverBudget,
+    Indeterminate,
+    NoBudget,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostReport {
+    pub schema_version: String,
+    pub snapshot_id: String,
+    pub scenario: QuantityScenario,
+    pub currency: Currency,
+    pub lines: Vec<CostLine>,
+    pub known_subtotal: Money,
+    pub complete_total: Option<Money>,
+    pub budget: Option<Money>,
+    pub budget_outcome: BudgetOutcome,
+    pub has_expired_inputs: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteComparison {
+    pub estimate: Money,
+    pub quote: Money,
+    pub difference: Money,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum CostError {
+    #[error("money value is negative, non-finite, or too large")]
+    InvalidMoney,
+    #[error("currency mismatch")]
+    CurrencyMismatch,
+    #[error("cost arithmetic overflow")]
+    Overflow,
+    #[error("quantity must be greater than zero")]
+    InvalidQuantity,
+    #[error("offer for `{0}` has no usable price tier")]
+    MissingPrice(String),
+    #[error("offer for `{0}` has an invalid price tier")]
+    InvalidPriceTier(String),
+    #[error("PCB specification is outside estimate profile `{0}`")]
+    UnsupportedPcbProfile(String),
+    #[error("PCB profile and quote cannot both be selected")]
+    ConflictingPcbInputs,
+    #[error("quote specification hash does not match the frozen PCB specification")]
+    QuoteSpecificationMismatch,
+    #[error("assembly fee rule does not match the requested process")]
+    AssemblyProcessMismatch,
+}
+
+fn line_known(
+    category: &str,
+    item: &str,
+    quantity: u64,
+    amount: Money,
+    source: CostSource,
+) -> CostLine {
+    CostLine {
+        category: category.to_string(),
+        item: item.to_string(),
+        quantity,
+        amount: Some(amount),
+        source,
+        status: CostLineStatus::Known,
+        uncertain: false,
+        reason: None,
+        expires_at: None,
+    }
+}
+
+fn line_unknown(
+    category: &str,
+    item: &str,
+    quantity: u64,
+    source: CostSource,
+    reason: String,
+) -> CostLine {
+    CostLine {
+        category: category.to_string(),
+        item: item.to_string(),
+        quantity,
+        amount: None,
+        source,
+        status: CostLineStatus::Unknown,
+        uncertain: true,
+        reason: Some(reason),
+        expires_at: None,
+    }
+}
+
+fn rounded_purchase(required: u64, constraints: &PurchaseConstraints) -> Result<u64, CostError> {
+    if required == 0 {
+        return Err(CostError::InvalidQuantity);
+    }
+    let minimum = u64::from(constraints.moq.unwrap_or(0));
+    let multiple = u64::from(constraints.order_multiple.unwrap_or(1));
+    if multiple == 0 {
+        return Err(CostError::InvalidQuantity);
+    }
+    let target = required.max(minimum);
+    target
+        .checked_add(multiple - 1)
+        .map(|value| value / multiple * multiple)
+        .ok_or(CostError::Overflow)
+}
+
+fn tier_price(tiers: &[PriceTier], quantity: u64) -> Option<&PriceTier> {
+    tiers
+        .iter()
+        .filter(|tier| {
+            let min = u64::from(tier.minimum_quantity);
+            let max = tier.maximum_quantity.map(u64::from);
+            min <= quantity && max.is_none_or(|max| quantity <= max)
+        })
+        .max_by_key(|tier| tier.minimum_quantity)
+}
+
+fn offer_line(
+    input: &PartCostInput,
+    assembled: u32,
+    currency: Currency,
+) -> Result<CostLine, CostError> {
+    let required = u64::from(input.units_per_board)
+        .checked_mul(u64::from(assembled))
+        .and_then(|value| value.checked_add(u64::from(input.allowance)))
+        .ok_or(CostError::Overflow)?;
+    if required == 0 {
+        return Err(CostError::InvalidQuantity);
+    }
+    let constraints = &input.offer.status.purchase;
+    let purchase = rounded_purchase(required, constraints)?;
+    let tier = tier_price(&constraints.price_tiers, purchase);
+    let price = tier
+        .map(|tier| tier.unit_price_usd)
+        .or(input.offer.status.unit_price_usd);
+    let Some(price) = price else {
+        return Ok(line_unknown(
+            "parts",
+            &input.sku,
+            purchase,
+            CostSource::FrozenOffer,
+            "provider supplied no usable price".into(),
+        ));
+    };
+    let unit = Money::from_decimal(currency, price)?;
+    let mut line = line_known(
+        "parts",
+        &input.sku,
+        purchase,
+        unit.checked_mul(purchase)?,
+        CostSource::FrozenOffer,
+    );
+    line.uncertain = input.offer.status.stock_status != StockStatus::InStock
+        || input.offer.status.stock_qty < purchase
+        || input.offer.status.lifecycle.is_problematic()
+        || !matches!(
+            input.offer.status.assembly_eligibility,
+            synth_supply::AssemblyEligibility::Eligible
+        );
+    line.expires_at.clone_from(&input.offer.expires_at);
+    if line.uncertain {
+        line.reason = Some(
+            "supplier stock, lifecycle, or assembly eligibility is not sufficient for this purchase"
+                .into(),
+        );
+    }
+    Ok(line)
+}
+
+fn sum_known(lines: &[CostLine], currency: Currency) -> Result<(Money, bool), CostError> {
+    let mut subtotal = Money::zero(currency);
+    let mut complete = true;
+    for line in lines {
+        if let Some(amount) = line.amount {
+            subtotal = subtotal.checked_add(amount)?;
+        } else {
+            complete = false;
+        }
+        if line.uncertain || line.status == CostLineStatus::Unknown {
+            complete = false;
+        }
+    }
+    Ok((subtotal, complete))
+}
+
+fn expired(now: &str, expires_at: Option<&str>) -> bool {
+    expires_at.is_some_and(|expiry| expiry < now)
+}
+
+/// Calculate a deterministic report from frozen, offline inputs.
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+pub fn calculate(input: &CostInput) -> Result<CostReport, CostError> {
+    if input.scenario.fabricated_boards == 0 || input.scenario.assembled_boards == 0 {
+        return Err(CostError::InvalidQuantity);
+    }
+    let mut lines = Vec::new();
+    for part in &input.parts {
+        lines.push(offer_line(
+            part,
+            input.scenario.assembled_boards,
+            input.currency,
+        )?);
+    }
+
+    if let Some(spec) = &input.pcb_specification {
+        if input.pcb_profile.is_some() && input.pcb_quote.is_some() {
+            return Err(CostError::ConflictingPcbInputs);
+        }
+        if let Some(quote) = &input.pcb_quote {
+            if let Some(expected_hash) = &input.pcb_specification_hash {
+                if expected_hash != &quote.specification_hash {
+                    return Err(CostError::QuoteSpecificationMismatch);
+                }
+            }
+            let amount = quote.amount;
+            if amount.currency != input.currency {
+                return Err(CostError::CurrencyMismatch);
+            }
+            lines.push(line_known(
+                "pcb",
+                &quote.quote_id,
+                u64::from(input.scenario.fabricated_boards),
+                amount,
+                CostSource::Quote,
+            ));
+        } else if let Some(profile) = &input.pcb_profile {
+            if profile.currency != input.currency
+                || profile.setup_fee.currency != input.currency
+                || profile.per_board_fee.currency != input.currency
+                || profile.per_cm2_fee.currency != input.currency
+            {
+                return Err(CostError::CurrencyMismatch);
+            }
+            if !profile.supported_layers.contains(&spec.layers)
+                || spec.width_mm <= 0.0
+                || spec.height_mm <= 0.0
+                || spec.width_mm > profile.max_width_mm
+                || spec.height_mm > profile.max_height_mm
+            {
+                return Err(CostError::UnsupportedPcbProfile(profile.name.clone()));
+            }
+            let area_cm2 = spec.width_mm * spec.height_mm / 100.0;
+            let area_fee = Money::from_decimal(
+                profile.currency,
+                area_cm2 * profile.per_cm2_fee.micros as f64 / MICROS_PER_UNIT as f64,
+            )?;
+            let board_fee = profile
+                .per_board_fee
+                .checked_mul(u64::from(input.scenario.fabricated_boards))?;
+            let amount = profile
+                .setup_fee
+                .checked_add(area_fee)?
+                .checked_add(board_fee)?;
+            lines.push(line_known(
+                "pcb",
+                &profile.name,
+                u64::from(input.scenario.fabricated_boards),
+                amount,
+                CostSource::Estimate,
+            ));
+        } else {
+            lines.push(line_unknown(
+                "pcb",
+                "quote_required",
+                u64::from(input.scenario.fabricated_boards),
+                CostSource::Estimate,
+                "no supported estimate profile or supplier quote supplied".into(),
+            ));
+        }
+    }
+
+    if let Some(assembly) = &input.assembly {
+        if assembly.process != assembly.rule.process {
+            return Err(CostError::AssemblyProcessMismatch);
+        }
+        if assembly.rule.currency != input.currency
+            || assembly.rule.setup_fee.currency != input.currency
+            || assembly.rule.stencil_fee.currency != input.currency
+            || assembly.rule.per_placement.currency != input.currency
+            || assembly.rule.per_solder_joint.currency != input.currency
+            || assembly.rule.manual_fee.currency != input.currency
+            || assembly.rule.inspection_fee.currency != input.currency
+        {
+            return Err(CostError::CurrencyMismatch);
+        }
+        let boards = u64::from(input.scenario.assembled_boards);
+        let placements = u64::from(assembly.placements_per_board)
+            .checked_mul(boards)
+            .ok_or(CostError::Overflow)?;
+        let joints = u64::from(assembly.solder_joints_per_board)
+            .checked_mul(boards)
+            .ok_or(CostError::Overflow)?;
+        let manual = u64::from(assembly.manual_operations)
+            .checked_mul(boards)
+            .ok_or(CostError::Overflow)?;
+        let inspection = u64::from(assembly.inspection_boards);
+        let rule = &assembly.rule;
+        let amount = rule
+            .setup_fee
+            .checked_add(rule.stencil_fee)?
+            .checked_add(rule.per_placement.checked_mul(placements)?)?
+            .checked_add(rule.per_solder_joint.checked_mul(joints)?)?
+            .checked_add(rule.manual_fee.checked_mul(manual)?)?
+            .checked_add(rule.inspection_fee.checked_mul(inspection)?)?;
+        lines.push(line_known(
+            "assembly",
+            &rule.name,
+            boards,
+            amount,
+            CostSource::Estimate,
+        ));
+    }
+
+    if let Some(delivery) = &input.delivery {
+        for (name, value) in [
+            ("shipping", delivery.shipping),
+            ("duties", delivery.duties),
+            ("taxes", delivery.taxes),
+        ] {
+            if let Some(amount) = value {
+                if amount.currency != input.currency {
+                    return Err(CostError::CurrencyMismatch);
+                }
+                lines.push(line_known(
+                    "delivery",
+                    name,
+                    1,
+                    amount,
+                    CostSource::UserSupplied,
+                ));
+            } else {
+                lines.push(line_unknown(
+                    "delivery",
+                    name,
+                    1,
+                    CostSource::UserSupplied,
+                    "not supplied".into(),
+                ));
+            }
+        }
+    }
+
+    let has_expired_inputs = input
+        .parts
+        .iter()
+        .any(|part| expired(&input.evaluated_at, part.offer.expires_at.as_deref()))
+        || input
+            .pcb_quote
+            .as_ref()
+            .is_some_and(|quote| quote.valid_until.as_str() < input.evaluated_at.as_str())
+        || input
+            .assembly
+            .as_ref()
+            .and_then(|assembly| assembly.rule.expires_at.as_deref())
+            .is_some_and(|expiry| expiry < input.evaluated_at.as_str());
+    for line in &mut lines {
+        if expired(&input.evaluated_at, line.expires_at.as_deref()) {
+            line.uncertain = true;
+            line.reason = Some("input has expired".into());
+        }
+    }
+    let (known_subtotal, complete) = sum_known(&lines, input.currency)?;
+    let complete_total = (complete && !has_expired_inputs).then_some(known_subtotal);
+    let budget_outcome = match (input.budget, complete_total) {
+        (None, _) => BudgetOutcome::NoBudget,
+        (Some(_), None) => BudgetOutcome::Indeterminate,
+        (Some(budget), Some(total)) if total.micros <= budget.micros => BudgetOutcome::WithinBudget,
+        (Some(_), Some(_)) => BudgetOutcome::OverBudget,
+    };
+    Ok(CostReport {
+        schema_version: "synth.cost-report.v1".into(),
+        snapshot_id: input.snapshot_id.clone(),
+        scenario: input.scenario.clone(),
+        currency: input.currency,
+        lines,
+        known_subtotal,
+        complete_total,
+        budget: input.budget,
+        budget_outcome,
+        has_expired_inputs,
+    })
+}
+
+/// Compare an estimate and a quote in the same currency.
+pub fn compare_quote(estimate: Money, quote: Money) -> Result<QuoteComparison, CostError> {
+    if estimate.currency != quote.currency {
+        return Err(CostError::CurrencyMismatch);
+    }
+    Ok(QuoteComparison {
+        estimate,
+        quote,
+        difference: Money {
+            currency: estimate.currency,
+            micros: quote
+                .micros
+                .checked_sub(estimate.micros)
+                .ok_or(CostError::Overflow)?,
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synth_supply::{AssemblyEligibility, LifecycleStatus};
+
+    fn offer(tiers: Vec<PriceTier>, stock: StockStatus) -> FrozenOffer {
+        FrozenOffer {
+            status: SupplyStatus {
+                part_number: "C1".into(),
+                distributor: "LCSC".into(),
+                in_stock: stock == StockStatus::InStock,
+                stock_qty: 100,
+                stock_status: stock,
+                assembly_eligibility: AssemblyEligibility::Eligible,
+                moq: 1,
+                purchase: PurchaseConstraints {
+                    moq: Some(5),
+                    order_multiple: Some(5),
+                    price_tiers: tiers,
+                },
+                unit_price_usd: None,
+                lifecycle: LifecycleStatus::Active,
+                fetched_at: "2026-01-01T00:00:00Z".into(),
+                snapshot_id: Some("snap-1".into()),
+            },
+            expires_at: Some("2027-01-01T00:00:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn quantity_rounding_and_tier_boundary_are_exact() {
+        let input = CostInput {
+            schema_version: "test".into(),
+            snapshot_id: "snap-1".into(),
+            scenario: QuantityScenario {
+                fabricated_boards: 1,
+                assembled_boards: 3,
+            },
+            currency: Currency::Usd,
+            parts: vec![PartCostInput {
+                sku: "C1".into(),
+                units_per_board: 2,
+                allowance: 0,
+                offer: offer(
+                    vec![
+                        PriceTier {
+                            minimum_quantity: 1,
+                            maximum_quantity: Some(9),
+                            unit_price_usd: 0.10,
+                        },
+                        PriceTier {
+                            minimum_quantity: 10,
+                            maximum_quantity: None,
+                            unit_price_usd: 0.08,
+                        },
+                    ],
+                    StockStatus::InStock,
+                ),
+            }],
+            pcb_specification: None,
+            pcb_specification_hash: None,
+            pcb_profile: None,
+            pcb_quote: None,
+            assembly: None,
+            delivery: None,
+            budget: None,
+            evaluated_at: "2026-06-01T00:00:00Z".into(),
+        };
+        let report = calculate(&input).expect("cost report");
+        assert_eq!(report.complete_total.expect("complete").micros, 800_000);
+        assert_eq!(report.lines[0].quantity, 10);
+    }
+
+    #[test]
+    fn unknown_price_keeps_total_incomplete_and_budget_indeterminate() {
+        let mut input = CostInput {
+            schema_version: "test".into(),
+            snapshot_id: "snap-1".into(),
+            scenario: QuantityScenario {
+                fabricated_boards: 5,
+                assembled_boards: 5,
+            },
+            currency: Currency::Usd,
+            parts: vec![PartCostInput {
+                sku: "C1".into(),
+                units_per_board: 1,
+                allowance: 0,
+                offer: offer(vec![], StockStatus::Unknown),
+            }],
+            pcb_specification: None,
+            pcb_specification_hash: None,
+            pcb_profile: None,
+            pcb_quote: None,
+            assembly: None,
+            delivery: None,
+            budget: Some(Money::from_decimal(Currency::Usd, 10.0).unwrap()),
+            evaluated_at: "2026-06-01T00:00:00Z".into(),
+        };
+        input.parts[0].offer.status.purchase.price_tiers.clear();
+        let report = calculate(&input).expect("partial report");
+        assert!(report.complete_total.is_none());
+        assert_eq!(report.budget_outcome, BudgetOutcome::Indeterminate);
+    }
+
+    #[test]
+    fn replay_is_stable_and_quote_difference_is_signed() {
+        let money = Money::from_decimal(Currency::Usd, 1.25).unwrap();
+        let comparison =
+            compare_quote(money, Money::from_decimal(Currency::Usd, 1.50).unwrap()).unwrap();
+        assert_eq!(comparison.difference.micros, 250_000);
+        assert_eq!(
+            serde_json::to_string(&money).unwrap(),
+            serde_json::to_string(&money).unwrap()
+        );
+    }
+}

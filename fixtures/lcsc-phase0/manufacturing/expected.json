@@ -1,0 +1,14 @@
+{
+  "schema": "synth.jlcpcb.phase0.manufacturing.v1",
+  "supplier_assembled_references": ["D1", "R1", "R2"],
+  "bom_references": ["D1", "R1", "R2"],
+  "cpl_references": ["D1", "R1", "R2"],
+  "dnp_references": ["C1"],
+  "manual_assembly_references": ["J1"],
+  "assertions": {
+    "bom_cpl_reference_sets_equal": true,
+    "dnp_excluded_from_bom_and_cpl": true,
+    "manual_assembly_excluded_from_supplier_cpl": true,
+    "inner_layers_rejected": true
+  }
+}

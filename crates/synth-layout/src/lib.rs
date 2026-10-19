@@ -7402,6 +7402,46 @@ mod documentation_tests {
     }
 
     #[test]
+    fn group_note_reserves_the_text_of_a_left_facing_net_label() {
+        let ic = part("ic", vec![pin("a"), pin("b"), pin("c"), pin("d")]);
+        let b = board_with_notes(
+            vec![component(0, "U1", ic, Some("Input"))],
+            vec![net(0, "SIG", &[(0, 0)])],
+            Vec::new(),
+        );
+        let mut layout = layout(&b);
+        let placements: std::collections::HashMap<_, _> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let (pin_id, x, y) = (0..4)
+            .find_map(|i| {
+                let (x, y, dx, _) =
+                    route::pin_terminal_xy(&b, ComponentId(0), PinId(i), &placements)?;
+                (dx < -0.1).then_some((PinId(i), x, y))
+            })
+            .expect("a left-facing pin");
+        layout.net_labels.push(NetLabel {
+            net: NetId(0),
+            component: ComponentId(0),
+            pin: pin_id,
+            label: "MODEM_IDLE".to_string(),
+        });
+        // The text runs left from the end of the 5.08 mm stub, about 11 mm.
+        let stub_end = x - 5.08;
+        let label_bottom = y + 1.905;
+        let far_end = group_hang_bottom(&b, &layout, "Input", stub_end - 11.0, stub_end - 10.0);
+        assert!(
+            (far_end - label_bottom).abs() < 1e-6,
+            "the far end of the text is not reserved: {far_end}"
+        );
+        let pin_side = group_hang_bottom(&b, &layout, "Input", stub_end + 1.0, stub_end + 5.0);
+        assert_eq!(
+            pin_side,
+            f64::NEG_INFINITY,
+            "reserved on the pin side of the stub"
+        );
+    }
+
+    #[test]
     fn group_box_is_wide_enough_for_its_widest_note_line() {
         let r = || part("resistor", vec![pin("p1"), pin("p2")]);
         let long = "Jumper 1-2: 3.3 V. Jumper 2-3: 5 V. No jumper: VIO off.";

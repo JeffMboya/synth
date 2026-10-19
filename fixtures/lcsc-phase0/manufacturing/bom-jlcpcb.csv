@@ -1,0 +1,3 @@
+Comment,Designator,Footprint,LCSC,Quantity
+10k resistor,"R1,R2",Resistor_SMD:R_0603_1608Metric,C25804,2
+status LED,D1,LED_SMD:LED_0603_1608Metric,C2286,1
