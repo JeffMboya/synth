@@ -1,0 +1,116 @@
+// A memory clock generated in fabric. The FPGA's ball cannot declare
+// `clock_output` — that capability requires electrical type `Clock` and a soft
+// I/O is `Bidirectional` — so the part's kind is what says a clock can come
+// from here. `E-SYNTH-CLOCK-002` must stay silent: an FPGA driving a clock out
+// of an ordinary ball is the normal case on a board with programmable logic,
+// and the alternative is asking such a board for an oscillator per clock
+// domain it generates.
+//
+// The rest of this fixture is the price of using two parts that declare 80
+// required pins between them: every supply, ground and command pin has to go
+// somewhere for the board to be clean enough to prove the one thing it is
+// here to prove.
+board "clock_002_from_programmable_logic" {
+  layers 4
+  manufacturer "jlcpcb"
+
+  component U1: fpga "ice40hx4k_bg121"
+  component U2: memory "is42s16400j_sdram"
+  component R1: resistor "r_generic_0603" value "22R"
+  component C1: capacitor "c_generic_0603" value "100nF"
+  component C2: capacitor "c_generic_0603" value "100nF"
+  component J1: connector "header_1x4"
+
+  // The rails arrive on the header and reach every supply pin.
+  connect J1.p1 -> C1.p1 as "V3V3"
+  connect C1.p2 -> J1.p2 as "GND"
+  connect J1.p3 -> C2.p1 as "V1V2"
+  connect C2.p2 -> J1.p2 as "GND"
+  connect U1.vccio_0 -> C1.p1 as "V3V3"
+  connect U1.vccio_1 -> C1.p1 as "V3V3"
+  connect U1.vccio_2 -> C1.p1 as "V3V3"
+  connect U1.vccio_3 -> C1.p1 as "V3V3"
+  connect U1.vccio_3_2 -> C1.p1 as "V3V3"
+  connect U1.vpp_fast -> C1.p1 as "V3V3"
+  connect U1.gndpll1 -> C1.p2 as "GND"
+  connect U1.vccpll1 -> C2.p1 as "V1V2"
+  connect U1.vpp_2v5 -> C1.p1 as "V3V3"
+  connect U1.vcc -> C2.p1 as "V1V2"
+  connect U1.vcc_2 -> C2.p1 as "V1V2"
+  connect U1.gnd -> C1.p2 as "GND"
+  connect U1.gnd_2 -> C1.p2 as "GND"
+  connect U1.gnd_3 -> C1.p2 as "GND"
+  connect U1.gnd_4 -> C1.p2 as "GND"
+  connect U1.gnd_5 -> C1.p2 as "GND"
+  connect U1.gnd_6 -> C1.p2 as "GND"
+  connect U1.gnd_7 -> C1.p2 as "GND"
+  connect U1.gnd_8 -> C1.p2 as "GND"
+  connect U1.gnd_9 -> C1.p2 as "GND"
+  connect U1.vcc_3 -> C2.p1 as "V1V2"
+  connect U1.gnd_10 -> C1.p2 as "GND"
+  connect U1.vcc_4 -> C2.p1 as "V1V2"
+  connect U1.vccpll0 -> C2.p1 as "V1V2"
+  connect U1.gndpll0 -> C1.p2 as "GND"
+  connect U1.vcc_spi -> C1.p1 as "V3V3"
+  connect U1.creset -> J1.p4 as "CRESET"
+  connect U1.cdone -> J1.p4 as "CRESET"
+
+  // Everything the die insists on, so the one real connection below is
+  // the only thing this fixture is testing.
+  connect U2.vdd_0 -> C1.p1 as "V3V3"
+  connect U2.dq0 -> U1.iot_225 as "BUS_DQ0"
+  connect U2.vddq_0 -> C1.p1 as "V3V3"
+  connect U2.dq1 -> U1.iot_222 as "BUS_DQ1"
+  connect U2.dq2 -> U1.iot_223 as "BUS_DQ2"
+  connect U2.gndq_0 -> C1.p2 as "GND"
+  connect U2.dq3 -> U1.iot_211 as "BUS_DQ3"
+  connect U2.dq4 -> U1.iot_207 as "BUS_DQ4"
+  connect U2.vddq_1 -> C1.p1 as "V3V3"
+  connect U2.dq5 -> U1.iot_206 as "BUS_DQ5"
+  connect U2.dq6 -> U1.iot_192 as "BUS_DQ6"
+  connect U2.gndq_1 -> C1.p2 as "GND"
+  connect U2.dq7 -> U1.iot_190 as "BUS_DQ7"
+  connect U2.vdd_1 -> C1.p1 as "V3V3"
+  connect U2.ldqm -> U1.iot_178 as "BUS_LDQM"
+  connect U2.we -> U1.iot_170 as "BUS_WE"
+  connect U2.cas -> U1.iot_168 as "BUS_CAS"
+  connect U2.ras -> U1.iot_221 as "BUS_RAS"
+  connect U2.cs -> U1.iot_219 as "BUS_CS"
+  connect U2.ba0 -> U1.iot_208 as "BUS_BA0"
+  connect U2.ba1 -> U1.iot_177 as "BUS_BA1"
+  connect U2.a10 -> U1.iot_174 as "BUS_A10"
+  connect U2.a0 -> U1.iot_191 as "BUS_A0"
+  connect U2.a1 -> U1.iot_179 as "BUS_A1"
+  connect U2.a2 -> U1.iot_172 as "BUS_A2"
+  connect U2.a3 -> U1.iot_212 as "BUS_A3"
+  connect U2.vdd_2 -> C1.p1 as "V3V3"
+  connect U2.gnd_0 -> C1.p2 as "GND"
+  connect U2.a4 -> U1.iot_181 as "BUS_A4"
+  connect U2.a5 -> U1.ior_161 as "BUS_A5"
+  connect U2.a6 -> U1.ior_160 as "BUS_A6"
+  connect U2.a7 -> U1.ior_147 as "BUS_A7"
+  connect U2.a8 -> U1.ior_154 as "BUS_A8"
+  connect U2.a9 -> U1.ior_152 as "BUS_A9"
+  connect U2.a11 -> U1.ior_146 as "BUS_A11"
+  connect U2.cke -> U1.ior_144 as "BUS_CKE"
+  connect U2.udqm -> U1.ior_148 as "BUS_UDQM"
+  connect U2.gnd_1 -> C1.p2 as "GND"
+  connect U2.dq8 -> U1.ior_137 as "BUS_DQ8"
+  connect U2.vddq_2 -> C1.p1 as "V3V3"
+  connect U2.dq9 -> U1.ior_136 as "BUS_DQ9"
+  connect U2.dq10 -> U1.ior_118 as "BUS_DQ10"
+  connect U2.gndq_2 -> C1.p2 as "GND"
+  connect U2.dq11 -> U1.ior_128 as "BUS_DQ11"
+  connect U2.dq12 -> U1.ior_120 as "BUS_DQ12"
+  connect U2.vddq_3 -> C1.p1 as "V3V3"
+  connect U2.dq13 -> U1.ior_129 as "BUS_DQ13"
+  connect U2.dq14 -> U1.ior_116 as "BUS_DQ14"
+  connect U2.gndq_3 -> C1.p2 as "GND"
+  connect U2.dq15 -> U1.ior_119 as "BUS_DQ15"
+  connect U2.gnd_2 -> C1.p2 as "GND"
+
+  // The fabric drives the clock, through the damping resistor a real bus
+  // carries, so the source is two terminals away from the load.
+  connect U1.iol_25a -> R1.p1 as "SDRAM_CLK_H"
+  connect R1.p2 -> U2.clk as "SDRAM_CLK"
+}
