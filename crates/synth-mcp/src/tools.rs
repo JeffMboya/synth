@@ -331,6 +331,23 @@ pub fn list_tools() -> Vec<McpToolInfo> {
             }),
         },
         McpToolInfo {
+            name: "synth_cost_budget_plan".into(),
+            description: "Evaluate a bounded set of frozen synth.cost-input.v1 candidates against their optional target budgets and rank the results. Complete candidates within budget rank first, then complete candidates over budget, then unresolved candidates; unresolved evidence is never treated as a budget pass.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "inputs": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "items": { "type": "object" },
+                        "description": "Frozen synth.cost-input.v1 candidates, usually one per reviewed part/rate-card alternative"
+                    }
+                },
+                "required": ["inputs"]
+            }),
+        },
+        McpToolInfo {
             name: "synth_multi_agent_synthesize".into(),
             description: "World Model multi-agent board synthesis engine (under active local development).".into(),
             input_schema: serde_json::json!({
@@ -594,6 +611,7 @@ pub fn call_tool(
         }
         "synth_live_supply_chain" => execute_live_supply_chain(args, default_registry),
         "synth_cost_report" => execute_cost_report(args),
+        "synth_cost_budget_plan" => execute_cost_budget_plan(args),
         "synth_place_with_hints" => execute_place_with_hints(args, default_registry),
         "synth_describe_placement" => execute_describe_placement(args, default_registry),
         "synth_resolve_footprints" => execute_resolve_footprints(args, default_registry),
@@ -643,6 +661,101 @@ fn execute_cost_report(args: &Value) -> Result<Value, String> {
     };
     value["unresolved"] = Value::Array(unresolved);
     Ok(value)
+}
+
+fn execute_cost_budget_plan(args: &Value) -> Result<Value, String> {
+    let inputs = args
+        .get("inputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "missing required inputs array: synth.cost-input.v1 candidates".to_string()
+        })?;
+    if inputs.is_empty() || inputs.len() > 32 {
+        return Err("inputs must contain between 1 and 32 candidates".into());
+    }
+
+    let mut candidates = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| {
+            let parsed: Result<synth_cost::CostInput, _> = serde_json::from_value(input.clone());
+            match parsed {
+                Ok(parsed) => match synth_cost::calculate(&parsed) {
+                    Ok(report) => {
+                        let unresolved = report
+                            .lines
+                            .iter()
+                            .filter(|line| {
+                                line.status == synth_cost::CostLineStatus::Unknown || line.uncertain
+                            })
+                            .count();
+                        let rank = match report.budget_outcome {
+                            synth_cost::BudgetOutcome::WithinBudget => 0,
+                            synth_cost::BudgetOutcome::OverBudget => 1,
+                            synth_cost::BudgetOutcome::NoBudget => 2,
+                            synth_cost::BudgetOutcome::Indeterminate => 3,
+                        };
+                        serde_json::json!({
+                            "candidate_index": index,
+                            "snapshot_id": report.snapshot_id,
+                            "budget_outcome": report.budget_outcome,
+                            "complete_total": report.complete_total,
+                            "known_subtotal": report.known_subtotal,
+                            "review_status": if unresolved == 0 { "complete" } else { "unresolved" },
+                            "unresolved_count": unresolved,
+                            "_rank": rank
+                        })
+                    }
+                    Err(error) => serde_json::json!({
+                        "candidate_index": index,
+                        "review_status": "rejected",
+                        "error": error.to_string(),
+                        "_rank": 4
+                    }),
+                },
+                Err(error) => serde_json::json!({
+                    "candidate_index": index,
+                    "review_status": "rejected",
+                    "error": format!("invalid synth.cost-input.v1: {error}"),
+                    "_rank": 4
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        left["_rank"]
+            .as_u64()
+            .cmp(&right["_rank"].as_u64())
+            .then_with(|| {
+                left["complete_total"]["micros"]
+                    .as_i64()
+                    .unwrap_or(i64::MAX)
+                    .cmp(
+                        &right["complete_total"]["micros"]
+                            .as_i64()
+                            .unwrap_or(i64::MAX),
+                    )
+            })
+            .then_with(|| {
+                left["candidate_index"]
+                    .as_u64()
+                    .cmp(&right["candidate_index"].as_u64())
+            })
+    });
+    for candidate in &mut candidates {
+        if let Some(map) = candidate.as_object_mut() {
+            map.remove("_rank");
+        }
+    }
+    let selected_candidate_index = candidates
+        .first()
+        .and_then(|candidate| candidate["candidate_index"].as_u64());
+    Ok(serde_json::json!({
+        "schema_version": "synth.cost-budget-plan.v1",
+        "candidates": candidates,
+        "selected_candidate_index": selected_candidate_index
+    }))
 }
 
 /// Attempt to find workspace root containing `registry/parts`.
@@ -4688,6 +4801,56 @@ electrical_type = "input"
         assert_eq!(result["budget"]["micros"], 250000000);
         assert_eq!(result["budget_outcome"], "indeterminate");
         assert_eq!(result["review_status"], "unresolved");
+    }
+
+    #[test]
+    fn budget_plan_ranks_complete_within_budget_candidate_first() {
+        let complete = serde_json::json!({
+            "schema_version": "synth.cost-input.v1",
+            "snapshot_id": "complete-candidate",
+            "scenario": {"fabricated_boards": 1, "assembled_boards": 0},
+            "currency": "Usd",
+            "parts": [],
+            "pcb_specification": {
+                "width_mm": 10.0, "height_mm": 10.0, "layers": 2,
+                "material": "FR4", "thickness_mm": 1.6, "copper_oz": 1.0,
+                "finish": "HASL", "solder_mask": "green", "panel_count": 1
+            },
+            "pcb_profile": {
+                "name": "rate-card", "currency": "Usd", "max_width_mm": 100.0,
+                "max_height_mm": 100.0, "supported_layers": [2],
+                "setup_fee": {"currency": "Usd", "micros": 0},
+                "per_board_fee": {"currency": "Usd", "micros": 0},
+                "per_cm2_fee": {"currency": "Usd", "micros": 0}
+            },
+            "pcb_quote": null,
+            "assembly": null,
+            "delivery": {
+                "shipping": {"currency": "Usd", "micros": 0},
+                "duties": {"currency": "Usd", "micros": 0},
+                "taxes": {"currency": "Usd", "micros": 0}
+            },
+            "budget": {"currency": "Usd", "micros": 1000000},
+            "evaluated_at": "2026-10-16T00:00:00Z"
+        });
+        let unresolved = serde_json::json!({
+            "schema_version": "synth.cost-input.v1",
+            "snapshot_id": "unresolved-candidate",
+            "scenario": {"fabricated_boards": 1, "assembled_boards": 1},
+            "currency": "Usd", "parts": [], "pcb_specification": null,
+            "pcb_profile": null, "pcb_quote": null, "assembly": null,
+            "delivery": null, "budget": {"currency": "Usd", "micros": 1000000},
+            "evaluated_at": "2026-10-16T00:00:00Z"
+        });
+        let result = call_tool(
+            "synth_cost_budget_plan",
+            &serde_json::json!({"inputs": [unresolved, complete]}),
+            None,
+        )
+        .expect("candidate plan should evaluate all frozen inputs");
+        assert_eq!(result["selected_candidate_index"], 1);
+        assert_eq!(result["candidates"][0]["review_status"], "complete");
+        assert_eq!(result["candidates"][0]["budget_outcome"], "within_budget");
     }
 }
 

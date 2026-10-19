@@ -477,13 +477,20 @@ pub fn calculate(input: &CostInput) -> Result<CostReport, CostError> {
             if amount.currency != input.currency {
                 return Err(CostError::CurrencyMismatch);
             }
-            lines.push(line_known(
+            let mut line = line_known(
                 "pcb",
                 &quote.quote_id,
                 u64::from(input.scenario.fabricated_boards),
                 amount,
                 CostSource::Quote,
-            ));
+            );
+            line.expires_at = Some(quote.valid_until.clone());
+            if input.pcb_specification_hash.is_none() {
+                line.uncertain = true;
+                line.reason =
+                    Some("quote is not bound to the frozen PCB specification hash".into());
+            }
+            lines.push(line);
         } else if let Some(profile) = &input.pcb_profile {
             if profile.currency != input.currency
                 || profile.setup_fee.currency != input.currency
@@ -577,13 +584,13 @@ pub fn calculate(input: &CostInput) -> Result<CostReport, CostError> {
             .checked_add(rule.per_solder_joint.checked_mul(joints)?)?
             .checked_add(rule.manual_fee.checked_mul(manual)?)?
             .checked_add(rule.inspection_fee.checked_mul(inspection)?)?;
-        lines.push(line_known(
-            "assembly",
-            &rule.name,
-            boards,
-            amount,
-            CostSource::Estimate,
-        ));
+        let mut line = line_known("assembly", &rule.name, boards, amount, CostSource::Estimate);
+        line.expires_at.clone_from(&rule.expires_at);
+        if rule.effective_from > input.evaluated_at {
+            line.uncertain = true;
+            line.reason = Some("assembly fee rule is not effective yet".into());
+        }
+        lines.push(line);
     }
 
     if input.assembly.is_none() && input.scenario.assembled_boards > 0 {
@@ -953,5 +960,78 @@ mod tests {
             serde_json::to_string(&money).unwrap(),
             serde_json::to_string(&money).unwrap()
         );
+    }
+
+    #[test]
+    fn unbound_pcb_quote_is_visible_but_cannot_certify_total() {
+        let mut input = incomplete_input();
+        input.scenario.assembled_boards = 0;
+        input.pcb_specification = Some(PcbSpecification {
+            width_mm: 20.0,
+            height_mm: 10.0,
+            layers: 2,
+            material: "FR4".into(),
+            thickness_mm: 1.6,
+            copper_oz: 1.0,
+            finish: "HASL".into(),
+            solder_mask: "green".into(),
+            panel_count: 1,
+        });
+        input.pcb_quote = Some(PcbQuote {
+            quote_id: "jlc-quote-1".into(),
+            source: "JLCPCB".into(),
+            specification_hash: "quote-hash".into(),
+            amount: Money::from_decimal(Currency::Usd, 12.0).unwrap(),
+            quoted_at: "2026-06-01T00:00:00Z".into(),
+            valid_until: "2026-12-01T00:00:00Z".into(),
+        });
+        input.delivery = Some(DeliveryInput {
+            shipping: Some(Money::zero(Currency::Usd)),
+            duties: Some(Money::zero(Currency::Usd)),
+            taxes: Some(Money::zero(Currency::Usd)),
+        });
+
+        let report = calculate(&input).unwrap();
+        let pcb = report
+            .lines
+            .iter()
+            .find(|line| line.category == "pcb")
+            .unwrap();
+        assert!(pcb.uncertain);
+        assert_eq!(pcb.expires_at.as_deref(), Some("2026-12-01T00:00:00Z"));
+        assert!(report.complete_total.is_none());
+    }
+
+    #[test]
+    fn future_assembly_rule_is_not_used_as_a_certified_fee() {
+        let mut input = incomplete_input();
+        input.assembly = Some(AssemblyInput {
+            process: "standard".into(),
+            placements_per_board: 1,
+            solder_joints_per_board: 2,
+            manual_operations: 0,
+            inspection_boards: 1,
+            rule: AssemblyFeeRule {
+                name: "future-rate-card".into(),
+                process: "standard".into(),
+                effective_from: "2027-01-01T00:00:00Z".into(),
+                expires_at: None,
+                currency: Currency::Usd,
+                setup_fee: Money::zero(Currency::Usd),
+                stencil_fee: Money::zero(Currency::Usd),
+                per_placement: Money::zero(Currency::Usd),
+                per_solder_joint: Money::zero(Currency::Usd),
+                manual_fee: Money::zero(Currency::Usd),
+                inspection_fee: Money::zero(Currency::Usd),
+            },
+        });
+        let report = calculate(&input).unwrap();
+        let assembly = report
+            .lines
+            .iter()
+            .find(|line| line.category == "assembly")
+            .unwrap();
+        assert!(assembly.uncertain);
+        assert_eq!(report.budget_outcome, BudgetOutcome::Indeterminate);
     }
 }
