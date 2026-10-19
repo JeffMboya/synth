@@ -40,6 +40,20 @@ electrical_type = "bidirectional"
 capabilities = ["i2c_scl"]
 required = true
 
+# ALERT and ADD0 are the remaining two pads of the package. ADD0 selects the
+# device address and has no default: left unconnected the address is whatever a
+# floating input decides, so a board straps it. ALERT is an open-drain output a
+# design may leave unused.
+[[pins]]
+name = "alert"
+number = "3"
+electrical_type = "open_drain_low"
+
+[[pins]]
+name = "add0"
+number = "4"
+electrical_type = "input"
+
 [[required_decoupling]]
 net = "vdd"
 value = "100nf"
