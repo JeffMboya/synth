@@ -1883,8 +1883,9 @@ const POWER_NAME_OFFSET_MM: f64 = 3.81;
 /// How far from the symbol's axis a name that moved to a side starts, in mm.
 const POWER_NAME_SIDE_MM: f64 = 1.9;
 /// How far past its usual spot a power name may move to clear what is in the
-/// way, nearest first, in mm.
-const POWER_NAME_RINGS_MM: [f64; 3] = [0.0, 2.54, 5.08];
+/// way, nearest first, in mm. Past the last ring the name stays near its
+/// symbol and takes the spot that overlaps least.
+const POWER_NAME_RINGS_MM: [f64; 9] = [0.0, 2.54, 5.08, 7.62, 10.16, 12.7, 15.24, 17.78, 20.32];
 /// How far the tip of the arrow or triangle is from the pin, in mm.
 const POWER_TIP_MM: f64 = 2.54;
 
@@ -2056,8 +2057,9 @@ const FIELD_SIDES: [FieldSide; 4] = [
 ];
 /// How far past its usual spot a field may move to clear what is in the way,
 /// nearest first, in mm. The 5.08 is a ring spacing that happens to equal the
-/// net label stub, not a reference to it.
-const FIELD_RINGS_MM: [f64; 3] = [0.0, 5.08, 10.16];
+/// net label stub, not a reference to it. Past the last ring the field stays
+/// near its symbol and takes the spot that overlaps least.
+const FIELD_RINGS_MM: [f64; 6] = [0.0, 5.08, 10.16, 15.24, 20.32, 25.4];
 
 /// Height of a Reference or Value string in mm, from KiCad's plot of 1.27 mm text.
 const FIELD_TEXT_HEIGHT_MM: f64 = 1.4;
@@ -4111,6 +4113,78 @@ mod tests {
             assert!(!value.4, "GND is hidden");
             assert!(value.2 .1 > *y, "GND is not below its triangle");
         }
+    }
+
+    fn overlaps(a: &field_clear::Rect, b: &field_clear::Rect) -> bool {
+        a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+    }
+
+    /// Half the side of the block the tests wall a symbol in, in mm: wider than
+    /// the old nearest rings, narrower than the farthest ones now.
+    const WALL_HALF_MM: f64 = 12.0;
+
+    /// A block `half` mm either side of the origin.
+    fn wall(half: f64) -> field_clear::Rect {
+        field_clear::Rect {
+            x0: -half,
+            y0: -half,
+            x1: half,
+            y1: half,
+        }
+    }
+
+    #[test]
+    fn a_power_name_walled_in_close_by_moves_out_until_it_is_clear() {
+        for kind in [
+            synth_layout::PowerFlagKind::Gnd,
+            synth_layout::PowerFlagKind::Vcc,
+        ] {
+            let mut obstacles = vec![FieldObstacle {
+                owner: None,
+                rect: wall(WALL_HALF_MM),
+            }];
+            power_symbol_properties(
+                "#PWR1",
+                "GND",
+                kind,
+                (0.0, 0.0),
+                &mut obstacles,
+                &mut Vec::new(),
+            );
+            let placed = &obstacles.last().expect("the name is an obstacle now").rect;
+            assert!(
+                !overlaps(placed, &wall(WALL_HALF_MM)),
+                "{kind:?} name on the wall: {placed:?}"
+            );
+        }
+    }
+
+    // Four characters, centred on the anchor, stand in for a field's text.
+    fn four_char_rect((side, ring): (FieldSide, f64)) -> field_clear::Rect {
+        text_rect_at(push_out((0.0, 0.0), side, ring), None, 4)
+    }
+
+    #[test]
+    fn a_field_walled_in_close_by_moves_out_until_it_is_clear() {
+        let candidates = field_candidates(FieldSide::Right, FieldSide::Left);
+        let wall = wall(WALL_HALF_MM);
+        let picked = field_clear::pick_clear(&candidates, &four_char_rect, &[wall].iter());
+        assert!(
+            !overlaps(&four_char_rect(picked), &wall),
+            "{picked:?} on the wall"
+        );
+    }
+
+    #[test]
+    fn a_field_with_no_clear_ring_takes_the_farthest_one_and_overlaps() {
+        // Past the last ring nothing is clear, so the pick is the candidate
+        // that overlaps least. That is the outermost ring, where the text
+        // sticks out of the wall the most.
+        let candidates = field_candidates(FieldSide::Right, FieldSide::Left);
+        let wall = wall(FIELD_RINGS_MM[FIELD_RINGS_MM.len() - 1] + 1.6);
+        let picked = field_clear::pick_clear(&candidates, &four_char_rect, &[wall].iter());
+        assert_eq!(Some(&picked.1), FIELD_RINGS_MM.last());
+        assert!(overlaps(&four_char_rect(picked), &wall));
     }
 
     #[test]
