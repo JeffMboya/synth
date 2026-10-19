@@ -1,0 +1,891 @@
+// A Class-C compute and memory platform: a Lattice iCE40 HX4K in a 121-ball
+// BGA driving a 32-bit SDR SDRAM bus, with its configuration flash, its
+// clock, a USB console, a three-rail power tree, current and thermal
+// monitoring, a debug header and an expansion header, on six layers.
+//
+// Produced from a prompt through the Synth MCP server.
+//
+// WHAT THIS BOARD IS FOR. The memory bus is still the qualification subject —
+// 32 data lines, 14 address and bank lines and 10 command lines,
+// every shared one series damped, under declared skew budgets. What changes
+// is that the bus now has a driver on the same board, so the card is a system
+// rather than a module: the subsystems compete for space, the rails have to
+// be separated, the BGA has to escape, and the interfaces have to reach the
+// edge. That is the difference between a board that demonstrates a bus and a
+// board somebody could bring up.
+//
+// WHY THESE PARTS. The iCE40 HX4K is the only part in the registry with
+// enough I/O to drive a x32 SDRAM bus and real fabric to put a controller in:
+// 93 usable balls on an 0.8 mm grid, four of them the dedicated
+// configuration SPI, eight of them global buffer inputs. An 0.8 mm BGA
+// escapes only through vias in its own pads, which is why this board declares
+// `requires via_in_pad` and a filled-via process rather than pretending the
+// standard tier will do.
+//
+// THE BALL ASSIGNMENT IS NOT ARBITRARY. The data bus takes the left bank
+// entirely and spills into the top; the address and command buses take the
+// top and right. Keeping each bus inside as few banks as possible is what
+// lets the skew budgets be achievable at all, because a line that crosses the
+// die to reach its ball spends that length before it ever leaves the package.
+//
+// SIX LAYERS, AND WHY. Three rails and a 143 MHz bus need more than four
+// layers can give. The stack is signal, ground, 3V3, 1V2, ground, signal: the
+// bus on F.Cu is referenced to the ground plane directly beneath it, the two
+// power planes are sandwiched between grounds so neither is a reference for
+// anything, and B.Cu has its own ground beneath it. On the four-layer card
+// this design grew out of, the only inner plane was a rail, and the bus was
+// referenced to copper carrying switching current.
+//
+// THE POWER TREE. 5 V arrives on USB-C behind a resettable fuse and a
+// transient clamp. A linear regulator makes 3V3 for the I/O banks, the flash,
+// the console bridge and the monitor; a switching regulator makes 1V2 for the
+// fabric, because 4 W of linear drop to 1.2 V is a heatsink, not a rail. The
+// PLL supply is 1V2 through a bead, which is what the datasheet asks for.
+// VPP_2V5 and VPP_FAST sit on 3V3: the operating range is 2.375 to 3.465 V,
+// so a separate 2.5 V rail would buy nothing.
+//
+// WHAT IS MEASURED RATHER THAN ASSUMED. Two shunts and a three-channel
+// monitor on the I2C bus report the 5 V input and the 1V2 fabric rail, so the
+// board's own consumption is an observation. A thermistor beside the FPGA
+// brings board temperature out to the expansion header. Both rails, both
+// console lines and the thermal node land on test pads.
+
+board "compute_memory_platform" {
+    layers 6
+    manufacturer "jlc-filled-via"
+    revision "A"
+    requires via_in_pad
+
+    // 1.6 mm, six copper layers. The 0.15 mm prepreg under F.Cu is what the
+    // bus geometry is derived from, and 0.22 mm is the narrowest width whose
+    // estimate lands on 50 Ohm over it — which is why the bus classes declare
+    // that rather than the 0.35 mm a four-layer stack needed.
+    //
+    // Both numbers were measured rather than chosen. Over 0.1 mm of prepreg
+    // the same 0.18 mm trace came out at 44.3 Ohm and reaching 50 Ohm would
+    // have meant 0.13 mm of copper — the fabricator's floor, with nothing
+    // left for tolerance. Over 0.15 mm it came out at 59.2 Ohm, so the trace
+    // widened instead of the dielectric thinning. Narrow copper is what a
+    // BGA field has room for, so the stack is what moved.
+    stackup {
+      copper 0.035mm
+      insulator 0.15mm er 4.2 material "FR4"
+      copper 0.0152mm
+      insulator 0.3mm er 4.4 material "FR4"
+      copper 0.0152mm
+      insulator 0.45mm er 4.6 material "FR4"
+      copper 0.0152mm
+      insulator 0.3mm er 4.4 material "FR4"
+      copper 0.0152mm
+      insulator 0.15mm er 4.2 material "FR4"
+      copper 0.035mm
+    }
+
+    // Three planes over four inner layers: ground takes two of them, which is
+    // what makes the outer signal layers referenced on both sides.
+    netclass "GND" {
+      trace_width 0.4mm
+      clearance 0.15mm
+      plane
+    }
+
+    netclass "V3V3" {
+      trace_width 0.4mm
+      clearance 0.15mm
+      plane
+    }
+
+    netclass "V1V2" {
+      trace_width 0.4mm
+      clearance 0.15mm
+      plane
+    }
+
+    // The input rail and the switching node are routed copper, deliberately:
+    // a switcher's output node carries the ripple current and belongs on one
+    // layer, short, not spread across a plane.
+    netclass "V5" {
+      trace_width 0.8mm
+      clearance 0.2mm
+    }
+
+    netclass "SWITCH" {
+      trace_width 0.8mm
+      clearance 0.3mm
+    }
+
+    // The PLL supply is filtered from the fabric rail and feeds two balls.
+    netclass "VCCPLL" {
+      trace_width 0.3mm
+      clearance 0.2mm
+    }
+
+    // 0.18 mm over the 0.1 mm prepreg is the 50 Ohm geometry for this stack.
+    // Every bus class takes it; what differs is the spread each allows.
+    netclass "SDRAM_DQL" {
+      trace_width 0.22mm
+      clearance 0.15mm
+      impedance 50ohm
+      max_skew 2.5mm
+    }
+
+    netclass "SDRAM_DQH" {
+      trace_width 0.22mm
+      clearance 0.15mm
+      impedance 50ohm
+      max_skew 2.5mm
+    }
+
+    netclass "SDRAM_ADDR" {
+      trace_width 0.22mm
+      clearance 0.15mm
+      impedance 50ohm
+      max_skew 5mm
+    }
+
+    netclass "SDRAM_ADDR_HOST" {
+      trace_width 0.22mm
+      clearance 0.15mm
+      impedance 50ohm
+      max_skew 3mm
+    }
+
+    netclass "SDRAM_CTRL" {
+      trace_width 0.22mm
+      clearance 0.15mm
+      impedance 50ohm
+      max_skew 5mm
+    }
+
+    netclass "SDRAM_CTRL_HOST" {
+      trace_width 0.22mm
+      clearance 0.15mm
+      impedance 50ohm
+      max_skew 3mm
+    }
+
+    netclass "SDRAM_CLK" {
+      trace_width 0.22mm
+      clearance 0.2mm
+      impedance 50ohm
+      max_length 40mm
+    }
+
+    netclass "SDRAM_CLK_HOST" {
+      trace_width 0.22mm
+      clearance 0.2mm
+      impedance 50ohm
+      max_length 20mm
+    }
+
+    // The configuration bus is shared with the boot flash and brought out to
+    // the debug header, so it is longer than it looks and gets its own class.
+    netclass "SPI_CFG" {
+      trace_width 0.2mm
+      clearance 0.2mm
+      max_length 60mm
+    }
+
+    // No impedance on this class, and the reason is the stackup rather than
+    // indifference: over the 0.1 mm prepreg that makes the memory bus 50 Ohm,
+    // Synth's estimator covers 41.2 to 54.2 Ohm, and a 90 Ohm differential
+    // target is outside what it can verify. The pair is still declared as a
+    // pair, which is what gets it matched and clamped; the impedance is a
+    // claim this board cannot support and so does not make.
+    netclass "USB" {
+      trace_width 0.3mm
+      clearance 0.2mm
+    }
+
+    netclass "UART" {
+      trace_width 0.2mm
+      clearance 0.2mm
+    }
+
+    netclass "I2C" {
+      trace_width 0.2mm
+      clearance 0.25mm
+    }
+
+    netclass "THERMAL" {
+      trace_width 0.2mm
+      clearance 0.25mm
+    }
+
+    // 5 V in, fused and clamped, measured on its way through.
+    group "POWER INPUT" color "#047857" {
+      component J1: connector "usb_c_receptacle" {
+        placement_hint { region: left_edge edge: left priority: hard }
+      }
+      component F1: fuse "polyfuse" value "1A"
+      component D1: diode "ptvs6v0s1ur" value "6V0"
+      component R1: resistor "r_generic_2010" value "0.05R"
+      component C1: capacitor "c_generic_0805" value "22uF"
+      component C2: capacitor "c_generic_0805" value "22uF"
+      // CC pull-downs: without them a USB-C source delivers nothing.
+      component R2: resistor "r_generic_0402" value "5.1k"
+      component R3: resistor "r_generic_0402" value "5.1k"
+
+      connect J1.vbus    -> F1.p1 as "VBUS" class "V5"
+      connect J1.vbus_b4 -> F1.p1 as "VBUS"
+      connect J1.vbus_a9 -> F1.p1 as "VBUS"
+      connect J1.vbus_b9 -> F1.p1 as "VBUS"
+      connect F1.p2 -> R1.p1 as "V5_FUSED" class "V5"
+      connect R1.p2 -> C1.p1 as "V5" class "V5"
+      connect C1.p2 -> J1.gnd as "GND" class "GND"
+      connect R1.p2 -> C2.p1 as "V5"
+      connect C2.p2 -> J1.gnd as "GND"
+      connect D1.cathode -> R1.p2 as "V5"
+      connect D1.anode -> J1.gnd as "GND"
+
+      connect J1.gnd_a12 -> J1.gnd as "GND"
+      connect J1.gnd_b12 -> J1.gnd as "GND"
+      connect J1.gnd_b1  -> J1.gnd as "GND"
+      connect J1.cc1 -> R2.p1 as "CC1"
+      connect R2.p2 -> J1.gnd as "GND"
+      connect J1.cc2 -> R3.p1 as "CC2"
+      connect R3.p2 -> J1.gnd as "GND"
+    }
+
+    // 3V3 for the I/O banks, the dice, the flash, the bridge and the monitor.
+    // A switcher, not a linear part: the loads add up to about 850 mA, and
+    // 1.7 V of linear drop at that current is 1.4 W in an SOT-223 — a
+    // heatsink problem rather than a rail. `E-SYNTH-POWER-010` is what said
+    // so, against the regulator's own declared limit.
+    group "RAIL 3V3" color "#0369a1" {
+      component U7: regulator "mp2307_buck"
+      component L3: inductor "l_generic_1210" value "4.7uH"
+      component R9: resistor "r_generic_0402" value "10k"
+      component R10: resistor "r_generic_0402" value "26k"
+      component R11: resistor "r_generic_0402" value "100k"
+      component C3: capacitor "c_generic_0805" value "22uF"
+      component C4: capacitor "c_generic_0805" value "22uF"
+      component C5: capacitor "c_generic_0402" value "100nF"
+      component C10: capacitor "c_generic_0402" value "10nF"
+
+      connect U7.in -> C3.p1 as "V5"
+      connect C3.p2 -> U7.gnd as "GND"
+      connect U7.ep -> U7.gnd as "GND"
+      connect U7.en -> R11.p1 as "EN_3V3"
+      connect R11.p2 -> U7.in as "V5"
+      connect U7.bs -> C5.p1 as "BOOT_3V3"
+      connect C5.p2 -> U7.sw as "SWITCH_3V3" class "SWITCH"
+      connect U7.sw -> L3.p1 as "SWITCH_3V3"
+      connect L3.p2 -> C4.p1 as "V3V3" class "V3V3"
+      connect C4.p2 -> U7.gnd as "GND"
+
+      // 0.925 V reference, so 3.3 V wants 26k over 10k to ground.
+      connect U7.fb -> R10.p1 as "FB_3V3"
+      connect R10.p2 -> L3.p2 as "V3V3"
+      connect U7.fb -> R9.p1 as "FB_3V3"
+      connect R9.p2 -> U7.gnd as "GND"
+      connect U7.comp -> C10.p1 as "COMP_3V3"
+      connect C10.p2 -> U7.gnd as "GND"
+    }
+
+    // 1V2 for the fabric. A linear regulator dropping 3.8 V at the core
+    // current of an HX4K is most of a watt in an SOT-223; a switcher is the
+    // only sensible answer, and it brings the inductor, the feedback divider
+    // and the bootstrap capacitor with it.
+    group "RAIL 1V2" color "#1d4ed8" {
+      component U8: regulator "mp2307_buck"
+      component L1: inductor "l_generic_1210" value "4.7uH"
+      component R4: resistor "r_generic_2010" value "0.05R"
+      component R5: resistor "r_generic_0402" value "10k"
+      component R6: resistor "r_generic_0402" value "20k"
+      component R7: resistor "r_generic_0402" value "100k"
+      component C6: capacitor "c_generic_0805" value "22uF"
+      component C7: capacitor "c_generic_0805" value "22uF"
+      component C8: capacitor "c_generic_0402" value "100nF"
+      component C9: capacitor "c_generic_0402" value "10nF"
+
+      connect U8.in -> C6.p1 as "V5"
+      connect C6.p2 -> U8.gnd as "GND"
+      connect U8.ep -> U8.gnd as "GND"
+      connect U8.en -> R7.p1 as "EN"
+      connect R7.p2 -> U8.in as "V5"
+      connect U8.bs -> C8.p1 as "BOOT"
+      connect C8.p2 -> U8.sw as "SWITCH" class "SWITCH"
+      connect U8.sw -> L1.p1 as "SWITCH"
+      connect L1.p2 -> R4.p1 as "V1V2_SENSE" class "V1V2"
+      connect R4.p2 -> C7.p1 as "V1V2" class "V1V2"
+      connect C7.p2 -> U8.gnd as "GND"
+
+      // 0.925 V reference, so 1.2 V wants 20k over 10k to ground.
+      connect U8.fb -> R6.p1 as "FB"
+      connect R6.p2 -> R4.p2 as "V1V2"
+      connect U8.fb -> R5.p1 as "FB"
+      connect R5.p2 -> U8.gnd as "GND"
+      connect U8.comp -> C9.p1 as "COMP"
+      connect C9.p2 -> U8.gnd as "GND"
+    }
+
+    // The fabric. Every supply ball gets its own ceramic, which is what an
+    // 0.8 mm BGA needs and what via-in-pad makes possible: each one stitches
+    // to its plane through a via in its own pad rather than through a track to
+    // somewhere there was room.
+    group "FPGA" color "#7c3aed" {
+      component U1: fpga "ice40hx4k_bg121" {
+        placement_hint { region: centre priority: hard }
+      }
+      component C11: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C12: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C13: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C14: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C15: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C16: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C17: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C18: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C19: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C20: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C21: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C22: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U1" priority: hard } }
+      component C23: capacitor "c_generic_0805" value "22uF"  { placement_hint { near: "U1" priority: soft } }
+      component C24: capacitor "c_generic_0805" value "22uF"  { placement_hint { near: "U1" priority: soft } }
+
+      // The PLL supply is the fabric rail through a bead, which is what the
+      // datasheet asks for and the one place on this board where a rail is
+      // filtered rather than poured.
+      component L2: inductor "ferrite_bead_0603" value "600R@100MHz"
+      component C30: capacitor "c_generic_0402" value "100nF"
+      component C31: capacitor "c_generic_0402" value "10nF"
+
+      // Configuration: a reset the host can press, and a pull-up so the part
+      // comes out of reset on its own.
+      component R8: resistor "r_generic_0402" value "10k"
+      component SW1: switch "spst_tactile"
+
+      connect U1.vccio_0    -> C11.p1 as "V3V3"
+      connect U1.vccio_1    -> C12.p1 as "V3V3"
+      connect U1.vccio_2    -> C13.p1 as "V3V3"
+      connect U1.vccio_3    -> C14.p1 as "V3V3"
+      connect U1.vccio_3_2  -> C15.p1 as "V3V3"
+      connect U1.vcc        -> C16.p1 as "V1V2"
+      connect U1.vcc_2      -> C17.p1 as "V1V2"
+      connect U1.vcc_3      -> C18.p1 as "V1V2"
+      connect U1.vcc_4      -> C19.p1 as "V1V2"
+      connect U1.vcc_spi    -> C20.p1 as "V3V3"
+      connect U1.vpp_fast   -> C21.p1 as "V3V3"
+      connect U1.vpp_2v5    -> C22.p1 as "V3V3"
+      connect C11.p2 -> U1.gnd as "GND"
+      connect C12.p2 -> U1.gnd as "GND"
+      connect C13.p2 -> U1.gnd as "GND"
+      connect C14.p2 -> U1.gnd as "GND"
+      connect C15.p2 -> U1.gnd as "GND"
+      connect C16.p2 -> U1.gnd as "GND"
+      connect C17.p2 -> U1.gnd as "GND"
+      connect C18.p2 -> U1.gnd as "GND"
+      connect C19.p2 -> U1.gnd as "GND"
+      connect C20.p2 -> U1.gnd as "GND"
+      connect C21.p2 -> U1.gnd as "GND"
+      connect C22.p2 -> U1.gnd as "GND"
+      connect U1.vccio_0 -> C23.p1 as "V3V3"
+      connect C23.p2 -> U1.gnd as "GND"
+      connect U1.vcc -> C24.p1 as "V1V2"
+      connect C24.p2 -> U1.gnd as "GND"
+
+      connect U1.gnd        -> SW1.p2 as "GND"
+      connect U1.gnd_2      -> SW1.p2 as "GND"
+      connect U1.gnd_3      -> SW1.p2 as "GND"
+      connect U1.gnd_4      -> SW1.p2 as "GND"
+      connect U1.gnd_5      -> SW1.p2 as "GND"
+      connect U1.gnd_6      -> SW1.p2 as "GND"
+      connect U1.gnd_7      -> SW1.p2 as "GND"
+      connect U1.gnd_8      -> SW1.p2 as "GND"
+      connect U1.gnd_9      -> SW1.p2 as "GND"
+      connect U1.gnd_10     -> SW1.p2 as "GND"
+
+      connect L2.p1 -> U1.vcc as "V1V2"
+      connect L2.p2 -> U1.vccpll0 as "VCCPLL" class "VCCPLL"
+      connect L2.p2 -> U1.vccpll1 as "VCCPLL"
+      connect C30.p1 -> L2.p2 as "VCCPLL"
+      connect C30.p2 -> U1.gndpll0 as "GND"
+      connect C31.p1 -> L2.p2 as "VCCPLL"
+      connect C31.p2 -> U1.gndpll1 as "GND"
+
+      connect U1.creset -> R8.p1 as "CRESET"
+      connect R8.p2 -> U1.vccio_0 as "V3V3"
+      connect SW1.p1 -> U1.creset as "CRESET"
+      connect SW1.p2 -> U1.gnd as "GND"
+    }
+
+    // U2 takes the low half of the data bus. The dice sit either
+    // side of the FPGA so each faces the bank its data lines come from.
+    group "SDRAM LOW HALF" color "#1d4ed8" {
+      component U2: memory "is42s16400j_sdram" {
+        placement_hint { near: "U1" priority: hard }
+      }
+      component C32: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U2" priority: hard } }
+      component C33: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U2" priority: hard } }
+      component C34: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U2" priority: hard } }
+      component C35: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U2" priority: hard } }
+      component C36: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U2" priority: hard } }
+      component C37: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U2" priority: hard } }
+      component C38: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U2" priority: hard } }
+      component C39: capacitor "c_generic_0805" value "22uF"  { placement_hint { near: "U2" priority: soft } }
+
+      connect U2.vdd_0   -> C32.p1 as "V3V3"
+      connect U2.vdd_1   -> C33.p1 as "V3V3"
+      connect U2.vdd_2   -> C34.p1 as "V3V3"
+      connect U2.vddq_0  -> C35.p1 as "V3V3"
+      connect U2.vddq_1  -> C36.p1 as "V3V3"
+      connect U2.vddq_2  -> C37.p1 as "V3V3"
+      connect U2.vddq_3  -> C38.p1 as "V3V3"
+      connect U2.vdd_0  -> C39.p1 as "V3V3"
+
+      connect C32.p2 -> U2.gnd_0   as "GND"
+      connect C33.p2 -> U2.gnd_1   as "GND"
+      connect C34.p2 -> U2.gnd_2   as "GND"
+      connect C35.p2 -> U2.gndq_0  as "GND"
+      connect C36.p2 -> U2.gndq_1  as "GND"
+      connect C37.p2 -> U2.gndq_2  as "GND"
+      connect C38.p2 -> U2.gndq_3  as "GND"
+      connect C39.p2 -> U2.gnd_0  as "GND"
+    }
+
+    // U3 takes the high half of the data bus. The dice sit either
+    // side of the FPGA so each faces the bank its data lines come from.
+    group "SDRAM HIGH HALF" color "#1e40af" {
+      component U3: memory "is42s16400j_sdram" {
+        placement_hint { near: "U1" priority: hard }
+      }
+      component C40: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U3" priority: hard } }
+      component C41: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U3" priority: hard } }
+      component C42: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U3" priority: hard } }
+      component C43: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U3" priority: hard } }
+      component C44: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U3" priority: hard } }
+      component C45: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U3" priority: hard } }
+      component C46: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U3" priority: hard } }
+      component C47: capacitor "c_generic_0805" value "22uF"  { placement_hint { near: "U3" priority: soft } }
+
+      connect U3.vdd_0   -> C40.p1 as "V3V3"
+      connect U3.vdd_1   -> C41.p1 as "V3V3"
+      connect U3.vdd_2   -> C42.p1 as "V3V3"
+      connect U3.vddq_0  -> C43.p1 as "V3V3"
+      connect U3.vddq_1  -> C44.p1 as "V3V3"
+      connect U3.vddq_2  -> C45.p1 as "V3V3"
+      connect U3.vddq_3  -> C46.p1 as "V3V3"
+      connect U3.vdd_0  -> C47.p1 as "V3V3"
+
+      connect C40.p2 -> U3.gnd_0   as "GND"
+      connect C41.p2 -> U3.gnd_1   as "GND"
+      connect C42.p2 -> U3.gnd_2   as "GND"
+      connect C43.p2 -> U3.gndq_0  as "GND"
+      connect C44.p2 -> U3.gndq_1  as "GND"
+      connect C45.p2 -> U3.gndq_2  as "GND"
+      connect C46.p2 -> U3.gndq_3  as "GND"
+      connect C47.p2 -> U3.gnd_0  as "GND"
+    }
+
+    // The data bus is point to point — one ball to one pad — so there is no
+    // branch to damp and a series resistor would only add a discontinuity.
+    // What it needs is matching, which is what its two classes declare.
+    group "DATA BUS" color "#b91c1c" {
+      connect U1.iol_2a    -> U2.dq0    as "DQ0" class "SDRAM_DQL"
+      connect U1.iol_2b    -> U2.dq1    as "DQ1" class "SDRAM_DQL"
+      connect U1.iol_5b    -> U2.dq2    as "DQ2" class "SDRAM_DQL"
+      connect U1.iol_5a    -> U2.dq3    as "DQ3" class "SDRAM_DQL"
+      connect U1.iol_4b    -> U2.dq4    as "DQ4" class "SDRAM_DQL"
+      connect U1.iol_4a    -> U2.dq5    as "DQ5" class "SDRAM_DQL"
+      connect U1.iol_8b    -> U2.dq6    as "DQ6" class "SDRAM_DQL"
+      connect U1.iol_9a    -> U2.dq7    as "DQ7" class "SDRAM_DQL"
+      connect U1.iol_9b    -> U2.dq8    as "DQ8" class "SDRAM_DQL"
+      connect U1.iol_8a    -> U2.dq9    as "DQ9" class "SDRAM_DQL"
+      connect U1.iol_10a   -> U2.dq10   as "DQ10" class "SDRAM_DQL"
+      connect U1.iol_10b   -> U2.dq11   as "DQ11" class "SDRAM_DQL"
+      connect U1.iol_12a   -> U2.dq12   as "DQ12" class "SDRAM_DQL"
+      connect U1.iol_12b   -> U2.dq13   as "DQ13" class "SDRAM_DQL"
+      connect U1.iol_13a   -> U2.dq14   as "DQ14" class "SDRAM_DQL"
+      connect U1.iol_14b   -> U2.dq15   as "DQ15" class "SDRAM_DQL"
+      connect U1.iol_17a   -> U3.dq0    as "DQ16" class "SDRAM_DQH"
+      connect U1.iol_18a   -> U3.dq1    as "DQ17" class "SDRAM_DQH"
+      connect U1.iol_18b   -> U3.dq2    as "DQ18" class "SDRAM_DQH"
+      connect U1.iol_17b   -> U3.dq3    as "DQ19" class "SDRAM_DQH"
+      connect U1.iol_23a   -> U3.dq4    as "DQ20" class "SDRAM_DQH"
+      connect U1.iol_25b   -> U3.dq5    as "DQ21" class "SDRAM_DQH"
+      connect U1.iol_23b   -> U3.dq6    as "DQ22" class "SDRAM_DQH"
+      connect U1.iol_25a   -> U3.dq7    as "DQ23" class "SDRAM_DQH"
+      connect U1.iot_225   -> U3.dq8    as "DQ24" class "SDRAM_DQH"
+      connect U1.iot_222   -> U3.dq9    as "DQ25" class "SDRAM_DQH"
+      connect U1.iot_223   -> U3.dq10   as "DQ26" class "SDRAM_DQH"
+      connect U1.iot_211   -> U3.dq11   as "DQ27" class "SDRAM_DQH"
+      connect U1.iot_207   -> U3.dq12   as "DQ28" class "SDRAM_DQH"
+      connect U1.iot_206   -> U3.dq13   as "DQ29" class "SDRAM_DQH"
+      connect U1.iot_192   -> U3.dq14   as "DQ30" class "SDRAM_DQH"
+      connect U1.iot_190   -> U3.dq15   as "DQ31" class "SDRAM_DQH"
+    }
+
+    // Every line that reaches both dice is damped at the driver: a 143 MHz
+    // edge arriving at a T reflects off two unterminated stubs, and 22 ohms in
+    // series is what an unbuffered bus does about it. Each line is therefore
+    // two nets — the ball to its resistor, and the resistor to the loads — so
+    // the budgets split with them and a total path budget is the sum.
+    group "COMMAND BUS" color "#be185d" {
+      component R20: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R21: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R22: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R23: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R24: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R25: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R26: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R27: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R28: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R29: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R30: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R31: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R32: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R33: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R34: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R35: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R36: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R37: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R38: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R39: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R40: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R41: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R42: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+      component R43: resistor "r_generic_0402" value "22R" { placement_hint { near: "U1" priority: soft } }
+
+      connect U1.ior_160   -> R20.p1 as "CLK_H" class "SDRAM_CLK_HOST"
+      connect R20.p2 -> U2.clk     as "CLK" class "SDRAM_CLK"
+      connect R20.p2 -> U3.clk     as "CLK"
+      connect U1.ior_147   -> R21.p1 as "CKE_H" class "SDRAM_CTRL_HOST"
+      connect R21.p2 -> U2.cke     as "CKE" class "SDRAM_CTRL"
+      connect R21.p2 -> U3.cke     as "CKE"
+      connect U1.ior_154   -> R22.p1 as "CS_N_H" class "SDRAM_CTRL_HOST"
+      connect R22.p2 -> U2.cs      as "CS_N" class "SDRAM_CTRL"
+      connect R22.p2 -> U3.cs      as "CS_N"
+      connect U1.ior_152   -> R23.p1 as "RAS_N_H" class "SDRAM_CTRL_HOST"
+      connect R23.p2 -> U2.ras     as "RAS_N" class "SDRAM_CTRL"
+      connect R23.p2 -> U3.ras     as "RAS_N"
+      connect U1.ior_146   -> R24.p1 as "CAS_N_H" class "SDRAM_CTRL_HOST"
+      connect R24.p2 -> U2.cas     as "CAS_N" class "SDRAM_CTRL"
+      connect R24.p2 -> U3.cas     as "CAS_N"
+      connect U1.ior_144   -> R25.p1 as "WE_N_H" class "SDRAM_CTRL_HOST"
+      connect R25.p2 -> U2.we      as "WE_N" class "SDRAM_CTRL"
+      connect R25.p2 -> U3.we      as "WE_N"
+      connect U1.iot_178   -> R26.p1 as "A0_H" class "SDRAM_ADDR_HOST"
+      connect R26.p2 -> U2.a0      as "A0" class "SDRAM_ADDR"
+      connect R26.p2 -> U3.a0      as "A0"
+      connect U1.iot_170   -> R27.p1 as "A1_H" class "SDRAM_ADDR_HOST"
+      connect R27.p2 -> U2.a1      as "A1" class "SDRAM_ADDR"
+      connect R27.p2 -> U3.a1      as "A1"
+      connect U1.iot_168   -> R28.p1 as "A2_H" class "SDRAM_ADDR_HOST"
+      connect R28.p2 -> U2.a2      as "A2" class "SDRAM_ADDR"
+      connect R28.p2 -> U3.a2      as "A2"
+      connect U1.iot_221   -> R29.p1 as "A3_H" class "SDRAM_ADDR_HOST"
+      connect R29.p2 -> U2.a3      as "A3" class "SDRAM_ADDR"
+      connect R29.p2 -> U3.a3      as "A3"
+      connect U1.iot_219   -> R30.p1 as "A4_H" class "SDRAM_ADDR_HOST"
+      connect R30.p2 -> U2.a4      as "A4" class "SDRAM_ADDR"
+      connect R30.p2 -> U3.a4      as "A4"
+      connect U1.iot_208   -> R31.p1 as "A5_H" class "SDRAM_ADDR_HOST"
+      connect R31.p2 -> U2.a5      as "A5" class "SDRAM_ADDR"
+      connect R31.p2 -> U3.a5      as "A5"
+      connect U1.iot_177   -> R32.p1 as "A6_H" class "SDRAM_ADDR_HOST"
+      connect R32.p2 -> U2.a6      as "A6" class "SDRAM_ADDR"
+      connect R32.p2 -> U3.a6      as "A6"
+      connect U1.iot_174   -> R33.p1 as "A7_H" class "SDRAM_ADDR_HOST"
+      connect R33.p2 -> U2.a7      as "A7" class "SDRAM_ADDR"
+      connect R33.p2 -> U3.a7      as "A7"
+      connect U1.iot_191   -> R34.p1 as "A8_H" class "SDRAM_ADDR_HOST"
+      connect R34.p2 -> U2.a8      as "A8" class "SDRAM_ADDR"
+      connect R34.p2 -> U3.a8      as "A8"
+      connect U1.iot_179   -> R35.p1 as "A9_H" class "SDRAM_ADDR_HOST"
+      connect R35.p2 -> U2.a9      as "A9" class "SDRAM_ADDR"
+      connect R35.p2 -> U3.a9      as "A9"
+      connect U1.iot_172   -> R36.p1 as "A10_H" class "SDRAM_ADDR_HOST"
+      connect R36.p2 -> U2.a10     as "A10" class "SDRAM_ADDR"
+      connect R36.p2 -> U3.a10     as "A10"
+      connect U1.iot_212   -> R37.p1 as "A11_H" class "SDRAM_ADDR_HOST"
+      connect R37.p2 -> U2.a11     as "A11" class "SDRAM_ADDR"
+      connect R37.p2 -> U3.a11     as "A11"
+      connect U1.iot_181   -> R38.p1 as "BA0_H" class "SDRAM_ADDR_HOST"
+      connect R38.p2 -> U2.ba0     as "BA0" class "SDRAM_ADDR"
+      connect R38.p2 -> U3.ba0     as "BA0"
+      connect U1.ior_161   -> R39.p1 as "BA1_H" class "SDRAM_ADDR_HOST"
+      connect R39.p2 -> U2.ba1     as "BA1" class "SDRAM_ADDR"
+      connect R39.p2 -> U3.ba1     as "BA1"
+      connect U1.ior_148   -> R40.p1 as "DQM0_H" class "SDRAM_CTRL_HOST"
+      connect R40.p2 -> U2.ldqm    as "DQM0" class "SDRAM_CTRL"
+      connect U1.ior_137   -> R41.p1 as "DQM1_H" class "SDRAM_CTRL_HOST"
+      connect R41.p2 -> U2.udqm    as "DQM1" class "SDRAM_CTRL"
+      connect U1.ior_136   -> R42.p1 as "DQM2_H" class "SDRAM_CTRL_HOST"
+      connect R42.p2 -> U3.ldqm    as "DQM2" class "SDRAM_CTRL"
+      connect U1.ior_118   -> R43.p1 as "DQM3_H" class "SDRAM_CTRL_HOST"
+      connect R43.p2 -> U3.udqm    as "DQM3" class "SDRAM_CTRL"
+    }
+
+    // The boot flash is on the configuration bus the FPGA drives itself at
+    // power-up and can read afterwards, which is why one device serves as
+    // both the bitstream store and the board's non-volatile memory.
+    group "BOOT FLASH" color "#a16207" {
+      component U4: memory "w25q128_flash"
+      component C48: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U4" priority: hard } }
+      component R44: resistor "r_generic_0402" value "10k"
+      component R52: resistor "r_generic_0402" value "10k"
+      component R53: resistor "r_generic_0402" value "10k"
+
+      connect U4.vcc -> C48.p1 as "V3V3"
+      connect C48.p2 -> U4.gnd as "GND"
+
+      connect U1.iob_108_ss   -> U4.cs  as "CFG_SS"  class "SPI_CFG"
+      connect U1.iob_107_sck  -> U4.clk as "CFG_SCK" class "SPI_CFG"
+      connect U1.iob_105_sdo  -> U4.io0 as "CFG_SDO" class "SPI_CFG"
+      connect U1.iob_106_sdi  -> U4.io1 as "CFG_SDI" class "SPI_CFG"
+
+      // Chip select idles high, so the part is deselected while the FPGA's
+      // own pins are still tri-stated at power-up.
+      connect R44.p1 -> U4.cs as "CFG_SS"
+      connect R44.p2 -> U4.vcc as "V3V3"
+
+      // The quad data pins are unused in the configuration protocol. They are
+      // held high through resistors rather than tied to the rail: they are
+      // bidirectional pins, and a pin that can drive low must never be hard
+      // against a supply.
+      connect R52.p1 -> U4.io2 as "FLASH_IO2"
+      connect R52.p2 -> U4.vcc as "V3V3"
+      connect R53.p1 -> U4.io3 as "FLASH_IO3"
+      connect R53.p2 -> U4.vcc as "V3V3"
+    }
+
+    // One oscillator rather than a crystal: the fabric has no crystal
+    // oscillator of its own, so the clock has to arrive as a square wave, and
+    // it arrives on a global buffer input because that is the only pin that
+    // reaches the fabric's clock network without burning routing.
+    group "CLOCK" color "#0e7490" {
+      component Y1: crystal "osc_smd_25mhz" value "25MHz"
+      component C49: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "Y1" priority: hard } }
+
+      connect Y1.vcc -> C49.p1 as "V3V3"
+      connect C49.p2 -> Y1.gnd as "GND"
+      connect Y1.oe  -> Y1.vcc as "V3V3"
+      connect Y1.out -> U1.iot_198_gbin0 as "CLK_25M" class "SDRAM_CLK_HOST"
+    }
+
+    // A USB console, which is how a board like this is actually used: the
+    // bridge runs at 3V3 so its logic levels match the fabric's banks, and
+    // the pair is clamped where it leaves the board.
+    group "USB CONSOLE" color "#be123c" {
+      component U5: ic "ch340g"
+      component Y2: crystal "ecs_120_20_33_tr" value "12MHz"
+      component C50: capacitor "c_generic_0402" value "22pF" { placement_hint { near: "Y2" priority: hard } }
+      component C51: capacitor "c_generic_0402" value "22pF" { placement_hint { near: "Y2" priority: hard } }
+      component C52: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U5" priority: hard } }
+      component C53: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U5" priority: hard } }
+      component D2: diode "prtr5v0u2x" { placement_hint { near: "J1" priority: soft } }
+
+      connect U5.vcc -> C52.p1 as "V3V3"
+      connect C52.p2 -> U5.gnd as "GND"
+      // At 3V3 the regulator pin is tied to the supply it no longer has to
+      // make, with its own capacitor.
+      connect U5.v3 -> C53.p1 as "V3V3"
+      connect C53.p2 -> U5.gnd as "GND"
+
+      connect U5.xi -> Y2.xtal_a as "XTAL_A"
+      connect U5.xo -> Y2.xtal_b as "XTAL_B"
+      connect C50.p1 -> Y2.xtal_a as "XTAL_A"
+      connect C50.p2 -> Y2.gnd_2 as "GND"
+      connect C51.p1 -> Y2.xtal_b as "XTAL_B"
+      connect C51.p2 -> Y2.gnd_4 as "GND"
+
+      connect J1.dp -> U5.ud_plus  as "USB_DP" class "USB"
+      connect J1.dn -> U5.ud_minus as "USB_DN" class "USB"
+      connect D2.io1 -> U5.ud_plus  as "USB_DP"
+      connect D2.io2 -> U5.ud_minus as "USB_DN"
+      connect D2.vcc -> U5.vcc as "V3V3"
+      connect D2.gnd -> U5.gnd as "GND"
+
+      connect U5.txd -> U1.ior_128 as "CONSOLE_RX" class "UART"
+      connect U5.rxd -> U1.ior_120 as "CONSOLE_TX" class "UART"
+
+      // The modem-control inputs are active low and this board uses none of
+      // them, so they are held at the rail rather than left to float; the
+      // RS232-inversion pin is held low, which is what selects TTL levels.
+      connect U5.cts  -> U5.vcc as "V3V3"
+      connect U5.dsr  -> U5.vcc as "V3V3"
+      connect U5.ri   -> U5.vcc as "V3V3"
+      connect U5.dcd  -> U5.vcc as "V3V3"
+      connect U5.r232 -> U5.gnd as "GND"
+    }
+
+    // What the board draws, measured rather than estimated: channel one across
+    // the input shunt, channel two across the fabric rail's shunt, channel
+    // three on 3V3 for its voltage alone.
+    group "POWER MONITOR" color "#0f766e" {
+      component U6: sensor "ina3221_power_monitor"
+      component C54: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U6" priority: hard } }
+      component R45: resistor "r_generic_0402" value "4.7k"
+      component R46: resistor "r_generic_0402" value "4.7k"
+
+      connect U6.vs  -> C54.p1 as "V3V3"
+      connect C54.p2 -> U6.gnd as "GND"
+      connect U6.vpu -> U6.vs  as "V3V3"
+      connect U6.a0  -> U6.gnd as "GND"
+      connect U6.ep  -> U6.gnd as "GND"
+
+      connect U6.in1_p -> R1.p1 as "V5_FUSED"
+      connect U6.in1_n -> R1.p2 as "V5"
+      connect U6.in2_p -> R4.p1 as "V1V2_SENSE"
+      connect U6.in2_n -> R4.p2 as "V1V2"
+      connect U6.in3_p -> U6.vs as "V3V3"
+      connect U6.in3_n -> U6.vs as "V3V3"
+
+      connect U6.sda -> U1.ior_129 as "I2C_SDA" class "I2C"
+      connect U6.scl -> U1.ior_116 as "I2C_SCL" class "I2C"
+      connect R45.p1 -> U6.sda as "I2C_SDA"
+      connect R45.p2 -> U6.vs  as "V3V3"
+      connect R46.p1 -> U6.scl as "I2C_SCL"
+      connect R46.p2 -> U6.vs  as "V3V3"
+    }
+
+    // Board temperature beside the fabric, brought out rather than read on
+    // board: neither the FPGA nor the monitor has an analog input.
+    group "THERMAL" color "#ea580c" {
+      component R47: resistor "r_thermistor_ntc_10k" value "10k" { placement_hint { near: "U1" priority: soft } }
+      component R48: resistor "r_generic_0402" value "10k" { placement_hint { near: "R47" priority: soft } }
+
+      connect R48.p1 -> U6.vs as "V3V3"
+      connect R48.p2 -> R47.p1 as "THERM" class "THERMAL"
+      connect R47.p2 -> U6.gnd as "GND"
+    }
+
+    // Three lights: the rail is up, the fabric is configured, and one the
+    // bitstream owns.
+    group "STATUS" color "#65a30d" {
+      component D3: led "led_0603" value "green 2V0"
+      component D4: led "led_0603" value "amber 2V0"
+      component D5: led "led_0603" value "blue 2V8"
+      component R49: resistor "r_generic_0402" value "1k"
+      component R50: resistor "r_generic_0402" value "1k"
+      component R51: resistor "r_generic_0402" value "1k"
+
+      connect R49.p1 -> U6.vs as "V3V3"
+      connect R49.p2 -> D3.a as "LED_PWR"
+      connect D3.k -> U6.gnd as "GND"
+
+      // CDONE is an open-drain output that releases when configuration
+      // finishes, so the light is on while the part is unconfigured.
+      connect R50.p1 -> U6.vs as "V3V3"
+      connect R50.p2 -> D4.a as "LED_CFG"
+      connect D4.k -> U1.cdone as "CDONE"
+
+      connect R51.p1 -> U1.iob_87 as "LED_USER"
+      connect R51.p2 -> D5.a as "LED_USER_A"
+      connect D5.k -> U6.gnd as "GND"
+    }
+
+    // The configuration bus, the reset and the done signal, where a
+    // programmer can reach them.
+    group "DEBUG" color "#525252" {
+      component J3: connector "header_2x5" {
+        placement_hint { region: top_edge edge: top priority: hard }
+      }
+
+      connect J3.p1  -> U6.vs  as "V3V3"
+      connect J3.p2  -> U6.gnd as "GND"
+      connect J3.p3  -> U4.clk as "CFG_SCK"
+      connect J3.p4  -> U4.io1 as "CFG_SDI"
+      connect J3.p5  -> U4.io0 as "CFG_SDO"
+      connect J3.p6  -> U4.cs  as "CFG_SS"
+      connect J3.p7  -> U1.creset as "CRESET"
+      connect J3.p8  -> U1.cdone  as "CDONE"
+      connect J3.p9  -> U6.gnd as "GND"
+      connect J3.p10 -> U6.gnd as "GND"
+    }
+
+    // Everything the bus did not need, brought out with a ground every fourth
+    // pin and the thermal node on the last one.
+    group "EXPANSION" color "#334155" {
+      component J2: connector "header_2x20" {
+        placement_hint { region: right_edge edge: right priority: hard }
+      }
+
+      connect J2.p1  -> U6.vs  as "V3V3"
+      connect J2.p2  -> U6.gnd as "GND"
+      connect J2.p3  -> U1.iob_78        as "EXP0"
+      connect J2.p4  -> U1.iob_86        as "EXP1"
+      connect J2.p5  -> U6.gnd as "GND"
+      connect J2.p6  -> U1.iob_91        as "EXP2"
+      connect J2.p7  -> U1.iob_63        as "EXP3"
+      connect J2.p8  -> U1.iob_73        as "EXP4"
+      connect J2.p9  -> U1.iob_79        as "EXP5"
+      connect J2.p10 -> U6.gnd as "GND"
+      connect J2.p11 -> U1.iob_89        as "EXP6"
+      connect J2.p12 -> U1.iob_56        as "EXP7"
+      connect J2.p13 -> U1.iob_61        as "EXP8"
+      connect J2.p14 -> U1.iob_71        as "EXP9"
+      connect J2.p15 -> U6.gnd as "GND"
+      connect J2.p16 -> U1.iob_72        as "EXP10"
+      connect J2.p17 -> U1.iob_94        as "EXP11"
+      connect J2.p18 -> U1.ior_119       as "EXP12"
+      connect J2.p19 -> U1.ior_117       as "EXP13"
+      connect J2.p20 -> U6.gnd as "GND"
+      connect J2.p21 -> U1.ior_114       as "EXP14"
+      connect J2.p22 -> U1.ior_115       as "EXP15"
+      connect J2.p23 -> U1.iob_103_cbsel0 as "EXP16"
+      connect J2.p24 -> U1.iob_104_cbsel1 as "EXP17"
+      connect J2.p25 -> U6.gnd as "GND"
+      connect J2.p26 -> U1.iob_81_gbin5  as "EXP18"
+      connect J2.p27 -> U1.iob_82_gbin4  as "EXP19"
+      connect J2.p28 -> U1.iol_13b_gbin7 as "EXP20"
+      connect J2.p29 -> U1.iol_14a_gbin6 as "EXP21"
+      connect J2.p30 -> U6.gnd as "GND"
+      connect J2.p31 -> U1.ior_140_gbin3 as "EXP22"
+      connect J2.p32 -> U1.ior_141_gbin2 as "EXP23"
+      connect J2.p33 -> U1.iot_197_gbin1 as "EXP24"
+      connect J2.p34 -> U6.gnd as "GND"
+      connect J2.p35 -> U6.gnd as "GND"
+      connect J2.p36 -> U6.gnd as "GND"
+      connect J2.p37 -> U6.gnd as "GND"
+      connect J2.p38 -> U6.gnd as "GND"
+      connect J2.p39 -> R47.p1 as "THERM"
+      connect J2.p40 -> U6.gnd as "GND"
+    }
+
+    // The pair is NOT declared as a `diff_pair`, and that is a finding rather
+    // than an omission.
+    //
+    // A declared pair must carry an impedance target (`E-SYNTH-DIFF-001`), a
+    // USB channel's target is 90 Ohm differential, and on this stackup the
+    // estimator covers 41.2 to 54.2 Ohm (`E-SYNTH-IMPEDANCE-002`) — because
+    // the 0.1 mm prepreg that puts the memory bus at 50 Ohm on a width a BGA
+    // field can route also puts every trace over it at a low impedance. The
+    // two rules together mean no USB pair can be declared on this board at
+    // all: the only way to satisfy both would be to claim a target the board
+    // does not have.
+    //
+    // Thickening the top prepreg to reach 90 Ohm would take the bus to about
+    // 0.55 mm of trace width, which does not escape a 0.8 mm ball field. That
+    // is the real conflict between the two subsystems on this board, and it
+    // is what a six-layer stack tuned for one of them costs the other.
+    //
+    // The pair keeps its own netclass, its tight clearance and its clamp, so
+    // it is routed as a pair and protected as one. What it does not carry is a
+    // verified impedance.
+
+    group "MECHANICAL" color "#475569" {
+      component H1: mounting_hole "mounting_hole_m2_5" { placement_hint { region: top_left priority: hard } }
+      component H2: mounting_hole "mounting_hole_m2_5" { placement_hint { region: top_right priority: hard } }
+      component H3: mounting_hole "mounting_hole_m2_5" { placement_hint { region: bottom_left priority: hard } }
+      component H4: mounting_hole "mounting_hole_m2_5" { placement_hint { region: bottom_right priority: hard } }
+      component FID1: fiducial "fiducial_1mm"
+      component FID2: fiducial "fiducial_1mm"
+
+      // Six pads: all three rails, ground, the thermal node and the done
+      // signal, so bring-up needs no wire soldered to a part.
+      component TP1: testpoint "testpoint_pad_1_5"
+      component TP2: testpoint "testpoint_pad_1_5"
+      component TP3: testpoint "testpoint_pad_1_5"
+      component TP4: testpoint "testpoint_pad_1_5"
+      component TP5: testpoint "testpoint_pad_1_5"
+      component TP6: testpoint "testpoint_pad_1_5"
+
+      connect TP1.p1 -> R1.p2  as "V5"
+      connect TP2.p1 -> U6.vs  as "V3V3"
+      connect TP3.p1 -> R4.p2  as "V1V2"
+      connect TP4.p1 -> U6.gnd as "GND"
+      connect TP5.p1 -> R47.p1 as "THERM"
+      connect TP6.p1 -> U1.cdone as "CDONE"
+    }
+}
