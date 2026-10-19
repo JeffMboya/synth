@@ -1230,6 +1230,272 @@ fn place_with_tuning_impl<S: ::std::hash::BuildHasher>(
     }))
 }
 
+/// A board feature carrying no net: a mounting hole, a fiducial, or a test
+/// point nobody wired to anything.
+///
+/// Nothing in the solver has a reason to put one of these anywhere. It has no
+/// pad to be near, no anchor to hug and no net to shorten, so the greedy
+/// search places it wherever a legal cell happens to be free and the outline
+/// then has to contain the result. They are placed after the circuit instead,
+/// by [`place_board_features`].
+fn is_netless_board_feature(board: &Board, id: ComponentId) -> bool {
+    board.component(id).is_some_and(|component| {
+        synth_layout::is_board_feature_kind(&component.kind)
+            && !board.nets.iter().any(|net| {
+                net.endpoints
+                    .iter()
+                    .any(|endpoint| endpoint.component == id)
+            })
+    })
+}
+
+/// The eight positions a board feature is offered, in the order an unhinted
+/// feature takes them: the four corners first, then the four edge midpoints.
+const FEATURE_SLOTS: [FeatureSlot; 8] = [
+    FeatureSlot::TopLeft,
+    FeatureSlot::TopRight,
+    FeatureSlot::BottomLeft,
+    FeatureSlot::BottomRight,
+    FeatureSlot::TopMid,
+    FeatureSlot::BottomMid,
+    FeatureSlot::LeftMid,
+    FeatureSlot::RightMid,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeatureSlot {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    TopMid,
+    BottomMid,
+    LeftMid,
+    RightMid,
+}
+
+impl FeatureSlot {
+    /// The point on the envelope this slot aims at: a corner, or the middle
+    /// of an edge.
+    fn anchor(self, envelope: Rect) -> Point {
+        let mid_x = (envelope.min.x_nm + envelope.max.x_nm) / 2;
+        let mid_y = (envelope.min.y_nm + envelope.max.y_nm) / 2;
+        match self {
+            Self::TopLeft => envelope.min,
+            Self::TopRight => Point::new(envelope.max.x_nm, envelope.min.y_nm),
+            Self::BottomLeft => Point::new(envelope.min.x_nm, envelope.max.y_nm),
+            Self::BottomRight => envelope.max,
+            Self::TopMid => Point::new(mid_x, envelope.min.y_nm),
+            Self::BottomMid => Point::new(mid_x, envelope.max.y_nm),
+            Self::LeftMid => Point::new(envelope.min.x_nm, mid_y),
+            Self::RightMid => Point::new(envelope.max.x_nm, mid_y),
+        }
+    }
+}
+
+/// The slot a feature's own hint asks for, if it names one.
+///
+/// A corner region is read as that corner and an edge as that edge's
+/// midpoint, so `region: top_left` and `edge: top` mean what they say on a
+/// part whose only job is to sit somewhere on the border. `centre` and a
+/// `near` hint name no slot and leave the caller's fallback to choose.
+fn hinted_feature_slot(hint: &synth_ir::PlacementConstraint) -> Option<FeatureSlot> {
+    use synth_ir::{PlacementEdge, PlacementRegion};
+    if let Some(region) = &hint.region {
+        return match region {
+            PlacementRegion::TopLeft => Some(FeatureSlot::TopLeft),
+            PlacementRegion::TopRight => Some(FeatureSlot::TopRight),
+            PlacementRegion::BottomLeft => Some(FeatureSlot::BottomLeft),
+            PlacementRegion::BottomRight => Some(FeatureSlot::BottomRight),
+            PlacementRegion::TopEdge => Some(FeatureSlot::TopMid),
+            PlacementRegion::BottomEdge => Some(FeatureSlot::BottomMid),
+            PlacementRegion::LeftEdge => Some(FeatureSlot::LeftMid),
+            PlacementRegion::RightEdge => Some(FeatureSlot::RightMid),
+            PlacementRegion::Centre => None,
+        };
+    }
+    match hint.edge.as_ref()? {
+        PlacementEdge::Top => Some(FeatureSlot::TopMid),
+        PlacementEdge::Bottom => Some(FeatureSlot::BottomMid),
+        PlacementEdge::Left => Some(FeatureSlot::LeftMid),
+        PlacementEdge::Right => Some(FeatureSlot::RightMid),
+    }
+}
+
+/// Place every net-less board feature in the border band of the finished
+/// circuit, as close as it can get to the corner or edge it asked for.
+///
+/// Placed with the circuit, these parts take whatever the greedy search had
+/// free: on the Class-C SDRAM card the four mounting holes, each asking for a
+/// different corner at `priority: hard`, land at the four quadrant *centres*
+/// — 17 mm in from the left edge and 20 mm down from the top — which puts
+/// four keep-outs in the middle of the routing area and no hole near a
+/// corner. The two fiducials land mid-board, where a placement camera has no
+/// use for them.
+///
+/// The band searched is the part's own extent plus a gap, inside the
+/// envelope, which is where a hole or a fiducial belongs on a real board.
+/// Only if nothing in the band is free does a feature step outside and grow
+/// the outline, so a board pays area for a mounting hole exactly when its
+/// border is genuinely full.
+///
+/// Deterministic: features are taken in `ComponentId` order, each slot is
+/// claimed once, and candidates are ordered by distance to the slot's anchor
+/// with ties broken by coordinate.
+fn place_board_features(
+    board: &Board,
+    placements: &mut Vec<ComponentPlacement>,
+    features: &[ComponentId],
+    courtyard_lookup: &std::collections::HashMap<ComponentId, (f64, f64)>,
+    courtyard_offset_lookup: &std::collections::HashMap<ComponentId, (f64, f64)>,
+) {
+    let rect_of = |placement: &ComponentPlacement| -> Rect {
+        let (w_mm, h_mm) = courtyard_lookup[&placement.id];
+        courtyard_rect_for_placement(
+            placement,
+            w_mm,
+            h_mm,
+            courtyard_offset_lookup.get(&placement.id).copied(),
+            0,
+        )
+    };
+
+    let mut occupied: Vec<Rect> = placements.iter().map(rect_of).collect();
+    let Some(envelope) = occupied.iter().copied().reduce(|a, b| {
+        Rect::new(
+            Point::new(a.min.x_nm.min(b.min.x_nm), a.min.y_nm.min(b.min.y_nm)),
+            Point::new(a.max.x_nm.max(b.max.x_nm), a.max.y_nm.max(b.max.y_nm)),
+        )
+    }) else {
+        // No circuit to be on the border of. Leave the features where a
+        // caller's own sizing put them rather than inventing an envelope.
+        return;
+    };
+
+    let step_nm = mm_to_nm(GRID_PITCH_MM);
+    let gap_nm = mm_to_nm(0.5);
+    let mut claimed: Vec<FeatureSlot> = Vec::with_capacity(features.len());
+    let mut ordered = features.to_vec();
+    ordered.sort_by_key(|id| id.0);
+
+    for id in ordered {
+        let (w_mm, h_mm) = courtyard_lookup[&id];
+        let half_w = mm_to_nm(w_mm) / 2;
+        let half_h = mm_to_nm(h_mm) / 2;
+        let offset = courtyard_offset_lookup
+            .get(&id)
+            .copied()
+            .unwrap_or((0.0, 0.0));
+        let band_nm = half_w.max(half_h) * 2 + gap_nm;
+
+        let asked = board
+            .component(id)
+            .and_then(|component| component.placement_hint.as_ref())
+            .and_then(hinted_feature_slot);
+        let start = asked
+            .and_then(|slot| FEATURE_SLOTS.iter().position(|s| *s == slot))
+            .unwrap_or(0);
+
+        let legal = |centre: Point, occupied: &[Rect]| -> Option<Rect> {
+            let candidate =
+                courtyard_rect_at_anchor(centre, Rotation::Zero, half_w, half_h, offset, gap_nm);
+            if occupied.iter().any(|rect| candidate.intersects(rect)) {
+                return None;
+            }
+            if intersects_keepout(candidate, id, board, envelope, |pid| {
+                placements
+                    .iter()
+                    .find(|placement| placement.id == pid)
+                    .map(rect_of)
+            }) {
+                return None;
+            }
+            Some(candidate)
+        };
+
+        // Every grid centre whose courtyard sits inside the envelope and
+        // touches its border band, nearest the asked-for anchor first. A
+        // second ring outside the envelope follows, for a border with no room
+        // left.
+        let mut chosen: Option<(Point, Rect)> = None;
+        'slots: for turn in 0..FEATURE_SLOTS.len() {
+            let slot = FEATURE_SLOTS[(start + turn) % FEATURE_SLOTS.len()];
+            if claimed.contains(&slot) && asked != Some(slot) {
+                continue;
+            }
+            let anchor = slot.anchor(envelope);
+            for ring in 0..2 {
+                let search = if ring == 0 {
+                    envelope
+                } else {
+                    Rect::new(
+                        Point::new(envelope.min.x_nm - band_nm, envelope.min.y_nm - band_nm),
+                        Point::new(envelope.max.x_nm + band_nm, envelope.max.y_nm + band_nm),
+                    )
+                };
+                let mut candidates: Vec<Point> = Vec::new();
+                let mut y = search.min.y_nm + half_h;
+                while y <= search.max.y_nm - half_h {
+                    let mut x = search.min.x_nm + half_w;
+                    while x <= search.max.x_nm - half_w {
+                        let in_band = x - half_w <= search.min.x_nm + band_nm
+                            || x + half_w >= search.max.x_nm - band_nm
+                            || y - half_h <= search.min.y_nm + band_nm
+                            || y + half_h >= search.max.y_nm - band_nm;
+                        if in_band {
+                            candidates.push(Point::new(x, y));
+                        }
+                        x += step_nm;
+                    }
+                    y += step_nm;
+                }
+                candidates.sort_by_key(|point| {
+                    (
+                        (point.x_nm - anchor.x_nm).abs() + (point.y_nm - anchor.y_nm).abs(),
+                        point.y_nm,
+                        point.x_nm,
+                    )
+                });
+                for centre in candidates {
+                    if let Some(rect) = legal(centre, &occupied) {
+                        chosen = Some((centre, rect));
+                        claimed.push(slot);
+                        break 'slots;
+                    }
+                }
+            }
+        }
+
+        if let Some((centre, rect)) = chosen {
+            occupied.push(rect);
+            placements.push(ComponentPlacement {
+                id,
+                center: centre,
+                rotation: Rotation::Zero,
+                layer: Layer::Top,
+            });
+        } else {
+            // Nothing legal anywhere on either ring. Clear of the envelope's
+            // far corner is still legal, and is better than on top of a part.
+            let centre = Point::new(envelope.max.x_nm + half_w, envelope.max.y_nm + half_h);
+            occupied.push(courtyard_rect_at_anchor(
+                centre,
+                Rotation::Zero,
+                half_w,
+                half_h,
+                offset,
+                gap_nm,
+            ));
+            placements.push(ComponentPlacement {
+                id,
+                center: centre,
+                rotation: Rotation::Zero,
+                layer: Layer::Top,
+            });
+        }
+    }
+}
+
 /// Half-extents of a component's courtyard after applying its rotation.
 ///
 /// `unrot_half_w`/`unrot_half_h` are the footprint's own (unrotated) half
@@ -1436,6 +1702,19 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
             .component(id)
             .is_some_and(|c| c.placement_hint.is_some())
     };
+
+    // A mounting hole or fiducial carries no net, so nothing in the solver
+    // pulls it toward anything. Placed with the circuit it competes for the
+    // same cells, lands wherever the greedy search has room, and then holds
+    // the automatic outline out from the inside: on the Class-C SDRAM card
+    // four holes asking for the four corners landed in one 32 x 6 mm huddle
+    // mid-board and two 1 mm fiducials were packed 25 mm clear of every part
+    // that has a net, which is where a third of that board's height came
+    // from. They are placed last instead, against the finished circuit
+    // envelope, by `place_board_features`.
+    let (all_components, board_features): (Vec<ComponentId>, Vec<ComponentId>) = all_components
+        .into_iter()
+        .partition(|&id| !is_netless_board_feature(board, id));
 
     let (order, mut passives): (Vec<ComponentId>, Vec<ComponentId>) = all_components
         .into_iter()
@@ -2148,6 +2427,19 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                 }
             }
         }
+    }
+
+    // The circuit is settled, so the envelope it needs is now known and the
+    // board features can take the border instead of defining it.
+    if !board_features.is_empty() {
+        place_board_features(
+            board,
+            &mut placements,
+            &board_features,
+            &courtyard_lookup,
+            &courtyard_offset_lookup,
+        );
+        placements.sort_by_key(|p| p.id.0);
     }
 
     // Tight Adaptive PCB Sizing:
@@ -5724,8 +6016,17 @@ mod tests {
             assert!(source.contains(from), "{from} not in {path}");
             source = source.replace(from, to);
         }
+        board_from_source(&source, path)
+    }
+
+    /// Lower a SynthSpec source held in the test itself.
+    ///
+    /// No shipped design declares a mounting hole, a fiducial or a test point,
+    /// so a board carrying the furniture cannot be exercised through a fixture
+    /// file without adding one to the repository for the placer's sake alone.
+    fn board_from_source(source: &str, path: &str) -> Board {
         let file = path.to_string();
-        let parse = synth_parser::parse(&source, file.clone());
+        let parse = synth_parser::parse(source, file.clone());
         let ast = parse.ast.as_ref().expect("parse");
         let registry_dir = std::path::Path::new("../..").join("registry").join("parts");
         let registry = synth_registry::load_dir(&registry_dir).expect("registry");
@@ -5994,6 +6295,102 @@ mod tests {
             !assignment.hints.is_empty(),
             "CEM should assign region hints to macro components"
         );
+    }
+
+    /// A board that is nothing but a circuit and the furniture round it.
+    const FEATURE_BOARD: &str = r#"
+board "features" {
+  layers 2
+
+  component U1: ic "sn74hc595_shift"
+  component C1: capacitor "c_generic_0603" value "100nF" { placement_hint { near: "U1" priority: hard } }
+  component C2: capacitor "c_generic_0603" value "100nF" { placement_hint { near: "U1" priority: hard } }
+  component C3: capacitor "c_generic_0603" value "100nF" { placement_hint { near: "U1" priority: hard } }
+  component R1: resistor "r_generic_0603" value "10k"
+  component J1: connector "header_1x4"
+
+  component H1: mounting_hole "mounting_hole_m2_5" { placement_hint { region: top_left priority: hard } }
+  component H2: mounting_hole "mounting_hole_m2_5" { placement_hint { region: top_right priority: hard } }
+  component H3: mounting_hole "mounting_hole_m2_5" { placement_hint { region: bottom_left priority: hard } }
+  component H4: mounting_hole "mounting_hole_m2_5" { placement_hint { region: bottom_right priority: hard } }
+  component FID1: fiducial "fiducial_1mm"
+  component FID2: fiducial "fiducial_1mm"
+
+  connect J1.p1 -> U1.vcc as "V3V3"
+  connect J1.p2 -> U1.gnd as "GND"
+  connect U1.vcc -> C1.p1 as "V3V3"
+  connect C1.p2 -> U1.gnd as "GND"
+  connect U1.vcc -> C2.p1 as "V3V3"
+  connect C2.p2 -> U1.gnd as "GND"
+  connect U1.vcc -> C3.p1 as "V3V3"
+  connect C3.p2 -> U1.gnd as "GND"
+  connect J1.p3 -> R1.p1 as "SRCLK_H"
+  connect R1.p2 -> U1.srclk as "SRCLK"
+  connect J1.p4 -> U1.ser as "SER"
+}
+"#;
+
+    /// The courtyard each placed component occupies, by refdes.
+    fn courtyards_by_refdes(board: &Board, placement: &Placement) -> BTreeMap<String, Rect> {
+        let mut out = BTreeMap::new();
+        for placed in &placement.components {
+            let Some(component) = board.component(placed.id) else {
+                continue;
+            };
+            let (w, h) = component.part.as_ref().map_or_else(
+                || fallback_courtyard(&component.kind),
+                |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
+            );
+            out.insert(
+                component.refdes.clone(),
+                courtyard_rect_for_placement(placed, w, h, Some(PLACEMENT_COURTYARD_OFFSET_MM), 0),
+            );
+        }
+        out
+    }
+
+    fn envelope_of<'a>(rects: impl Iterator<Item = &'a Rect>) -> Rect {
+        rects
+            .copied()
+            .reduce(|a, b| {
+                Rect::new(
+                    Point::new(a.min.x_nm.min(b.min.x_nm), a.min.y_nm.min(b.min.y_nm)),
+                    Point::new(a.max.x_nm.max(b.max.x_nm), a.max.y_nm.max(b.max.y_nm)),
+                )
+            })
+            .expect("at least one rect")
+    }
+
+    /// A mounting hole asking for a corner belongs on the border, not in the
+    /// middle of the routing area.
+    ///
+    /// Placed with the circuit, all four landed at the quadrant centres — 17 mm
+    /// in from the edge on the Class-C SDRAM card — because a part with no net
+    /// has nothing pulling it anywhere and is ordered last by net degree.
+    #[test]
+    fn a_net_less_board_feature_takes_the_border_and_not_the_middle() {
+        let board = board_from_source(FEATURE_BOARD, "features.synth");
+        let placement = place(&board).expect("place");
+        let courtyards = courtyards_by_refdes(&board, &placement);
+        let circuit = envelope_of(
+            courtyards
+                .iter()
+                .filter(|(refdes, _)| !refdes.starts_with('H') && !refdes.starts_with("FID"))
+                .map(|(_, rect)| rect),
+        );
+
+        for feature in ["H1", "H2", "H3", "H4", "FID1", "FID2"] {
+            let rect = courtyards[feature];
+            let band = mm_to_nm(6.0);
+            let on_border = rect.min.x_nm <= circuit.min.x_nm + band
+                || rect.max.x_nm >= circuit.max.x_nm - band
+                || rect.min.y_nm <= circuit.min.y_nm + band
+                || rect.max.y_nm >= circuit.max.y_nm - band;
+            assert!(
+                on_border,
+                "{feature} is not within 6 mm of an edge of the circuit envelope"
+            );
+        }
     }
 
     #[test]
