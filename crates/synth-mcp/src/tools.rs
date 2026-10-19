@@ -321,11 +321,11 @@ pub fn list_tools() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "synth_cost_report".into(),
-            description: "Calculate a deterministic manufacturing cost report from frozen supplier offers and dated PCB, assembly, and delivery inputs. Returns complete_total=null and explicit unresolved lines when evidence is stale or incomplete; agents must not claim a final cost in that state.".into(),
+            description: "Calculate a deterministic manufacturing cost report from frozen supplier offers and dated PCB, assembly, and delivery inputs. Set input.budget to evaluate a target budget: the response includes budget_outcome (within_budget, over_budget, indeterminate, or no_budget). Returns complete_total=null and explicit unresolved lines when evidence is stale or incomplete; agents must not claim a final cost in that state.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "input": { "type": "object", "description": "A synth.cost-input.v1 JSON object containing only frozen, revision-bound evidence" }
+                    "input": { "type": "object", "description": "A synth.cost-input.v1 JSON object containing only frozen, revision-bound evidence. Optional budget is a money object such as {currency: \"Usd\", micros: 250000000}; use budget_outcome to decide whether the target can be met." }
                 },
                 "required": ["input"]
             }),
@@ -4661,6 +4661,33 @@ electrical_type = "input"
         .expect("missing inputs produce an unresolved report");
         assert_eq!(result["review_status"], "unresolved");
         assert!(!result["unresolved"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cost_report_evaluates_agent_budget_target_without_claiming_unknown_cost() {
+        let input = serde_json::json!({
+            "schema_version": "synth.cost-input.v1",
+            "snapshot_id": "snap-budget-1",
+            "scenario": {"fabricated_boards": 1, "assembled_boards": 1},
+            "currency": "Usd",
+            "parts": [],
+            "pcb_specification": null,
+            "pcb_profile": null,
+            "pcb_quote": null,
+            "assembly": null,
+            "delivery": null,
+            "budget": {"currency": "Usd", "micros": 250000000},
+            "evaluated_at": "2026-10-16T00:00:00Z"
+        });
+        let result = call_tool(
+            "synth_cost_report",
+            &serde_json::json!({"input": input}),
+            None,
+        )
+        .expect("budget target should be accepted even when evidence is incomplete");
+        assert_eq!(result["budget"]["micros"], 250000000);
+        assert_eq!(result["budget_outcome"], "indeterminate");
+        assert_eq!(result["review_status"], "unresolved");
     }
 }
 
