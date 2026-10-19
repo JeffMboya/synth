@@ -641,33 +641,26 @@ pub(crate) fn build_sheet_schematic(
         ));
     }
 
-    // Titled outline boxes: one `(rectangle ...)` per declared `group`
-    // (§21.1), framing the caption and its parts. Same graphic
-    // status as captions — no electrical meaning, never trips ERC.
-    // Shape grammar mirrors the embedded symbol library
-    // (`(rectangle … (stroke …) (fill …))`), which is what
-    // `kicad-cli sch erc` accepts at top level — a bare
-    // `(rect … (fill none))` fails to load.
-    //
-    // Phase B2 styling: a thin solid stroke in the group's deterministic
-    // hue ([`synth_layout::group_color`]) plus a translucent fill of
-    // the same hue, so each region reads as its own block (reference
-    // mechanism 2). The grammar was verified against `kicad-cli 10`:
-    // `(stroke (type solid) (color r g b 1))` and
-    // `(fill (type color) (color r g b 0.08))` both load.
-    for group_box in &layout.group_boxes {
-        let uuid = derive_entity_uuid(project, "group_box", &group_box.group);
-        let [r, g, b] = group_box.color;
+    // The outline of the region boxes (§21.1), framing each caption and its
+    // parts. Same graphic status as captions — no electrical meaning, never
+    // trips ERC. The boxes tile the page, so together they read as a single
+    // outline cut into sections: one colour, no tint, and each boundary
+    // drawn once as a `(polyline ...)` rather than once per box.
+    let [r, g, b] = REGION_LINE_RGB;
+    for (n, (from, to)) in region_outline(&layout.group_boxes, layout.sheet_size.dims_mm())
+        .into_iter()
+        .enumerate()
+    {
+        let uuid = derive_entity_uuid(project, "region_line", &n.to_string());
         children.push(Sexp::list(
-            "rectangle",
+            "polyline",
             vec![
                 Sexp::list(
-                    "start",
-                    vec![num(group_box.min_mm.0), num(group_box.min_mm.1)],
-                ),
-                Sexp::list(
-                    "end",
-                    vec![num(group_box.max_mm.0), num(group_box.max_mm.1)],
+                    "pts",
+                    vec![
+                        Sexp::list("xy", vec![num(from.0), num(from.1)]),
+                        Sexp::list("xy", vec![num(to.0), num(to.1)]),
+                    ],
                 ),
                 Sexp::list(
                     "stroke",
@@ -681,21 +674,6 @@ pub(crate) fn build_sheet_schematic(
                                 Sexp::atom(g.to_string()),
                                 Sexp::atom(b.to_string()),
                                 num(1.0),
-                            ],
-                        ),
-                    ],
-                ),
-                Sexp::list(
-                    "fill",
-                    vec![
-                        Sexp::list("type", vec![Sexp::atom("color")]),
-                        Sexp::list(
-                            "color",
-                            vec![
-                                Sexp::atom(r.to_string()),
-                                Sexp::atom(g.to_string()),
-                                Sexp::atom(b.to_string()),
-                                num(0.08),
                             ],
                         ),
                     ],
@@ -1398,6 +1376,92 @@ fn power_symbol_lib_id(label: &str) -> String {
 /// symbol sits.
 const POWER_FLAG_STUB_LEN: f64 = 2.54;
 
+/// The one colour every region box is stroked in.
+const REGION_LINE_RGB: [u8; 3] = [49, 66, 150];
+
+/// How far apart two box edges can be and still be one boundary: more than the
+/// gap the layout leaves between neighbours.
+const REGION_JOIN_MM: f64 = 0.3;
+
+/// The lines that outline `boxes` on a sheet `sheet` mm across, each boundary
+/// once. A box draws its right and bottom edges; it draws its left and top
+/// edges only where no neighbour's edge already runs along them. An edge that
+/// lies on the sheet frame, or on the top line of the title block, is left to
+/// them.
+fn region_outline(
+    boxes: &[synth_layout::GroupBox],
+    sheet: (f64, f64),
+) -> Vec<((f64, f64), (f64, f64))> {
+    let near = |a: f64, b: f64| (a - b).abs() < REGION_JOIN_MM;
+    let frame = synth_layout::SHEET_BORDER_MM;
+    let (block_x, block_y) = synth_layout::title_block_origin(sheet);
+    let mut lines = Vec::new();
+    for (i, b) in boxes.iter().enumerate() {
+        let ((x0, y0), (x1, y1)) = (b.min_mm, b.max_mm);
+        let others = || {
+            boxes
+                .iter()
+                .enumerate()
+                .filter(move |&(j, _)| j != i)
+                .map(|(_, o)| o)
+        };
+        if !near(x1, sheet.0 - frame) {
+            lines.push(((x1, y0), (x1, y1)));
+        }
+        if !near(y1, sheet.1 - frame) {
+            // Over the title block's top line the block draws the rest.
+            let end = if near(y1, block_y) {
+                x1.min(block_x)
+            } else {
+                x1
+            };
+            if end - x0 > REGION_JOIN_MM {
+                lines.push(((x0, y1), (end, y1)));
+            }
+        }
+        if !near(x0, frame) {
+            let met = others()
+                .filter(|o| near(o.max_mm.0, x0))
+                .map(|o| (o.min_mm.1, o.max_mm.1))
+                .collect();
+            lines.extend(
+                uncovered((y0, y1), met)
+                    .into_iter()
+                    .map(|(from, to)| ((x0, from), (x0, to))),
+            );
+        }
+        if !near(y0, frame) {
+            let met = others()
+                .filter(|o| near(o.max_mm.1, y0))
+                .map(|o| (o.min_mm.0, o.max_mm.0))
+                .collect();
+            lines.extend(
+                uncovered((x0, x1), met)
+                    .into_iter()
+                    .map(|(from, to)| ((from, y0), (to, y0))),
+            );
+        }
+    }
+    lines
+}
+
+/// The parts of `span` that none of the `met` spans cover.
+fn uncovered(span: (f64, f64), mut met: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    met.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = Vec::new();
+    let mut at = span.0;
+    for (from, to) in met {
+        if from > at + REGION_JOIN_MM {
+            out.push((at, from.min(span.1)));
+        }
+        at = at.max(to);
+    }
+    if at < span.1 - REGION_JOIN_MM {
+        out.push((at, span.1));
+    }
+    out
+}
+
 /// Grid tolerance for "these two points are the same point" when
 /// deciding whether a flag lands on a foreign pin.
 const PIN_COINCIDENT_EPS: f64 = 0.05;
@@ -1511,7 +1575,22 @@ fn clear_power_flag_position(
     let (x, y, dx, dy) = (anchor.x, anchor.y, anchor.dx, anchor.dy);
     let stub_len = POWER_FLAG_STUB_LEN;
     let natural = (x + dx * stub_len, y + dy * stub_len);
-    if !stub_is_blocked(board, flag, placements, layout, (x, y), natural) {
+    let natural_is_clear = !stub_is_blocked(board, flag, placements, layout, (x, y), natural);
+    // A ground on a top edge pin would hang its triangle back over its own
+    // stub, so run the stub up and across and let the triangle drop beside
+    // the pin's column.
+    if natural_is_clear && flag.kind == synth_layout::PowerFlagKind::Gnd && dx == 0.0 && dy < 0.0 {
+        for step in [stub_len, -stub_len] {
+            let candidate = (natural.0 + step, natural.1);
+            let hangs = power_flag_rect(candidate.0, candidate.1, upright(flag.kind));
+            if !stub_is_blocked(board, flag, placements, layout, natural, candidate)
+                && !body_is_blocked(board, layout, placements, flag, &hangs)
+            {
+                return (candidate.0, candidate.1, Some(natural));
+            }
+        }
+    }
+    if natural_is_clear {
         return (natural.0, natural.1, None);
     }
     // Perpendicular from the pin, then along the axis. Bending the
@@ -2237,6 +2316,23 @@ fn power_body(
         return unturned;
     }
     let rect = power_flag_rect(at.0, at.1, unturned);
+    if body_is_blocked(board, layout, placements, flag, &rect) {
+        (dx.signum(), 0.0)
+    } else {
+        unturned
+    }
+}
+
+/// Whether a symbol body drawn as `rect` would land on a wire or a label of
+/// another net, or on the stub of another rail's flag. On a header the arrow
+/// of one pin ends on the stub of the pin above it.
+fn body_is_blocked(
+    board: &Board,
+    layout: &synth_layout::Layout,
+    placements: &HashMap<ComponentId, &ComponentPlacement>,
+    flag: &synth_layout::PowerFlag,
+    rect: &field_clear::Rect,
+) -> bool {
     let on_a_wire = layout
         .wires
         .iter()
@@ -2246,11 +2342,16 @@ fn power_body(
     let on_a_flag = label_rects(board, layout, placements)
         .iter()
         .any(|label| rect.overlaps(label));
-    if on_a_wire || on_a_flag {
-        (dx.signum(), 0.0)
-    } else {
-        unturned
-    }
+    let on_a_stub = layout
+        .power_flags
+        .iter()
+        .filter(|other| other.net != flag.net)
+        .filter_map(|other| pin_terminal_xy(board, other.component, other.pin, placements))
+        .any(|(x, y, sx, sy)| {
+            let end = (x + sx * POWER_FLAG_STUB_LEN, y + sy * POWER_FLAG_STUB_LEN);
+            rect.overlaps(&wire_rect((x, y), end))
+        });
+    on_a_wire || on_a_flag || on_a_stub
 }
 
 /// The box of the group each component belongs to, so its text can stay
@@ -3272,7 +3373,7 @@ mod tests {
         let text = build_schematic(&board, &project).to_string_pretty();
         // Sanity: the styled forms are present before we ask KiCad.
         assert!(text.contains("(type solid)"), "solid stroke");
-        assert!(text.contains("(type color)"), "colour fill");
+        assert!(text.contains("(polyline"), "outline line");
         assert!(text.contains("bold"), "bold caption");
         assert!(text.contains("Keep leads short."), "in-box note line");
 
@@ -3295,7 +3396,7 @@ mod tests {
     }
 
     #[test]
-    fn group_box_exports_rectangle() {
+    fn group_box_exports_outline() {
         let board = lower_inline(
             r#"board "b" {
                 component R1: resistor "r_generic_0603"
@@ -3308,14 +3409,12 @@ mod tests {
         );
         let project = crate::uuid_v5::project_namespace(&board.name);
         let text = build_schematic(&board, &project).to_string_pretty();
-        assert!(text.contains("(rectangle"), "group outline box must render");
+        assert!(text.contains("(polyline"), "group outline must render");
         assert!(text.contains("\"Input\""), "group caption must render");
-        // Phase B2: thin solid stroke in the group hue plus a translucent
-        // fill of the same hue.
-        assert!(text.contains("(type solid)"), "box stroke must be solid");
+        // Thin solid stroke in the one region colour.
         assert!(
-            text.contains("(fill") && text.contains("(type color)"),
-            "box must carry a colour fill"
+            text.contains("(type solid)"),
+            "outline stroke must be solid"
         );
         // Phase B4: the caption renders bold.
         assert!(

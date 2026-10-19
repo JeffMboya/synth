@@ -1105,18 +1105,52 @@ expression: schematic
 		)
 		(uuid "3eda6c41-e404-5a85-ba0e-aeba5fac1a6f")
 	)
-	(rectangle
-		(start 20.21 21.7)
-		(end 57.47 58.42)
+	(polyline
+		(pts
+			(xy 57.47 21.7)
+			(xy 57.47 58.42)
+		)
 		(stroke
 			(width 0.254)
 			(type solid)
-			(color 139 69 19 1)
+			(color 49 66 150 1)
 		)
-		(fill
-			(type color)
-			(color 139 69 19 0.08)
+		(uuid "3e8601c9-71c3-5011-be4c-384cf44d13f3")
+	)
+	(polyline
+		(pts
+			(xy 20.21 58.42)
+			(xy 57.47 58.42)
 		)
-		(uuid "72f86672-d111-5503-9946-64a7ba145b92")
+		(stroke
+			(width 0.254)
+			(type solid)
+			(color 49 66 150 1)
+		)
+		(uuid "9f7db7d7-85cf-58a9-89c9-0c9cf58a3c05")
+	)
+	(polyline
+		(pts
+			(xy 20.21 21.7)
+			(xy 20.21 58.42)
+		)
+		(stroke
+			(width 0.254)
+			(type solid)
+			(color 49 66 150 1)
+		)
+		(uuid "d323e51b-e3d7-57d7-b1cb-d4a0195add88")
+	)
+	(polyline
+		(pts
+			(xy 20.21 21.7)
+			(xy 57.47 21.7)
+		)
+		(stroke
+			(width 0.254)
+			(type solid)
+			(color 49 66 150 1)
+		)
+		(uuid "3c7537b9-9541-5fc8-b470-a5187209df1b")
 	)
 )
