@@ -1359,7 +1359,7 @@ pub fn net_label_rect(
     placements: &HashMap<ComponentId, &ComponentPlacement>,
 ) -> Option<(f64, f64, f64, f64)> {
     let (x, y, dx, _dy) = pin_terminal_xy(board, component, pin, placements)?;
-    let stub_len = 5.08;
+    let stub_len = LABEL_STUB_MM;
     let faces_right = dx >= -0.1;
     let label_x = if faces_right {
         x + stub_len
@@ -1378,7 +1378,7 @@ pub fn net_label_rect(
 /// Centring it on the stub end left the outer half of a long label open to
 /// wires and walled off the pin side.
 fn net_label_obstacle(text: &str, label_x: f64, y: f64, faces_right: bool) -> (f64, f64, f64, f64) {
-    let label_w = (text.len() as f64) * LABEL_CHAR_WIDTH_MM + LABEL_PADDING_MM;
+    let label_w = label_text_width(text);
     let label_h = 3.81;
     let (x_min, x_max) = if faces_right {
         (label_x, label_x + label_w)
@@ -1388,11 +1388,18 @@ fn net_label_obstacle(text: &str, label_x: f64, y: f64, faces_right: bool) -> (f
     (x_min, y - label_h / 2.0, x_max, y + label_h / 2.0)
 }
 
+/// Width the text of a net label covers, in mm, with room for its box or arrow.
+pub(crate) fn label_text_width(text: &str) -> f64 {
+    text.len() as f64 * LABEL_CHAR_WIDTH_MM + LABEL_PADDING_MM
+}
+
 /// Width of one label character on the sheet, in mm: a little over the
 /// 1.13 mm measured on KiCad's plot of 1.27 mm text.
-const LABEL_CHAR_WIDTH_MM: f64 = 1.2;
+pub(crate) const LABEL_CHAR_WIDTH_MM: f64 = 1.2;
 /// Room around a label's text for its box or arrow, in mm.
 const LABEL_PADDING_MM: f64 = 2.0;
+/// Length of the stub between a pin and its net label, in mm.
+pub(crate) const LABEL_STUB_MM: f64 = 5.08;
 
 /// Route every signal net on `board` over the already-placed `layout`.
 ///

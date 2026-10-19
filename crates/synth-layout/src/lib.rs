@@ -614,6 +614,9 @@ fn compute_dynamic_member_dx(board: &Board, members: &[ComponentId]) -> f64 {
 /// extents for the router, so placement and routing agree on how
 /// much vertical room a component actually needs.
 const TEXT_MARGIN_Y: f64 = 6.35;
+/// How far a vertical part's Reference and Value text sit from its centre,
+/// to its right and left.
+const SIDE_TEXT_OFFSET_MM: f64 = 3.81;
 
 /// A component's half-height including its Reference/Value text
 /// labels, not just its body — the router already accounts for this
@@ -955,6 +958,7 @@ pub fn layout_with_overrides(
     rotate_two_pin_with_power_flags(board, &mut layout);
     rotate_led_chains(board, &clusters, &mut layout);
     rotate_usb_esd_diodes(board, &clusters, &mut layout);
+    rotate_series_resistors(board, &clusters, &mut layout);
     lock_connector_rotations(board, &mut layout);
     overlay(&mut layout);
     route_and_label(board, &mut layout);
@@ -2069,6 +2073,38 @@ fn rotate_usb_esd_diodes(board: &Board, clusters: &[Cluster], layout: &mut Layou
     }
 }
 
+/// A series resistor beside its anchor's pin is turned so the pin on the
+/// anchor's net faces the anchor: a resistor left of the anchor shows that
+/// pin on its right, one right of the anchor on its left. Without this the
+/// wire to the anchor runs back over the resistor body.
+fn rotate_series_resistors(board: &Board, clusters: &[Cluster], layout: &mut Layout) {
+    use std::collections::HashMap;
+    let mut rot: HashMap<ComponentId, Rotation> = HashMap::new();
+    for member in clusters.iter().flat_map(|c| &c.members) {
+        let (Some(facing), Some(part)) = (
+            member.anchor_facing_pin,
+            board
+                .component(member.id)
+                .and_then(|c| c.part.as_ref())
+                .filter(|p| p.pins.len() == 2),
+        ) else {
+            continue;
+        };
+        let facing_is_left = pin_is_left_at_zero(part, facing.0 as usize);
+        let rotation = match (member.side, facing_is_left) {
+            (MemberSide::Left, true) | (MemberSide::Right, false) => Rotation::OneEighty,
+            (MemberSide::Left, false) | (MemberSide::Right, true) => Rotation::Zero,
+            _ => continue,
+        };
+        rot.insert(member.id, rotation);
+    }
+    for placement in &mut layout.components {
+        if let Some(&r) = rot.get(&placement.id) {
+            placement.rotation = r;
+        }
+    }
+}
+
 /// LED-indicator clusters get rendered as a vertical chain
 /// (current-limit resistor on top, LED below), with the LED's
 /// anode and the resistor's signal-side pin on top.
@@ -2228,6 +2264,9 @@ impl Cluster {
 pub struct ClusterMember {
     pub id: ComponentId,
     pub side: MemberSide,
+    /// For a series resistor, the member's pin on the anchor's net: the
+    /// one that must face the anchor. `None` for every other member.
+    pub anchor_facing_pin: Option<PinId>,
 }
 
 /// Where to place a cluster member relative to its anchor.
@@ -2299,10 +2338,11 @@ pub fn build_clusters(board: &Board) -> Vec<Cluster> {
 /// decides membership.
 ///
 /// The side is a drawing convention, not a connection: a decoupling cap
-/// hangs below its IC, a pull resistor rises above the pin it pulls, a
-/// reset-network part sits on whichever side the anchor's reset pin
-/// occupies, and an ESD diode stands to the connector's left so its
-/// stub to the connector is a short horizontal run.
+/// hangs below its IC, a pull resistor sits beside the pin it pulls (above
+/// it when the pin is on the top or bottom), a reset-network part sits on
+/// whichever side the anchor's reset pin occupies, and an ESD diode stands
+/// to the connector's left so its stub to the connector is a short
+/// horizontal run.
 fn draw_cluster(board: &Board, cluster: &synth_ir::FunctionalCluster) -> Cluster {
     let anchor_part = board
         .component(cluster.anchor)
@@ -2316,6 +2356,8 @@ fn draw_cluster(board: &Board, cluster: &synth_ir::FunctionalCluster) -> Cluster
         .into_iter()
         .map(|member| ClusterMember {
             id: member.component,
+            anchor_facing_pin: (member.role == synth_ir::MemberRole::SignalSeries)
+                .then_some(member.binding.member_pin),
             side: match member.role {
                 synth_ir::MemberRole::DecouplingCap
                 | synth_ir::MemberRole::RailCap
@@ -2323,9 +2365,22 @@ fn draw_cluster(board: &Board, cluster: &synth_ir::FunctionalCluster) -> Cluster
                 | synth_ir::MemberRole::OrphanRailCap
                 | synth_ir::MemberRole::DividerPartner => MemberSide::Below,
                 synth_ir::MemberRole::EsdDiode => MemberSide::Left,
-                synth_ir::MemberRole::SeriesLimit
-                | synth_ir::MemberRole::PullUp
-                | synth_ir::MemberRole::I2cPullUp => MemberSide::Above,
+                synth_ir::MemberRole::SeriesLimit | synth_ir::MemberRole::I2cPullUp => {
+                    MemberSide::Above
+                }
+                // A pull or series resistor hangs off the side of the pin it
+                // sits on, so its wire is a short run rather than a net label
+                // to a column above the whole part. A pin on the top or
+                // bottom keeps the old column above.
+                synth_ir::MemberRole::PullUp | synth_ir::MemberRole::SignalSeries => {
+                    match anchor_part.map(|part| {
+                        compute_anchor_pin_offset(part, member.binding.anchor_pin.0 as usize).2
+                    }) {
+                        Some(PinSide::Left) => MemberSide::Left,
+                        Some(PinSide::Right) => MemberSide::Right,
+                        _ => MemberSide::Above,
+                    }
+                }
                 synth_ir::MemberRole::ResetNetwork => {
                     // The stock symbol's geometry wins over the
                     // synthesized-model convention: STM32F103's NRST
@@ -3140,6 +3195,21 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                     .fold(0.0_f64, f64::max)
             })
             .collect();
+        // How far past the usual clearance a column's members beside its
+        // anchors reach, per side. Long net labels push them out.
+        let column_growth = |side: MemberSide| -> Vec<f64> {
+            col_groups
+                .iter()
+                .map(|group| {
+                    group
+                        .iter()
+                        .map(|&idx| side_column_growth(board, &clusters[idx], side))
+                        .fold(0.0_f64, f64::max)
+                })
+                .collect()
+        };
+        let col_left_growth = column_growth(MemberSide::Left);
+        let col_right_growth = column_growth(MemberSide::Right);
         // Gap BETWEEN consecutive columns: must clear column i's own
         // rightward extent (its anchor's half-width, symmetric around
         // its centre) *and* column i+1's anchor extending back leftward
@@ -3210,7 +3280,9 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
             for col in start..end {
                 if col > start {
                     let gap = snap_grid(
-                        floor.max(col_max_half_w[col - 1] + col_max_half_w[col] + WIRE_MARGIN),
+                        floor.max(col_max_half_w[col - 1] + col_max_half_w[col] + WIRE_MARGIN)
+                            + col_right_growth[col - 1]
+                            + col_left_growth[col],
                     );
                     cum += gap;
                 }
@@ -3717,6 +3789,98 @@ fn body_bbox_of(board: &Board, placements: &[ComponentPlacement]) -> Option<(f64
     min_x.is_finite().then_some((min_x, max_x, min_y, max_y))
 }
 
+/// How far a net label reaches from its pin: the stub, then the text.
+fn net_label_extent(net: &synth_ir::Net) -> f64 {
+    route::LABEL_STUB_MM + route::label_text_width(&net.name)
+}
+
+/// How far a part's Reference and Value text reach from its centre when drawn
+/// beside it: [`SIDE_TEXT_OFFSET_MM`] out, then the longer of the two strings.
+fn side_text_reach(board: &Board, id: ComponentId) -> f64 {
+    let Some(component) = board.component(id) else {
+        return 0.0;
+    };
+    let chars = component
+        .refdes
+        .len()
+        .max(component.value.as_deref().map_or(0, str::len));
+    SIDE_TEXT_OFFSET_MM + chars as f64 * route::LABEL_CHAR_WIDTH_MM
+}
+
+/// How far from the anchor's centre a member in a column beside its `side`
+/// pins has to sit: past the net labels those pins can carry (pin tip, stub,
+/// widest text). A member on the left has its own labels facing those pins,
+/// since a vertical part's label points right, so they need room too. The
+/// member's own text goes in that room. Never less than the usual clearance
+/// from the body.
+fn side_column_offset(
+    board: &Board,
+    anchor: ComponentId,
+    side: PinSide,
+    members: &[ComponentId],
+    anchor_half_w: f64,
+) -> f64 {
+    let label_reach = board
+        .component(anchor)
+        .and_then(|c| c.part.as_ref())
+        .map_or(0.0, |part| {
+            (0..part.pins.len())
+                .filter_map(|idx| {
+                    let (px, _, pin_side) = compute_anchor_pin_offset(part, idx);
+                    if pin_side != side {
+                        return None;
+                    }
+                    let (_, net) = board.nets_containing(anchor, PinId(idx as u32)).next()?;
+                    Some(px.abs() + net_label_extent(net))
+                })
+                .fold(0.0, f64::max)
+        });
+    let member_reach = members
+        .iter()
+        .map(|&id| {
+            let own_labels = if side == PinSide::Left {
+                board
+                    .nets
+                    .iter()
+                    .filter(|n| n.endpoints.iter().any(|e| e.component == id))
+                    .map(net_label_extent)
+                    .fold(0.0, f64::max)
+            } else {
+                0.0
+            };
+            side_text_reach(board, id).max(own_labels)
+        })
+        .fold(0.0, f64::max);
+    (anchor_half_w + MEMBER_CLEARANCE).max(label_reach + member_reach)
+}
+
+/// How much further out than the usual clearance the cluster's members on
+/// `member_side` sit, for the gap to the next column to make room for it.
+/// `0.0` when it has none there or the usual clearance already holds them.
+fn side_column_growth(board: &Board, cluster: &Cluster, member_side: MemberSide) -> f64 {
+    let members: Vec<ComponentId> = cluster
+        .members
+        .iter()
+        .filter(|m| m.side == member_side)
+        .map(|m| m.id)
+        .collect();
+    if members.is_empty() {
+        return 0.0;
+    }
+    let pin_side = if member_side == MemberSide::Left {
+        PinSide::Left
+    } else {
+        PinSide::Right
+    };
+    let half_w = board
+        .component(cluster.anchor)
+        .and_then(|c| c.part.as_ref())
+        .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
+        / 2.0;
+    side_column_offset(board, cluster.anchor, pin_side, &members, half_w)
+        - (half_w + MEMBER_CLEARANCE)
+}
+
 /// Place one cluster's anchor and members into `placements`, updating
 /// `occupied` so later clusters avoid the same grid points.
 ///
@@ -3850,7 +4014,10 @@ fn place_cluster_into(
     // position can both leave less room than a member's own
     // Reference/Value text needs, overlapping its neighbour.
     if !right.is_empty() {
-        let default_col_x = snap_grid(anchor_x + anchor_half_w + MEMBER_CLEARANCE);
+        let default_col_x = snap_grid(
+            anchor_x
+                + side_column_offset(board, cluster.anchor, PinSide::Right, &right, anchor_half_w),
+        );
         let total_height: f64 = right
             .windows(2)
             .map(|pair| min_member_dy(board, pair[0], pair[1]))
@@ -3887,7 +4054,8 @@ fn place_cluster_into(
                             // would pick that wrong pin and yank
                             // the member up-and-inside the body.
                             if side == PinSide::Right {
-                                col_x = snap_grid(anchor_x + px + MEMBER_CLEARANCE);
+                                col_x =
+                                    snap_grid(anchor_x + px + MEMBER_CLEARANCE).max(default_col_x);
                                 let target_y = snap_grid(anchor_y + py);
                                 let coord_key = (
                                     (col_x * 10.0).round() as i64,
@@ -4003,7 +4171,10 @@ fn place_cluster_into(
     // A single Left member has no such adjacency, so it y-aligns
     // with its connecting pin for a straight-across wire.
     if !left.is_empty() {
-        let col_x = snap_grid(anchor_x - anchor_half_w - MEMBER_CLEARANCE);
+        let col_x = snap_grid(
+            anchor_x
+                - side_column_offset(board, cluster.anchor, PinSide::Left, &left, anchor_half_w),
+        );
         let total_height: f64 = left
             .windows(2)
             .map(|pair| min_member_dy(board, pair[0], pair[1]))
@@ -5981,6 +6152,410 @@ mod patterns_tests {
             variants: vec![],
             source_span: Span::new(0, 0),
         }
+    }
+
+    /// A pull resistor on a left pin of the IC hangs off the left, one on a
+    /// right pin off the right: beside the pin it pulls, not in a column above
+    /// the whole part.
+    #[test]
+    fn a_pull_up_sits_on_the_side_of_the_pin_it_pulls() {
+        let ic = component(
+            0,
+            "U1",
+            part(
+                "ic",
+                vec![
+                    pin("vdd", ElectricalType::PowerInput, &[]),
+                    pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                    pin("mdm", ElectricalType::Bidirectional, &[]),
+                    pin(
+                        "clk",
+                        ElectricalType::Bidirectional,
+                        &[PinCapability::ClockOutput],
+                    ),
+                ],
+            ),
+        );
+        let resistor = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        let b = board(
+            vec![ic, resistor(1, "R1"), resistor(2, "R2")],
+            vec![
+                net(0, "3V3", &[(0, 0), (1, 1), (2, 1)]),
+                net(1, "MODEM", &[(0, 2), (1, 0)]),
+                net(2, "CLK", &[(0, 3), (2, 0)]),
+                net(3, "RESET", &[(0, 1)]),
+            ],
+        );
+        let clusters = build_clusters(&b);
+        let cluster = find_cluster(&clusters, 0);
+        assert_member(cluster, 1, MemberSide::Left);
+        assert_member(cluster, 2, MemberSide::Right);
+    }
+
+    /// A resistor beside the pins stays out of the zone where the net labels
+    /// of those pins are drawn: a stub, then the text.
+    #[test]
+    fn a_pull_up_clears_the_net_labels_on_its_side() {
+        let ic = component(
+            0,
+            "U1",
+            part(
+                "ic",
+                vec![
+                    pin("vdd", ElectricalType::PowerInput, &[]),
+                    pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                    pin("mdm", ElectricalType::Bidirectional, &[]),
+                    pin("cts", ElectricalType::Bidirectional, &[]),
+                ],
+            ),
+        );
+        let two_pin = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        let long_name = "CTS_FROM_THE_MODEM_BRIDGE";
+        let b = board(
+            vec![ic, two_pin(1, "R1"), two_pin(2, "R2")],
+            vec![
+                net(0, "3V3", &[(0, 0), (1, 1)]),
+                net(1, long_name, &[(0, 2), (1, 0)]),
+                net(2, "CTS", &[(0, 3), (2, 0)]),
+                net(3, "RESET", &[(0, 1)]),
+            ],
+        );
+        let layout = layout(&b);
+        let x_of = |id: u32| {
+            layout
+                .components
+                .iter()
+                .find(|p| p.id == ComponentId(id))
+                .expect("placed")
+                .center_mm
+                .0
+        };
+        let body_half_w =
+            body_size_for_part(b.component(ComponentId(0)).unwrap().part.as_ref().unwrap()).0 / 2.0;
+        // 1.13 mm a character, measured on KiCad's plot of 1.27 mm text.
+        let label_text = long_name.len() as f64 * 1.13;
+        // R1's own label on the same net faces the part and needs a stub and its text too.
+        let own_label = route::LABEL_STUB_MM + label_text;
+        let beside = x_of(0) - x_of(1);
+        assert!(
+            beside >= body_half_w + route::LABEL_STUB_MM + label_text + own_label,
+            "R1 is {beside} mm from U1, inside the net label zone"
+        );
+    }
+
+    /// A resistor's Value is drawn 3.81 mm to its side, towards the pin
+    /// labels when it stands beside the pins, so its text needs room too.
+    #[test]
+    fn a_pull_up_clears_the_net_labels_with_its_value_text() {
+        let ic = component(
+            0,
+            "U1",
+            part(
+                "ic",
+                vec![
+                    pin("vdd", ElectricalType::PowerInput, &[]),
+                    pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                    pin("mdm", ElectricalType::Bidirectional, &[]),
+                    pin(
+                        "clk",
+                        ElectricalType::Bidirectional,
+                        &[PinCapability::ClockOutput],
+                    ),
+                ],
+            ),
+        );
+        let value = "4.7k_1%_0603";
+        let mut resistor = component(
+            1,
+            "R1",
+            part(
+                "resistor",
+                vec![
+                    pin("p1", ElectricalType::Passive, &[]),
+                    pin("p2", ElectricalType::Passive, &[]),
+                ],
+            ),
+        );
+        resistor.value = Some(value.to_string());
+        let b = board(
+            vec![ic, resistor],
+            vec![
+                net(0, "3V3", &[(0, 0), (1, 1)]),
+                net(1, "CLK", &[(0, 3), (1, 0)]),
+                net(2, "RESET", &[(0, 1)]),
+            ],
+        );
+        let layout = layout(&b);
+        let x_of = |id: u32| {
+            layout
+                .components
+                .iter()
+                .find(|p| p.id == ComponentId(id))
+                .expect("placed")
+                .center_mm
+                .0
+        };
+        let body_half_w =
+            body_size_for_part(b.component(ComponentId(0)).unwrap().part.as_ref().unwrap()).0 / 2.0;
+        // 1.13 mm a character, measured on KiCad's plot of 1.27 mm text.
+        let labels = route::LABEL_STUB_MM + "CLK".len() as f64 * 1.13;
+        let value_text = SIDE_TEXT_OFFSET_MM + value.len() as f64 * 1.13;
+        let beside = x_of(1) - x_of(0);
+        assert!(
+            beside >= body_half_w + labels + value_text,
+            "R1 is {beside} mm from U1, its value text is inside the net label zone"
+        );
+    }
+
+    /// The gap between two columns has to hold the wider member column that
+    /// long net labels push out, or the member lands on the part before it.
+    #[test]
+    fn a_wide_member_column_does_not_reach_the_part_before_it() {
+        let make = |id: u32, name: &str, kind: &str, pins: Vec<RegPin>| {
+            component(id, name, part(kind, pins))
+        };
+        let u1 = make(
+            0,
+            "J1",
+            "connector",
+            vec![pin("io", ElectricalType::Output, &[])],
+        );
+        let u2 = make(
+            1,
+            "U2",
+            "ic",
+            vec![
+                pin("vdd", ElectricalType::PowerInput, &[]),
+                pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                pin("mdm", ElectricalType::Bidirectional, &[]),
+                pin("link", ElectricalType::Input, &[]),
+            ],
+        );
+        let resistor = component(
+            2,
+            "R1",
+            part(
+                "resistor",
+                vec![
+                    pin("p1", ElectricalType::Passive, &[]),
+                    pin("p2", ElectricalType::Passive, &[]),
+                ],
+            ),
+        );
+        let b = board(
+            vec![u1, u2, resistor],
+            vec![
+                net(0, "3V3", &[(1, 0), (2, 1)]),
+                net(1, "CTS_FROM_THE_MODEM_BRIDGE", &[(1, 2), (2, 0)]),
+                net(2, "LINK", &[(0, 0), (1, 3)]),
+                net(3, "RESET", &[(1, 1)]),
+            ],
+        );
+        let layout = layout(&b);
+        let x_of = |id: u32| {
+            layout
+                .components
+                .iter()
+                .find(|p| p.id == ComponentId(id))
+                .expect("placed")
+                .center_mm
+                .0
+        };
+        let u1_half_w =
+            body_size_for_part(b.component(ComponentId(0)).unwrap().part.as_ref().unwrap()).0 / 2.0;
+        assert!(x_of(0) < x_of(1), "U1 is before U2");
+        // R1 hangs off the left of U2; its text reaches 3.81 mm further left.
+        assert!(
+            x_of(2) - SIDE_TEXT_OFFSET_MM > x_of(0) + u1_half_w,
+            "R1 at {} lands on J1 at {}",
+            x_of(2),
+            x_of(0)
+        );
+    }
+
+    /// A series resistor on a signal pin sits beside that pin, like a pull.
+    #[test]
+    fn a_series_resistor_sits_on_the_side_of_its_pin() {
+        let ic = component(
+            0,
+            "U1",
+            part(
+                "ic",
+                vec![
+                    pin("vdd", ElectricalType::PowerInput, &[]),
+                    pin("txd", ElectricalType::Bidirectional, &[]),
+                    pin(
+                        "clk",
+                        ElectricalType::Bidirectional,
+                        &[PinCapability::ClockOutput],
+                    ),
+                    pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                ],
+            ),
+        );
+        let resistor = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        let b = board(
+            vec![ic, resistor(1, "R1"), resistor(2, "R2")],
+            vec![
+                net(0, "TXD", &[(0, 1), (1, 0)]),
+                net(1, "TXD_OUT", &[(1, 1)]),
+                net(2, "CLK", &[(0, 2), (2, 0)]),
+                net(3, "CLK_OUT", &[(2, 1)]),
+                net(4, "RESET", &[(0, 3)]),
+            ],
+        );
+        let clusters = build_clusters(&b);
+        let cluster = find_cluster(&clusters, 0);
+        assert_member(cluster, 1, MemberSide::Left);
+        assert_member(cluster, 2, MemberSide::Right);
+    }
+
+    /// A series resistor on a connector pin sits beside that pin: on the
+    /// left of a pin the symbol draws on the left, on the right of one drawn
+    /// on the right.
+    #[test]
+    fn a_series_resistor_sits_on_the_side_of_its_connector_pin() {
+        let connector = component(
+            0,
+            "J1",
+            part(
+                "connector",
+                vec![
+                    pin("rx", ElectricalType::Passive, &[]),
+                    pin("tx", ElectricalType::Output, &[]),
+                ],
+            ),
+        );
+        let resistor = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        let b = board(
+            vec![connector, resistor(1, "R1"), resistor(2, "R2")],
+            vec![
+                net(0, "RX", &[(0, 0), (1, 0)]),
+                net(1, "RX_MCU", &[(1, 1)]),
+                net(2, "TX", &[(0, 1), (2, 0)]),
+                net(3, "TX_MCU", &[(2, 1)]),
+            ],
+        );
+        let clusters = build_clusters(&b);
+        let cluster = find_cluster(&clusters, 0);
+        assert_eq!(cluster.kind, ClusterKind::ConnectorBlock);
+        assert_member(cluster, 1, MemberSide::Left);
+        assert_member(cluster, 2, MemberSide::Right);
+    }
+
+    /// A series resistor beside a connector pin is turned so the pin tied to
+    /// the connector faces it, whichever side it sits on.
+    #[test]
+    fn a_series_resistor_faces_its_connector_pin() {
+        let connector = component(
+            0,
+            "J1",
+            part(
+                "connector",
+                vec![
+                    pin("rx", ElectricalType::Passive, &[]),
+                    pin("tx", ElectricalType::Output, &[]),
+                    pin("aux", ElectricalType::Passive, &[]),
+                    pin("tx2", ElectricalType::Output, &[]),
+                ],
+            ),
+        );
+        let resistor = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        // R1 sits left of J1 with its pin 0 on the connector net, so that
+        // pin must end up on its right; R2 sits right of J1 with pin 0 on
+        // the connector net, which is already on its left. R3 and R4 are the
+        // same with the connector on pin 1.
+        let b = board(
+            vec![
+                connector,
+                resistor(1, "R1"),
+                resistor(2, "R2"),
+                resistor(3, "R3"),
+                resistor(4, "R4"),
+            ],
+            vec![
+                net(0, "RX", &[(0, 0), (1, 0)]),
+                net(1, "RX_MCU", &[(1, 1)]),
+                net(2, "TX", &[(0, 1), (2, 0)]),
+                net(3, "TX_MCU", &[(2, 1)]),
+                net(4, "AUX", &[(0, 2), (3, 1)]),
+                net(5, "AUX_MCU", &[(3, 0)]),
+                net(6, "TX2", &[(0, 3), (4, 1)]),
+                net(7, "TX2_MCU", &[(4, 0)]),
+            ],
+        );
+        let placed = layout(&b);
+        let rotation = |id: u32| {
+            placed
+                .components
+                .iter()
+                .find(|p| p.id.0 == id)
+                .map(|p| p.rotation)
+        };
+        assert_eq!(rotation(1), Some(Rotation::OneEighty));
+        assert_eq!(rotation(2), Some(Rotation::Zero));
+        assert_eq!(rotation(3), Some(Rotation::Zero));
+        assert_eq!(rotation(4), Some(Rotation::OneEighty));
     }
 
     fn find_cluster(clusters: &[Cluster], anchor: u32) -> &Cluster {

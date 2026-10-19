@@ -580,7 +580,7 @@ expression: schematic
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x04")
-		(at 78.74 25.4 0)
+		(at 106.68 33.02 0)
 		(unit 1)
 		(in_bom yes)
 		(on_board yes)
@@ -588,7 +588,7 @@ expression: schematic
 		(property
 			"Reference"
 			"J1"
-			(at 78.74 17.78 0)
+			(at 106.68 25.4 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -598,7 +598,7 @@ expression: schematic
 		(property
 			"Value"
 			"(no value)"
-			(at 78.74 33.02 0)
+			(at 106.68 40.64 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -608,7 +608,7 @@ expression: schematic
 		(property
 			"Footprint"
 			"Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
-			(at 78.74 25.4 0)
+			(at 106.68 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -619,7 +619,7 @@ expression: schematic
 		(property
 			"Datasheet"
 			""
-			(at 78.74 25.4 0)
+			(at 106.68 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -630,7 +630,7 @@ expression: schematic
 		(property
 			"MPN"
 			""
-			(at 78.74 25.4 0)
+			(at 106.68 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -641,7 +641,7 @@ expression: schematic
 		(property
 			"LCSC"
 			""
-			(at 78.74 25.4 0)
+			(at 106.68 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -652,7 +652,7 @@ expression: schematic
 	)
 	(symbol
 		(lib_id "Device:R_US")
-		(at 139.7 25.4 90)
+		(at 76.2 22.86 270)
 		(unit 1)
 		(in_bom yes)
 		(on_board yes)
@@ -660,7 +660,7 @@ expression: schematic
 		(property
 			"Reference"
 			"R1"
-			(at 139.7 20.86 90)
+			(at 76.2 18.32 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -670,7 +670,7 @@ expression: schematic
 		(property
 			"Value"
 			"(no value)"
-			(at 139.7 29.94 90)
+			(at 76.2 27.4 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -680,7 +680,7 @@ expression: schematic
 		(property
 			"Footprint"
 			"Resistor_SMD:R_0603_1608Metric"
-			(at 139.7 25.4 0)
+			(at 76.2 22.86 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -691,7 +691,7 @@ expression: schematic
 		(property
 			"Datasheet"
 			""
-			(at 139.7 25.4 0)
+			(at 76.2 22.86 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -702,7 +702,7 @@ expression: schematic
 		(property
 			"MPN"
 			""
-			(at 139.7 25.4 0)
+			(at 76.2 22.86 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -713,7 +713,7 @@ expression: schematic
 		(property
 			"LCSC"
 			""
-			(at 139.7 25.4 0)
+			(at 76.2 22.86 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -724,7 +724,7 @@ expression: schematic
 	)
 	(symbol
 		(lib_id "Device:R_US")
-		(at 139.7 55.88 90)
+		(at 76.2 45.72 270)
 		(unit 1)
 		(in_bom yes)
 		(on_board yes)
@@ -733,7 +733,7 @@ expression: schematic
 		(property
 			"Reference"
 			"R2"
-			(at 139.7 51.34 90)
+			(at 76.2 41.18 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -743,7 +743,7 @@ expression: schematic
 		(property
 			"Value"
 			"(no value)"
-			(at 139.7 60.42 90)
+			(at 76.2 50.26 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -753,7 +753,7 @@ expression: schematic
 		(property
 			"Footprint"
 			"Resistor_SMD:R_0603_1608Metric"
-			(at 139.7 55.88 0)
+			(at 76.2 45.72 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -764,7 +764,7 @@ expression: schematic
 		(property
 			"Datasheet"
 			""
-			(at 139.7 55.88 0)
+			(at 76.2 45.72 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -775,7 +775,7 @@ expression: schematic
 		(property
 			"MPN"
 			""
-			(at 139.7 55.88 0)
+			(at 76.2 45.72 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -786,7 +786,7 @@ expression: schematic
 		(property
 			"LCSC"
 			""
-			(at 139.7 55.88 0)
+			(at 76.2 45.72 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -869,140 +869,96 @@ expression: schematic
 	)
 	(wire
 		(pts
-			(xy 73.66 22.86)
-			(xy 69.85 22.86)
+			(xy 101.6 30.48)
+			(xy 80.01 30.48)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "51f5196e-fdc6-5627-923c-21079cf4045f")
+		(uuid "634db900-f7e3-57bf-b3e6-f52c718166b3")
 	)
 	(wire
 		(pts
-			(xy 69.85 22.86)
-			(xy 69.85 11.43)
+			(xy 80.01 30.48)
+			(xy 80.01 22.86)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "50823ab2-2499-5518-9ade-e02c3fa0defa")
+		(uuid "8c3e00c3-953a-5364-a531-5b859657978f")
 	)
 	(wire
 		(pts
-			(xy 69.85 11.43)
-			(xy 135.89 11.43)
+			(xy 101.6 35.56)
+			(xy 80.01 35.56)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "876d8b5a-7c1d-55af-804f-362d42fc963d")
+		(uuid "06edcad5-a362-5794-93d1-fd77e351e096")
 	)
 	(wire
 		(pts
-			(xy 135.89 11.43)
-			(xy 135.89 25.4)
+			(xy 80.01 35.56)
+			(xy 80.01 45.72)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "dfaa0d83-bcf8-5398-831b-9efc31d2b166")
+		(uuid "98bb5b51-ca50-5259-bb4e-b43a61867a9c")
 	)
 	(wire
 		(pts
-			(xy 73.66 27.94)
-			(xy 71.12 27.94)
+			(xy 72.39 45.72)
+			(xy 67.31 45.72)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "82e3131e-e6f1-5c82-9f64-b3fffd844770")
+		(uuid "1019a6a9-89f5-5109-87c2-d3d26c1b8142")
 	)
 	(wire
 		(pts
-			(xy 71.12 27.94)
-			(xy 71.12 34.29)
+			(xy 67.31 45.72)
+			(xy 67.31 57.15)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "58c61ee2-1a19-505e-8457-ee2a4b7d004c")
+		(uuid "70bebe6e-5efe-5ed3-a6d4-28e9a6093b5a")
 	)
 	(wire
 		(pts
-			(xy 71.12 34.29)
-			(xy 135.89 34.29)
+			(xy 67.31 57.15)
+			(xy 101.6 57.15)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "ff8bbc3c-8dfa-5895-8998-6a753042a32c")
+		(uuid "ad990ed9-8038-5e42-a4da-e7a0be1e8ddd")
 	)
 	(wire
 		(pts
-			(xy 135.89 34.29)
-			(xy 135.89 55.88)
+			(xy 101.6 57.15)
+			(xy 101.6 38.1)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "e8772b88-9c93-50b1-93ee-4e8ed5d9584d")
+		(uuid "e491b6a4-2940-5976-a5b9-508bdf3fadd8")
 	)
 	(wire
 		(pts
-			(xy 143.51 55.88)
-			(xy 147.32 55.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "99051c22-36fb-5d22-a3a4-2510f6472276")
-	)
-	(wire
-		(pts
-			(xy 147.32 55.88)
-			(xy 147.32 67.31)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "38617fa5-27f2-51d9-aa83-7ade2be5e19b")
-	)
-	(wire
-		(pts
-			(xy 147.32 67.31)
-			(xy 73.66 67.31)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4d64be5f-9104-5555-93d4-2bc90fd15250")
-	)
-	(wire
-		(pts
-			(xy 73.66 67.31)
-			(xy 73.66 30.48)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "edb9bc76-662e-52d0-92d2-ff5226f2a48a")
-	)
-	(wire
-		(pts
-			(xy 143.51 25.4)
-			(xy 148.59 25.4)
+			(xy 72.39 22.86)
+			(xy 67.31 22.86)
 		)
 		(stroke
 			(width 0)
@@ -1012,12 +968,12 @@ expression: schematic
 	)
 	(label
 		"P2_R1"
-		(at 148.59 25.4 0)
+		(at 67.31 22.86 180)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify left)
+			(justify right)
 		)
 		(uuid "5c561a74-3aed-53af-be65-936734d0e2f5")
 	)
@@ -1045,8 +1001,8 @@ expression: schematic
 	)
 	(wire
 		(pts
-			(xy 73.66 25.4)
-			(xy 68.58 25.4)
+			(xy 101.6 33.02)
+			(xy 96.52 33.02)
 		)
 		(stroke
 			(width 0)
@@ -1056,7 +1012,7 @@ expression: schematic
 	)
 	(label
 		"P2"
-		(at 68.58 25.4 180)
+		(at 96.52 33.02 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1123,7 +1079,7 @@ expression: schematic
 	)
 	(text
 		"Build"
-		(at 20 75.31 0)
+		(at 20 65.15 0)
 		(effects
 			(font
 				(size 2 2)
@@ -1134,7 +1090,7 @@ expression: schematic
 	)
 	(text
 		"Assemble at JLCPCB."
-		(at 20 79.31 0)
+		(at 20 69.15 0)
 		(effects
 			(font
 				(size 1 1)
