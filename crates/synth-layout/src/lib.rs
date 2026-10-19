@@ -1343,9 +1343,11 @@ fn tile_group_boxes(boxes: &mut [GroupBox], fixed: &[Rect], gap: f64) {
 /// A rectangle as `(min, max)` corners in sheet millimetres.
 type Rect = ((f64, f64), (f64, f64));
 
-/// Bodies of the parts that belong to no group, padded like a group box. They
-/// have no box of their own, so a group box must stop short of them.
+/// The parts that belong to no group, with what they draw past their bodies,
+/// padded like a group box. They have no box of their own, so a group box
+/// must stop short of all of it.
 fn ungrouped_blocks(board: &Board, layout: &Layout) -> Vec<Rect> {
+    let drawn = drawn_beyond_bodies(board, layout);
     layout
         .components
         .iter()
@@ -1358,9 +1360,17 @@ fn ungrouped_blocks(board: &Board, layout: &Layout) -> Vec<Rect> {
                 _ => (w, h),
             };
             let (x, y) = p.center_mm;
+            let (mut x0, mut y0, mut x1, mut y1) =
+                (x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0);
+            for (_, r) in drawn.iter().filter(|(id, _)| *id == p.id) {
+                x0 = x0.min(r.0);
+                y0 = y0.min(r.1);
+                x1 = x1.max(r.2);
+                y1 = y1.max(r.3);
+            }
             Some((
-                (x - w / 2.0 - GROUP_BOX_PAD, y - h / 2.0 - GROUP_BOX_PAD),
-                (x + w / 2.0 + GROUP_BOX_PAD, y + h / 2.0 + GROUP_BOX_PAD),
+                (x0 - GROUP_BOX_PAD, y0 - GROUP_BOX_PAD),
+                (x1 + GROUP_BOX_PAD, y1 + GROUP_BOX_PAD),
             ))
         })
         .collect()
@@ -1741,6 +1751,7 @@ fn place_connector_legends(board: &Board, layout: &mut Layout) {
     if !board.legends {
         return;
     }
+    let drawn = drawn_beyond_bodies(board, layout);
     for placement in &layout.components {
         let Some(component) = board.component(placement.id) else {
             continue;
@@ -1769,7 +1780,14 @@ fn place_connector_legends(board: &Board, layout: &mut Layout) {
         let (cx, cy) = placement.center_mm;
         let (bw, bh) = body_size_for_part(part);
         let x = cx - bw / 2.0;
-        let mut y = cy + bh / 2.0 + BELOW_GAP;
+        // Below the body and below what the part draws past it: a connector
+        // turned to face up and down hangs power symbols lower than the gap.
+        let bottom = drawn
+            .iter()
+            .filter(|(id, _)| *id == placement.id)
+            .map(|(_, rect)| rect.3)
+            .fold(cy + bh / 2.0, f64::max);
+        let mut y = bottom + BELOW_GAP;
         layout.annotations.push(TextAnnotation {
             text: format!("{} pinout", component.refdes),
             at_mm: (x, y),
@@ -1933,7 +1951,8 @@ fn resolve_text_overlaps(board: &Board, layout: &mut Layout) {
         return;
     }
     // Fixed obstacles: component bodies including their Reference /
-    // Value text margin, so a nudged run never lands on a part.
+    // Value text margin, and what parts draw past their bodies, so a nudged
+    // run never lands on a part or its pins.
     let mut placed: Vec<(f64, f64, f64, f64)> = layout
         .components
         .iter()
@@ -1951,6 +1970,11 @@ fn resolve_text_overlaps(board: &Board, layout: &mut Layout) {
             )
         })
         .collect();
+    placed.extend(
+        drawn_beyond_bodies(board, layout)
+            .into_iter()
+            .map(|(_, r)| r),
+    );
     // Largest glyphs first; authored order breaks ties (stable sort).
     let mut order: Vec<usize> = (0..layout.annotations.len()).collect();
     order.sort_by(|&a, &b| {
@@ -2022,34 +2046,10 @@ fn resolve_text_overlaps(board: &Board, layout: &mut Layout) {
     }
 }
 
-/// Lowest content baseline on the sheet: component bodies, wire
-/// points, annotations, and group boxes. Board-level design notes
-/// start below this.
+/// Lowest content baseline on the sheet, from [`content_bounds`]. Board-level
+/// design notes start below this.
 fn content_bottom(board: &Board, layout: &Layout) -> f64 {
-    let mut bottom = f64::NEG_INFINITY;
-    for placement in &layout.components {
-        let bh = board
-            .component(placement.id)
-            .and_then(|c| c.part.as_ref())
-            .map_or(BODY_FALLBACK_H, |part| body_size_for_part(part).1);
-        bottom = bottom.max(placement.center_mm.1 + bh / 2.0);
-    }
-    for wire in &layout.wires {
-        for &(_, y) in &wire.points {
-            bottom = bottom.max(y);
-        }
-    }
-    for text in &layout.annotations {
-        bottom = bottom.max(text.at_mm.1);
-    }
-    for box_ in &layout.group_boxes {
-        bottom = bottom.max(box_.max_mm.1);
-    }
-    if bottom.is_finite() {
-        bottom
-    } else {
-        PAGE_MARGIN
-    }
+    content_bounds(board, layout).map_or(PAGE_MARGIN, |(_, _, _, max_y)| max_y)
 }
 
 /// Bounding box of everything drawn on the sheet — component
@@ -8416,25 +8416,7 @@ mod documentation_tests {
     /// symbols, fanned legs and no-connect markers.
     #[test]
     fn content_bounds_hold_what_an_ungrouped_part_draws_past_its_body() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let registry = synth_registry::load_dir(&root.join("registry").join("parts")).unwrap();
-        let source = r#"board "ungrouped_mcu" {
-    layers 2
-    manufacturer "jlcpcb"
-    component U2: mcu "stm32f103c8"
-    component J1: connector "header_1x4"
-    component U1: regulator "ams1117_3v3"
-    connect J1.p1 -> U1.vin
-    connect J1.p2 -> U1.gnd
-    connect U1.vout -> U2.vdd
-    connect U1.gnd -> U2.vss
-}"#;
-        let ast = synth_parser::parse(source, "ungrouped_mcu.synth")
-            .ast
-            .unwrap();
-        let b = synth_ir::lower(&ast, &registry, "ungrouped_mcu.synth")
-            .board
-            .unwrap();
+        let b = ungrouped_mcu_board();
         let layout = layout(&b);
         let (min_x, max_x, min_y, max_y) = content_bounds(&b, &layout).expect("content");
         let drawn = drawn_beyond_bodies(&b, &layout);
@@ -8444,6 +8426,173 @@ mod documentation_tests {
                 min_x <= x0 && min_y <= y0 && x1 <= max_x && y1 <= max_y,
                 "({x0:.2}, {y0:.2}, {x1:.2}, {y1:.2}) is outside the content \
                  ({min_x:.2}, {min_y:.2}, {max_x:.2}, {max_y:.2})"
+            );
+        }
+    }
+
+    /// A part in no group has no box, so a group's box must stop short of all
+    /// it draws, not only its body: pin ends, fields, power symbols.
+    #[test]
+    fn a_group_box_stops_short_of_everything_an_ungrouped_part_draws() {
+        let b = ungrouped_mcu_board();
+        let layout = layout(&b);
+        let blocks = ungrouped_blocks(&b, &layout);
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        assert!(!drawn.is_empty(), "nothing drawn past a body");
+        for (id, (x0, y0, x1, y1)) in drawn {
+            let index = layout.components.iter().position(|p| p.id == id).unwrap();
+            let ((bx0, by0), (bx1, by1)) = blocks[index];
+            assert!(
+                bx0 <= x0 && by0 <= y0 && x1 <= bx1 && y1 <= by1,
+                "({x0:.2}, {y0:.2}, {x1:.2}, {y1:.2}) is outside the block \
+                 ({bx0:.2}, {by0:.2}, {bx1:.2}, {by1:.2})"
+            );
+        }
+    }
+
+    /// A board from `.synth` source, with the registry of real parts.
+    fn board_from_source(source: &str) -> Board {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = synth_registry::load_dir(&root.join("registry").join("parts")).unwrap();
+        let ast = synth_parser::parse(source, "t.synth").ast.unwrap();
+        synth_ir::lower(&ast, &registry, "t.synth").board.unwrap()
+    }
+
+    /// A microcontroller, a connector and a regulator, none in a group, so
+    /// the power legs and no-connect markers of the STM32 are drawn.
+    fn ungrouped_mcu_board() -> Board {
+        board_from_source(
+            r#"board "ungrouped_mcu" {
+    layers 2
+    manufacturer "jlcpcb"
+    component U2: mcu "stm32f103c8"
+    component J1: connector "header_1x4"
+    component U1: regulator "ams1117_3v3"
+    connect J1.p1 -> U1.vin
+    connect J1.p2 -> U1.gnd
+    connect U1.vout -> U2.vdd
+    connect U1.gnd -> U2.vss
+}"#,
+        )
+    }
+
+    /// A note is nudged off what parts draw past their bodies too, not only
+    /// off the bodies: pin ends and fields would be written over.
+    #[test]
+    fn a_note_is_nudged_off_what_a_part_draws_past_its_body() {
+        let b = ungrouped_mcu_board();
+        let mut layout = layout(&b);
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        // Something drawn past a body that no body covers, so only it can
+        // move the note.
+        let bodies: Vec<_> = layout
+            .components
+            .iter()
+            .map(|p| {
+                let (w, h) = b
+                    .component(p.id)
+                    .and_then(|c| c.part.as_ref())
+                    .map_or((BODY_FALLBACK_W, BODY_FALLBACK_H), body_size_for_part);
+                let (cx, cy) = p.center_mm;
+                (
+                    cx - w / 2.0,
+                    cy - h / 2.0 - TEXT_MARGIN_Y,
+                    cx + w / 2.0,
+                    cy + h / 2.0 + TEXT_MARGIN_Y,
+                )
+            })
+            .collect();
+        let (_, target) = *drawn
+            .iter()
+            .find(|(_, r)| !bodies.iter().any(|body| rects_overlap(*r, *body)))
+            .expect("a rectangle drawn clear of every body");
+        layout.annotations = vec![TextAnnotation {
+            text: "note".to_string(),
+            at_mm: (target.0, target.3),
+            size_mm: NOTE_LINE_SIZE,
+            kind: TextKind::LegendLine,
+        }];
+        resolve_text_overlaps(&b, &mut layout);
+        assert_eq!(layout.annotations.len(), 1, "the note was dropped");
+        let note = &layout.annotations[0];
+        let (x, y) = note.at_mm;
+        let rect = (
+            x,
+            y - note.size_mm,
+            x + text_run_width(&note.text, note.size_mm),
+            y,
+        );
+        for (_, other) in drawn {
+            assert!(
+                !rects_overlap(rect, other),
+                "the note {rect:?} sits on something a part draws, {other:?}"
+            );
+        }
+    }
+
+    /// A connector's pinout legend starts below what the connector draws past
+    /// its body, so it does not land on its power symbols and fields.
+    #[test]
+    fn a_connector_legend_starts_below_what_the_connector_draws() {
+        let b = board_from_source(
+            r#"board "legend" {
+    layers 2
+    legends on
+    component J1: connector "header_1x4"
+    component U1: regulator "ams1117_3v3"
+    component R1: resistor "r_generic_0603"
+    connect J1.p1 -> U1.vin as "VIN"
+    connect J1.p2 -> U1.gnd as "GND"
+    connect J1.p3 -> U1.vout as "VOUT"
+    connect J1.p4 -> R1.p1 as "SIG"
+}"#,
+        );
+        let mut layout = layout(&b);
+        let j1 = b.components.iter().find(|c| c.refdes == "J1").unwrap().id;
+        // Turned so its pins face up and down, what hangs below it is most.
+        for placement in &mut layout.components {
+            if placement.id == j1 {
+                placement.rotation = Rotation::Ninety;
+            }
+        }
+        layout.annotations.clear();
+        place_connector_legends(&b, &mut layout);
+        let bottom = drawn_beyond_bodies(&b, &layout)
+            .into_iter()
+            .filter(|(id, _)| *id == j1)
+            .map(|(_, r)| r.3)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let title = layout
+            .annotations
+            .iter()
+            .find(|a| a.kind == TextKind::LegendTitle)
+            .expect("the connector has a legend");
+        assert!(
+            title.at_mm.1 - title.size_mm >= bottom,
+            "the legend title's top {:.2} is above what J1 draws, to {bottom:.2}",
+            title.at_mm.1 - title.size_mm
+        );
+    }
+
+    /// Board-level notes start below the content, so below what an ungrouped
+    /// part draws past its body too, or a note lands on its power symbols and
+    /// net labels.
+    #[test]
+    fn board_notes_start_below_what_an_ungrouped_part_draws() {
+        let ic = part("ic", vec![pin("a"), pin("b"), pin("c"), pin("d")]);
+        let b = board_with_notes(
+            vec![component(0, "U1", ic, None)],
+            vec![net(0, "SIG", &[(0, 0)])],
+            Vec::new(),
+        );
+        let layout = layout(&b);
+        let bottom = content_bottom(&b, &layout);
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        assert!(!drawn.is_empty(), "nothing drawn past the body");
+        for (_, (_, _, _, y1)) in drawn {
+            assert!(
+                y1 <= bottom,
+                "something is drawn to {y1:.2}, notes start at {bottom:.2}"
             );
         }
     }

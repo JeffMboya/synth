@@ -280,7 +280,7 @@ pub fn check_with_config(
     violations.extend(check_long_nets(layout, config.long_net_max_mm));
     violations.extend(check_junction_fanout(layout, config.max_junction_degree));
     violations.extend(check_cross_net_junctions(layout));
-    violations.extend(check_page_overflow(layout));
+    violations.extend(check_page_overflow(board, layout));
     violations.extend(check_net_label_case(layout));
     violations.extend(check_net_label_length(layout, config.max_net_label_len));
     violations.extend(check_ambiguous_power_rails(layout, board));
@@ -910,15 +910,16 @@ const PAGE_OVERFLOW_EPSILON_MM: f64 = 0.01;
 /// escalates A4 → A3 → A2 from the content
 /// bounding box; past A2 it stops growing and the §P26 split takes
 /// over (§MULTI-SHEET). This rule makes any residual overflow
-/// visible: a component placement or wire point beyond the sheet's
-/// dimensions is flagged. Multi-sheet boards run this per
+/// visible: a component placement, a wire point, or anything a part draws
+/// past its body (pin ends, fields, power symbols, labels) beyond the
+/// sheet's dimensions is flagged. Multi-sheet boards run this per
 /// sheet (`check_sheets`), so a split board no longer trips it.
 ///
 /// Overflow is checked on all four sides. The right/bottom case is the
 /// placer failing to grow the page; the left/top case (negative
 /// coordinates) is content driven off the page by a page shift or a
 /// manual/agent override, which used to be invisible to every rule.
-fn check_page_overflow(layout: &Layout) -> Vec<Diagnostic> {
+fn check_page_overflow(board: &Board, layout: &Layout) -> Vec<Diagnostic> {
     let (w, h) = layout.sheet_size.dims_mm();
     let max_x = w + PAGE_OVERFLOW_EPSILON_MM;
     let max_y = h + PAGE_OVERFLOW_EPSILON_MM;
@@ -944,6 +945,13 @@ fn check_page_overflow(layout: &Layout) -> Vec<Diagnostic> {
             consider(x, y);
         }
     }
+    // The corners of the content, which take in what parts draw past their
+    // bodies: a pin end or a name can hang off the page while the centre and
+    // every wire point are on it.
+    if let Some((min_x, max_x, min_y, max_y)) = synth_layout::content_bounds(board, layout) {
+        consider(min_x, min_y);
+        consider(max_x, max_y);
+    }
     let Some((x, y)) = worst else {
         return Vec::new();
     };
@@ -957,7 +965,7 @@ fn check_page_overflow(layout: &Layout) -> Vec<Diagnostic> {
                  (origin at the top-left corner); move it onto the page or resize the sheet",
     ))
     .expected(format!("all content within {w:.0} × {h:.0} mm"))
-    .found(format!("content at ({x:.1}, {y:.1}) mm"))
+    .found(format!("content extends to ({x:.1}, {y:.1}) mm"))
     .explanation_url("synth.docs/diagnostics/E-SYNTH-SCHEM-007")
     .build()]
 }
@@ -1948,7 +1956,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let violations = check_page_overflow(&layout);
+        let violations = check_page_overflow(&board_with_nets(Vec::new()), &layout);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].code, "E-SYNTH-SCHEM-007");
     }
@@ -1961,7 +1969,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let violations = check_page_overflow(&layout);
+        let violations = check_page_overflow(&board_with_nets(Vec::new()), &layout);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].code, "E-SYNTH-SCHEM-007");
     }
@@ -1977,7 +1985,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        assert!(check_page_overflow(&layout).is_empty());
+        assert!(check_page_overflow(&board_with_nets(Vec::new()), &layout).is_empty());
     }
 
     #[test]
@@ -1991,7 +1999,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let violations = check_page_overflow(&layout);
+        let violations = check_page_overflow(&board_with_nets(Vec::new()), &layout);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].code, "E-SYNTH-SCHEM-007");
         assert!(
@@ -1999,7 +2007,7 @@ mod tests {
                 .message
                 .as_deref()
                 .unwrap_or("")
-                .contains("-22.9"),
+                .contains("reaches (-30.4"),
             "message must name the negative coordinate: {:?}",
             violations[0].message
         );
@@ -2013,19 +2021,24 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        assert_eq!(check_page_overflow(&layout).len(), 1);
+        assert_eq!(
+            check_page_overflow(&board_with_nets(Vec::new()), &layout).len(),
+            1
+        );
     }
 
     #[test]
     fn zero_origin_content_is_silent() {
-        // Exactly on the origin is on the page, not off it.
+        // Exactly on the origin is on the page, not off it. A wire has no
+        // body, so it is the case that sits on the origin without hanging
+        // off it.
         let layout = layout(
-            vec![placement(ComponentId(0), 0.0, 0.0, Rotation::Zero)],
             Vec::new(),
+            vec![wire(NetId(0), vec![(0.0, 0.0), (10.0, 0.0)])],
             Vec::new(),
             Vec::new(),
         );
-        assert!(check_page_overflow(&layout).is_empty());
+        assert!(check_page_overflow(&board_with_nets(Vec::new()), &layout).is_empty());
     }
 
     #[test]
@@ -2039,7 +2052,50 @@ mod tests {
             Vec::new(),
         );
         layout.sheet_size = SheetSize::A3;
-        assert!(check_page_overflow(&layout).is_empty());
+        assert!(check_page_overflow(&board_with_nets(Vec::new()), &layout).is_empty());
+    }
+
+    #[test]
+    fn a_part_whose_drawn_extents_just_fit_the_page_is_silent() {
+        // Placed so the lowest thing it draws sits a millimetre inside the
+        // bottom edge: the rule must not fire for a part that fits.
+        let mut board = board_with_one_component();
+        board.components[0].part = Some(single_pin_part("a"));
+        let mut layout = layout(
+            vec![placement(ComponentId(0), 100.0, 100.0, Rotation::Zero)],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let (_, _, _, max_y) = synth_layout::content_bounds(&board, &layout).expect("content");
+        let (_, sheet_h) = layout.sheet_size.dims_mm();
+        layout.components[0].center_mm.1 += sheet_h - 1.0 - max_y;
+        assert!(check_page_overflow(&board, &layout).is_empty());
+    }
+
+    #[test]
+    fn what_a_part_draws_past_the_page_edge_is_flagged() {
+        // The body sits inside the page and so does its centre, but its
+        // Reference and Value text hang past the bottom edge.
+        let mut board = board_with_one_component();
+        board.components[0].part = Some(single_pin_part("a"));
+        let (_, body_h) =
+            synth_layout::body_size_for_part(board.components[0].part.as_ref().unwrap());
+        let (_, sheet_h) = SheetSize::A4.dims_mm();
+        let layout = layout(
+            vec![placement(
+                ComponentId(0),
+                100.0,
+                sheet_h - body_h / 2.0 - 1.0,
+                Rotation::Zero,
+            )],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let violations = check_page_overflow(&board, &layout);
+        assert_eq!(violations.len(), 1, "text past the edge is not flagged");
+        assert_eq!(violations[0].code, "E-SYNTH-SCHEM-007");
     }
 
     // ----- E-SYNTH-SCHEM-008 ----------------------------------------------
