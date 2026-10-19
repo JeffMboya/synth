@@ -5504,6 +5504,10 @@ fn procurement_lock(
 ) -> anyhow::Result<u8> {
     let (source, file) = read_source(input)?;
     let parse = synth_parser::parse(&source, file.clone());
+    write_diagnostics_to_stderr(&parse.diagnostics)?;
+    if parse.has_errors() {
+        anyhow::bail!("parse errors prevent procurement locking");
+    }
     let ast = parse
         .ast
         .as_ref()
@@ -5513,12 +5517,27 @@ fn procurement_lock(
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let loader = synth_ir::FsImportLoader { root: import_root };
     let resolved = synth_ir::resolve_imports(ast, &loader, &file);
+    write_diagnostics_to_stderr(&resolved.diagnostics)?;
+    if resolved
+        .diagnostics
+        .iter()
+        .any(|d| d.severity.is_blocking())
+    {
+        anyhow::bail!("import errors prevent procurement locking");
+    }
     let registry = load_registry(registry_dir)
         .ok_or_else(|| anyhow::anyhow!("registry could not be loaded"))?;
     let lowered = synth_ir::lower(&resolved.program, &registry, &file);
+    write_diagnostics_to_stderr(&lowered.diagnostics)?;
+    if lowered.has_errors() {
+        anyhow::bail!("lowering errors prevent procurement locking");
+    }
     let board = lowered.board.as_ref().ok_or_else(|| {
         anyhow::anyhow!("lowering produced no IR; cannot create procurement lock")
     })?;
+    if board.components.is_empty() {
+        anyhow::bail!("cannot lock a design without components");
+    }
     let variant = match variant_name {
         Some(name) => Some(
             board
