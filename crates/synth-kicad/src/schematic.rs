@@ -905,7 +905,9 @@ fn fanned_leg_obstacles<'a>(
         };
         if let Some(((x, y), (flag_x, flag_y))) = fanned_leg_stub(board, leg, placements) {
             out.push(FieldObstacle::fixed(power_flag_rect(
-                flag_x, flag_y, rail.kind,
+                flag_x,
+                flag_y,
+                upright(rail.kind),
             )));
             out.push(FieldObstacle::fixed(wire_rect((x, y), (flag_x, flag_y))));
         }
@@ -975,12 +977,13 @@ fn build_fanned_power_symbol(
         &refdes_pwr,
         label,
         rail.kind,
+        upright(rail.kind),
         (flag_x, flag_y),
         obstacles,
         power_names,
         bounds,
     );
-    let sym_sexp = power_symbol_sexp(lib_id_out, flag_x, flag_y, sym_uuid, properties);
+    let sym_sexp = power_symbol_sexp(lib_id_out, flag_x, flag_y, 0.0, sym_uuid, properties);
 
     Some(vec![wire_sexp, sym_sexp])
 }
@@ -991,12 +994,13 @@ fn power_symbol_sexp(
     lib_id: String,
     flag_x: f64,
     flag_y: f64,
+    angle: f64,
     sym_uuid: Uuid,
     properties: Vec<Sexp>,
 ) -> Sexp {
     let mut children = vec![
         str_pair("lib_id", lib_id),
-        Sexp::list("at", vec![num(flag_x), num(flag_y), num(0.0)]),
+        Sexp::list("at", vec![num(flag_x), num(flag_y), num(angle)]),
         pair("unit", Sexp::atom("1")),
         pair("in_bom", Sexp::atom("no")),
         pair("on_board", Sexp::atom("no")),
@@ -1629,16 +1633,19 @@ fn build_power_symbol(
         ));
     }
 
+    let body = power_body(board, layout, placements, flag, (flag_x, flag_y), dx);
     let properties = power_symbol_properties(
         &refdes_pwr,
         &flag.label,
         flag.kind,
+        body,
         (flag_x, flag_y),
         obstacles,
         power_names,
         bounds,
     );
-    let sym_sexp = power_symbol_sexp(lib_id, flag_x, flag_y, sym_uuid, properties);
+    let angle = power_symbol_angle(flag.kind, body);
+    let sym_sexp = power_symbol_sexp(lib_id, flag_x, flag_y, angle, sym_uuid, properties);
 
     let mut out = stub_wires;
     out.push(sym_sexp);
@@ -1879,34 +1886,44 @@ type PowerName = ((f64, f64), String);
 /// afterwards.
 /// Stacked pins give several symbols at one point; the first draws the name and
 /// the rest keep theirs hidden, so the same text is not printed over itself.
+#[allow(clippy::too_many_arguments)]
 fn power_symbol_properties(
     refdes: &str,
     name: &str,
     kind: synth_layout::PowerFlagKind,
+    body: Body,
     at: (f64, f64),
     obstacles: &mut Vec<FieldObstacle>,
     power_names: &mut Vec<PowerName>,
     bounds: Option<field_clear::Rect>,
 ) -> Vec<Sexp> {
     // A rail arrow points up the sheet, a ground triangle down.
-    let away = match kind {
-        synth_layout::PowerFlagKind::Vcc => -1.0,
-        synth_layout::PowerFlagKind::Gnd => 1.0,
-    };
+    let away = upright(kind).1;
     let candidates: Vec<(f64, f64, Option<&'static str>)> =
         ring_distances(POWER_NAME_RING_STEP_MM, obstacle_reach(obstacles, at))
             .flat_map(|ring| {
-                [
-                    (0.0, away * (POWER_NAME_OFFSET_MM + ring), None),
-                    (POWER_NAME_SIDE_MM + ring, away * POWER_TIP_MM, Some("left")),
-                    (
-                        -(POWER_NAME_SIDE_MM + ring),
-                        away * POWER_TIP_MM,
-                        Some("right"),
-                    ),
-                ]
+                if body.0 == 0.0 {
+                    vec![
+                        (0.0, away * (POWER_NAME_OFFSET_MM + ring), None),
+                        (POWER_NAME_SIDE_MM + ring, away * POWER_TIP_MM, Some("left")),
+                        (
+                            -(POWER_NAME_SIDE_MM + ring),
+                            away * POWER_TIP_MM,
+                            Some("right"),
+                        ),
+                    ]
+                } else {
+                    // A symbol turned along its stub keeps its name on its own
+                    // row, past the tip.
+                    let justify = if body.0 > 0.0 { "left" } else { "right" };
+                    vec![(body.0 * (POWER_NAME_OFFSET_MM + ring), 0.0, Some(justify))]
+                }
             })
             .collect();
+    let angle = power_symbol_angle(kind, body);
+    // The field is counter-rotated like a turned part's, so the name stays
+    // horizontal.
+    let field_angle = if angle == 0.0 { 0.0 } else { 90.0 };
     let repeats = power_names.iter().any(|(p, n)| *p == at && n == name);
     let chars = name.chars().count();
     let rect_at = |(dx, dy, justify): (f64, f64, Option<&'static str>)| {
@@ -1932,7 +1949,7 @@ fn power_symbol_properties(
     let value_effects = if repeats {
         hidden_field_effects()
     } else {
-        field_effects(justify)
+        field_effects(written_justify(justify, angle, field_angle))
     };
     let property = |field: &str, text: &str, pos: (f64, f64), effects: Sexp| {
         Sexp::list(
@@ -1940,7 +1957,7 @@ fn power_symbol_properties(
             vec![
                 Sexp::str(field),
                 Sexp::str(text),
-                Sexp::list("at", vec![num(pos.0), num(pos.1), num(0.0)]),
+                Sexp::list("at", vec![num(pos.0), num(pos.1), num(field_angle)]),
                 effects,
             ],
         )
@@ -2147,18 +2164,88 @@ fn wire_rect(a: (f64, f64), b: (f64, f64)) -> field_clear::Rect {
     }
 }
 
+/// The way a power symbol's body points from its point, as a unit step on the
+/// sheet (y grows downward).
+type Body = (f64, f64);
+
+/// How KiCad draws a power symbol unturned: a ground triangle points down, a
+/// rail arrow up.
+fn upright(kind: synth_layout::PowerFlagKind) -> Body {
+    match kind {
+        synth_layout::PowerFlagKind::Gnd => (0.0, 1.0),
+        synth_layout::PowerFlagKind::Vcc => (0.0, -1.0),
+    }
+}
+
+/// The angle to write for a symbol of `kind` so its body points along `body`.
+/// KiCad turns counter-clockwise on the sheet, so a triangle that points down
+/// ends up pointing right at 90 and left at 270, and an arrow that points up
+/// the other way round.
+fn power_symbol_angle(kind: synth_layout::PowerFlagKind, body: Body) -> f64 {
+    if body.0 == 0.0 {
+        return 0.0;
+    }
+    match (kind, body.0 > 0.0) {
+        (synth_layout::PowerFlagKind::Gnd, true) | (synth_layout::PowerFlagKind::Vcc, false) => {
+            90.0
+        }
+        (synth_layout::PowerFlagKind::Gnd, false) | (synth_layout::PowerFlagKind::Vcc, true) => {
+            270.0
+        }
+    }
+}
+
 /// What a power symbol at (`x`, `y`) draws: from its point to the tip of the
-/// triangle below a ground or of the arrow above a rail.
-fn power_flag_rect(x: f64, y: f64, kind: synth_layout::PowerFlagKind) -> field_clear::Rect {
-    let tip = match kind {
-        synth_layout::PowerFlagKind::Gnd => y + POWER_TIP_MM,
-        synth_layout::PowerFlagKind::Vcc => y - POWER_TIP_MM,
-    };
+/// triangle or arrow, as wide as the symbol across the body.
+fn power_flag_rect(x: f64, y: f64, body: Body) -> field_clear::Rect {
+    let (tip_x, tip_y) = (x + body.0 * POWER_TIP_MM, y + body.1 * POWER_TIP_MM);
+    let (half_x, half_y) = (
+        POWER_FLAG_HALF_MM * body.1.abs(),
+        POWER_FLAG_HALF_MM * body.0.abs(),
+    );
     field_clear::Rect {
-        x0: x - POWER_FLAG_HALF_MM,
-        y0: y.min(tip),
-        x1: x + POWER_FLAG_HALF_MM,
-        y1: y.max(tip),
+        x0: x.min(tip_x) - half_x,
+        y0: y.min(tip_y) - half_y,
+        x1: x.max(tip_x) + half_x,
+        y1: y.max(tip_y) + half_y,
+    }
+}
+
+/// How the symbol of `flag`, drawn at `at` on a stub that leaves its pin along
+/// `dx`, points.
+///
+/// Unturned, a ground triangle drops one pin pitch below its stub, so beside a
+/// column of pins it ends on the next pin's row: across that pin's wire, number
+/// and flag, and its name finds no free spot nearer than the pin after that.
+/// Turned to point along the stub it stays in its own pin's row. It is only
+/// turned when the unturned body would land on a wire or a flag of another
+/// net, so a sheet where nothing is in the way keeps the usual symbol.
+fn power_body(
+    board: &Board,
+    layout: &synth_layout::Layout,
+    placements: &HashMap<ComponentId, &ComponentPlacement>,
+    flag: &synth_layout::PowerFlag,
+    at: (f64, f64),
+    dx: f64,
+) -> Body {
+    let unturned = upright(flag.kind);
+    if dx == 0.0 {
+        return unturned;
+    }
+    let rect = power_flag_rect(at.0, at.1, unturned);
+    let on_a_wire = layout
+        .wires
+        .iter()
+        .filter(|wire| wire.net != flag.net)
+        .flat_map(|wire| wire.points.windows(2))
+        .any(|seg| rect.overlaps(&wire_rect(seg[0], seg[1])));
+    let on_a_flag = label_rects(board, layout, placements)
+        .iter()
+        .any(|label| rect.overlaps(label));
+    if on_a_wire || on_a_flag {
+        (dx.signum(), 0.0)
+    } else {
+        unturned
     }
 }
 
@@ -2183,6 +2270,45 @@ fn field_bounds(
             Some((c.id, rect))
         })
         .collect()
+}
+
+/// What each net label covers: its text and the stub that joins it to the pin.
+/// A cross-sheet label is drawn the same way.
+fn label_rects(
+    board: &Board,
+    layout: &synth_layout::Layout,
+    placements: &HashMap<ComponentId, &ComponentPlacement>,
+) -> Vec<field_clear::Rect> {
+    let labels = layout
+        .net_labels
+        .iter()
+        .map(|l| (&l.label, l.component, l.pin, l.spot))
+        .chain(layout.hierarchical_labels.iter().map(|l| {
+            (
+                &l.label,
+                l.component,
+                l.pin,
+                synth_layout::LabelSpot::default(),
+            )
+        }));
+    let mut out = Vec::new();
+    for (text, component, pin, spot) in labels {
+        let Some((x0, y0, x1, y1)) =
+            synth_layout::route::net_label_rect(board, text, component, pin, placements, spot)
+        else {
+            continue;
+        };
+        let Some((pin_x, ..)) = pin_terminal_xy(board, component, pin, placements) else {
+            continue;
+        };
+        out.push(field_clear::Rect {
+            x0: x0.min(pin_x),
+            y0,
+            x1: x1.max(pin_x),
+            y1,
+        });
+    }
+    out
 }
 
 /// Every wire, body, pin, net label, power flag and caption on the sheet as an
@@ -2222,37 +2348,11 @@ fn field_obstacles(
             })
         });
     }
-    // A net label is its text and the stub that joins it to the pin; a
-    // cross-sheet label is drawn the same way, but a net label on an upright
-    // pin first rises past the pin end (`build_net_label`).
-    let labels = layout
-        .net_labels
-        .iter()
-        .map(|l| (&l.label, l.component, l.pin, l.spot))
-        .chain(layout.hierarchical_labels.iter().map(|l| {
-            (
-                &l.label,
-                l.component,
-                l.pin,
-                synth_layout::LabelSpot::default(),
-            )
-        }));
-    for (text, component, pin, spot) in labels {
-        let Some((x0, y0, x1, y1)) =
-            synth_layout::route::net_label_rect(board, text, component, pin, placements, spot)
-        else {
-            continue;
-        };
-        let Some((pin_x, ..)) = pin_terminal_xy(board, component, pin, placements) else {
-            continue;
-        };
-        out.push(fixed(field_clear::Rect {
-            x0: x0.min(pin_x),
-            y0,
-            x1: x1.max(pin_x),
-            y1,
-        }));
-    }
+    out.extend(
+        label_rects(board, layout, placements)
+            .into_iter()
+            .map(fixed),
+    );
     for component in &board.components {
         let Some(part) = component.part.as_ref() else {
             continue;
@@ -2308,7 +2408,8 @@ fn field_obstacles(
                 layout,
                 PinAnchor { x, y, dx, dy },
             );
-            out.push(fixed(power_flag_rect(cx, cy, flag.kind)));
+            let body = power_body(board, layout, placements, flag, (cx, cy), dx);
+            out.push(fixed(power_flag_rect(cx, cy, body)));
             out.extend(
                 power_stub_points((x, y), corner, (cx, cy))
                     .windows(2)
@@ -2851,7 +2952,7 @@ mod tests {
         assert!(
             obstacles
                 .iter()
-                .any(|o| o.rect == power_flag_rect(cx, cy, kind)),
+                .any(|o| o.rect == power_flag_rect(cx, cy, upright(kind))),
             "no obstacle on the moved flag at {cleared:?}"
         );
     }
@@ -4008,7 +4109,7 @@ mod tests {
                 };
                 legs_seen += 1;
                 for want in [
-                    power_flag_rect(flag.0, flag.1, rail.kind),
+                    power_flag_rect(flag.0, flag.1, upright(rail.kind)),
                     wire_rect(pin, flag),
                 ] {
                     assert!(
@@ -4333,6 +4434,27 @@ mod tests {
     type PowerSymbol = ((f64, f64), Vec<PowerField>);
 
     fn power_symbols(sexp: &Sexp) -> Vec<PowerSymbol> {
+        power_symbols_at_angle(sexp)
+            .into_iter()
+            .map(|(_, symbol)| symbol)
+            .collect()
+    }
+
+    /// The symbols that stand upright, whose triangle hangs below and whose
+    /// arrow rises above their point.
+    fn upright_power_symbols(sexp: &Sexp) -> Vec<PowerSymbol> {
+        power_symbols_at_angle(sexp)
+            .into_iter()
+            .filter(|(angle, _)| *angle == 0.0)
+            .map(|(_, symbol)| symbol)
+            .collect()
+    }
+
+    /// Each power symbol with the angle it is written at. A name is given as
+    /// KiCad draws it: it swaps left and right justification on a string it
+    /// turns the right way up, which is the case for a symbol at 90 with its
+    /// fields at 90.
+    fn power_symbols_at_angle(sexp: &Sexp) -> Vec<(f64, PowerSymbol)> {
         let Sexp::List { children, .. } = sexp else {
             return Vec::new();
         };
@@ -4352,6 +4474,7 @@ mod tests {
                 else {
                     unreachable!("filtered to lists")
                 };
+                let (x, y, angle) = at_of(s);
                 let fields = props
                     .iter()
                     .filter(|p| matches!(p, Sexp::List { head, .. } if head == "property"))
@@ -4360,18 +4483,27 @@ mod tests {
                             unreachable!("filtered to lists")
                         };
                         let effects = sub_node(p, "effects");
-                        let (x, y, _) = at_of(p);
+                        let (fx, fy, field_angle) = at_of(p);
+                        let justify = sub(effects, "justify").and_then(|j| j.first().map(str_of));
+                        let justify = match justify.as_deref() {
+                            Some("left") if (angle + field_angle).rem_euclid(360.0) == 180.0 => {
+                                Some("right".to_string())
+                            }
+                            Some("right") if (angle + field_angle).rem_euclid(360.0) == 180.0 => {
+                                Some("left".to_string())
+                            }
+                            _ => justify,
+                        };
                         (
                             str_of(&v[0]),
                             str_of(&v[1]),
-                            (x, y),
-                            sub(effects, "justify").and_then(|j| j.first().map(str_of)),
+                            (fx, fy),
+                            justify,
                             sub(effects, "hide").is_some_and(|h| str_of(&h[0]) == "yes"),
                         )
                     })
                     .collect();
-                let (x, y, _) = at_of(s);
-                ((x, y), fields)
+                (angle, ((x, y), fields))
             })
             .collect()
     }
@@ -4383,7 +4515,7 @@ mod tests {
     #[test]
     fn a_rail_symbol_shows_its_name_above_the_arrow() {
         let (_board, sexp, _text) = build_reference("ref_ldo_sensor");
-        let rails: Vec<_> = power_symbols(&sexp)
+        let rails: Vec<_> = upright_power_symbols(&sexp)
             .into_iter()
             .filter(|(_, f)| !matches!(power_value(f).1.as_str(), "GND" | "PWR_FLAG"))
             .collect();
@@ -4398,7 +4530,7 @@ mod tests {
     #[test]
     fn a_ground_symbol_shows_its_name_below_the_triangle() {
         let (_board, sexp, _text) = build_reference("ref_ldo_sensor");
-        let grounds: Vec<_> = power_symbols(&sexp)
+        let grounds: Vec<_> = upright_power_symbols(&sexp)
             .into_iter()
             .filter(|(_, f)| power_value(f).1 == "GND")
             .collect();
@@ -4447,6 +4579,7 @@ mod tests {
                     "#PWR1",
                     "GND",
                     kind,
+                    upright(kind),
                     (0.0, 0.0),
                     &mut obstacles,
                     &mut Vec::new(),
@@ -4882,17 +5015,25 @@ mod tests {
             "sensor_logger",
         ] {
             let (_board, sexp, _text) = build_reference(name);
-            // A ground triangle hangs below its point, a rail arrow rises above.
-            let drawings: Vec<(f64, f64, f64, f64)> = power_symbols(&sexp)
+            // A ground triangle hangs below its point, a rail arrow rises
+            // above; a symbol turned to 90 points right, at 270 left.
+            let drawings: Vec<(f64, f64, f64, f64)> = power_symbols_at_angle(&sexp)
                 .into_iter()
-                .filter_map(|((x, y), fields)| {
+                .filter_map(|(angle, ((x, y), fields))| {
                     let value = power_value(&fields);
-                    let (y0, y1) = if value.2 .1 > y {
-                        (y, y + POWER_TIP_MM)
+                    let drawing = if angle == 0.0 {
+                        let (y0, y1) = if value.2 .1 > y {
+                            (y, y + POWER_TIP_MM)
+                        } else {
+                            (y - POWER_TIP_MM, y)
+                        };
+                        (x - 1.27, y0, x + 1.27, y1)
+                    } else if value.2 .0 > x {
+                        (x, y - 1.27, x + POWER_TIP_MM, y + 1.27)
                     } else {
-                        (y - POWER_TIP_MM, y)
+                        (x - POWER_TIP_MM, y - 1.27, x, y + 1.27)
                     };
-                    (!value.4).then_some((x - 1.27, y0, x + 1.27, y1))
+                    (!value.4).then_some(drawing)
                 })
                 .collect();
             for (field, x0, y0, x1, y1) in drawn_field_boxes(&sexp) {
