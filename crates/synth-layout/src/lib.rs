@@ -58,6 +58,7 @@ pub mod kicad_zip;
 pub mod maxrects;
 pub mod netclass;
 pub mod ops;
+pub mod pin_reconcile;
 pub mod placer;
 pub mod qualify_facts;
 pub mod route;
@@ -470,6 +471,8 @@ const NOTE_TITLE_GAP: f64 = 4.0;
 /// the router reserves for a power flag.
 const POWER_STUB_LEN: f64 = 2.54;
 const POWER_SYMBOL_HALF: f64 = 2.54;
+/// Half the side of the cross a no-connect marker draws, in mm.
+const NO_CONNECT_HALF: f64 = 0.635;
 /// Gap below a group box, connector body, or content bottom before a
 /// notes block or pin legend starts.
 const BELOW_GAP: f64 = 8.0;
@@ -1474,9 +1477,37 @@ fn default_caption_inside() -> bool {
     true
 }
 
+/// The symbol of a power flag whose stub ends at `at`, and its name.
+fn power_symbol_rects((sx, sy): (f64, f64), flag: &PowerFlag) -> [(f64, f64, f64, f64); 2] {
+    // A rail arrow points up and its name sits above it, a ground
+    // triangle points down and its name sits below.
+    let name_y = match flag.kind {
+        PowerFlagKind::Vcc => sy - POWER_NAME_OFFSET_MM,
+        PowerFlagKind::Gnd => sy + POWER_NAME_OFFSET_MM,
+    };
+    // The name moves beside the symbol when its usual spot is taken, so
+    // the box reaches a name's width past the symbol's axis each way.
+    let reach = POWER_NAME_SIDE_MM + flag.label.chars().count() as f64 * POWER_NAME_CHAR_MM;
+    [
+        (
+            sx - POWER_SYMBOL_HALF,
+            sy - POWER_SYMBOL_HALF,
+            sx + POWER_SYMBOL_HALF,
+            sy + POWER_SYMBOL_HALF,
+        ),
+        (
+            sx - reach,
+            name_y - POWER_NAME_HALF_MM,
+            sx + reach,
+            name_y + POWER_NAME_HALF_MM,
+        ),
+    ]
+}
+
 /// Rectangles `(x0, y0, x1, y1)` that parts draw outside their bodies, each
 /// with the component that draws it: pin ends with their numbers, power
-/// symbols with their names, and net label flags with their stubs.
+/// symbols with their names, power legs fanned out of pins the registry does
+/// not declare, no-connect markers, and net label flags with their stubs.
 fn drawn_beyond_bodies(board: &Board, layout: &Layout) -> Vec<(ComponentId, (f64, f64, f64, f64))> {
     let placements: std::collections::HashMap<ComponentId, &ComponentPlacement> =
         layout.components.iter().map(|p| (p.id, p)).collect();
@@ -1561,33 +1592,52 @@ fn drawn_beyond_bodies(board: &Board, layout: &Layout) -> Vec<(ComponentId, (f64
             continue;
         };
         let (sx, sy) = (x + dx * POWER_STUB_LEN, y + dy * POWER_STUB_LEN);
-        out.push((
-            flag.component,
-            (
-                sx - POWER_SYMBOL_HALF,
-                sy - POWER_SYMBOL_HALF,
-                sx + POWER_SYMBOL_HALF,
-                sy + POWER_SYMBOL_HALF,
-            ),
-        ));
-        // A rail arrow points up and its name sits above it, a ground
-        // triangle points down and its name sits below.
-        let name_y = match flag.kind {
-            PowerFlagKind::Vcc => sy - POWER_NAME_OFFSET_MM,
-            PowerFlagKind::Gnd => sy + POWER_NAME_OFFSET_MM,
-        };
-        // The name moves beside the symbol when its usual spot is taken, so
-        // the box reaches a name's width past the symbol's axis each way.
-        let reach = POWER_NAME_SIDE_MM + flag.label.chars().count() as f64 * POWER_NAME_CHAR_MM;
-        out.push((
-            flag.component,
-            (
-                sx - reach,
-                name_y - POWER_NAME_HALF_MM,
-                sx + reach,
-                name_y + POWER_NAME_HALF_MM,
-            ),
-        ));
+        out.extend(
+            power_symbol_rects((sx, sy), flag)
+                .into_iter()
+                .map(|rect| (flag.component, rect)),
+        );
+    }
+    // The legs the exporter fans out of physical pins the registry does not
+    // declare draw the same symbol and name on the rail they join, and the
+    // pins the netlist never reaches draw a no-connect cross.
+    for reconciled in pin_reconcile::reconcile_all(board) {
+        for leg in &reconciled.power_legs {
+            let Some(rail) = layout.power_flags.iter().find(|f| f.net == leg.net) else {
+                continue;
+            };
+            let Some(((px, py), at)) = pin_reconcile::fanned_leg_stub(board, leg, &placements)
+            else {
+                continue;
+            };
+            out.push((
+                leg.component,
+                (
+                    px - PIN_TEXT_HALF_MM,
+                    py - PIN_TEXT_HALF_MM,
+                    px + PIN_TEXT_HALF_MM,
+                    py + PIN_TEXT_HALF_MM,
+                ),
+            ));
+            out.extend(
+                power_symbol_rects(at, rail)
+                    .into_iter()
+                    .map(|rect| (leg.component, rect)),
+            );
+        }
+        for pin in &reconciled.no_connects {
+            if let Some((x, y)) = pin_reconcile::no_connect_position(board, pin, &placements) {
+                out.push((
+                    pin.component,
+                    (
+                        x - NO_CONNECT_HALF,
+                        y - NO_CONNECT_HALF,
+                        x + NO_CONNECT_HALF,
+                        y + NO_CONNECT_HALF,
+                    ),
+                ));
+            }
+        }
     }
     let labels = layout
         .net_labels
@@ -8257,6 +8307,99 @@ mod documentation_tests {
                 "power symbol at x={x} reaches y={symbol_bottom}, note starts at y={note_top}"
             );
         }
+    }
+
+    /// What a part draws past its body includes the power legs fanned out of
+    /// physical pins the registry does not declare and the no-connect markers
+    /// on pins the netlist never reaches, so a group box is sized from them
+    /// too.
+    #[test]
+    fn parts_draw_fanned_power_legs_and_no_connect_markers_beyond_their_bodies() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = synth_registry::load_dir(&root.join("registry").join("parts")).unwrap();
+        let source = r#"board "lone_mcu" {
+    layers 2
+    manufacturer "jlcpcb"
+    group "MCU" {
+      component U2: mcu "stm32f103c8"
+    }
+    component J1: connector "header_1x4"
+    component U1: regulator "ams1117_3v3"
+    connect J1.p1 -> U1.vin
+    connect J1.p2 -> U1.gnd
+    connect U1.vout -> U2.vdd
+    connect U1.gnd -> U2.vss
+}"#;
+        let ast = synth_parser::parse(source, "lone_mcu.synth").ast.unwrap();
+        let b = synth_ir::lower(&ast, &registry, "lone_mcu.synth")
+            .board
+            .unwrap();
+        let layout = layout(&b);
+        let placements: std::collections::HashMap<_, _> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        // One rectangle the component draws holds the whole of `want`.
+        let holds = |id: ComponentId, want: (f64, f64, f64, f64)| {
+            drawn.iter().any(|(owner, r)| {
+                *owner == id && r.0 <= want.0 && r.1 <= want.1 && want.2 <= r.2 && want.3 <= r.3
+            })
+        };
+        let (mut legs, mut markers) = (0, 0);
+        for reconciled in pin_reconcile::reconcile_all(&b) {
+            for leg in &reconciled.power_legs {
+                if !layout.power_flags.iter().any(|f| f.net == leg.net) {
+                    continue;
+                }
+                let (_, (fx, fy)) = pin_reconcile::fanned_leg_stub(&b, leg, &placements)
+                    .expect("a leg on the symbol has a stub");
+                legs += 1;
+                let symbol = (
+                    fx - POWER_SYMBOL_HALF,
+                    fy - POWER_SYMBOL_HALF,
+                    fx + POWER_SYMBOL_HALF,
+                    fy + POWER_SYMBOL_HALF,
+                );
+                assert!(
+                    holds(leg.component, symbol),
+                    "leg {} symbol {symbol:?}",
+                    leg.pin_number
+                );
+                // The rail's name sits a step past the symbol, below a ground
+                // triangle and above a rail arrow.
+                let rail = layout
+                    .power_flags
+                    .iter()
+                    .find(|f| f.net == leg.net)
+                    .expect("the leg's rail has a flag");
+                let name_y = match rail.kind {
+                    PowerFlagKind::Gnd => fy + POWER_NAME_OFFSET_MM,
+                    PowerFlagKind::Vcc => fy - POWER_NAME_OFFSET_MM,
+                };
+                let name = (fx - 1.0, name_y - 0.5, fx + 1.0, name_y + 0.5);
+                assert!(
+                    holds(leg.component, name),
+                    "leg {} name {name:?}",
+                    leg.pin_number
+                );
+            }
+            for pin in &reconciled.no_connects {
+                let at = pin_reconcile::no_connect_position(&b, pin, &placements)
+                    .expect("a no-connect pin has a position");
+                markers += 1;
+                let cross = (
+                    at.0 - NO_CONNECT_HALF,
+                    at.1 - NO_CONNECT_HALF,
+                    at.0 + NO_CONNECT_HALF,
+                    at.1 + NO_CONNECT_HALF,
+                );
+                assert!(
+                    holds(pin.component, cross),
+                    "marker on pin {} at {at:?}",
+                    pin.pin_number
+                );
+            }
+        }
+        assert!(legs > 0 && markers > 0, "{legs} legs and {markers} markers");
     }
 
     #[test]

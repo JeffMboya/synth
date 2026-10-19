@@ -73,6 +73,7 @@ use synth_layout::{ComponentPlacement, PinSide, Rotation};
 use uuid::Uuid;
 
 use crate::field_clear;
+use crate::pin_reconcile::fanned_leg_stub;
 use crate::sexp::{num, pair, str_pair, Sexp};
 use crate::symbol_lib::{self, LIBRARY_NICKNAME};
 use crate::uuid_v5::derive_entity_uuid;
@@ -888,45 +889,6 @@ fn build_power_flag_driver(
     ))
 }
 
-/// Where a fanned power leg's stub runs: from the pin terminal to the point
-/// its power symbol sits at.
-fn fanned_leg_stub(
-    board: &Board,
-    leg: &crate::pin_reconcile::PowerLeg,
-    placements: &HashMap<ComponentId, &ComponentPlacement>,
-) -> Option<((f64, f64), (f64, f64))> {
-    let component = board.component(leg.component)?;
-    let part = component.part.as_ref()?;
-    let lib_id = part.kicad_symbol.as_deref()?;
-    let placement = placements.get(&component.id)?;
-
-    let natural_offset = natural_rotation_offset(part);
-    let logical_deg = match placement.rotation {
-        Rotation::Zero => 0.0,
-        Rotation::Ninety => 90.0,
-        Rotation::OneEighty => 180.0,
-        Rotation::TwoSeventy => 270.0,
-    };
-    let total_deg = (logical_deg + natural_offset).rem_euclid(360.0);
-
-    let (x, y, dx, dy) = crate::pin_reconcile::physical_terminal(
-        lib_id,
-        &leg.pin_number,
-        (
-            snap_grid_127(placement.center_mm.0),
-            snap_grid_127(placement.center_mm.1),
-        ),
-        total_deg,
-    )?;
-
-    // Offset the symbol one grid unit outward from the pin so it
-    // sits clear of the body.
-    let stub_len = POWER_FLAG_STUB_LEN;
-    let flag_x = x + dx * stub_len;
-    let flag_y = y + dy * stub_len;
-    Some(((x, y), (flag_x, flag_y)))
-}
-
 /// The flag square and stub of every fanned power leg on the sheet, as
 /// obstacles for text. `leg_rail` gives the rail flag a leg joins, and `None`
 /// for a leg the emitter does not draw on this sheet, so the two agree.
@@ -1057,38 +1019,7 @@ fn build_no_connect(
     project: &Uuid,
 ) -> Option<Sexp> {
     let component = board.component(pin.component)?;
-    let part = component.part.as_ref()?;
-    let placement = placements.get(&component.id)?;
-
-    let center = (
-        snap_grid_127(placement.center_mm.0),
-        snap_grid_127(placement.center_mm.1),
-    );
-    let natural_offset = natural_rotation_offset(part);
-    let logical_deg = match placement.rotation {
-        Rotation::Zero => 0.0,
-        Rotation::Ninety => 90.0,
-        Rotation::OneEighty => 180.0,
-        Rotation::TwoSeventy => 270.0,
-    };
-    let total_deg = (logical_deg + natural_offset).rem_euclid(360.0);
-
-    // Prefer the referenced symbol's physical pin positions; fall back
-    // to the synthesized-rectangle terminal for parts without a
-    // `kicad_symbol` mapping (BG95, etc.).
-    let (x, y) = if let Some(lib_id) = part.kicad_symbol.as_deref() {
-        crate::pin_reconcile::physical_terminal(lib_id, &pin.pin_number, center, total_deg)
-            .map(|(x, y, _, _)| (x, y))?
-    } else {
-        let pin_idx = part
-            .pins
-            .iter()
-            .position(|p| p.number.0 == pin.pin_number)
-            .map(|i| i as u32)?;
-        let (x, y, _dx, _dy) =
-            pin_terminal_xy(board, component.id, synth_ir::PinId(pin_idx), placements)?;
-        (snap_grid_127(x), snap_grid_127(y))
-    };
+    let (x, y) = crate::pin_reconcile::no_connect_position(board, pin, placements)?;
 
     let key = format!("no_connect_{}_{}", component.refdes, pin.pin_number);
     let node_uuid = derive_entity_uuid(project, "no_connect", &key);
