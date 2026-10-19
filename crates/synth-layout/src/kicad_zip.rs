@@ -79,9 +79,12 @@ pub fn parse_kicad_zip(bytes: &[u8]) -> Result<KicadZipImport, String> {
             continue;
         }
         // zip 9 returns the entry name as a `Result`: a name that is not
-        // valid UTF-8 is an error rather than a lossy string. This parser
-        // only looks for `.kicad_sym` and `.kicad_mod`, so an unreadable
-        // name is an entry it was never going to match.
+        // valid UTF-8 is an error rather than the lossy string zip 8 handed
+        // back. We skip such an entry on purpose — not because its name could
+        // never match (under zip 8's lossy decoding, one ending in
+        // `.kicad_mod` still would have, after replacement-character
+        // substitution), but because a name we cannot reconstruct is one we
+        // will not guess at.
         let Ok(name) = entry.name() else {
             continue;
         };
