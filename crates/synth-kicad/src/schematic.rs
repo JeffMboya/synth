@@ -2215,8 +2215,9 @@ fn power_flag_rect(x: f64, y: f64, body: Body) -> field_clear::Rect {
 /// column of pins it ends on the next pin's row: across that pin's wire, number
 /// and flag, and its name finds no free spot nearer than the pin after that.
 /// Turned to point along the stub it stays in its own pin's row. It is only
-/// turned when the unturned body would land on a wire or a flag of another
-/// net, so a sheet where nothing is in the way keeps the usual symbol.
+/// turned when the unturned body would land on a wire of another net or on a
+/// net label (a power net never has one), so a sheet where nothing is in the
+/// way keeps the usual symbol.
 fn power_body(
     board: &Board,
     layout: &synth_layout::Layout,
@@ -2398,6 +2399,8 @@ fn field_obstacles(
     // neighbour is in the way, together with its stub and any bend.
     for flag in &layout.power_flags {
         if let Some((x, y, dx, dy)) = pin_terminal_xy(board, flag.component, flag.pin, placements) {
+            // The spot the symbol is drawn at, so the turn is decided where
+            // `build_power_symbol` decides it.
             let (cx, cy, corner) = clear_power_flag_position(
                 board,
                 flag,
