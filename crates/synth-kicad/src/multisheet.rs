@@ -760,6 +760,45 @@ mod tests {
         let _ = Span::new(0, 0);
     }
 
+    /// A signal label on a sheet of a hierarchy must stay a local `label`.
+    /// A `global_label` would join same-named nets on different sheets.
+    #[test]
+    fn hierarchical_sheet_net_labels_are_local() {
+        use synth_ir::{NetId, PinId};
+
+        let b = board(vec![component(0, None)], vec![]);
+        let mut layout = layout_at(&[(0, 40.0, 40.0)]);
+        layout.net_labels = vec![synth_layout::NetLabel {
+            net: NetId(0),
+            component: ComponentId(0),
+            pin: PinId(0),
+            label: "SIG".to_string(),
+        }];
+        let project = crate::uuid_v5::project_namespace(&b.name);
+        let root_uuid = derive_entity_uuid(&project, "sheet", "root");
+        let text = crate::schematic::build_sheet_schematic(
+            &b,
+            &project,
+            &layout,
+            &crate::schematic::SheetRender {
+                name: None,
+                uuid: root_uuid,
+                project_name: &b.name,
+                symbol_path: Some(format!("/{root_uuid}")),
+                members: None,
+                power_drivers: None,
+                root_furniture: None,
+            },
+            &mut crate::schematic::PowerRefAllocator::default(),
+        )
+        .to_string_pretty();
+        assert!(
+            text.contains("\n\t(label\n\t\t\"SIG\""),
+            "local label present:\n{text}"
+        );
+        assert!(!text.contains("global_label"));
+    }
+
     /// A cross-sheet **signal** net with a root endpoint must be
     /// labelled on the root too. Regression guard: the root used to
     /// get no label (hierarchical labels were emitted for sub-sheets

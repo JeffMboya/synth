@@ -551,15 +551,19 @@ pub(crate) fn build_sheet_schematic(
     }
 
     // KiCad per-pin net labels at every labeled-net endpoint. Each
-    // endpoint gets its own short stub + local `(label)` with the
-    // same name; same-named labels on the sheet are electrically
-    // connected (the same primitive the reference designs use for
-    // SCL/SDA/D+/D-). No long wires, no top rails. Unroutable nets
-    // were merged into `layout.net_labels` by `synth_layout::layout`,
-    // so this loop covers the routing-fallback labels too.
+    // endpoint gets its own short stub + `(global_label)` flag with the
+    // same name; same-named labels are electrically connected (the same
+    // primitive the reference designs use for SCL/SDA/D+/D-). With several
+    // sheets the label is a local `(label)`, so it cannot reach other
+    // sheets. No long wires, no top rails. Unroutable nets were merged
+    // into `layout.net_labels` by `synth_layout::layout`, so this loop
+    // covers the routing-fallback labels too.
+    let single_sheet = render.symbol_path.is_none();
     for label in &layout.net_labels {
         let color = net_colors.get(&label.net).copied();
-        if let Some(sexps) = build_net_label(board, label, &placements, project, color) {
+        if let Some(sexps) =
+            build_net_label(board, label, &placements, project, color, single_sheet)
+        {
             children.extend(sexps);
         }
     }
@@ -1088,14 +1092,24 @@ fn build_no_connect(
 /// off the part's end and away from its side-placed fields.
 const VERTICAL_LABEL_RISE: f64 = 2.54;
 
-/// Emit a KiCad `(global_label)` entry attached to a stub extending
-/// from the pin's coordinate.
+/// Text height (mm) of a net label flag. KiCad draws the box twice the text
+/// height plus a 0.15 mm line (about 2.7 mm at 1.27, 2.45 mm at 1.15, measured
+/// in a kicad-cli render), so 1.15 fits the 2.54 mm pin pitch and flags on
+/// neighbouring pins stay apart.
+const FLAG_FONT_MM: f64 = 1.15;
+
+/// Emit a KiCad net label attached to a stub extending from the pin's
+/// coordinate. With `global` it is a `(global_label)` whose output shape
+/// draws a boxed flag with its point away from the stub. A global label
+/// joins same-named nets on every sheet, so a design with several sheets
+/// passes `false` and gets a plain local `(label)` instead.
 fn build_net_label(
     board: &Board,
     label: &synth_layout::NetLabel,
     placements: &HashMap<ComponentId, &ComponentPlacement>,
     project: &Uuid,
     color: Option<[u8; 3]>,
+    global: bool,
 ) -> Option<Vec<Sexp>> {
     let component = board.component(label.component)?;
     let (x, y, dx, dy) = pin_terminal_xy(board, label.component, label.pin, placements)?;
@@ -1146,32 +1160,36 @@ fn build_net_label(
     // The label text carries the same hue as its wire, so a name and
     // the line it names read as one object (reference sheet
     // mechanism 4).
-    let mut font = vec![Sexp::list("size", vec![num(1.27), num(1.27)])];
+    let size = if global { FLAG_FONT_MM } else { 1.27 };
+    let mut font = vec![Sexp::list("size", vec![num(size), num(size)])];
     if let Some(rgb) = color {
         font.push(rgb_color(rgb));
     }
-    let label_sexp = Sexp::list(
-        "label",
-        vec![
-            Sexp::str(&label.label),
-            Sexp::list("at", vec![num(stub_x), num(elbow_y), num(angle)]),
-            Sexp::list(
-                "effects",
-                vec![
-                    Sexp::list("font", font),
-                    // KiCad centres a label's text on its anchor unless the
-                    // file says which way it runs, which drops half of it on
-                    // the stub and the pin. Run it away from the pin.
-                    Sexp::list(
-                        "justify",
-                        vec![Sexp::atom(if angle == 180.0 { "right" } else { "left" })],
-                    ),
-                ],
-            ),
-            str_pair("uuid", label_uuid.to_string()),
-        ],
-    );
-    out.push(label_sexp);
+    let mut label_parts = vec![Sexp::str(&label.label)];
+    if global {
+        label_parts.push(Sexp::list("shape", vec![Sexp::atom("output")]));
+    }
+    label_parts.extend([
+        Sexp::list("at", vec![num(stub_x), num(elbow_y), num(angle)]),
+        Sexp::list(
+            "effects",
+            vec![
+                Sexp::list("font", font),
+                // KiCad centres a label's text on its anchor unless the
+                // file says which way it runs, which drops half of it on
+                // the stub and the pin. Run it away from the pin.
+                Sexp::list(
+                    "justify",
+                    vec![Sexp::atom(if angle == 180.0 { "right" } else { "left" })],
+                ),
+            ],
+        ),
+        str_pair("uuid", label_uuid.to_string()),
+    ]);
+    out.push(Sexp::list(
+        if global { "global_label" } else { "label" },
+        label_parts,
+    ));
 
     Some(out)
 }
@@ -3650,6 +3668,114 @@ mod tests {
                 "no obstacle {reach} mm out from the pin"
             );
         }
+    }
+
+    /// `build_net_label` for pin 0 of every placed part of `ref_ldo_sensor`,
+    /// as the entries it emits.
+    fn net_label_entries(global: bool) -> Vec<Sexp> {
+        let (board, _sexp, _text) = build_reference("ref_ldo_sensor");
+        let layout = synth_layout::layout(&board);
+        let placements: HashMap<ComponentId, &ComponentPlacement> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let project = crate::uuid_v5::project_namespace(&board.name);
+        board
+            .components
+            .iter()
+            .filter_map(|c| {
+                let label = synth_layout::NetLabel {
+                    net: board.nets[0].id,
+                    component: c.id,
+                    pin: synth_ir::PinId(0),
+                    label: "SIG".to_string(),
+                };
+                build_net_label(&board, &label, &placements, &project, None, global)
+            })
+            .filter_map(|mut parts| parts.pop())
+            .collect()
+    }
+
+    #[test]
+    fn a_net_label_is_a_global_label_flag() {
+        let entries = net_label_entries(true);
+        assert!(entries.len() > 4, "too few labels to tell");
+        for entry in &entries {
+            let Sexp::List { head, .. } = entry else {
+                panic!("not a list")
+            };
+            assert_eq!(head, "global_label", "a signal label is a flag");
+        }
+    }
+
+    #[test]
+    fn a_net_label_stays_local_when_the_design_has_several_sheets() {
+        let entries = net_label_entries(false);
+        assert!(entries.len() > 4, "too few labels to tell");
+        for entry in &entries {
+            let Sexp::List { head, .. } = entry else {
+                panic!("not a list")
+            };
+            assert_eq!(
+                head, "label",
+                "a global label would join same-named nets across sheets"
+            );
+            assert!(sub(entry, "shape").is_none(), "a local label has no shape");
+        }
+    }
+
+    #[test]
+    fn a_net_label_flag_points_away_from_its_stub() {
+        let entries = net_label_entries(true);
+        let mut sides = [false; 2];
+        for entry in &entries {
+            let shape = sub(entry, "shape").expect("a global label has a shape");
+            assert!(matches!(&shape[0], Sexp::Atom(a) if a == "output"));
+            let at = sub(entry, "at").expect("at");
+            let angle = parse_num_atom(&at[2]).expect("angle");
+            let effects = sub(entry, "effects").expect("effects");
+            let justify = effects
+                .iter()
+                .find_map(|c| match c {
+                    Sexp::List { head, children } if head == "justify" => Some(children),
+                    _ => None,
+                })
+                .expect("justify");
+            let want = if angle == 180.0 { "right" } else { "left" };
+            assert!(matches!(&justify[0], Sexp::Atom(a) if a == want));
+            sides[usize::from(angle == 180.0)] = true;
+        }
+        assert_eq!(sides, [true, true], "both stub sides must occur");
+    }
+
+    #[test]
+    fn only_net_labels_become_flags_and_power_symbols_stay() {
+        let (board, _sexp, text) = build_reference("ref_ldo_sensor");
+        let labelled = synth_layout::layout(&board).net_labels.len();
+        assert!(labelled > 0, "the board must carry net labels");
+        assert_eq!(text.matches("\n\t(global_label\n").count(), labelled);
+        assert!(
+            text.contains("(lib_id \"power:") || text.contains("(lib_id \"synth:"),
+            "power symbols must still be drawn"
+        );
+    }
+
+    #[test]
+    fn a_cross_sheet_label_stays_a_hierarchical_label() {
+        let (board, _sexp, _text) = build_reference("ref_ldo_sensor");
+        let layout = synth_layout::layout(&board);
+        let placements: HashMap<ComponentId, &ComponentPlacement> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let project = crate::uuid_v5::project_namespace(&board.name);
+        let label = synth_layout::HierarchicalLabel {
+            net: board.nets[0].id,
+            component: board.components[0].id,
+            pin: synth_ir::PinId(0),
+            label: "SIG".to_string(),
+        };
+        let parts =
+            build_hierarchical_label(&board, &label, &placements, &project, "A").expect("label");
+        let text: String = parts.iter().map(Sexp::to_string_pretty).collect();
+        assert!(text.contains("hierarchical_label"));
+        assert!(!text.contains("global_label"));
     }
 
     /// The first child list of `sexp` with head `head`, as its children.
