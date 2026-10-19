@@ -1,0 +1,21 @@
+{
+  "code": 200,
+  "result": {
+    "productList": [
+      {
+        "productCode": "C10001",
+        "stockNumber": 10,
+        "minBuyNumber": 1,
+        "productStatus": "Active",
+        "productPriceList": [{ "productPrice": 0.10 }]
+      },
+      {
+        "productCode": "C10002",
+        "stockNumber": 20,
+        "minBuyNumber": 1,
+        "productStatus": "Active",
+        "productPriceList": [{ "productPrice": 0.12 }]
+      }
+    ]
+  }
+}

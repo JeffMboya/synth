@@ -432,11 +432,32 @@ impl RouteRequest {
             .join(format!("{}.{}.work", self.stem, self.engine.artifact_tag()))
     }
 
+    /// The project file that belongs to the preserved baseline.
+    ///
+    /// A `.kicad_pcb` does not carry its own design rules or net classes;
+    /// they live in the sibling `.kicad_pro`, which tools find by replacing
+    /// the board's extension. The baseline is named `<stem>.synth.kicad_pcb`
+    /// while the exported project is `<stem>.kicad_pro`, so without a copy
+    /// under this name the router looks for `<stem>.synth.kicad_pro`, finds
+    /// nothing, and routes against its own defaults.
+    #[must_use]
+    pub fn baseline_project_path(&self) -> PathBuf {
+        self.out_dir.join(format!("{}.synth.kicad_pro", self.stem))
+    }
+
     /// Copy the un-routed export to the baseline path.
     ///
     /// Fails loudly rather than continuing: routing a board whose baseline
     /// was not preserved would leave a failed run with nothing to fall
     /// back to, which is the one outcome the baseline exists to prevent.
+    ///
+    /// The sibling project is copied too, and a failure there is reported
+    /// rather than swallowed. Whether a project *exists* is the optional
+    /// part: a board exported without one still routes, against the engine's
+    /// defaults. A project that exists and cannot be copied is the opposite
+    /// case — the router then reads no project and silently falls back to
+    /// those same defaults, which is the behaviour this copy exists to
+    /// prevent, and it would do so while reporting success.
     pub fn preserve_baseline(&self) -> Result<(), RouterFailure> {
         if self.board_path == self.baseline_path() {
             return Ok(());
@@ -458,7 +479,26 @@ impl RouteRequest {
                         self.baseline_path().display()
                     ),
                 )
-            })
+            })?;
+        let exported_project = self.board_path.with_extension("kicad_pro");
+        if exported_project.is_file() {
+            std::fs::copy(&exported_project, self.baseline_project_path())
+                .map(|_| ())
+                .map_err(|e| {
+                    RouterFailure::io(
+                        self.engine,
+                        format!(
+                            "could not preserve the exported project at {}: {e}. \
+                             The router reads the project beside the board it is \
+                             given, so without this copy it would route against \
+                             the engine's own defaults instead of the design \
+                             rules the export wrote.",
+                            self.baseline_project_path().display()
+                        ),
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     /// The board a router should read: the preserved baseline, not the
@@ -499,6 +539,74 @@ impl RouteRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch directory holding an exported board and, optionally, its
+    /// sibling project.
+    fn exported(label: &str, with_project: bool) -> (RouteRequest, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "synth-preserve-{}-{label}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let board = dir.join("demo.kicad_pcb");
+        std::fs::write(&board, "(kicad_pcb)").expect("write board");
+        if with_project {
+            std::fs::write(dir.join("demo.kicad_pro"), "{}").expect("write project");
+        }
+        let mut request = RouteRequest::new(&board, &dir, RouterEngine::KiCadRoutingTools);
+        request.stem = "demo".to_string();
+        (request, dir)
+    }
+
+    /// The ordinary path: both files land beside each other under the
+    /// baseline name the router looks for.
+    #[test]
+    fn the_exported_project_is_preserved_beside_the_baseline() {
+        let (request, dir) = exported("ok", true);
+        request.preserve_baseline().expect("preserve");
+        assert!(request.baseline_path().is_file(), "baseline board");
+        assert!(
+            request.baseline_project_path().is_file(),
+            "the project the router reads has to be beside the board it reads"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A board exported without a project still routes. Absence is the
+    /// optional part; it is a *failed copy* that is not.
+    #[test]
+    fn a_board_with_no_project_is_preserved_without_one() {
+        let (request, dir) = exported("none", false);
+        request.preserve_baseline().expect("preserve");
+        assert!(request.baseline_path().is_file());
+        assert!(!request.baseline_project_path().exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The case this guards. A project that exists and cannot be copied used
+    /// to be discarded with `let _ =`, so the run continued, the router found
+    /// no project beside the board, and it fell back to the engine's own
+    /// defaults — the exact behaviour the copy exists to prevent, reported as
+    /// success.
+    ///
+    /// The destination is made a directory, which `fs::copy` cannot write
+    /// over on any platform.
+    #[test]
+    fn a_project_that_cannot_be_copied_fails_the_run() {
+        let (request, dir) = exported("blocked", true);
+        std::fs::create_dir_all(request.baseline_project_path()).expect("occupy the destination");
+        let failure = request
+            .preserve_baseline()
+            .expect_err("a project that cannot be copied must not report success");
+        let text = failure.to_string();
+        assert!(
+            text.contains("could not preserve the exported project"),
+            "the failure must say which copy failed: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn engine_round_trips_through_its_identifier() {

@@ -1,0 +1,21 @@
+{
+  "code": 200,
+  "result": {
+    "productList": [
+      {
+        "productCode": "C14663",
+        "stockNumber": 4200,
+        "minBuyNumber": 5,
+        "productStatus": "Active",
+        "productPriceList": [{ "productPrice": 0.98 }]
+      },
+      {
+        "productCode": "C99999",
+        "stockNumber": 800,
+        "minBuyNumber": 1,
+        "productStatus": "Active",
+        "productPriceList": [{ "productPrice": 0.02 }]
+      }
+    ]
+  }
+}

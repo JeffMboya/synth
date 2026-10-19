@@ -1906,6 +1906,13 @@ fn build_footprint_instance(
         "fp_property",
         &format!("{}:Description", component.refdes),
     );
+    let mpn_prop_uuid =
+        derive_entity_uuid(project, "fp_property", &format!("{}:MPN", component.refdes));
+    let lcsc_prop_uuid = derive_entity_uuid(
+        project,
+        "fp_property",
+        &format!("{}:LCSC", component.refdes),
+    );
     let doc_property = |name: &str, uuid: &Uuid| {
         Sexp::list(
             "property",
@@ -1925,6 +1932,15 @@ fn build_footprint_instance(
                 ),
             ],
         )
+    };
+    let assignment_property = |name: &str, value: &str, uuid: &Uuid| {
+        let mut property = doc_property(name, uuid);
+        if let Sexp::List { children, .. } = &mut property {
+            if let Some(Sexp::Str(current)) = children.get_mut(1) {
+                *current = value.to_string();
+            }
+        }
+        property
     };
 
     let mut reference_property = vec![
@@ -1985,6 +2001,24 @@ fn build_footprint_instance(
         ),
         doc_property("Datasheet", &datasheet_prop_uuid),
         doc_property("Description", &description_prop_uuid),
+        assignment_property(
+            "MPN",
+            component
+                .part
+                .as_ref()
+                .and_then(|part| part.mpn.as_deref())
+                .unwrap_or(""),
+            &mpn_prop_uuid,
+        ),
+        assignment_property(
+            "LCSC",
+            component
+                .part
+                .as_ref()
+                .and_then(|part| part.lcsc_pn.as_deref())
+                .unwrap_or(""),
+            &lcsc_prop_uuid,
+        ),
     ];
 
     let has_model = if let Some(body) = inlined_body.as_deref() {
@@ -2954,6 +2988,49 @@ mod tests {
             instance.matches("(pad").count() == 2 && pad_ats.len() >= 2,
             "pads must carry the 90 degree footprint angle:\n{instance}"
         );
+    }
+
+    #[test]
+    fn footprint_carries_native_procurement_fields() {
+        let mut part = no_footprint_part();
+        part.mpn = Some("MFG-123".into());
+        part.lcsc_pn = Some("C123456".into());
+        let component = synth_ir::Component {
+            id: ComponentId(0),
+            refdes: "R1".into(),
+            kind: part.kind.clone(),
+            part: Some(part.clone()),
+            value: None,
+            dnp: false,
+            properties: std::collections::BTreeMap::new(),
+            placement_hint: None,
+            group: None,
+            sheet: None,
+            source_span: Span::new(0, 0),
+        };
+        let placement = ComponentPlacement {
+            id: ComponentId(0),
+            center: Point { x_nm: 0, y_nm: 0 },
+            rotation: Rotation::Zero,
+            layer: Layer::Top,
+        };
+        let rendered = build_footprint_instance(
+            &component,
+            &part,
+            &placement,
+            "synth:nofp",
+            &Uuid::nil(),
+            &HashMap::new(),
+            silk_labels::LabelPos {
+                local_x_mm: 0.0,
+                local_y_mm: -4.5,
+                angle_deg: 0.0,
+                hidden: false,
+            },
+        )
+        .to_string_pretty();
+        assert!(rendered.contains("MPN") && rendered.contains("MFG-123"));
+        assert!(rendered.contains("LCSC") && rendered.contains("C123456"));
     }
 
     /// Regression test for the `lib_footprint_mismatch` DRC violation:

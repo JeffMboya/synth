@@ -614,6 +614,9 @@ fn compute_dynamic_member_dx(board: &Board, members: &[ComponentId]) -> f64 {
 /// extents for the router, so placement and routing agree on how
 /// much vertical room a component actually needs.
 const TEXT_MARGIN_Y: f64 = 6.35;
+/// How far a vertical part's Reference and Value text sit from its centre,
+/// to its right and left.
+const SIDE_TEXT_OFFSET_MM: f64 = 3.81;
 
 /// A component's half-height including its Reference/Value text
 /// labels, not just its body — the router already accounts for this
@@ -3192,6 +3195,21 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                     .fold(0.0_f64, f64::max)
             })
             .collect();
+        // How far past the usual clearance a column's members beside its
+        // anchors reach, per side. Long net labels push them out.
+        let column_growth = |side: MemberSide| -> Vec<f64> {
+            col_groups
+                .iter()
+                .map(|group| {
+                    group
+                        .iter()
+                        .map(|&idx| side_column_growth(board, &clusters[idx], side))
+                        .fold(0.0_f64, f64::max)
+                })
+                .collect()
+        };
+        let col_left_growth = column_growth(MemberSide::Left);
+        let col_right_growth = column_growth(MemberSide::Right);
         // Gap BETWEEN consecutive columns: must clear column i's own
         // rightward extent (its anchor's half-width, symmetric around
         // its centre) *and* column i+1's anchor extending back leftward
@@ -3262,7 +3280,9 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
             for col in start..end {
                 if col > start {
                     let gap = snap_grid(
-                        floor.max(col_max_half_w[col - 1] + col_max_half_w[col] + WIRE_MARGIN),
+                        floor.max(col_max_half_w[col - 1] + col_max_half_w[col] + WIRE_MARGIN)
+                            + col_right_growth[col - 1]
+                            + col_left_growth[col],
                     );
                     cum += gap;
                 }
@@ -3769,6 +3789,98 @@ fn body_bbox_of(board: &Board, placements: &[ComponentPlacement]) -> Option<(f64
     min_x.is_finite().then_some((min_x, max_x, min_y, max_y))
 }
 
+/// How far a net label reaches from its pin: the stub, then the text.
+fn net_label_extent(net: &synth_ir::Net) -> f64 {
+    route::LABEL_STUB_MM + route::label_text_width(&net.name)
+}
+
+/// How far a part's Reference and Value text reach from its centre when drawn
+/// beside it: [`SIDE_TEXT_OFFSET_MM`] out, then the longer of the two strings.
+fn side_text_reach(board: &Board, id: ComponentId) -> f64 {
+    let Some(component) = board.component(id) else {
+        return 0.0;
+    };
+    let chars = component
+        .refdes
+        .len()
+        .max(component.value.as_deref().map_or(0, str::len));
+    SIDE_TEXT_OFFSET_MM + chars as f64 * route::LABEL_CHAR_WIDTH_MM
+}
+
+/// How far from the anchor's centre a member in a column beside its `side`
+/// pins has to sit: past the net labels those pins can carry (pin tip, stub,
+/// widest text). A member on the left has its own labels facing those pins,
+/// since a vertical part's label points right, so they need room too. The
+/// member's own text goes in that room. Never less than the usual clearance
+/// from the body.
+fn side_column_offset(
+    board: &Board,
+    anchor: ComponentId,
+    side: PinSide,
+    members: &[ComponentId],
+    anchor_half_w: f64,
+) -> f64 {
+    let label_reach = board
+        .component(anchor)
+        .and_then(|c| c.part.as_ref())
+        .map_or(0.0, |part| {
+            (0..part.pins.len())
+                .filter_map(|idx| {
+                    let (px, _, pin_side) = compute_anchor_pin_offset(part, idx);
+                    if pin_side != side {
+                        return None;
+                    }
+                    let (_, net) = board.nets_containing(anchor, PinId(idx as u32)).next()?;
+                    Some(px.abs() + net_label_extent(net))
+                })
+                .fold(0.0, f64::max)
+        });
+    let member_reach = members
+        .iter()
+        .map(|&id| {
+            let own_labels = if side == PinSide::Left {
+                board
+                    .nets
+                    .iter()
+                    .filter(|n| n.endpoints.iter().any(|e| e.component == id))
+                    .map(net_label_extent)
+                    .fold(0.0, f64::max)
+            } else {
+                0.0
+            };
+            side_text_reach(board, id).max(own_labels)
+        })
+        .fold(0.0, f64::max);
+    (anchor_half_w + MEMBER_CLEARANCE).max(label_reach + member_reach)
+}
+
+/// How much further out than the usual clearance the cluster's members on
+/// `member_side` sit, for the gap to the next column to make room for it.
+/// `0.0` when it has none there or the usual clearance already holds them.
+fn side_column_growth(board: &Board, cluster: &Cluster, member_side: MemberSide) -> f64 {
+    let members: Vec<ComponentId> = cluster
+        .members
+        .iter()
+        .filter(|m| m.side == member_side)
+        .map(|m| m.id)
+        .collect();
+    if members.is_empty() {
+        return 0.0;
+    }
+    let pin_side = if member_side == MemberSide::Left {
+        PinSide::Left
+    } else {
+        PinSide::Right
+    };
+    let half_w = board
+        .component(cluster.anchor)
+        .and_then(|c| c.part.as_ref())
+        .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
+        / 2.0;
+    side_column_offset(board, cluster.anchor, pin_side, &members, half_w)
+        - (half_w + MEMBER_CLEARANCE)
+}
+
 /// Place one cluster's anchor and members into `placements`, updating
 /// `occupied` so later clusters avoid the same grid points.
 ///
@@ -3902,7 +4014,10 @@ fn place_cluster_into(
     // position can both leave less room than a member's own
     // Reference/Value text needs, overlapping its neighbour.
     if !right.is_empty() {
-        let default_col_x = snap_grid(anchor_x + anchor_half_w + MEMBER_CLEARANCE);
+        let default_col_x = snap_grid(
+            anchor_x
+                + side_column_offset(board, cluster.anchor, PinSide::Right, &right, anchor_half_w),
+        );
         let total_height: f64 = right
             .windows(2)
             .map(|pair| min_member_dy(board, pair[0], pair[1]))
@@ -3939,7 +4054,8 @@ fn place_cluster_into(
                             // would pick that wrong pin and yank
                             // the member up-and-inside the body.
                             if side == PinSide::Right {
-                                col_x = snap_grid(anchor_x + px + MEMBER_CLEARANCE);
+                                col_x =
+                                    snap_grid(anchor_x + px + MEMBER_CLEARANCE).max(default_col_x);
                                 let target_y = snap_grid(anchor_y + py);
                                 let coord_key = (
                                     (col_x * 10.0).round() as i64,
@@ -4055,7 +4171,10 @@ fn place_cluster_into(
     // A single Left member has no such adjacency, so it y-aligns
     // with its connecting pin for a straight-across wire.
     if !left.is_empty() {
-        let col_x = snap_grid(anchor_x - anchor_half_w - MEMBER_CLEARANCE);
+        let col_x = snap_grid(
+            anchor_x
+                - side_column_offset(board, cluster.anchor, PinSide::Left, &left, anchor_half_w),
+        );
         let total_height: f64 = left
             .windows(2)
             .map(|pair| min_member_dy(board, pair[0], pair[1]))
@@ -6085,6 +6204,199 @@ mod patterns_tests {
         assert_member(cluster, 2, MemberSide::Right);
     }
 
+    /// A resistor beside the pins stays out of the zone where the net labels
+    /// of those pins are drawn: a stub, then the text.
+    #[test]
+    fn a_pull_up_clears_the_net_labels_on_its_side() {
+        let ic = component(
+            0,
+            "U1",
+            part(
+                "ic",
+                vec![
+                    pin("vdd", ElectricalType::PowerInput, &[]),
+                    pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                    pin("mdm", ElectricalType::Bidirectional, &[]),
+                    pin("cts", ElectricalType::Bidirectional, &[]),
+                ],
+            ),
+        );
+        let two_pin = |id: u32, name: &str| {
+            component(
+                id,
+                name,
+                part(
+                    "resistor",
+                    vec![
+                        pin("p1", ElectricalType::Passive, &[]),
+                        pin("p2", ElectricalType::Passive, &[]),
+                    ],
+                ),
+            )
+        };
+        let long_name = "CTS_FROM_THE_MODEM_BRIDGE";
+        let b = board(
+            vec![ic, two_pin(1, "R1"), two_pin(2, "R2")],
+            vec![
+                net(0, "3V3", &[(0, 0), (1, 1)]),
+                net(1, long_name, &[(0, 2), (1, 0)]),
+                net(2, "CTS", &[(0, 3), (2, 0)]),
+                net(3, "RESET", &[(0, 1)]),
+            ],
+        );
+        let layout = layout(&b);
+        let x_of = |id: u32| {
+            layout
+                .components
+                .iter()
+                .find(|p| p.id == ComponentId(id))
+                .expect("placed")
+                .center_mm
+                .0
+        };
+        let body_half_w =
+            body_size_for_part(b.component(ComponentId(0)).unwrap().part.as_ref().unwrap()).0 / 2.0;
+        // 1.13 mm a character, measured on KiCad's plot of 1.27 mm text.
+        let label_text = long_name.len() as f64 * 1.13;
+        // R1's own label on the same net faces the part and needs a stub and its text too.
+        let own_label = route::LABEL_STUB_MM + label_text;
+        let beside = x_of(0) - x_of(1);
+        assert!(
+            beside >= body_half_w + route::LABEL_STUB_MM + label_text + own_label,
+            "R1 is {beside} mm from U1, inside the net label zone"
+        );
+    }
+
+    /// A resistor's Value is drawn 3.81 mm to its side, towards the pin
+    /// labels when it stands beside the pins, so its text needs room too.
+    #[test]
+    fn a_pull_up_clears_the_net_labels_with_its_value_text() {
+        let ic = component(
+            0,
+            "U1",
+            part(
+                "ic",
+                vec![
+                    pin("vdd", ElectricalType::PowerInput, &[]),
+                    pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                    pin("mdm", ElectricalType::Bidirectional, &[]),
+                    pin(
+                        "clk",
+                        ElectricalType::Bidirectional,
+                        &[PinCapability::ClockOutput],
+                    ),
+                ],
+            ),
+        );
+        let value = "4.7k_1%_0603";
+        let mut resistor = component(
+            1,
+            "R1",
+            part(
+                "resistor",
+                vec![
+                    pin("p1", ElectricalType::Passive, &[]),
+                    pin("p2", ElectricalType::Passive, &[]),
+                ],
+            ),
+        );
+        resistor.value = Some(value.to_string());
+        let b = board(
+            vec![ic, resistor],
+            vec![
+                net(0, "3V3", &[(0, 0), (1, 1)]),
+                net(1, "CLK", &[(0, 3), (1, 0)]),
+                net(2, "RESET", &[(0, 1)]),
+            ],
+        );
+        let layout = layout(&b);
+        let x_of = |id: u32| {
+            layout
+                .components
+                .iter()
+                .find(|p| p.id == ComponentId(id))
+                .expect("placed")
+                .center_mm
+                .0
+        };
+        let body_half_w =
+            body_size_for_part(b.component(ComponentId(0)).unwrap().part.as_ref().unwrap()).0 / 2.0;
+        // 1.13 mm a character, measured on KiCad's plot of 1.27 mm text.
+        let labels = route::LABEL_STUB_MM + "CLK".len() as f64 * 1.13;
+        let value_text = SIDE_TEXT_OFFSET_MM + value.len() as f64 * 1.13;
+        let beside = x_of(1) - x_of(0);
+        assert!(
+            beside >= body_half_w + labels + value_text,
+            "R1 is {beside} mm from U1, its value text is inside the net label zone"
+        );
+    }
+
+    /// The gap between two columns has to hold the wider member column that
+    /// long net labels push out, or the member lands on the part before it.
+    #[test]
+    fn a_wide_member_column_does_not_reach_the_part_before_it() {
+        let make = |id: u32, name: &str, kind: &str, pins: Vec<RegPin>| {
+            component(id, name, part(kind, pins))
+        };
+        let u1 = make(
+            0,
+            "J1",
+            "connector",
+            vec![pin("io", ElectricalType::Output, &[])],
+        );
+        let u2 = make(
+            1,
+            "U2",
+            "ic",
+            vec![
+                pin("vdd", ElectricalType::PowerInput, &[]),
+                pin("nrst", ElectricalType::Input, &[PinCapability::Reset]),
+                pin("mdm", ElectricalType::Bidirectional, &[]),
+                pin("link", ElectricalType::Input, &[]),
+            ],
+        );
+        let resistor = component(
+            2,
+            "R1",
+            part(
+                "resistor",
+                vec![
+                    pin("p1", ElectricalType::Passive, &[]),
+                    pin("p2", ElectricalType::Passive, &[]),
+                ],
+            ),
+        );
+        let b = board(
+            vec![u1, u2, resistor],
+            vec![
+                net(0, "3V3", &[(1, 0), (2, 1)]),
+                net(1, "CTS_FROM_THE_MODEM_BRIDGE", &[(1, 2), (2, 0)]),
+                net(2, "LINK", &[(0, 0), (1, 3)]),
+                net(3, "RESET", &[(1, 1)]),
+            ],
+        );
+        let layout = layout(&b);
+        let x_of = |id: u32| {
+            layout
+                .components
+                .iter()
+                .find(|p| p.id == ComponentId(id))
+                .expect("placed")
+                .center_mm
+                .0
+        };
+        let u1_half_w =
+            body_size_for_part(b.component(ComponentId(0)).unwrap().part.as_ref().unwrap()).0 / 2.0;
+        assert!(x_of(0) < x_of(1), "U1 is before U2");
+        // R1 hangs off the left of U2; its text reaches 3.81 mm further left.
+        assert!(
+            x_of(2) - SIDE_TEXT_OFFSET_MM > x_of(0) + u1_half_w,
+            "R1 at {} lands on J1 at {}",
+            x_of(2),
+            x_of(0)
+        );
+    }
+
     /// A series resistor on a signal pin sits beside that pin, like a pull.
     #[test]
     fn a_series_resistor_sits_on_the_side_of_its_pin() {
@@ -7662,6 +7974,46 @@ mod documentation_tests {
                 "power symbol at x={x} reaches y={symbol_bottom}, note starts at y={note_top}"
             );
         }
+    }
+
+    #[test]
+    fn group_note_reserves_the_text_of_a_left_facing_net_label() {
+        let ic = part("ic", vec![pin("a"), pin("b"), pin("c"), pin("d")]);
+        let b = board_with_notes(
+            vec![component(0, "U1", ic, Some("Input"))],
+            vec![net(0, "SIG", &[(0, 0)])],
+            Vec::new(),
+        );
+        let mut layout = layout(&b);
+        let placements: std::collections::HashMap<_, _> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let (pin_id, x, y) = (0..4)
+            .find_map(|i| {
+                let (x, y, dx, _) =
+                    route::pin_terminal_xy(&b, ComponentId(0), PinId(i), &placements)?;
+                (dx < -0.1).then_some((PinId(i), x, y))
+            })
+            .expect("a left-facing pin");
+        layout.net_labels.push(NetLabel {
+            net: NetId(0),
+            component: ComponentId(0),
+            pin: pin_id,
+            label: "MODEM_IDLE".to_string(),
+        });
+        // The text runs left from the end of the 5.08 mm stub, about 11 mm.
+        let stub_end = x - 5.08;
+        let label_bottom = y + 1.905;
+        let far_end = group_hang_bottom(&b, &layout, "Input", stub_end - 11.0, stub_end - 10.0);
+        assert!(
+            (far_end - label_bottom).abs() < 1e-6,
+            "the far end of the text is not reserved: {far_end}"
+        );
+        let pin_side = group_hang_bottom(&b, &layout, "Input", stub_end + 1.0, stub_end + 5.0);
+        assert_eq!(
+            pin_side,
+            f64::NEG_INFINITY,
+            "reserved on the pin side of the stub"
+        );
     }
 
     #[test]

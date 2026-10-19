@@ -580,7 +580,7 @@ expression: schematic
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x04")
-		(at 96.52 33.02 0)
+		(at 106.68 33.02 0)
 		(unit 1)
 		(in_bom yes)
 		(on_board yes)
@@ -588,7 +588,7 @@ expression: schematic
 		(property
 			"Reference"
 			"J1"
-			(at 96.52 25.4 0)
+			(at 106.68 25.4 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -598,7 +598,7 @@ expression: schematic
 		(property
 			"Value"
 			"(no value)"
-			(at 96.52 40.64 0)
+			(at 106.68 40.64 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -608,7 +608,7 @@ expression: schematic
 		(property
 			"Footprint"
 			"Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
-			(at 96.52 33.02 0)
+			(at 106.68 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -619,7 +619,7 @@ expression: schematic
 		(property
 			"Datasheet"
 			""
-			(at 96.52 33.02 0)
+			(at 106.68 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -630,7 +630,7 @@ expression: schematic
 		(property
 			"MPN"
 			""
-			(at 96.52 33.02 0)
+			(at 106.68 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -641,7 +641,7 @@ expression: schematic
 		(property
 			"LCSC"
 			""
-			(at 96.52 33.02 0)
+			(at 106.68 33.02 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -869,14 +869,14 @@ expression: schematic
 	)
 	(wire
 		(pts
-			(xy 91.44 30.48)
+			(xy 101.6 30.48)
 			(xy 80.01 30.48)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "b1884584-4d88-537c-9c1d-37d30e651335")
+		(uuid "634db900-f7e3-57bf-b3e6-f52c718166b3")
 	)
 	(wire
 		(pts
@@ -891,14 +891,14 @@ expression: schematic
 	)
 	(wire
 		(pts
-			(xy 91.44 35.56)
+			(xy 101.6 35.56)
 			(xy 80.01 35.56)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "00f7c6ee-8e6a-5c37-953f-272b38106bec")
+		(uuid "06edcad5-a362-5794-93d1-fd77e351e096")
 	)
 	(wire
 		(pts
@@ -936,24 +936,24 @@ expression: schematic
 	(wire
 		(pts
 			(xy 67.31 57.15)
-			(xy 91.44 57.15)
+			(xy 101.6 57.15)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "2bd9217a-3e08-5218-9f69-a728f8b9f30b")
+		(uuid "ad990ed9-8038-5e42-a4da-e7a0be1e8ddd")
 	)
 	(wire
 		(pts
-			(xy 91.44 57.15)
-			(xy 91.44 38.1)
+			(xy 101.6 57.15)
+			(xy 101.6 38.1)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "5e4d69a0-269e-5bc4-a199-55b8958e8a1e")
+		(uuid "e491b6a4-2940-5976-a5b9-508bdf3fadd8")
 	)
 	(wire
 		(pts
@@ -973,6 +973,7 @@ expression: schematic
 			(font
 				(size 1.27 1.27)
 			)
+			(justify right)
 		)
 		(uuid "5c561a74-3aed-53af-be65-936734d0e2f5")
 	)
@@ -994,13 +995,14 @@ expression: schematic
 			(font
 				(size 1.27 1.27)
 			)
+			(justify right)
 		)
 		(uuid "f6c3330e-a0df-59d1-b456-c419cdb587a8")
 	)
 	(wire
 		(pts
-			(xy 91.44 33.02)
-			(xy 86.36 33.02)
+			(xy 101.6 33.02)
+			(xy 96.52 33.02)
 		)
 		(stroke
 			(width 0)
@@ -1010,11 +1012,12 @@ expression: schematic
 	)
 	(label
 		"P2"
-		(at 86.36 33.02 180)
+		(at 96.52 33.02 180)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
+			(justify right)
 		)
 		(uuid "8f2f231f-cad6-575f-a5b8-59af510b121f")
 	)
@@ -1036,6 +1039,7 @@ expression: schematic
 			(font
 				(size 1.27 1.27)
 			)
+			(justify left)
 		)
 		(uuid "0828e7fe-ac33-5549-9ba5-f40fe414d5c0")
 	)

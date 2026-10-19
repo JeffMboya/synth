@@ -26,6 +26,7 @@ pub mod lower;
 pub mod modules;
 pub mod multiboard;
 pub mod power_domains;
+pub mod procurement;
 pub mod units;
 
 #[cfg(test)]
@@ -48,6 +49,10 @@ pub use lower::{lower, LowerResult};
 pub use modules::{expand as expand_modules, BusBundle, ModuleDesc};
 pub use multiboard::{InterBoardPinMapping, MultiBoardProject, MultiBoardValidationResult};
 pub use power_domains::{infer_power_domains, PowerDomainKind, PowerDomainMap};
+pub use procurement::{
+    lock_board, lock_board_with_dispositions, rank_candidates, record_substitution,
+    AssemblyDisposition, CandidateRequirements, PartAssignment, ProcurementError, ProcurementLock,
+};
 /// Re-export of the registry's `Pin` type so consumers of the IR
 /// don't need to depend on `synth-registry` directly.
 pub use synth_registry::Pin;
