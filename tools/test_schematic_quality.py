@@ -139,6 +139,12 @@ class RegionCoverage(unittest.TestCase):
     def test_a_rectangle_inside_a_symbol_is_not_a_group_box(self):
         self.assertEqual(len(sq.parse_group_boxes(sch_with_boxes((0, 0, 10, 20)))), 1)
 
+    def test_content_points_skip_a_rectangle_inside_a_symbol(self):
+        # The symbol-local rectangle spans (-1, -2) to (1, 2); only the
+        # sheet-level box corners belong in the used area.
+        points = sq.parse_content_points(sch_with_boxes((10, 20, 30, 40)))
+        self.assertEqual(sorted(points), [(10.0, 20.0), (30.0, 40.0)])
+
     def test_no_group_boxes_is_zero(self):
         self.assertEqual(self.cover(), 0.0)
 

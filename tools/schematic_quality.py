@@ -106,12 +106,8 @@ def parse_content_points(sch_text):
             rf'\(symbol\s+\(lib_id "[^"]*"\)\s+\(at ({_NUMBER}) ({_NUMBER})', sch_text
         )
     ]
-    for opening in re.finditer(r"\(rectangle\b", sch_text):
-        block = _balanced(sch_text, opening.start())
-        points += [
-            (float(x), float(y))
-            for x, y in re.findall(rf"\((?:start|end) ({_NUMBER}) ({_NUMBER})\)", block)
-        ]
+    for x1, y1, x2, y2 in parse_group_boxes(sch_text):
+        points += [(x1, y1), (x2, y2)]
     return points
 
 
