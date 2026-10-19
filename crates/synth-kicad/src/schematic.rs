@@ -392,7 +392,31 @@ pub(crate) fn build_sheet_schematic(
     // design variant overrides the symbol, which also lives in that
     // block. A design with no variants keeps byte-identical output.
     let variant_dnp = variant_dnp_by_refdes(board);
+    let rail_flag = |net_id: NetId| -> Option<&synth_layout::PowerFlag> {
+        layout.power_flags.iter().find(|f| f.net == net_id)
+    };
+    // Multi-sheet: reconcile runs board-wide, but each sheet emits only
+    // its own members' legs.
+    let on_sheet = |component: ComponentId| {
+        render
+            .members
+            .is_none_or(|members| members.contains(&component))
+    };
+    let leg_rail = |leg: &crate::pin_reconcile::PowerLeg| -> Option<&synth_layout::PowerFlag> {
+        on_sheet(leg.component)
+            .then(|| rail_flag(leg.net))
+            .flatten()
+    };
+    let reconciled_pins = crate::pin_reconcile::reconcile_all(board);
+    // The fan-out legs are drawn after the symbols, so their stubs are known
+    // up front or a Reference, a Value or a power name could land on one.
     let mut obstacles = field_obstacles(board, layout, &placements);
+    obstacles.extend(fanned_leg_obstacles(
+        board,
+        &placements,
+        &reconciled_pins,
+        leg_rail,
+    ));
     let mut power_names = Vec::new();
     for component in &board.components {
         if let Some(placement) = placements.get(&component.id) {
@@ -508,34 +532,6 @@ pub(crate) fn build_sheet_schematic(
                 str_pair("uuid", junc_uuid.to_string()),
             ],
         ));
-    }
-
-    // The fan-out legs come after the power flags, so their stubs are
-    // registered first or a power name could land on one.
-    let rail_flag = |net_id: NetId| -> Option<&synth_layout::PowerFlag> {
-        layout.power_flags.iter().find(|f| f.net == net_id)
-    };
-    // Multi-sheet: reconcile runs board-wide, but each sheet emits only
-    // its own members' legs.
-    let on_sheet = |component: ComponentId| {
-        render
-            .members
-            .is_none_or(|members| members.contains(&component))
-    };
-    let reconciled_pins = crate::pin_reconcile::reconcile_all(board);
-    for leg in reconciled_pins.iter().flat_map(|r| &r.power_legs) {
-        if on_sheet(leg.component) && rail_flag(leg.net).is_some() {
-            if let Some(((x, y), (flag_x, flag_y))) = fanned_leg_stub(board, leg, &placements) {
-                obstacles.push(FieldObstacle {
-                    owner: None,
-                    rect: power_flag_rect(flag_x, flag_y),
-                });
-                obstacles.push(FieldObstacle {
-                    owner: None,
-                    rect: wire_rect((x, y), (flag_x, flag_y)),
-                });
-            }
-        }
     }
 
     // KiCad power symbols at every power-flag pin (wire stub + symbol).
@@ -707,10 +703,7 @@ pub(crate) fn build_sheet_schematic(
     // would place it on a distinct global net with no driver.
     for reconciled in &reconciled_pins {
         for leg in &reconciled.power_legs {
-            if !on_sheet(leg.component) {
-                continue;
-            }
-            if let Some(rail) = rail_flag(leg.net) {
+            if let Some(rail) = leg_rail(leg) {
                 if let Some(sexps) = build_fanned_power_symbol(
                     board,
                     leg,
@@ -918,6 +911,34 @@ fn fanned_leg_stub(
     let flag_x = x + dx * stub_len;
     let flag_y = y + dy * stub_len;
     Some(((x, y), (flag_x, flag_y)))
+}
+
+/// The flag square and stub of every fanned power leg on the sheet, as
+/// obstacles for text. `leg_rail` gives the rail flag a leg joins, and `None`
+/// for a leg the emitter does not draw on this sheet, so the two agree.
+fn fanned_leg_obstacles<'a>(
+    board: &Board,
+    placements: &HashMap<ComponentId, &ComponentPlacement>,
+    reconciled: &[crate::pin_reconcile::ReconciledPins],
+    leg_rail: impl Fn(&crate::pin_reconcile::PowerLeg) -> Option<&'a synth_layout::PowerFlag>,
+) -> Vec<FieldObstacle> {
+    let mut out = Vec::new();
+    for leg in reconciled.iter().flat_map(|r| &r.power_legs) {
+        if leg_rail(leg).is_none() {
+            continue;
+        }
+        if let Some(((x, y), (flag_x, flag_y))) = fanned_leg_stub(board, leg, placements) {
+            out.push(FieldObstacle {
+                owner: None,
+                rect: power_flag_rect(flag_x, flag_y),
+            });
+            out.push(FieldObstacle {
+                owner: None,
+                rect: wire_rect((x, y), (flag_x, flag_y)),
+            });
+        }
+    }
+    out
 }
 
 /// Emit a power symbol + stub for a physical power leg that the
@@ -1569,6 +1590,19 @@ fn clear_power_flag_position(
     (x, y, None)
 }
 
+/// The points a power flag's stub runs through: the pin terminal, the corner
+/// when the stub had to bend, and the flag.
+fn power_stub_points(
+    pin: (f64, f64),
+    corner: Option<(f64, f64)>,
+    flag: (f64, f64),
+) -> Vec<(f64, f64)> {
+    std::iter::once(pin)
+        .chain(corner)
+        .chain(std::iter::once(flag))
+        .collect()
+}
+
 /// Emit a KiCad `(symbol)` entry for a power-flag symbol attached
 /// just outside the pin terminal with a short connecting wire.
 /// Returns `[wire, symbol]` so the stub is explicit and the flag
@@ -1614,11 +1648,7 @@ fn build_power_symbol(
     // terminal to the flag; when the flag had to step off the stub
     // axis, bend at the pin so the run matches the route
     // `clear_power_flag_position` validated.
-    let mut stub_points = vec![(x, y)];
-    if let Some(corner) = stub_corner {
-        stub_points.push(corner);
-    }
-    stub_points.push((flag_x, flag_y));
+    let stub_points = power_stub_points((x, y), stub_corner, (flag_x, flag_y));
 
     let mut stub_wires = Vec::new();
     for (segment, pair) in stub_points.windows(2).enumerate() {
@@ -1649,10 +1679,6 @@ fn build_power_symbol(
         ));
     }
 
-    obstacles.extend(stub_points.windows(2).map(|seg| FieldObstacle {
-        owner: None,
-        rect: wire_rect(seg[0], seg[1]),
-    }));
     let properties = power_symbol_properties(
         &refdes_pwr,
         &flag.label,
@@ -1882,10 +1908,9 @@ fn hidden_field_effects() -> Sexp {
 const POWER_NAME_OFFSET_MM: f64 = 3.81;
 /// How far from the symbol's axis a name that moved to a side starts, in mm.
 const POWER_NAME_SIDE_MM: f64 = 1.9;
-/// How far past its usual spot a power name may move to clear what is in the
-/// way, nearest first, in mm. Past the last ring the name stays near its
-/// symbol and takes the spot that overlaps least.
-const POWER_NAME_RINGS_MM: [f64; 9] = [0.0, 2.54, 5.08, 7.62, 10.16, 12.7, 15.24, 17.78, 20.32];
+/// How far apart the distances are that a power name tries, nearest first, in
+/// mm, when its usual spot is taken. See [`ring_distances`].
+const POWER_NAME_RING_STEP_MM: f64 = 2.54;
 /// How far the tip of the arrow or triangle is from the pin, in mm.
 const POWER_TIP_MM: f64 = 2.54;
 
@@ -1912,20 +1937,20 @@ fn power_symbol_properties(
         synth_layout::PowerFlagKind::Vcc => -1.0,
         synth_layout::PowerFlagKind::Gnd => 1.0,
     };
-    let candidates: Vec<(f64, f64, Option<&'static str>)> = POWER_NAME_RINGS_MM
-        .iter()
-        .flat_map(|&ring| {
-            [
-                (0.0, away * (POWER_NAME_OFFSET_MM + ring), None),
-                (POWER_NAME_SIDE_MM + ring, away * POWER_TIP_MM, Some("left")),
-                (
-                    -(POWER_NAME_SIDE_MM + ring),
-                    away * POWER_TIP_MM,
-                    Some("right"),
-                ),
-            ]
-        })
-        .collect();
+    let candidates: Vec<(f64, f64, Option<&'static str>)> =
+        ring_distances(POWER_NAME_RING_STEP_MM, obstacle_reach(obstacles, at))
+            .flat_map(|ring| {
+                [
+                    (0.0, away * (POWER_NAME_OFFSET_MM + ring), None),
+                    (POWER_NAME_SIDE_MM + ring, away * POWER_TIP_MM, Some("left")),
+                    (
+                        -(POWER_NAME_SIDE_MM + ring),
+                        away * POWER_TIP_MM,
+                        Some("right"),
+                    ),
+                ]
+            })
+            .collect();
     let repeats = power_names.iter().any(|(p, n)| *p == at && n == name);
     let chars = name.chars().count();
     let rect_at = |(dx, dy, justify): (f64, f64, Option<&'static str>)| {
@@ -2055,11 +2080,10 @@ const FIELD_SIDES: [FieldSide; 4] = [
     FieldSide::Right,
     FieldSide::Left,
 ];
-/// How far past its usual spot a field may move to clear what is in the way,
-/// nearest first, in mm. The 5.08 is a ring spacing that happens to equal the
-/// net label stub, not a reference to it. Past the last ring the field stays
-/// near its symbol and takes the spot that overlaps least.
-const FIELD_RINGS_MM: [f64; 6] = [0.0, 5.08, 10.16, 15.24, 20.32, 25.4];
+/// How far apart the distances are that a field tries, nearest first, in mm,
+/// when its usual spot is taken. The 5.08 is a ring spacing that happens to
+/// equal the net label stub, not a reference to it. See [`ring_distances`].
+const FIELD_RING_STEP_MM: f64 = 5.08;
 
 /// Height of a Reference or Value string in mm, from KiCad's plot of 1.27 mm text.
 const FIELD_TEXT_HEIGHT_MM: f64 = 1.4;
@@ -2091,15 +2115,40 @@ fn text_rect_at(pos: (f64, f64), justify: Option<&'static str>, chars: usize) ->
     }
 }
 
-/// Where a field may go, best first: the sides at each distance in
-/// [`FIELD_RINGS_MM`], nearest ring first. `first` and `second` are the sides
-/// the field would take by preference, then the other two follow.
-fn field_candidates(first: FieldSide, second: FieldSide) -> Vec<(FieldSide, f64)> {
+/// How far from `at` the farthest edge of any of `obstacles` lies, in mm.
+fn obstacle_reach(obstacles: &[FieldObstacle], at: (f64, f64)) -> f64 {
+    obstacles
+        .iter()
+        .flat_map(|o| {
+            [
+                (o.rect.x0 - at.0).abs(),
+                (o.rect.x1 - at.0).abs(),
+                (o.rect.y0 - at.1).abs(),
+                (o.rect.y1 - at.1).abs(),
+            ]
+        })
+        .fold(0.0, f64::max)
+}
+
+/// The distances, `step` mm apart from 0, a text may be pushed out by. They run
+/// past the farthest obstacle, `reach` mm from the symbol, so a spot clear of
+/// every obstacle known at that moment always exists. Nearest first, so text
+/// only goes far when it is walled in. `reach` is not negative and `step` is
+/// positive, so the count cannot be negative.
+#[allow(clippy::cast_sign_loss)]
+fn ring_distances(step: f64, reach: f64) -> impl Iterator<Item = f64> {
+    let count = ((reach + FIELD_TEXT_HEIGHT_MM) / step).ceil() as usize;
+    (0..=count).map(move |i| i as f64 * step)
+}
+
+/// Where a field may go, best first: the sides at each distance out to past
+/// everything within `reach` mm, nearest ring first. `first` and `second` are
+/// the sides the field would take by preference, then the other two follow.
+fn field_candidates(first: FieldSide, second: FieldSide, reach: f64) -> Vec<(FieldSide, f64)> {
     let rest = FIELD_SIDES.iter().filter(|&&s| s != first && s != second);
     let order: Vec<FieldSide> = [first, second].into_iter().chain(rest.copied()).collect();
-    FIELD_RINGS_MM
-        .iter()
-        .flat_map(|&ring| order.iter().map(move |&side| (side, ring)))
+    ring_distances(FIELD_RING_STEP_MM, reach)
+        .flat_map(|ring| order.iter().map(move |&side| (side, ring)))
         .collect()
 }
 
@@ -2242,11 +2291,23 @@ fn field_obstacles(
             }));
         }
     }
+    // Each flag where it is drawn, which is off the pin's own stub when a
+    // neighbour is in the way, together with its stub and any bend.
     for flag in &layout.power_flags {
         if let Some((x, y, dx, dy)) = pin_terminal_xy(board, flag.component, flag.pin, placements) {
-            let (cx, cy) = (x + dx * POWER_FLAG_STUB_LEN, y + dy * POWER_FLAG_STUB_LEN);
+            let (cx, cy, corner) = clear_power_flag_position(
+                board,
+                flag,
+                placements,
+                layout,
+                PinAnchor { x, y, dx, dy },
+            );
             out.push(fixed(power_flag_rect(cx, cy)));
-            out.push(fixed(wire_rect((x, y), (cx, cy))));
+            out.extend(
+                power_stub_points((x, y), corner, (cx, cy))
+                    .windows(2)
+                    .map(|seg| fixed(wire_rect(seg[0], seg[1]))),
+            );
         }
     }
     // A note is anchored left and bottom, so it rises from `at_mm`.
@@ -2402,7 +2463,8 @@ fn build_symbol_unit(
     // cannot take its spot. The symbol's own body is skipped, since its text
     // sits against it.
     let (ref_pref, value_pref) = choose_field_sides(counts);
-    let mut place_field = |text: &str, candidates: &[(FieldSide, f64)]| {
+    let mut place_field = |text: &str, first: FieldSide, second: FieldSide| {
+        let candidates = field_candidates(first, second, obstacle_reach(obstacles, (x, y)));
         let spot = |(side, ring): (FieldSide, f64)| {
             let (pos, justify) = field_anchor(side, pins_on(counts, side), (x, y), body_edges);
             (push_out(pos, side, ring), justify)
@@ -2415,15 +2477,13 @@ fn build_symbol_unit(
             .iter()
             .filter(|o| o.owner != Some(component.id))
             .map(|o| &o.rect);
-        let (pos, justify) = spot(field_clear::pick_clear(candidates, &rect_at, &others));
+        let (pos, justify) = spot(field_clear::pick_clear(&candidates, &rect_at, &others));
         let rect = text_rect_at(pos, justify, text.chars().count());
         obstacles.push(FieldObstacle { owner: None, rect });
         (pos, written_justify(justify, angle, field_angle))
     };
-    let (ref_pos, ref_justify) =
-        place_field(&component.refdes, &field_candidates(ref_pref, value_pref));
-    let (value_pos, value_justify) =
-        place_field(display_value, &field_candidates(value_pref, ref_pref));
+    let (ref_pos, ref_justify) = place_field(&component.refdes, ref_pref, value_pref);
+    let (value_pos, value_justify) = place_field(display_value, value_pref, ref_pref);
 
     let mut fields = vec![
         str_pair("lib_id", lib_id),
@@ -2754,6 +2814,15 @@ mod tests {
             None => !stub_is_blocked(&board, &flag, &placements, &layout, (px, py), cleared),
         };
         assert!(leg_clear, "flag stub must not touch a foreign pin");
+
+        // Text is kept off the flag where it really is drawn, not where it
+        // would sit with no neighbour in the way.
+        layout.power_flags = vec![flag];
+        let obstacles = field_obstacles(&board, &layout, &placements);
+        assert!(
+            obstacles.iter().any(|o| o.rect == power_flag_rect(cx, cy)),
+            "no obstacle on the moved flag at {cleared:?}"
+        );
     }
 
     /// A flag steps *perpendicular* off the stub axis rather than
@@ -3717,24 +3786,87 @@ mod tests {
             .collect()
     }
 
+    const REFERENCE_BOARDS: [&str; 10] = [
+        "ref_battery_charger",
+        "ref_crystal_mcu",
+        "ref_ldo_sensor",
+        "ref_led_driver",
+        "ref_secure_element",
+        "ref_spi_flash",
+        "ref_uart_bridge",
+        "ref_usb_cdc",
+        "secure_tracker",
+        "sensor_logger",
+    ];
+
     #[test]
     fn reference_and_value_text_stays_off_wires() {
         let mut hits = Vec::new();
-        for name in [
-            "ref_battery_charger",
-            "ref_crystal_mcu",
-            "ref_ldo_sensor",
-            "ref_led_driver",
-            "ref_secure_element",
-            "ref_spi_flash",
-            "ref_uart_bridge",
-            "ref_usb_cdc",
-            "secure_tracker",
-            "sensor_logger",
-        ] {
+        for name in REFERENCE_BOARDS {
             hits.extend(field_text_on_wires(name));
         }
         assert!(hits.is_empty(), "text with a wire through it: {hits:?}");
+    }
+
+    #[test]
+    fn every_fanned_power_leg_is_an_obstacle_for_text() {
+        let mut legs_seen = 0;
+        for name in ["ref_crystal_mcu", "ref_usb_cdc", "ref_secure_element"] {
+            let (board, ..) = build_reference(name);
+            let layout = synth_layout::layout(&board);
+            let placements: HashMap<ComponentId, &ComponentPlacement> =
+                layout.components.iter().map(|p| (p.id, p)).collect();
+            let reconciled = crate::pin_reconcile::reconcile_all(&board);
+            let rail_of = |leg: &crate::pin_reconcile::PowerLeg| {
+                layout.power_flags.iter().find(|f| f.net == leg.net)
+            };
+            let obstacles = fanned_leg_obstacles(&board, &placements, &reconciled, rail_of);
+            for leg in reconciled.iter().flat_map(|r| &r.power_legs) {
+                let Some((pin, flag)) =
+                    fanned_leg_stub(&board, leg, &placements).filter(|_| rail_of(leg).is_some())
+                else {
+                    continue;
+                };
+                legs_seen += 1;
+                for want in [power_flag_rect(flag.0, flag.1), wire_rect(pin, flag)] {
+                    assert!(
+                        obstacles.iter().any(|o| o.rect == want),
+                        "{name}: no obstacle on the leg at {flag:?}"
+                    );
+                }
+            }
+        }
+        assert!(legs_seen > 0, "no fixture has a fanned power leg");
+    }
+
+    #[test]
+    fn a_fanned_leg_the_emitter_skips_is_not_an_obstacle() {
+        let (board, ..) = build_reference("ref_crystal_mcu");
+        let layout = synth_layout::layout(&board);
+        let placements: HashMap<ComponentId, &ComponentPlacement> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let reconciled = crate::pin_reconcile::reconcile_all(&board);
+        let skipped = |_: &crate::pin_reconcile::PowerLeg| None;
+        assert!(fanned_leg_obstacles(&board, &placements, &reconciled, skipped).is_empty());
+    }
+
+    #[test]
+    fn reference_and_value_text_stays_off_power_symbols() {
+        let mut hits = Vec::new();
+        for name in REFERENCE_BOARDS {
+            let (_board, sexp, _text) = build_reference(name);
+            let symbols: Vec<field_clear::Rect> = power_symbols(&sexp)
+                .into_iter()
+                .map(|((x, y), _)| power_flag_rect(x, y))
+                .collect();
+            for (text, x0, y0, x1, y1) in drawn_field_boxes(&sexp) {
+                let rect = field_clear::Rect { x0, y0, x1, y1 };
+                if symbols.iter().any(|s| overlaps(&rect, s)) {
+                    hits.push(format!("{name}: {text}"));
+                }
+            }
+        }
+        assert!(hits.is_empty(), "text on a power symbol: {hits:?}");
     }
 
     // ------------------------------------------------------------------
@@ -4119,9 +4251,9 @@ mod tests {
         a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
     }
 
-    /// Half the side of the block the tests wall a symbol in, in mm: wider than
-    /// the old nearest rings, narrower than the farthest ones now.
-    const WALL_HALF_MM: f64 = 12.0;
+    /// Half the side of the blocks the tests wall a symbol in, in mm: close
+    /// by, past a page, and far past any search with a fixed reach.
+    const WALL_HALF_MM: [f64; 3] = [12.0, 40.0, 400.0];
 
     /// A block `half` mm either side of the origin.
     fn wall(half: f64) -> field_clear::Rect {
@@ -4133,58 +4265,68 @@ mod tests {
         }
     }
 
+    fn walled(half: f64) -> Vec<FieldObstacle> {
+        vec![FieldObstacle {
+            owner: None,
+            rect: wall(half),
+        }]
+    }
+
     #[test]
-    fn a_power_name_walled_in_close_by_moves_out_until_it_is_clear() {
-        for kind in [
-            synth_layout::PowerFlagKind::Gnd,
-            synth_layout::PowerFlagKind::Vcc,
-        ] {
-            let mut obstacles = vec![FieldObstacle {
-                owner: None,
-                rect: wall(WALL_HALF_MM),
-            }];
-            power_symbol_properties(
-                "#PWR1",
-                "GND",
-                kind,
-                (0.0, 0.0),
-                &mut obstacles,
-                &mut Vec::new(),
-            );
-            let placed = &obstacles.last().expect("the name is an obstacle now").rect;
+    fn a_walled_in_power_name_moves_out_until_it_is_clear() {
+        for half in WALL_HALF_MM {
+            for kind in [
+                synth_layout::PowerFlagKind::Gnd,
+                synth_layout::PowerFlagKind::Vcc,
+            ] {
+                let mut obstacles = walled(half);
+                power_symbol_properties(
+                    "#PWR1",
+                    "GND",
+                    kind,
+                    (0.0, 0.0),
+                    &mut obstacles,
+                    &mut Vec::new(),
+                );
+                let placed = &obstacles.last().expect("the name is an obstacle now").rect;
+                assert!(
+                    !overlaps(placed, &wall(half)),
+                    "{kind:?} name on a {half} mm wall: {placed:?}"
+                );
+            }
+        }
+    }
+
+    // Four characters anchored at the origin stand in for a field's text, run
+    // outward from the anchor the way `field_anchor` justifies it.
+    fn four_char_rect((side, ring): (FieldSide, f64)) -> field_clear::Rect {
+        let justify = match side {
+            FieldSide::Right => Some("left"),
+            FieldSide::Left => Some("right"),
+            FieldSide::Top | FieldSide::Bottom => None,
+        };
+        text_rect_at(push_out((0.0, 0.0), side, ring), justify, 4)
+    }
+
+    #[test]
+    fn a_walled_in_field_moves_out_until_it_is_clear() {
+        for half in WALL_HALF_MM {
+            let obstacles = walled(half);
+            let reach = obstacle_reach(&obstacles, (0.0, 0.0));
+            let candidates = field_candidates(FieldSide::Right, FieldSide::Left, reach);
+            let others = obstacles.iter().map(|o| &o.rect);
+            let picked = field_clear::pick_clear(&candidates, &four_char_rect, &others);
             assert!(
-                !overlaps(placed, &wall(WALL_HALF_MM)),
-                "{kind:?} name on the wall: {placed:?}"
+                !overlaps(&four_char_rect(picked), &wall(half)),
+                "{picked:?} on a {half} mm wall"
             );
         }
     }
 
-    // Four characters, centred on the anchor, stand in for a field's text.
-    fn four_char_rect((side, ring): (FieldSide, f64)) -> field_clear::Rect {
-        text_rect_at(push_out((0.0, 0.0), side, ring), None, 4)
-    }
-
     #[test]
-    fn a_field_walled_in_close_by_moves_out_until_it_is_clear() {
-        let candidates = field_candidates(FieldSide::Right, FieldSide::Left);
-        let wall = wall(WALL_HALF_MM);
-        let picked = field_clear::pick_clear(&candidates, &four_char_rect, &[wall].iter());
-        assert!(
-            !overlaps(&four_char_rect(picked), &wall),
-            "{picked:?} on the wall"
-        );
-    }
-
-    #[test]
-    fn a_field_with_no_clear_ring_takes_the_farthest_one_and_overlaps() {
-        // Past the last ring nothing is clear, so the pick is the candidate
-        // that overlaps least. That is the outermost ring, where the text
-        // sticks out of the wall the most.
-        let candidates = field_candidates(FieldSide::Right, FieldSide::Left);
-        let wall = wall(FIELD_RINGS_MM[FIELD_RINGS_MM.len() - 1] + 1.6);
-        let picked = field_clear::pick_clear(&candidates, &four_char_rect, &[wall].iter());
-        assert_eq!(Some(&picked.1), FIELD_RINGS_MM.last());
-        assert!(overlaps(&four_char_rect(picked), &wall));
+    fn with_nothing_in_the_way_a_field_keeps_its_nearest_spot() {
+        let candidates = field_candidates(FieldSide::Right, FieldSide::Left, 0.0);
+        assert_eq!(candidates[0], (FieldSide::Right, 0.0));
     }
 
     #[test]

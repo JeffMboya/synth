@@ -32,7 +32,9 @@ impl Rect {
 
 /// The first of `candidates` whose text overlaps no obstacle; when every one
 /// does, the one that overlaps least, the earlier winning a tie. `text_rect`
-/// gives the rectangle the text covers at a candidate.
+/// gives the rectangle the text covers at a candidate. The exporter lists
+/// candidates out past every obstacle it knows of, so the fallback is a safety
+/// net there rather than a choice it makes.
 ///
 /// # Panics
 ///
