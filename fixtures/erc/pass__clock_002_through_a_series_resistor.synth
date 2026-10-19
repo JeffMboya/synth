@@ -1,0 +1,26 @@
+// A clock reaching its load through a series damping resistor. R1 is the
+// 22 ohm source termination an unbuffered bus puts between the driver and the
+// line, so the connector that is the clock source sits on CLK_H and the load
+// sits on CLK, one passive away. E-SYNTH-CLOCK-002 must stay silent: the
+// source is real, it is simply on the other terminal of the resistor — the
+// same reasoning E-SYNTH-POWER-003 already applies to a rail arriving through
+// a bead.
+board "clock_002_through_a_series_resistor" {
+  layers 2
+
+  component J1: connector "header_1x4"
+  component R1: resistor "r_generic_0603" value "22R"
+  component U1: ic "sn74hc165_pload"
+  component C1: capacitor "c_generic_0603" value "100nF"
+
+  connect J1.p1 -> U1.vcc as "V3V3"
+  connect J1.p2 -> U1.gnd as "GND"
+  connect U1.vcc -> C1.p1 as "V3V3"
+  connect C1.p2 -> U1.gnd as "GND"
+
+  // The clock is damped at the source, so it arrives one resistor away.
+  connect J1.p3 -> R1.p1 as "CLK_H"
+  connect R1.p2 -> U1.clk as "CLK"
+
+  connect J1.p4 -> U1.shld as "nSHLD"
+}
