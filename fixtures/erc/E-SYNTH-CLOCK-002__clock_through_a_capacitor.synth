@@ -1,0 +1,24 @@
+// A clock reaching its load through a capacitor. The traversal that accepts a
+// source on the far terminal of a series resistor or bead deliberately stops
+// at a capacitor: its second terminal is a return, not a continuation of the
+// signal, so nothing here drives U1's clock and E-SYNTH-CLOCK-002 is right to
+// say so. Without this boundary the rule would call a decoupling capacitor a
+// clock source.
+board "clock_through_a_capacitor" {
+  layers 2
+
+  component J1: connector "header_1x4"
+  component C2: capacitor "c_generic_0603" value "100nF"
+  component U1: ic "sn74hc165_pload"
+  component C1: capacitor "c_generic_0603" value "100nF"
+
+  connect J1.p1 -> U1.vcc as "V3V3"
+  connect J1.p2 -> U1.gnd as "GND"
+  connect U1.vcc -> C1.p1 as "V3V3"
+  connect C1.p2 -> U1.gnd as "GND"
+
+  connect J1.p3 -> C2.p1 as "CLK_H"
+  connect C2.p2 -> U1.clk as "CLK"
+
+  connect J1.p4 -> U1.shld as "nSHLD"
+}
