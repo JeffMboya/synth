@@ -1655,6 +1655,41 @@ impl ErcRule for ClockSourceCollisionRule {
 /// already uses this notion for its own reason, in `deep_erc`.
 const BOARD_EDGE_KINDS: [&str; 3] = ["connector", "jack", "receptacle"];
 
+/// Whether any endpoint of `net` is something that drives a clock: a pin
+/// declaring `clock_output`, a crystal or oscillator, or the board edge.
+///
+/// A connector counts, and not as a courtesy: a mezzanine, a memory card and
+/// a daughterboard are all clocked by whatever they plug into, so the source
+/// is real and simply off the board. Without this the rule asks a correct
+/// design to add an oscillator, which would make it wrong — a card that
+/// generates its own clock is not synchronous with the host reading it.
+fn net_carries_clock_source(board: &Board, net: &synth_ir::Net) -> bool {
+    net.endpoints.iter().any(|e| {
+        endpoint_has_any_capability(board, e.component, e.pin, &[PinCapability::ClockOutput])
+            || board
+                .component(e.component)
+                .and_then(|c| c.part.as_ref())
+                .is_some_and(|p| {
+                    p.kind == "crystal"
+                        || p.kind == "oscillator"
+                        || BOARD_EDGE_KINDS.contains(&p.kind.as_str())
+                })
+    })
+}
+
+/// A two-terminal part a signal passes *through*: a series resistor, a
+/// ferrite bead, an inductor or a link.
+///
+/// Deliberately not a capacitor, whose second terminal is a return rather
+/// than a continuation of the signal.
+fn is_two_terminal_passive(board: &Board, id: ComponentId) -> bool {
+    board.component(id).is_some_and(|c| {
+        c.part.as_ref().is_some_and(|p| {
+            matches!(p.kind.as_str(), "resistor" | "inductor" | "filter") && p.pins.len() == 2
+        })
+    })
+}
+
 struct ClockInputNoSourceRule;
 
 impl ErcRule for ClockInputNoSourceRule {
@@ -1681,21 +1716,35 @@ impl ErcRule for ClockInputNoSourceRule {
             // Without this the rule asks a correct design to add an
             // oscillator, which would make it wrong — a card that generates
             // its own clock is not synchronous with the host reading it.
-            let has_output = net.endpoints.iter().any(|e| {
-                endpoint_has_any_capability(
-                    board,
-                    e.component,
-                    e.pin,
-                    &[PinCapability::ClockOutput],
-                ) || board
-                    .component(e.component)
-                    .and_then(|c| c.part.as_ref())
-                    .is_some_and(|p| {
-                        p.kind == "crystal"
-                            || p.kind == "oscillator"
-                            || BOARD_EDGE_KINDS.contains(&p.kind.as_str())
-                    })
-            });
+            let has_output = net_carries_clock_source(board, net)
+                // A damped clock is the same situation one resistor further
+                // away. An unbuffered memory module puts 22 ohms in series at
+                // the source of its clock and command lines, which splits
+                // each line into a stub carrying the source and a branch
+                // carrying the loads — so the branch's source is on the other
+                // terminal of the passive, exactly as `E-SYNTH-POWER-003`
+                // already allows for a rail arriving through a bead or a
+                // fuse. One terminal is as far as this looks: a rule that
+                // walked further would eventually call a decoupling capacitor
+                // a clock source.
+                || net.endpoints.iter().any(|e| {
+                    is_two_terminal_passive(board, e.component)
+                        && board
+                            .component(e.component)
+                            .and_then(|c| c.part.as_ref())
+                            .is_some_and(|part| {
+                                (0..part.pins.len()).any(|idx| {
+                                    board
+                                        .nets_containing(
+                                            e.component,
+                                            PinId(u32::try_from(idx).unwrap_or(u32::MAX)),
+                                        )
+                                        .any(|(id, other)| {
+                                            id != net.id && net_carries_clock_source(board, other)
+                                        })
+                                })
+                            })
+                });
             if !has_output {
                 let first = &net.endpoints[0];
                 let comp = board.component(first.component).expect("c");
