@@ -24,8 +24,9 @@ use synth_ir::{Board, ComponentId, NetId};
 
 use crate::{
     annotate_groups, body_size_for_part, clamp_annotations_to_sheet, compact_sheet_to_fit,
-    grow_sheet_to_fit, place_connector_legends, place_design_notes, resolve_text_overlaps,
-    settle_sheet_size, HierarchicalLabel, Layout, SheetSize, BODY_FALLBACK_H, BODY_FALLBACK_W,
+    effective_group, grow_sheet_to_fit, place_connector_legends, place_design_notes,
+    resolve_text_overlaps, settle_sheet_size, ComponentPlacement, HierarchicalLabel, Layout,
+    SheetSize, BODY_FALLBACK_H, BODY_FALLBACK_W, GROUP_CONTENT_PAD, GROUP_TITLE_BAND_MM,
     PAGE_MARGIN,
 };
 
@@ -94,54 +95,18 @@ pub fn plan_sheets(board: &Board) -> Vec<SheetPartition> {
 
 /// True when the laid-out content needs more room than the largest page
 /// this design will use on a single sheet, so it must be split into a
-/// hierarchy. Mirrors the bound computation in `grow_sheet_to_fit`
-/// (components, wires, annotations, group boxes).
+/// hierarchy. Measures the content the way `grow_sheet_to_fit` does, through
+/// [`crate::content_bounds`], so the two cannot disagree about whether the
+/// content fits.
 ///
 /// The threshold follows `schematic { overflow }`: A0 by default, so a
 /// board that overflows A4 keeps growing through the standard ladder, or
 /// the requested page under `overflow = "hierarchy"`, where more content
 /// means more sheets.
 pub fn sheet_overflow(board: &Board, layout: &Layout) -> bool {
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for placement in &layout.components {
-        let (cx, cy) = placement.center_mm;
-        let (bw, bh) = board
-            .component(placement.id)
-            .and_then(|c| c.part.as_ref())
-            .map_or((BODY_FALLBACK_W, BODY_FALLBACK_H), body_size_for_part);
-        min_x = min_x.min(cx - bw / 2.0);
-        max_x = max_x.max(cx + bw / 2.0);
-        min_y = min_y.min(cy - bh / 2.0);
-        max_y = max_y.max(cy + bh / 2.0);
-    }
-    for wire in &layout.wires {
-        for &(x, y) in &wire.points {
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-        }
-    }
-    for text in &layout.annotations {
-        let (x, y) = text.at_mm;
-        let width = text.text.chars().count() as f64 * text.size_mm * 0.72;
-        min_x = min_x.min(x);
-        max_x = max_x.max(x + width);
-        min_y = min_y.min(y - text.size_mm);
-        max_y = max_y.max(y);
-    }
-    for box_ in &layout.group_boxes {
-        min_x = min_x.min(box_.min_mm.0);
-        max_x = max_x.max(box_.max_mm.0);
-        min_y = min_y.min(box_.min_mm.1);
-        max_y = max_y.max(box_.max_mm.1);
-    }
-    if !min_x.is_finite() {
+    let Some((min_x, max_x, min_y, max_y)) = crate::content_bounds(board, layout) else {
         return false;
-    }
+    };
     let (need_w, need_h) = crate::sheet_needs(min_x, max_x, min_y, max_y);
     let (ceiling_w, ceiling_h) = crate::max_single_sheet(board).dims_mm();
     need_w > ceiling_w || need_h > ceiling_h
@@ -200,6 +165,12 @@ fn split_layout(board: &Board, global: &Layout, partitions: &[SheetPartition]) -
         .filter_map(|(net, parts)| (parts.len() > 1).then_some(*net))
         .collect();
 
+    // What each part draws past its body, so a sheet's rebase starts that at
+    // the margin too and not only the bodies.
+    let drawn = crate::drawn_beyond_bodies(board, global);
+    let placements: HashMap<ComponentId, &ComponentPlacement> =
+        global.components.iter().map(|p| (p.id, p)).collect();
+
     partitions
         .iter()
         .enumerate()
@@ -214,17 +185,58 @@ fn split_layout(board: &Board, global: &Layout, partitions: &[SheetPartition]) -
                     .get(&net)
                     .is_some_and(|parts| parts.len() == 1 && parts[0] == pi)
             };
-            // Rigid rebase offset from the subset's placed bodies and
+            // Hierarchical stubs for cross-sheet signal nets: one per
+            // in-partition endpoint, named by the shared net name.
+            // Power nets are skipped — their symbols join globally.
+            let stubs: Vec<(&synth_ir::Net, &synth_ir::NetEndpoint)> = board
+                .nets
+                .iter()
+                .filter(|net| cross_net.contains(&net.id) && !power_nets.contains(&net.id))
+                .flat_map(|net| net.endpoints.iter().map(move |endpoint| (net, endpoint)))
+                .filter(|(_, e)| {
+                    members.contains(&e.component) && board.pin(e.component, e.pin).is_some()
+                })
+                .collect();
+            // A grouped part also needs the padding and the title band its
+            // group's box draws round it, which start above and left of it.
+            let box_reach = |id: ComponentId| {
+                if effective_group(board, id).is_some() {
+                    (GROUP_CONTENT_PAD, GROUP_TITLE_BAND_MM)
+                } else {
+                    (0.0, 0.0)
+                }
+            };
+            // Rigid rebase offset from the subset's placed bodies, what they
+            // draw past them, their group boxes, the labels its stubs get and
             // kept wires so content starts at the page margin.
             let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+            for (id, (x0, y0, ..)) in drawn.iter().filter(|(id, _)| members.contains(id)) {
+                let (reach_x, reach_y) = box_reach(*id);
+                min_x = min_x.min(*x0 - reach_x);
+                min_y = min_y.min(*y0 - reach_y);
+            }
+            for (net, endpoint) in &stubs {
+                if let Some((x0, y0, ..)) = crate::route::net_label_rect(
+                    board,
+                    &net.name,
+                    endpoint.component,
+                    endpoint.pin,
+                    &placements,
+                ) {
+                    let (reach_x, reach_y) = box_reach(endpoint.component);
+                    min_x = min_x.min(x0 - reach_x);
+                    min_y = min_y.min(y0 - reach_y);
+                }
+            }
             for placement in global.components.iter().filter(|p| members.contains(&p.id)) {
                 let (cx, cy) = placement.center_mm;
                 let (bw, bh) = board
                     .component(placement.id)
                     .and_then(|c| c.part.as_ref())
                     .map_or((BODY_FALLBACK_W, BODY_FALLBACK_H), body_size_for_part);
-                min_x = min_x.min(cx - bw / 2.0);
-                min_y = min_y.min(cy - bh / 2.0);
+                let (reach_x, reach_y) = box_reach(placement.id);
+                min_x = min_x.min(cx - bw / 2.0 - reach_x);
+                min_y = min_y.min(cy - bh / 2.0 - reach_y);
             }
             for wire in global.wires.iter().filter(|w| keep_wire(w.net)) {
                 for &(x, y) in &wire.points {
@@ -301,31 +313,16 @@ fn split_layout(board: &Board, global: &Layout, partitions: &[SheetPartition]) -
                 })
                 .map(|&(jx, jy)| (jx + dx, jy + dy))
                 .collect();
-            // Hierarchical stubs for cross-sheet signal nets: one per
-            // in-partition endpoint, named by the shared net name.
-            // Power nets are skipped — their symbols join globally.
-            for net in &board.nets {
-                if !cross_net.contains(&net.id) || power_nets.contains(&net.id) {
-                    continue;
-                }
-                for endpoint in net
-                    .endpoints
-                    .iter()
-                    .filter(|e| members.contains(&e.component))
-                {
-                    if board.pin(endpoint.component, endpoint.pin).is_none() {
-                        continue;
-                    }
-                    layout.hierarchical_labels.push(HierarchicalLabel {
-                        net: net.id,
-                        component: endpoint.component,
-                        pin: endpoint.pin,
-                        // The shared net name is what joins the sheets
-                        // in KiCad — identical text on every sheet the
-                        // net touches, like local net labels.
-                        label: net.name.clone(),
-                    });
-                }
+            for (net, endpoint) in &stubs {
+                layout.hierarchical_labels.push(HierarchicalLabel {
+                    net: net.id,
+                    component: endpoint.component,
+                    pin: endpoint.pin,
+                    // The shared net name is what joins the sheets
+                    // in KiCad — identical text on every sheet the
+                    // net touches, like local net labels.
+                    label: net.name.clone(),
+                });
             }
             // Captions, boxes, legends, and notes recomputed for the
             // subset (positions are page-local now).
@@ -660,6 +657,178 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The rebase puts what a sheet's parts draw at the margin, not only
+    /// their bodies, so no pin end or field starts off the page.
+    #[test]
+    fn a_split_sheet_starts_what_parts_draw_at_the_margin() {
+        let two = || vec![pin("p1"), pin("p2")];
+        let b = board(
+            vec![
+                component(0, "R1", None, two()),
+                component(1, "R2", Some("Power"), two()),
+            ],
+            Vec::new(),
+        );
+        let global = layout(
+            vec![placed(0, 30.0, 30.0), placed(1, 100.0, 30.0)],
+            Vec::new(),
+        );
+        let sheets = split_layout(&b, &global, &plan_sheets(&b));
+        assert_eq!(sheets.len(), 2);
+        // The offset is rounded to the 1.27 mm connection grid, so content
+        // may start up to half a step short of the margin.
+        let slack = 0.635 + 1e-6;
+        for sheet in &sheets {
+            for (id, (x0, y0, ..)) in crate::drawn_beyond_bodies(&b, &sheet.layout) {
+                assert!(
+                    x0 >= PAGE_MARGIN - slack && y0 >= PAGE_MARGIN - slack,
+                    "component {id:?} draws from ({x0:.2}, {y0:.2}), off the margin"
+                );
+            }
+        }
+    }
+
+    /// A group's box is drawn round its parts with padding, so the box of a
+    /// split sheet starts at the margin too, not its parts.
+    #[test]
+    fn a_split_sheet_starts_its_group_boxes_at_the_margin() {
+        let two = || vec![pin("p1"), pin("p2")];
+        let b = board(
+            vec![
+                component(0, "R1", None, two()),
+                grouped_component(1, "R2", "Filter", two()),
+            ],
+            Vec::new(),
+        );
+        let global = layout(
+            vec![placed(0, 30.0, 30.0), placed(1, 100.0, 30.0)],
+            Vec::new(),
+        );
+        let sheets = split_layout(&b, &global, &plan_sheets(&b));
+        let slack = 0.635 + 1e-6;
+        let mut boxes = 0;
+        for sheet in &sheets {
+            for group_box in &sheet.layout.group_boxes {
+                boxes += 1;
+                let (x, y) = group_box.min_mm;
+                assert!(
+                    x >= PAGE_MARGIN - slack && y >= PAGE_MARGIN - slack,
+                    "box {} starts at ({x:.2}, {y:.2}), off the margin",
+                    group_box.group
+                );
+            }
+        }
+        assert!(boxes > 0, "no sheet has a group box");
+    }
+
+    /// When the leftmost thing a group holds is a label of a net that crosses
+    /// to another sheet, the box round it starts at the margin too.
+    #[test]
+    fn a_split_sheet_starts_a_group_box_round_its_stub_label_at_the_margin() {
+        let two = || vec![pin("p1"), pin("p2")];
+        let b = board(
+            vec![
+                component(0, "R1", None, two()),
+                grouped_component(1, "R2", "Filter", two()),
+            ],
+            vec![net(
+                0,
+                "A_LONG_CROSS_SHEET_SIGNAL",
+                &[(0, 0), (1, 0), (1, 1)],
+            )],
+        );
+        let global = layout(
+            vec![placed(0, 30.0, 30.0), placed(1, 100.0, 30.0)],
+            Vec::new(),
+        );
+        let sheets = split_layout(&b, &global, &plan_sheets(&b));
+        let slack = 0.635 + 1e-6;
+        let mut boxes = 0;
+        for sheet in &sheets {
+            for group_box in &sheet.layout.group_boxes {
+                boxes += 1;
+                let (x, y) = group_box.min_mm;
+                assert!(
+                    x >= PAGE_MARGIN - slack && y >= PAGE_MARGIN - slack,
+                    "box {} starts at ({x:.2}, {y:.2}), off the margin",
+                    group_box.group
+                );
+            }
+        }
+        assert!(boxes > 0, "no sheet has a group box");
+    }
+
+    /// The labels a sheet gets for the nets that cross to another sheet hang
+    /// off its pins like any other label, so the rebase counts them too.
+    #[test]
+    fn a_split_sheet_starts_its_hierarchical_labels_at_the_margin() {
+        let two = || vec![pin("p1"), pin("p2")];
+        let b = board(
+            vec![
+                component(0, "R1", None, two()),
+                component(1, "R2", Some("Power"), two()),
+            ],
+            vec![net(
+                0,
+                "A_LONG_CROSS_SHEET_SIGNAL",
+                &[(0, 0), (1, 0), (1, 1)],
+            )],
+        );
+        let global = layout(
+            vec![placed(0, 30.0, 30.0), placed(1, 100.0, 30.0)],
+            Vec::new(),
+        );
+        let sheets = split_layout(&b, &global, &plan_sheets(&b));
+        let slack = 0.635 + 1e-6;
+        let mut labels = 0;
+        for sheet in &sheets {
+            let placements: HashMap<ComponentId, &ComponentPlacement> =
+                sheet.layout.components.iter().map(|p| (p.id, p)).collect();
+            for label in &sheet.layout.hierarchical_labels {
+                labels += 1;
+                let (x0, y0, ..) = crate::route::net_label_rect(
+                    &b,
+                    &label.label,
+                    label.component,
+                    label.pin,
+                    &placements,
+                )
+                .expect("a label has a rectangle");
+                assert!(
+                    x0 >= PAGE_MARGIN - slack && y0 >= PAGE_MARGIN - slack,
+                    "label {} starts at ({x0:.2}, {y0:.2}), off the margin",
+                    label.label
+                );
+            }
+        }
+        assert!(labels > 0, "the net crosses sheets, so it has labels");
+    }
+
+    /// A design whose bodies fit the largest single page, but whose pin ends
+    /// and fields hang past it, still has to split into sheets.
+    #[test]
+    fn what_parts_draw_past_their_bodies_counts_toward_overflow() {
+        let two = || vec![pin("p1"), pin("p2")];
+        let mut b = board(vec![component(0, "R1", None, two())], Vec::new());
+        b.schematic_overflow = Some(synth_ir::SchematicOverflow::Hierarchy);
+        let (ceiling_w, _) = crate::max_single_sheet(&b).dims_mm();
+        let (body_w, body_h) = body_size_for_part(b.components[0].part.as_ref().unwrap());
+        // The body's right edge sits half a millimetre inside the limit.
+        let (x, y) = (ceiling_w - PAGE_MARGIN - 0.5 - body_w / 2.0, 60.0);
+        let layout = layout(vec![placed(0, x, y)], Vec::new());
+        let (need_w, _) = crate::sheet_needs(
+            x - body_w / 2.0,
+            x + body_w / 2.0,
+            y - body_h / 2.0,
+            y + body_h / 2.0,
+        );
+        assert!(need_w <= ceiling_w, "the body alone must fit: {need_w}");
+        assert!(
+            sheet_overflow(&b, &layout),
+            "the pin ends hang past the page"
+        );
     }
 
     #[test]

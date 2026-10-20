@@ -153,6 +153,163 @@ class RegionCoverage(unittest.TestCase):
         self.assertAlmostEqual(got["region_coverage"], 400.0 / 600.0, places=4)
 
 
+def contain_sch(boxes=(), symbols=(), titles=(), wires=()):
+    """A `.kicad_sch` with group boxes (x1, y1, x2, y2), one symbol definition
+    `Device:R` (a rectangle from -1,-2 to 1,2 and pins at 0,+3.81 and 0,-3.81)
+    placed as `symbols` given as (x, y), bold captions given as (text, x, y)
+    and wires given as (x1, y1, x2, y2)."""
+    out = [
+        "(kicad_sch",
+        "\t(lib_symbols",
+        '\t\t(symbol "Device:R"',
+        "\t\t\t(rectangle (start -1 -2) (end 1 2))",
+        '\t\t\t(symbol "R_1_1"',
+        '\t\t\t\t(pin passive line\n\t\t\t\t\t(at 0 3.81 270)\n\t\t\t\t\t(number "1")\n\t\t\t\t)',
+        '\t\t\t\t(pin passive line\n\t\t\t\t\t(at 0 -3.81 90)\n\t\t\t\t\t(number "2")\n\t\t\t\t)',
+        "\t\t\t)",
+        "\t\t)",
+        "\t)",
+    ]
+    for x1, y1, x2, y2 in boxes:
+        out.append(f"\t(rectangle\n\t\t(start {x1} {y1})\n\t\t(end {x2} {y2})\n\t)")
+    for x, y in symbols:
+        out.append(
+            f'\t(symbol\n\t\t(lib_id "Device:R")\n\t\t(at {x} {y} 0)\n'
+            '\t\t(property\n\t\t\t"Reference"\n\t\t\t"R1"\n\t\t\t(at 0 0 0)\n\t\t)\n\t)'
+        )
+    for text, x, y in titles:
+        out.append(
+            f'\t(text\n\t\t"{text}"\n\t\t(at {x} {y} 0)\n'
+            "\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 2 2)\n\t\t\t\tbold\n\t\t\t)\n\t\t)\n\t)"
+        )
+    for x1, y1, x2, y2 in wires:
+        out.append(f"\t(wire\n\t\t(pts\n\t\t\t(xy {x1} {y1}) (xy {x2} {y2})\n\t\t)\n\t)")
+    out.append(")")
+    return "\n".join(out)
+
+
+def containment(sch_text, svg_text):
+    """The two region measures for a schematic and its plot."""
+    got = sq.score(
+        sq.parse_wires(sch_text),
+        sq.parse_texts(svg_text),
+        sq.page_size(svg_text),
+        group_boxes=sq.parse_group_boxes(sch_text),
+        symbol_boxes=sq.parse_symbol_boxes(sch_text),
+        titles=sq.parse_titles(sch_text),
+    )
+    return got["items_outside_group_boxes"], got["title_gap_min_mm"]
+
+
+BOX = (0, 0, 40, 30)
+
+
+class OutsideGroupBoxes(unittest.TestCase):
+    """Symbols and texts that are not wholly inside one group box."""
+
+    def test_a_text_inside_a_box_is_inside(self):
+        self.assertEqual(containment(contain_sch([BOX]), svg(("RX1", 5, 5, 8, 7)))[0], 0)
+
+    def test_a_text_across_a_box_edge_is_outside(self):
+        self.assertEqual(containment(contain_sch([BOX]), svg(("RX1", 38, 5, 42, 7)))[0], 1)
+
+    def test_a_text_beside_every_box_is_outside(self):
+        self.assertEqual(containment(contain_sch([BOX]), svg(("RX1", 50, 5, 53, 7)))[0], 1)
+
+    def test_a_text_spanning_two_boxes_is_outside(self):
+        got = containment(contain_sch([BOX, (41, 0, 80, 30)]), svg(("RX1", 38, 5, 43, 7)))
+        self.assertEqual(got[0], 1)
+
+    def test_a_symbol_inside_a_box_is_inside(self):
+        self.assertEqual(containment(contain_sch([BOX], symbols=[(20, 15)]), svg())[0], 0)
+
+    def test_a_symbol_whose_pin_reaches_past_the_edge_is_outside(self):
+        # Pins end 3.81 mm above and below the anchor.
+        self.assertEqual(containment(contain_sch([BOX], symbols=[(20, 2)]), svg())[0], 1)
+
+    def test_a_symbol_and_a_text_outside_count_twice(self):
+        got = containment(contain_sch([BOX], symbols=[(60, 15)]), svg(("RX1", 50, 5, 53, 7)))
+        self.assertEqual(got[0], 2)
+
+    def test_the_position_of_a_library_field_does_not_stretch_the_symbol(self):
+        # The Reference field of the definition is written 50 mm away from the
+        # drawn outline; it is text, not part of the symbol.
+        sch_text = contain_sch([BOX], symbols=[(20, 15)]).replace(
+            "(rectangle (start -1 -2) (end 1 2))",
+            '(rectangle (start -1 -2) (end 1 2))\n\t\t\t(property "Reference" "R"'
+            " (at 50 50 0))",
+        )
+        self.assertEqual(containment(sch_text, svg())[0], 0)
+
+    def test_a_schematic_without_boxes_has_nothing_outside(self):
+        self.assertEqual(containment(contain_sch(symbols=[(20, 15)]), svg(("RX1", 5, 5, 8, 7)))[0], 0)
+
+    def test_page_ruler_characters_and_the_title_block_are_not_content(self):
+        # Page 100 x 80: ruler cells sit in the frame, the title block is the
+        # 125 x 45 mm rectangle at the bottom right (clipped to this page).
+        page = svg(("A", 2, 30, 4, 32), ("3", 50, 2, 52, 4), ("Fab: x", 5, 60, 30, 62))
+        self.assertEqual(containment(contain_sch([BOX]), page)[0], 0)
+
+    def test_text_beside_the_title_block_is_content(self):
+        # Page 200 x 120: the title block starts at x 75, y 75.
+        inside = svg(("Fab: x", 150, 100, 170, 102), width=200.0, height=120.0)
+        beside = svg(("Fab: x", 50, 100, 70, 102), width=200.0, height=120.0)
+        self.assertEqual(containment(contain_sch([BOX]), inside)[0], 0)
+        self.assertEqual(containment(contain_sch([BOX]), beside)[0], 1)
+
+
+class TitleGap(unittest.TestCase):
+    """The smallest distance from a bold caption down to what stands under it."""
+
+    TITLE = [("Box", 2, 6)]
+    # The caption text spans y 4 to 6 in the plot.
+    CAPTION = ("Box", 2, 4, 12, 6)
+
+    def gap(self, *items, symbols=(), wires=(), boxes=(BOX,)):
+        sch_text = contain_sch(list(boxes), symbols=symbols, titles=self.TITLE, wires=wires)
+        return containment(sch_text, svg(self.CAPTION, *items))[1]
+
+    def test_the_gap_is_from_the_caption_bottom_to_the_text_below(self):
+        self.assertAlmostEqual(self.gap(("RX1", 3, 9, 6, 11)), 3.0)
+
+    def test_the_nearest_item_sets_the_gap(self):
+        self.assertAlmostEqual(self.gap(("RX1", 3, 12, 6, 14), ("RX2", 3, 8, 6, 10)), 2.0)
+
+    def test_a_text_over_the_caption_has_a_negative_gap(self):
+        self.assertAlmostEqual(self.gap(("RX1", 3, 5, 6, 8)), -1.0)
+
+    def test_a_text_beside_the_caption_is_not_under_it(self):
+        self.assertIsNone(self.gap(("RX1", 20, 5, 25, 7)))
+
+    def test_a_text_above_the_caption_is_not_under_it(self):
+        self.assertIsNone(self.gap(("RX1", 3, 0, 6, 2)))
+
+    def test_a_symbol_under_the_caption_counts(self):
+        # Anchor (5, 15): the top pin ends at y 11.19.
+        self.assertAlmostEqual(self.gap(symbols=[(5, 15)]), 11.19 - 6, places=2)
+
+    def test_a_wire_under_the_caption_counts(self):
+        self.assertAlmostEqual(self.gap(wires=[(5, 10, 5, 20)]), 4.0)
+
+    def test_content_in_another_box_is_not_under_this_caption(self):
+        got = self.gap(("RX1", 3, 36, 6, 38), boxes=(BOX, (0, 35, 40, 60)))
+        self.assertIsNone(got)
+
+    def test_a_caption_outside_every_box_measures_nothing(self):
+        self.assertIsNone(self.gap(("RX1", 3, 9, 6, 11), boxes=((50, 0, 90, 30),)))
+
+    def test_no_captions_means_no_gap(self):
+        got = containment(contain_sch([BOX]), svg(("RX1", 3, 9, 6, 11)))
+        self.assertIsNone(got[1])
+
+    def test_each_caption_is_measured_and_the_smallest_wins(self):
+        sch_text = contain_sch(
+            [BOX, (50, 0, 90, 30)], titles=[("Box", 2, 6), ("Two", 52, 6)]
+        )
+        plot = svg(self.CAPTION, ("Two", 52, 4, 60, 6), ("RX1", 3, 12, 6, 14), ("RX2", 53, 8, 56, 10))
+        self.assertAlmostEqual(containment(sch_text, plot)[1], 2.0)
+
+
 class PickPlot(unittest.TestCase):
     def test_the_plot_named_after_the_schematic_wins(self):
         paths = [Path("a/sub.svg"), Path("a/board.svg")]

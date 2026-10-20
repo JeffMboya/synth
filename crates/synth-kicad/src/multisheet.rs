@@ -199,48 +199,16 @@ pub(crate) fn export_sheets(
     Ok(())
 }
 
-/// Content bounds `(min_x, max_x, min_y, max_y)` of a laid-out sheet:
-/// bodies, wires, annotations, and group boxes. Mirrors the bound
-/// pass in `grow_sheet_to_fit`.
+/// Content bounds `(min_x, max_x, min_y, max_y)` of a laid-out sheet, as the
+/// layout measures them for every other page. An empty sheet gives an
+/// inverted box, so folding the root furniture into it still works.
 fn content_bounds(board: &Board, layout: &synth_layout::Layout) -> (f64, f64, f64, f64) {
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for placement in &layout.components {
-        let (cx, cy) = placement.center_mm;
-        let (bw, bh) = board
-            .component(placement.id)
-            .and_then(|c| c.part.as_ref())
-            .map_or((15.0, 10.0), synth_layout::body_size_for_part);
-        min_x = min_x.min(cx - bw / 2.0);
-        max_x = max_x.max(cx + bw / 2.0);
-        min_y = min_y.min(cy - bh / 2.0);
-        max_y = max_y.max(cy + bh / 2.0);
-    }
-    for wire in &layout.wires {
-        for &(x, y) in &wire.points {
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-        }
-    }
-    for text in &layout.annotations {
-        let (x, y) = text.at_mm;
-        let width = text.text.chars().count() as f64 * text.size_mm * 0.72;
-        min_x = min_x.min(x);
-        max_x = max_x.max(x + width);
-        min_y = min_y.min(y - text.size_mm);
-        max_y = max_y.max(y);
-    }
-    for box_ in &layout.group_boxes {
-        min_x = min_x.min(box_.min_mm.0);
-        max_x = max_x.max(box_.max_mm.0);
-        min_y = min_y.min(box_.min_mm.1);
-        max_y = max_y.max(box_.max_mm.1);
-    }
-    (min_x, max_x, min_y, max_y)
+    synth_layout::content_bounds(board, layout).unwrap_or((
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ))
 }
 
 /// Everything the multi-sheet export needs: per-sheet files and
@@ -758,6 +726,30 @@ mod tests {
         let single = crate::schematic::build_schematic(&b, &project).to_string_pretty();
         assert_eq!(single.matches("(instances").count(), 0);
         let _ = Span::new(0, 0);
+    }
+
+    /// The root sheet is sized from the same content bounds as every other
+    /// page, so what its parts draw past their bodies is not left out.
+    #[test]
+    fn the_root_sheet_is_sized_from_the_layout_content_bounds() {
+        let b = board(vec![component(0, None)], vec![]);
+        let layout = layout_at(&[(0, 40.0, 40.0)]);
+        let (body_w, _) = synth_layout::body_size_for_part(b.components[0].part.as_ref().unwrap());
+        let (min_x, ..) = content_bounds(&b, &layout);
+        assert!(
+            min_x < 40.0 - body_w / 2.0,
+            "the pin ends left of the body are not in the bounds: {min_x}"
+        );
+    }
+
+    #[test]
+    fn an_empty_root_sheet_has_an_inverted_box() {
+        let b = board(vec![], vec![]);
+        let (min_x, max_x, min_y, max_y) = content_bounds(&b, &layout_at(&[]));
+        assert!(
+            min_x > max_x && min_y > max_y,
+            "{min_x} {max_x} {min_y} {max_y}"
+        );
     }
 
     /// A signal label on a sheet of a hierarchy must stay a local `label`.

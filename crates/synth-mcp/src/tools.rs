@@ -2369,18 +2369,16 @@ fn repair_hints(layout: &synth_layout::Layout, board: &synth_ir::Board) -> Vec<V
     // already knows which sheet fits (`fit_sheet_size`), so the hint is the
     // op that applies it. Spreading parts to fill the page only pushes
     // wires across blank paper.
-    if let Some((min_x, max_x, min_y, max_y)) = synth_layout::content_bounds(board, layout) {
+    // The drawing, including Reference/Value fields and what parts draw past
+    // their bodies, sizes both the ratio and the target page, the way the ERC
+    // rule and `fit_sheet` do.
+    if let Some((min_x, max_x, min_y, max_y)) = synth_layout::drawing_bounds(board, layout) {
         let (sheet_w, sheet_h) = layout.sheet_size.dims_mm();
-        // Size the target page the way `fit_sheet` will: around the drawing
-        // including Reference/Value fields, not just bodies and wires.
-        let (fit_min_x, fit_max_x, fit_min_y, fit_max_y) =
-            synth_layout::drawing_bounds(board, layout).unwrap_or((min_x, max_x, min_y, max_y));
         let content_w = (max_x - min_x).max(0.0);
         let content_h = (max_y - min_y).max(0.0);
         if sheet_w > 0.0 && sheet_h > 0.0 {
             let ratio = content_w * content_h / (sheet_w * sheet_h);
-            let fitted =
-                synth_layout::fit_sheet_size_any(fit_min_x, fit_max_x, fit_min_y, fit_max_y);
+            let fitted = synth_layout::fit_sheet_size_any(min_x, max_x, min_y, max_y);
             let (fit_w, fit_h) = fitted.dims_mm();
             if ratio < 0.45 && (fit_w < sheet_w || fit_h < sheet_h) {
                 hints.push(serde_json::json!({

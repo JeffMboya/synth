@@ -58,6 +58,7 @@ pub mod kicad_zip;
 pub mod maxrects;
 pub mod netclass;
 pub mod ops;
+pub mod pin_reconcile;
 pub mod placer;
 pub mod qualify_facts;
 pub mod route;
@@ -421,9 +422,36 @@ const GROUP_CAPTION_INSET: f64 = 1.0;
 /// Padding between a group's outline box (§21.1) and its contents —
 /// caption included, so the box top clears the caption baseline.
 const GROUP_BOX_PAD: f64 = 5.0;
+/// Padding (mm) between a group's content (bodies, pin ends, power symbols,
+/// flags) and its box edge on the sides and the bottom.
+const GROUP_CONTENT_PAD: f64 = 2.54;
+/// Clear space (mm) between a caption's baseline and the first row of
+/// content, one grid step.
+const GROUP_TITLE_GAP: f64 = 2.54;
+/// Height (mm) of the band at the top of a group box that the caption owns:
+/// the inset, the caption and the clear space under it. Nothing else is drawn
+/// in it.
+pub const GROUP_TITLE_BAND_MM: f64 = GROUP_CAPTION_INSET + GROUP_CAPTION_SIZE + GROUP_TITLE_GAP;
+/// Width (mm) of a group box's outline stroke.
+const GROUP_LINE_MM: f64 = 0.254;
 /// Gap (mm) left between two group boxes once they are stretched to meet:
-/// one grid step, a visible channel between regions.
-const GROUP_TILE_GAP: f64 = 2.54;
+/// one line wide, so neighbours show a single border.
+const GROUP_TILE_GAP: f64 = GROUP_LINE_MM;
+/// Half the height of a pin line and its number, in mm.
+const PIN_TEXT_HALF_MM: f64 = 1.3;
+/// How far a power symbol's name sits past the symbol, away from the pin, and
+/// half the height of that name, in mm.
+const POWER_NAME_OFFSET_MM: f64 = 3.81;
+const POWER_NAME_HALF_MM: f64 = 0.7;
+/// Width of one character of a power name, in mm.
+const POWER_NAME_CHAR_MM: f64 = 1.2;
+/// How far from the symbol's axis a power name that moved beside it starts.
+const POWER_NAME_SIDE_MM: f64 = 1.9;
+/// Width of one Reference or Value character, in mm.
+const FIELD_CHAR_MM: f64 = 1.2;
+/// How far a Reference or Value reaches off a body edge, in mm: the 3.81 mm
+/// the exporter keeps from a side that carries pins, plus half a line.
+const FIELD_REACH_MM: f64 = 3.81 + POWER_NAME_HALF_MM;
 /// Title and line sizes for design notes (§21.1 `notes` blocks) and
 /// generated connector pin legends. Phase B typography: titles stay
 /// at 2.0 mm, lines drop to 1.0 mm so prose reads subordinate to
@@ -443,6 +471,8 @@ const NOTE_TITLE_GAP: f64 = 4.0;
 /// the router reserves for a power flag.
 const POWER_STUB_LEN: f64 = 2.54;
 const POWER_SYMBOL_HALF: f64 = 2.54;
+/// Half the side of the cross a no-connect marker draws, in mm.
+const NO_CONNECT_HALF: f64 = 0.635;
 /// Gap below a group box, connector body, or content bottom before a
 /// notes block or pin legend starts.
 const BELOW_GAP: f64 = 8.0;
@@ -960,11 +990,25 @@ pub fn layout_with_overrides(
     rotate_usb_esd_diodes(board, &clusters, &mut layout);
     rotate_series_resistors(board, &clusters, &mut layout);
     lock_connector_rotations(board, &mut layout);
+    let before_overlay = layout.components.clone();
     overlay(&mut layout);
     route_and_label(board, &mut layout);
+    // A layout the overlay moved is a pinned one: its positions are kept.
+    let pinned = layout.components != before_overlay;
+    if !pinned {
+        for _ in 0..SEPARATE_ROUNDS {
+            if !separate_group_boxes(board, &mut layout) {
+                break;
+            }
+            route_and_label(board, &mut layout);
+        }
+    }
     annotate_groups(board, &mut layout);
     place_connector_legends(board, &mut layout);
     place_design_notes(board, &mut layout);
+    if !pinned {
+        shift_into_margin(board, &mut layout);
+    }
     // Notes sit under their box's bottom edge, so the boxes are stretched to
     // meet each other only once the notes are placed.
     let mut fixed = ungrouped_blocks(board, &layout);
@@ -1089,31 +1133,139 @@ fn mechanical_groups(board: &Board) -> std::collections::HashSet<&str> {
 /// the page like any other content.
 fn annotate_groups(board: &Board, layout: &mut Layout) {
     for (group, min_x, max_x, min_y, max_y) in group_bounds(board, layout) {
-        let caption_y = (min_y - GROUP_BOX_PAD + GROUP_CAPTION_SIZE + GROUP_CAPTION_INSET)
-            .max(GROUP_CAPTION_SIZE);
         // Header attributes (Phase D1): the display title when set,
         // and an explicit hue in place of the deterministic palette one.
         let declared = board.group(&group);
-        let caption = declared.map_or_else(|| group.clone(), |g| g.display_title().to_string());
+        let caption = group_caption(board, &group);
         let color = declared
             .and_then(|g| g.color)
             .unwrap_or_else(|| group_color(&group));
+        let (min_mm, max_mm) = group_box_rect(&caption, (min_x, max_x, min_y, max_y));
         layout.annotations.push(TextAnnotation {
-            text: caption,
             // Inside the box at the top-left, one glyph plus an
             // inset below the top edge stroke.
-            at_mm: (min_x, caption_y),
+            at_mm: (
+                min_mm.0 + GROUP_BOX_PAD,
+                (min_mm.1 + GROUP_CAPTION_SIZE + GROUP_CAPTION_INSET).max(GROUP_CAPTION_SIZE),
+            ),
+            text: caption,
             size_mm: GROUP_CAPTION_SIZE,
             kind: TextKind::Caption,
         });
         layout.group_boxes.push(GroupBox {
             group,
-            min_mm: (min_x - GROUP_BOX_PAD, min_y - GROUP_BOX_PAD),
-            max_mm: (max_x + GROUP_BOX_PAD, max_y + GROUP_BOX_PAD),
+            min_mm,
+            max_mm,
             color,
             caption_inside: true,
         });
     }
+}
+
+/// The text a group's caption shows: its display title when set.
+fn group_caption(board: &Board, group: &str) -> String {
+    board
+        .group(group)
+        .map_or_else(|| group.to_string(), |g| g.display_title().to_string())
+}
+
+/// The box a group draws round its content `(min_x, max_x, min_y, max_y)`.
+///
+/// The top reserves a title band: the caption plus a grid step of clear space
+/// before the first row of content. The box is at least as wide as its caption
+/// with a pad each side.
+fn group_box_rect(caption: &str, (min_x, max_x, min_y, max_y): (f64, f64, f64, f64)) -> Rect {
+    let min = (min_x - GROUP_CONTENT_PAD, min_y - GROUP_TITLE_BAND_MM);
+    let caption_w = caption.chars().count() as f64 * GROUP_CAPTION_SIZE * NOTE_CHAR_WIDTH;
+    let max_x = (max_x + GROUP_CONTENT_PAD).max(min.0 + caption_w + 2.0 * GROUP_BOX_PAD);
+    (min, (max_x, max_y + GROUP_CONTENT_PAD))
+}
+
+/// Rounds of [`separate_group_boxes`]: a shift moves a region's wires and
+/// labels, which can change what it draws, so the boxes are measured again.
+const SEPARATE_ROUNDS: usize = 3;
+
+/// Push regions apart until their boxes, as [`annotate_groups`] and
+/// [`place_design_notes`] will draw them, no longer overlap. True when any
+/// region moved.
+///
+/// Region packing reserves the bodies and a padding around them. What pins,
+/// power symbols and net labels draw past that is only known once the sheet
+/// is routed, so a region whose flags reach into its neighbour is moved
+/// right or down, whichever costs less, in whole grid steps. Regions are
+/// settled top to bottom and left to right, each against those already
+/// settled and the parts that belong to no region.
+fn separate_group_boxes(board: &Board, layout: &mut Layout) -> bool {
+    let mut boxes: Vec<(String, Rect)> = group_bounds(board, layout)
+        .into_iter()
+        .map(|(group, min_x, max_x, min_y, max_y)| {
+            let (min, max) =
+                group_box_rect(&group_caption(board, &group), (min_x, max_x, min_y, max_y));
+            let notes = board
+                .notes
+                .iter()
+                .filter(|n| n.group.as_deref() == Some(group.as_str()))
+                .map(note_strip_height)
+                .sum::<f64>();
+            let note_w = group_note_box_width(board, Some(&group));
+            (group, (min, (max.0.max(min.0 + note_w), max.1 + notes)))
+        })
+        .collect();
+    let fixed = ungrouped_blocks(board, layout);
+    let mut order: Vec<usize> = (0..boxes.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (ra, rb) = (&boxes[a].1, &boxes[b].1);
+        ra.0 .1
+            .total_cmp(&rb.0 .1)
+            .then(ra.0 .0.total_cmp(&rb.0 .0))
+    });
+    let overlaps = |a: &Rect, b: &Rect| {
+        a.0 .0 < b.1 .0 + GROUP_TILE_GAP
+            && b.0 .0 < a.1 .0 + GROUP_TILE_GAP
+            && a.0 .1 < b.1 .1 + GROUP_TILE_GAP
+            && b.0 .1 < a.1 .1 + GROUP_TILE_GAP
+    };
+    // Whole grid steps that clear `need` mm.
+    let steps = |need: f64| (need / 2.54).ceil() * 2.54;
+    let mut moved = std::collections::HashMap::new();
+    for (pos, &i) in order.iter().enumerate() {
+        loop {
+            let others = order[..pos]
+                .iter()
+                .map(|&j| boxes[j].1)
+                .chain(fixed.iter().copied());
+            let Some(blocker) = others.into_iter().find(|b| overlaps(&boxes[i].1, b)) else {
+                break;
+            };
+            let rect = &mut boxes[i].1;
+            let right = steps(blocker.1 .0 + GROUP_TILE_GAP - rect.0 .0);
+            let down = steps(blocker.1 .1 + GROUP_TILE_GAP - rect.0 .1);
+            let (dx, dy) = if right <= down {
+                (right, 0.0)
+            } else {
+                (0.0, down)
+            };
+            *rect = (
+                (rect.0 .0 + dx, rect.0 .1 + dy),
+                (rect.1 .0 + dx, rect.1 .1 + dy),
+            );
+            let shift: &mut (f64, f64) = moved.entry(i).or_default();
+            *shift = (shift.0 + dx, shift.1 + dy);
+        }
+    }
+    for placement in &mut layout.components {
+        let Some(group) = effective_group(board, placement.id) else {
+            continue;
+        };
+        let Some(index) = boxes.iter().position(|(g, _)| g == group) else {
+            continue;
+        };
+        if let Some(&(dx, dy)) = moved.get(&index) {
+            placement.center_mm.0 += dx;
+            placement.center_mm.1 += dy;
+        }
+    }
+    !moved.is_empty()
 }
 /// Stretch each group box right and down until it meets its neighbour, so the
 /// boxes tile the rectangle they span instead of floating apart.
@@ -1191,9 +1343,11 @@ fn tile_group_boxes(boxes: &mut [GroupBox], fixed: &[Rect], gap: f64) {
 /// A rectangle as `(min, max)` corners in sheet millimetres.
 type Rect = ((f64, f64), (f64, f64));
 
-/// Bodies of the parts that belong to no group, padded like a group box. They
-/// have no box of their own, so a group box must stop short of them.
+/// The parts that belong to no group, with what they draw past their bodies,
+/// padded like a group box. They have no box of their own, so a group box
+/// must stop short of all of it.
 fn ungrouped_blocks(board: &Board, layout: &Layout) -> Vec<Rect> {
+    let drawn = drawn_beyond_bodies(board, layout);
     layout
         .components
         .iter()
@@ -1206,9 +1360,17 @@ fn ungrouped_blocks(board: &Board, layout: &Layout) -> Vec<Rect> {
                 _ => (w, h),
             };
             let (x, y) = p.center_mm;
+            let (mut x0, mut y0, mut x1, mut y1) =
+                (x - w / 2.0, y - h / 2.0, x + w / 2.0, y + h / 2.0);
+            for (_, r) in drawn.iter().filter(|(id, _)| *id == p.id) {
+                x0 = x0.min(r.0);
+                y0 = y0.min(r.1);
+                x1 = x1.max(r.2);
+                y1 = y1.max(r.3);
+            }
             Some((
-                (x - w / 2.0 - GROUP_BOX_PAD, y - h / 2.0 - GROUP_BOX_PAD),
-                (x + w / 2.0 + GROUP_BOX_PAD, y + h / 2.0 + GROUP_BOX_PAD),
+                (x0 - GROUP_BOX_PAD, y0 - GROUP_BOX_PAD),
+                (x1 + GROUP_BOX_PAD, y1 + GROUP_BOX_PAD),
             ))
         })
         .collect()
@@ -1325,10 +1487,196 @@ fn default_caption_inside() -> bool {
     true
 }
 
-/// Bounding box of each declared `group`'s component bodies, in
-/// first-seen placement order: `(group, min_x, max_x, min_y, max_y)`.
-/// Shared by captions, boxes, and group-placed design notes so the
-/// three can never disagree about where a group is.
+/// The symbol of a power flag whose stub ends at `at`, and its name.
+fn power_symbol_rects((sx, sy): (f64, f64), flag: &PowerFlag) -> [(f64, f64, f64, f64); 2] {
+    // A rail arrow points up and its name sits above it, a ground
+    // triangle points down and its name sits below.
+    let name_y = match flag.kind {
+        PowerFlagKind::Vcc => sy - POWER_NAME_OFFSET_MM,
+        PowerFlagKind::Gnd => sy + POWER_NAME_OFFSET_MM,
+    };
+    // The name moves beside the symbol when its usual spot is taken, so
+    // the box reaches a name's width past the symbol's axis each way.
+    let reach = POWER_NAME_SIDE_MM + flag.label.chars().count() as f64 * POWER_NAME_CHAR_MM;
+    [
+        (
+            sx - POWER_SYMBOL_HALF,
+            sy - POWER_SYMBOL_HALF,
+            sx + POWER_SYMBOL_HALF,
+            sy + POWER_SYMBOL_HALF,
+        ),
+        (
+            sx - reach,
+            name_y - POWER_NAME_HALF_MM,
+            sx + reach,
+            name_y + POWER_NAME_HALF_MM,
+        ),
+    ]
+}
+
+/// Rectangles `(x0, y0, x1, y1)` that parts draw outside their bodies, each
+/// with the component that draws it: pin ends with their numbers, power
+/// symbols with their names, power legs fanned out of pins the registry does
+/// not declare, no-connect markers, and net label flags with their stubs.
+fn drawn_beyond_bodies(board: &Board, layout: &Layout) -> Vec<(ComponentId, (f64, f64, f64, f64))> {
+    let placements: std::collections::HashMap<ComponentId, &ComponentPlacement> =
+        layout.components.iter().map(|p| (p.id, p)).collect();
+    let mut out = Vec::new();
+    for placement in &layout.components {
+        let Some(component) = board.component(placement.id) else {
+            continue;
+        };
+        let Some(part) = component.part.as_ref() else {
+            continue;
+        };
+        let (mut sideways, mut vertical) = (0_usize, 0_usize);
+        for index in 0..part.pins.len() {
+            // u32 cast is bounded: the index comes from the part's own pin list.
+            let pin = PinId(index as u32);
+            if let Some((x, y, dx, _)) =
+                route::pin_terminal_xy(board, placement.id, pin, &placements)
+            {
+                if dx == 0.0 {
+                    vertical += 1;
+                } else {
+                    sideways += 1;
+                }
+                out.push((
+                    placement.id,
+                    (
+                        x - PIN_TEXT_HALF_MM,
+                        y - PIN_TEXT_HALF_MM,
+                        x + PIN_TEXT_HALF_MM,
+                        y + PIN_TEXT_HALF_MM,
+                    ),
+                ));
+            }
+        }
+        // Reference and Value go above and below a part whose pins are mostly
+        // beside it, and to its right and left otherwise.
+        let (w, h) = body_size_for_part(part);
+        let (w, h) = match placement.rotation {
+            Rotation::Ninety | Rotation::TwoSeventy => (h, w),
+            _ => (w, h),
+        };
+        let (cx, cy) = placement.center_mm;
+        let reference = component.refdes.chars().count() as f64 * FIELD_CHAR_MM;
+        let value = component
+            .value
+            .as_deref()
+            .or(part.mpn.as_deref())
+            .unwrap_or("(no value)")
+            .chars()
+            .count() as f64
+            * FIELD_CHAR_MM;
+        let (above, below) = (cy - h / 2.0 - FIELD_REACH_MM, cy + h / 2.0 + FIELD_REACH_MM);
+        let (right, left) = (cx + w / 2.0 + FIELD_REACH_MM, cx - w / 2.0 - FIELD_REACH_MM);
+        let (half_ref, half_value) = (reference / 2.0, value / 2.0);
+        let fields = if vertical <= sideways {
+            [
+                (cx - half_ref, above, cx + half_ref, cy - h / 2.0),
+                (cx - half_value, cy + h / 2.0, cx + half_value, below),
+            ]
+        } else {
+            [
+                (
+                    cx + w / 2.0,
+                    cy - POWER_NAME_HALF_MM,
+                    right + reference,
+                    cy + POWER_NAME_HALF_MM,
+                ),
+                (
+                    left - value,
+                    cy - POWER_NAME_HALF_MM,
+                    cx - w / 2.0,
+                    cy + POWER_NAME_HALF_MM,
+                ),
+            ]
+        };
+        out.extend(fields.into_iter().map(|rect| (placement.id, rect)));
+    }
+    for flag in &layout.power_flags {
+        let Some((x, y, dx, dy)) =
+            route::pin_terminal_xy(board, flag.component, flag.pin, &placements)
+        else {
+            continue;
+        };
+        let (sx, sy) = (x + dx * POWER_STUB_LEN, y + dy * POWER_STUB_LEN);
+        out.extend(
+            power_symbol_rects((sx, sy), flag)
+                .into_iter()
+                .map(|rect| (flag.component, rect)),
+        );
+    }
+    // The legs the exporter fans out of physical pins the registry does not
+    // declare draw the same symbol and name on the rail they join, and the
+    // pins the netlist never reaches draw a no-connect cross.
+    for reconciled in pin_reconcile::reconcile_all(board) {
+        for leg in &reconciled.power_legs {
+            let Some(rail) = layout.power_flags.iter().find(|f| f.net == leg.net) else {
+                continue;
+            };
+            let Some(((px, py), at)) = pin_reconcile::fanned_leg_stub(board, leg, &placements)
+            else {
+                continue;
+            };
+            out.push((
+                leg.component,
+                (
+                    px - PIN_TEXT_HALF_MM,
+                    py - PIN_TEXT_HALF_MM,
+                    px + PIN_TEXT_HALF_MM,
+                    py + PIN_TEXT_HALF_MM,
+                ),
+            ));
+            out.extend(
+                power_symbol_rects(at, rail)
+                    .into_iter()
+                    .map(|rect| (leg.component, rect)),
+            );
+        }
+        for pin in &reconciled.no_connects {
+            if let Some((x, y)) = pin_reconcile::no_connect_position(board, pin, &placements) {
+                out.push((
+                    pin.component,
+                    (
+                        x - NO_CONNECT_HALF,
+                        y - NO_CONNECT_HALF,
+                        x + NO_CONNECT_HALF,
+                        y + NO_CONNECT_HALF,
+                    ),
+                ));
+            }
+        }
+    }
+    let labels = layout
+        .net_labels
+        .iter()
+        .map(|l| (&l.label, l.component, l.pin))
+        .chain(
+            layout
+                .hierarchical_labels
+                .iter()
+                .map(|l| (&l.label, l.component, l.pin)),
+        );
+    for (text, component, pin) in labels {
+        let Some((x0, y0, x1, y1)) =
+            route::net_label_rect(board, text, component, pin, &placements)
+        else {
+            continue;
+        };
+        if let Some((pin_x, ..)) = route::pin_terminal_xy(board, component, pin, &placements) {
+            out.push((component, (x0.min(pin_x), y0, x1.max(pin_x), y1)));
+        }
+    }
+    out
+}
+
+/// Bounding box of each declared `group`'s content, in first-seen placement
+/// order: `(group, min_x, max_x, min_y, max_y)`. The content is the component
+/// bodies and what [`drawn_beyond_bodies`] lists. Shared by captions, boxes,
+/// and group-placed design notes so the three can never disagree about where
+/// a group is.
 fn group_bounds(board: &Board, layout: &Layout) -> Vec<(String, f64, f64, f64, f64)> {
     let mut order: Vec<String> = Vec::new();
     let mut bounds: std::collections::HashMap<String, (f64, f64, f64, f64)> =
@@ -1355,6 +1703,15 @@ fn group_bounds(board: &Board, layout: &Layout) -> Vec<(String, f64, f64, f64, f
         entry.1 = entry.1.max(cx + bw / 2.0);
         entry.2 = entry.2.min(cy - bh / 2.0);
         entry.3 = entry.3.max(cy + bh / 2.0);
+    }
+    for (id, (x0, y0, x1, y1)) in drawn_beyond_bodies(board, layout) {
+        let Some(entry) = effective_group(board, id).and_then(|g| bounds.get_mut(g)) else {
+            continue;
+        };
+        entry.0 = entry.0.min(x0);
+        entry.1 = entry.1.max(x1);
+        entry.2 = entry.2.min(y0);
+        entry.3 = entry.3.max(y1);
     }
     order
         .into_iter()
@@ -1394,6 +1751,7 @@ fn place_connector_legends(board: &Board, layout: &mut Layout) {
     if !board.legends {
         return;
     }
+    let drawn = drawn_beyond_bodies(board, layout);
     for placement in &layout.components {
         let Some(component) = board.component(placement.id) else {
             continue;
@@ -1422,7 +1780,14 @@ fn place_connector_legends(board: &Board, layout: &mut Layout) {
         let (cx, cy) = placement.center_mm;
         let (bw, bh) = body_size_for_part(part);
         let x = cx - bw / 2.0;
-        let mut y = cy + bh / 2.0 + BELOW_GAP;
+        // Below the body and below what the part draws past it: a connector
+        // turned to face up and down hangs power symbols lower than the gap.
+        let bottom = drawn
+            .iter()
+            .filter(|(id, _)| *id == placement.id)
+            .map(|(_, rect)| rect.3)
+            .fold(cy + bh / 2.0, f64::max);
+        let mut y = bottom + BELOW_GAP;
         layout.annotations.push(TextAnnotation {
             text: format!("{} pinout", component.refdes),
             at_mm: (x, y),
@@ -1475,24 +1840,15 @@ fn place_design_notes(board: &Board, layout: &mut Layout) {
                 continue;
             };
             // Strip below the current box bottom edge, inside the
-            // grown box: title first, lines beneath it. Power symbols
-            // and net labels hang below the parts, past the box edge,
-            // so the strip also starts below them.
+            // grown box: title first, lines beneath it. The box already
+            // holds the power symbols and net labels hanging below the
+            // parts, so the strip starts below them.
             let x = layout.group_boxes[box_idx].min_mm.0 + GROUP_BOX_PAD;
             let note_w = note_text_width(note);
-            let strip_top = layout.group_boxes[box_idx].max_mm.1.max(group_hang_bottom(
-                board,
-                layout,
-                group,
-                x,
-                x + note_w,
-            ));
+            let strip_top = layout.group_boxes[box_idx].max_mm.1;
             let title_y = strip_top + NOTE_STRIP_GAP + NOTE_TITLE_SIZE;
             push_note_runs(layout, note, x, title_y);
-            let last_y = title_y
-                + NOTE_TITLE_GAP
-                + note.lines.len().saturating_sub(1) as f64 * NOTE_LINE_PITCH;
-            layout.group_boxes[box_idx].max_mm.1 = last_y + GROUP_BOX_PAD;
+            layout.group_boxes[box_idx].max_mm.1 = strip_top + note_strip_height(note);
             let right = &mut layout.group_boxes[box_idx].max_mm.0;
             *right = right.max(x + note_w + GROUP_BOX_PAD);
         } else {
@@ -1503,40 +1859,14 @@ fn place_design_notes(board: &Board, layout: &mut Layout) {
     }
 }
 
-/// Lowest y that a part of `group` draws below its body between `x0`
-/// and `x1`: the pin ends, the power symbol on each pin stub and the net
-/// label text. The group box is sized from the bodies alone, so these
-/// reach past its bottom edge. `NEG_INFINITY` when nothing hangs there.
-fn group_hang_bottom(board: &Board, layout: &Layout, group: &str, x0: f64, x1: f64) -> f64 {
-    let placements: std::collections::HashMap<ComponentId, &ComponentPlacement> =
-        layout.components.iter().map(|p| (p.id, p)).collect();
-    let in_group = |id: ComponentId| effective_group(board, id) == Some(group);
-    let mut bottom = f64::NEG_INFINITY;
-    let mut reach = |x_min: f64, x_max: f64, y: f64| {
-        if x_max >= x0 && x_min <= x1 {
-            bottom = bottom.max(y);
-        }
-    };
-    for flag in layout.power_flags.iter().filter(|f| in_group(f.component)) {
-        if let Some((x, y, dx, dy)) =
-            route::pin_terminal_xy(board, flag.component, flag.pin, &placements)
-        {
-            let (sx, sy) = (x + dx * POWER_STUB_LEN, y + dy * POWER_STUB_LEN);
-            reach(
-                sx - POWER_SYMBOL_HALF,
-                sx + POWER_SYMBOL_HALF,
-                sy + POWER_SYMBOL_HALF,
-            );
-        }
-    }
-    for label in layout.net_labels.iter().filter(|l| in_group(l.component)) {
-        if let Some((x_min, _, x_max, y_max)) =
-            route::net_label_rect(board, &label.label, label.component, label.pin, &placements)
-        {
-            reach(x_min, x_max, y_max);
-        }
-    }
-    bottom
+/// Height (mm) a group note adds to its box: the gap under the box edge,
+/// the title, the lines and the padding below the last one.
+fn note_strip_height(note: &synth_ir::Note) -> f64 {
+    NOTE_STRIP_GAP
+        + NOTE_TITLE_SIZE
+        + NOTE_TITLE_GAP
+        + note.lines.len().saturating_sub(1) as f64 * NOTE_LINE_PITCH
+        + GROUP_BOX_PAD
 }
 
 /// Push one titled note block's runs: the title at `(x, y)`, one run
@@ -1621,7 +1951,8 @@ fn resolve_text_overlaps(board: &Board, layout: &mut Layout) {
         return;
     }
     // Fixed obstacles: component bodies including their Reference /
-    // Value text margin, so a nudged run never lands on a part.
+    // Value text margin, and what parts draw past their bodies, so a nudged
+    // run never lands on a part or its pins.
     let mut placed: Vec<(f64, f64, f64, f64)> = layout
         .components
         .iter()
@@ -1639,6 +1970,11 @@ fn resolve_text_overlaps(board: &Board, layout: &mut Layout) {
             )
         })
         .collect();
+    placed.extend(
+        drawn_beyond_bodies(board, layout)
+            .into_iter()
+            .map(|(_, r)| r),
+    );
     // Largest glyphs first; authored order breaks ties (stable sort).
     let mut order: Vec<usize> = (0..layout.annotations.len()).collect();
     order.sort_by(|&a, &b| {
@@ -1710,43 +2046,20 @@ fn resolve_text_overlaps(board: &Board, layout: &mut Layout) {
     }
 }
 
-/// Lowest content baseline on the sheet: component bodies, wire
-/// points, annotations, and group boxes. Board-level design notes
-/// start below this.
+/// Lowest content baseline on the sheet, from [`content_bounds`]. Board-level
+/// design notes start below this.
 fn content_bottom(board: &Board, layout: &Layout) -> f64 {
-    let mut bottom = f64::NEG_INFINITY;
-    for placement in &layout.components {
-        let bh = board
-            .component(placement.id)
-            .and_then(|c| c.part.as_ref())
-            .map_or(BODY_FALLBACK_H, |part| body_size_for_part(part).1);
-        bottom = bottom.max(placement.center_mm.1 + bh / 2.0);
-    }
-    for wire in &layout.wires {
-        for &(_, y) in &wire.points {
-            bottom = bottom.max(y);
-        }
-    }
-    for text in &layout.annotations {
-        bottom = bottom.max(text.at_mm.1);
-    }
-    for box_ in &layout.group_boxes {
-        bottom = bottom.max(box_.max_mm.1);
-    }
-    if bottom.is_finite() {
-        bottom
-    } else {
-        PAGE_MARGIN
-    }
+    content_bounds(board, layout).map_or(PAGE_MARGIN, |(_, _, _, max_y)| max_y)
 }
 
 /// Bounding box of everything drawn on the sheet — component
-/// bodies, wire points, text runs, and group boxes — as
+/// bodies, what parts draw past their bodies (`drawn_beyond_bodies`), wire
+/// points, text runs, and group boxes — as
 /// `(min_x, max_x, min_y, max_y)` in mm page coordinates, or `None`
 /// for an empty layout. Shared by `grow_sheet_to_fit`,
-/// `compact_sheet_to_fit`, and the `E-SYNTH-SCHEM-012` fill rule so
-/// page sizing and the fill measurement can never disagree about
-/// where the content is.
+/// `compact_sheet_to_fit` and `shift_into_margin`, so page sizing and the
+/// margin can never disagree about where the content is. The
+/// `E-SYNTH-SCHEM-012` fill rule measures through [`drawing_bounds`].
 pub fn content_bounds(board: &Board, layout: &Layout) -> Option<(f64, f64, f64, f64)> {
     let mut min_x = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
@@ -1762,6 +2075,13 @@ pub fn content_bounds(board: &Board, layout: &Layout) -> Option<(f64, f64, f64, 
         max_x = max_x.max(cx + bw / 2.0);
         min_y = min_y.min(cy - bh / 2.0);
         max_y = max_y.max(cy + bh / 2.0);
+    }
+    // A part in a group has its box for these, but a part in none does not.
+    for (_, (x0, y0, x1, y1)) in drawn_beyond_bodies(board, layout) {
+        min_x = min_x.min(x0);
+        max_x = max_x.max(x1);
+        min_y = min_y.min(y0);
+        max_y = max_y.max(y1);
     }
     for wire in &layout.wires {
         for &(x, y) in &wire.points {
@@ -5005,8 +5325,9 @@ pub fn fit_sheet_size_any(min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> She
 }
 
 /// [`content_bounds`] widened to cover each component's Reference and
-/// Value fields, which the exporter places around the body after layout
-/// and so `content_bounds` cannot see.
+/// Value fields, which the exporter places around the body after layout.
+/// `content_bounds` reaches them only through the fixed margin
+/// `drawn_beyond_bodies` allows, so this takes their text width as well.
 ///
 /// Page fitting and centring use this rather than the bare bounds: a sheet
 /// sized to bodies and wires alone puts the refdes/value text of the
@@ -5068,6 +5389,12 @@ pub fn centre_on_sheet(board: &Board, layout: &mut Layout) {
     if dx == 0.0 && dy == 0.0 {
         return;
     }
+    translate_layout(layout, dx, dy);
+}
+
+/// Move every geometric field of `layout` by `(dx, dy)`: bodies, wires,
+/// junctions, text and group boxes.
+fn translate_layout(layout: &mut Layout, dx: f64, dy: f64) {
     let shift = |p: &mut (f64, f64)| {
         p.0 += dx;
         p.1 += dy;
@@ -5086,6 +5413,21 @@ pub fn centre_on_sheet(board: &Board, layout: &mut Layout) {
     for group in &mut layout.group_boxes {
         shift(&mut group.min_mm);
         shift(&mut group.max_mm);
+    }
+}
+
+/// Move everything right and down, in whole grid steps, until nothing sits
+/// closer to the page's left or top edge than [`PAGE_MARGIN`]. Region boxes now
+/// hold what pins, flags and labels draw, which can reach past the margin the
+/// packer left for the bodies.
+fn shift_into_margin(board: &Board, layout: &mut Layout) {
+    let Some((min_x, _, min_y, _)) = content_bounds(board, layout) else {
+        return;
+    };
+    let steps = |need: f64| (need.max(0.0) / 2.54).ceil() * 2.54;
+    let (dx, dy) = (steps(PAGE_MARGIN - min_x), steps(PAGE_MARGIN - min_y));
+    if dx > 0.0 || dy > 0.0 {
+        translate_layout(layout, dx, dy);
     }
 }
 
@@ -7976,6 +8318,285 @@ mod documentation_tests {
         }
     }
 
+    /// What a part draws past its body includes the power legs fanned out of
+    /// physical pins the registry does not declare and the no-connect markers
+    /// on pins the netlist never reaches, so a group box is sized from them
+    /// too.
+    #[test]
+    fn parts_draw_fanned_power_legs_and_no_connect_markers_beyond_their_bodies() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = synth_registry::load_dir(&root.join("registry").join("parts")).unwrap();
+        let source = r#"board "lone_mcu" {
+    layers 2
+    manufacturer "jlcpcb"
+    group "MCU" {
+      component U2: mcu "stm32f103c8"
+    }
+    component J1: connector "header_1x4"
+    component U1: regulator "ams1117_3v3"
+    connect J1.p1 -> U1.vin
+    connect J1.p2 -> U1.gnd
+    connect U1.vout -> U2.vdd
+    connect U1.gnd -> U2.vss
+}"#;
+        let ast = synth_parser::parse(source, "lone_mcu.synth").ast.unwrap();
+        let b = synth_ir::lower(&ast, &registry, "lone_mcu.synth")
+            .board
+            .unwrap();
+        let layout = layout(&b);
+        let placements: std::collections::HashMap<_, _> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        // One rectangle the component draws holds the whole of `want`.
+        let holds = |id: ComponentId, want: (f64, f64, f64, f64)| {
+            drawn.iter().any(|(owner, r)| {
+                *owner == id && r.0 <= want.0 && r.1 <= want.1 && want.2 <= r.2 && want.3 <= r.3
+            })
+        };
+        let (mut legs, mut markers) = (0, 0);
+        for reconciled in pin_reconcile::reconcile_all(&b) {
+            for leg in &reconciled.power_legs {
+                if !layout.power_flags.iter().any(|f| f.net == leg.net) {
+                    continue;
+                }
+                let (_, (fx, fy)) = pin_reconcile::fanned_leg_stub(&b, leg, &placements)
+                    .expect("a leg on the symbol has a stub");
+                legs += 1;
+                let symbol = (
+                    fx - POWER_SYMBOL_HALF,
+                    fy - POWER_SYMBOL_HALF,
+                    fx + POWER_SYMBOL_HALF,
+                    fy + POWER_SYMBOL_HALF,
+                );
+                assert!(
+                    holds(leg.component, symbol),
+                    "leg {} symbol {symbol:?}",
+                    leg.pin_number
+                );
+                // The rail's name sits a step past the symbol, below a ground
+                // triangle and above a rail arrow.
+                let rail = layout
+                    .power_flags
+                    .iter()
+                    .find(|f| f.net == leg.net)
+                    .expect("the leg's rail has a flag");
+                let name_y = match rail.kind {
+                    PowerFlagKind::Gnd => fy + POWER_NAME_OFFSET_MM,
+                    PowerFlagKind::Vcc => fy - POWER_NAME_OFFSET_MM,
+                };
+                let name = (fx - 1.0, name_y - 0.5, fx + 1.0, name_y + 0.5);
+                assert!(
+                    holds(leg.component, name),
+                    "leg {} name {name:?}",
+                    leg.pin_number
+                );
+            }
+            for pin in &reconciled.no_connects {
+                let at = pin_reconcile::no_connect_position(&b, pin, &placements)
+                    .expect("a no-connect pin has a position");
+                markers += 1;
+                let cross = (
+                    at.0 - NO_CONNECT_HALF,
+                    at.1 - NO_CONNECT_HALF,
+                    at.0 + NO_CONNECT_HALF,
+                    at.1 + NO_CONNECT_HALF,
+                );
+                assert!(
+                    holds(pin.component, cross),
+                    "marker on pin {} at {at:?}",
+                    pin.pin_number
+                );
+            }
+        }
+        assert!(legs > 0 && markers > 0, "{legs} legs and {markers} markers");
+    }
+
+    /// A part in no group has no box to hold what it draws past its body, so
+    /// the page is fitted to those extents directly: pin ends, fields, power
+    /// symbols, fanned legs and no-connect markers.
+    #[test]
+    fn content_bounds_hold_what_an_ungrouped_part_draws_past_its_body() {
+        let b = ungrouped_mcu_board();
+        let layout = layout(&b);
+        let (min_x, max_x, min_y, max_y) = content_bounds(&b, &layout).expect("content");
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        assert!(!drawn.is_empty(), "nothing drawn past a body");
+        for (_, (x0, y0, x1, y1)) in drawn {
+            assert!(
+                min_x <= x0 && min_y <= y0 && x1 <= max_x && y1 <= max_y,
+                "({x0:.2}, {y0:.2}, {x1:.2}, {y1:.2}) is outside the content \
+                 ({min_x:.2}, {min_y:.2}, {max_x:.2}, {max_y:.2})"
+            );
+        }
+    }
+
+    /// A part in no group has no box, so a group's box must stop short of all
+    /// it draws, not only its body: pin ends, fields, power symbols.
+    #[test]
+    fn a_group_box_stops_short_of_everything_an_ungrouped_part_draws() {
+        let b = ungrouped_mcu_board();
+        let layout = layout(&b);
+        let blocks = ungrouped_blocks(&b, &layout);
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        assert!(!drawn.is_empty(), "nothing drawn past a body");
+        for (id, (x0, y0, x1, y1)) in drawn {
+            let index = layout.components.iter().position(|p| p.id == id).unwrap();
+            let ((bx0, by0), (bx1, by1)) = blocks[index];
+            assert!(
+                bx0 <= x0 && by0 <= y0 && x1 <= bx1 && y1 <= by1,
+                "({x0:.2}, {y0:.2}, {x1:.2}, {y1:.2}) is outside the block \
+                 ({bx0:.2}, {by0:.2}, {bx1:.2}, {by1:.2})"
+            );
+        }
+    }
+
+    /// A board from `.synth` source, with the registry of real parts.
+    fn board_from_source(source: &str) -> Board {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = synth_registry::load_dir(&root.join("registry").join("parts")).unwrap();
+        let ast = synth_parser::parse(source, "t.synth").ast.unwrap();
+        synth_ir::lower(&ast, &registry, "t.synth").board.unwrap()
+    }
+
+    /// A microcontroller, a connector and a regulator, none in a group, so
+    /// the power legs and no-connect markers of the STM32 are drawn.
+    fn ungrouped_mcu_board() -> Board {
+        board_from_source(
+            r#"board "ungrouped_mcu" {
+    layers 2
+    manufacturer "jlcpcb"
+    component U2: mcu "stm32f103c8"
+    component J1: connector "header_1x4"
+    component U1: regulator "ams1117_3v3"
+    connect J1.p1 -> U1.vin
+    connect J1.p2 -> U1.gnd
+    connect U1.vout -> U2.vdd
+    connect U1.gnd -> U2.vss
+}"#,
+        )
+    }
+
+    /// A note is nudged off what parts draw past their bodies too, not only
+    /// off the bodies: pin ends and fields would be written over.
+    #[test]
+    fn a_note_is_nudged_off_what_a_part_draws_past_its_body() {
+        let b = ungrouped_mcu_board();
+        let mut layout = layout(&b);
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        // Something drawn past a body that no body covers, so only it can
+        // move the note.
+        let bodies: Vec<_> = layout
+            .components
+            .iter()
+            .map(|p| {
+                let (w, h) = b
+                    .component(p.id)
+                    .and_then(|c| c.part.as_ref())
+                    .map_or((BODY_FALLBACK_W, BODY_FALLBACK_H), body_size_for_part);
+                let (cx, cy) = p.center_mm;
+                (
+                    cx - w / 2.0,
+                    cy - h / 2.0 - TEXT_MARGIN_Y,
+                    cx + w / 2.0,
+                    cy + h / 2.0 + TEXT_MARGIN_Y,
+                )
+            })
+            .collect();
+        let (_, target) = *drawn
+            .iter()
+            .find(|(_, r)| !bodies.iter().any(|body| rects_overlap(*r, *body)))
+            .expect("a rectangle drawn clear of every body");
+        layout.annotations = vec![TextAnnotation {
+            text: "note".to_string(),
+            at_mm: (target.0, target.3),
+            size_mm: NOTE_LINE_SIZE,
+            kind: TextKind::LegendLine,
+        }];
+        resolve_text_overlaps(&b, &mut layout);
+        assert_eq!(layout.annotations.len(), 1, "the note was dropped");
+        let note = &layout.annotations[0];
+        let (x, y) = note.at_mm;
+        let rect = (
+            x,
+            y - note.size_mm,
+            x + text_run_width(&note.text, note.size_mm),
+            y,
+        );
+        for (_, other) in drawn {
+            assert!(
+                !rects_overlap(rect, other),
+                "the note {rect:?} sits on something a part draws, {other:?}"
+            );
+        }
+    }
+
+    /// A connector's pinout legend starts below what the connector draws past
+    /// its body, so it does not land on its power symbols and fields.
+    #[test]
+    fn a_connector_legend_starts_below_what_the_connector_draws() {
+        let b = board_from_source(
+            r#"board "legend" {
+    layers 2
+    legends on
+    component J1: connector "header_1x4"
+    component U1: regulator "ams1117_3v3"
+    component R1: resistor "r_generic_0603"
+    connect J1.p1 -> U1.vin as "VIN"
+    connect J1.p2 -> U1.gnd as "GND"
+    connect J1.p3 -> U1.vout as "VOUT"
+    connect J1.p4 -> R1.p1 as "SIG"
+}"#,
+        );
+        let mut layout = layout(&b);
+        let j1 = b.components.iter().find(|c| c.refdes == "J1").unwrap().id;
+        // Turned so its pins face up and down, what hangs below it is most.
+        for placement in &mut layout.components {
+            if placement.id == j1 {
+                placement.rotation = Rotation::Ninety;
+            }
+        }
+        layout.annotations.clear();
+        place_connector_legends(&b, &mut layout);
+        let bottom = drawn_beyond_bodies(&b, &layout)
+            .into_iter()
+            .filter(|(id, _)| *id == j1)
+            .map(|(_, r)| r.3)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let title = layout
+            .annotations
+            .iter()
+            .find(|a| a.kind == TextKind::LegendTitle)
+            .expect("the connector has a legend");
+        assert!(
+            title.at_mm.1 - title.size_mm >= bottom,
+            "the legend title's top {:.2} is above what J1 draws, to {bottom:.2}",
+            title.at_mm.1 - title.size_mm
+        );
+    }
+
+    /// Board-level notes start below the content, so below what an ungrouped
+    /// part draws past its body too, or a note lands on its power symbols and
+    /// net labels.
+    #[test]
+    fn board_notes_start_below_what_an_ungrouped_part_draws() {
+        let ic = part("ic", vec![pin("a"), pin("b"), pin("c"), pin("d")]);
+        let b = board_with_notes(
+            vec![component(0, "U1", ic, None)],
+            vec![net(0, "SIG", &[(0, 0)])],
+            Vec::new(),
+        );
+        let layout = layout(&b);
+        let bottom = content_bottom(&b, &layout);
+        let drawn = drawn_beyond_bodies(&b, &layout);
+        assert!(!drawn.is_empty(), "nothing drawn past the body");
+        for (_, (_, _, _, y1)) in drawn {
+            assert!(
+                y1 <= bottom,
+                "something is drawn to {y1:.2}, notes start at {bottom:.2}"
+            );
+        }
+    }
+
     #[test]
     fn group_note_reserves_the_text_of_a_left_facing_net_label() {
         let ic = part("ic", vec![pin("a"), pin("b"), pin("c"), pin("d")]);
@@ -8003,16 +8624,17 @@ mod documentation_tests {
         // The text runs left from the end of the 5.08 mm stub, about 11 mm.
         let stub_end = x - 5.08;
         let label_bottom = y + 1.905;
-        let far_end = group_hang_bottom(&b, &layout, "Input", stub_end - 11.0, stub_end - 10.0);
+        let (_, min_x, _, _, max_y) = group_bounds(&b, &layout)
+            .into_iter()
+            .find(|(group, ..)| group == "Input")
+            .expect("the Input group has bounds");
         assert!(
-            (far_end - label_bottom).abs() < 1e-6,
-            "the far end of the text is not reserved: {far_end}"
+            min_x <= stub_end - 11.0,
+            "the far end of the text is not inside the group: {min_x}"
         );
-        let pin_side = group_hang_bottom(&b, &layout, "Input", stub_end + 1.0, stub_end + 5.0);
-        assert_eq!(
-            pin_side,
-            f64::NEG_INFINITY,
-            "reserved on the pin side of the stub"
+        assert!(
+            max_y >= label_bottom,
+            "the bottom of the text is not inside the group: {max_y}"
         );
     }
 
@@ -8064,6 +8686,284 @@ mod documentation_tests {
             "boxes overlap: {:?} {:?}",
             (a.min_mm, a.max_mm),
             (c.min_mm, c.max_mm)
+        );
+    }
+
+    fn power_connector(id: u32, refdes: &str, group: &str) -> Component {
+        let rail = |name: &str| RegPin {
+            electrical_type: ElectricalType::PowerInput,
+            ..pin(name)
+        };
+        let pins = vec![pin("sig"), rail("gnd"), rail("vbus")];
+        component(id, refdes, part("connector", pins), Some(group))
+    }
+
+    /// Two regions joined by a signal with a long name, so each side draws a
+    /// wide net label flag, and by two rails, so each draws power symbols.
+    fn two_regions() -> Board {
+        board_with_notes(
+            vec![
+                power_connector(0, "J1", "Input"),
+                power_connector(1, "J2", "Output"),
+            ],
+            vec![
+                net(0, "A_VERY_LONG_SIGNAL_NAME_INDEED", &[(0, 0), (1, 0)]),
+                net(1, "GND", &[(0, 1), (1, 1)]),
+                net(2, "VBUS", &[(0, 2), (1, 2)]),
+            ],
+            vec![],
+        )
+    }
+
+    type DrawnRect = (f64, f64, f64, f64);
+
+    /// What `group` draws beyond its part bodies, from first principles: every
+    /// pin end with its number, every power symbol with its name, every net
+    /// label flag with its stub.
+    fn drawn_rects(b: &Board, layout: &Layout, group: &str) -> Vec<DrawnRect> {
+        let placements: std::collections::HashMap<_, _> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let in_group = |id| effective_group(b, id) == Some(group);
+        let mut out = Vec::new();
+        for flag in layout.power_flags.iter().filter(|f| in_group(f.component)) {
+            let (x, y, dx, dy) =
+                route::pin_terminal_xy(b, flag.component, flag.pin, &placements).expect("pin");
+            out.push((x - 1.3, y - 1.3, x + 1.3, y + 1.3));
+            let (sx, sy) = (x + dx * POWER_STUB_LEN, y + dy * POWER_STUB_LEN);
+            out.push((
+                sx - POWER_SYMBOL_HALF,
+                sy - POWER_SYMBOL_HALF,
+                sx + POWER_SYMBOL_HALF,
+                sy + POWER_SYMBOL_HALF,
+            ));
+            // The name is 3.81 mm past the symbol, away from the pin side.
+            let name_y = match flag.kind {
+                PowerFlagKind::Vcc => sy - 3.81 - 0.7,
+                PowerFlagKind::Gnd => sy + 3.81 + 0.7,
+            };
+            let half_w = flag.label.chars().count() as f64 * 1.2 / 2.0;
+            out.push((sx - half_w, name_y, sx + half_w, name_y));
+        }
+        for label in layout.net_labels.iter().filter(|l| in_group(l.component)) {
+            let (x0, y0, x1, y1) =
+                route::net_label_rect(b, &label.label, label.component, label.pin, &placements)
+                    .expect("label");
+            let (pin_x, ..) =
+                route::pin_terminal_xy(b, label.component, label.pin, &placements).expect("pin");
+            out.push((x0.min(pin_x), y0, x1.max(pin_x), y1));
+        }
+        out
+    }
+
+    fn box_of<'a>(layout: &'a Layout, group: &str) -> &'a GroupBox {
+        layout
+            .group_boxes
+            .iter()
+            .find(|b| b.group == group)
+            .expect("box")
+    }
+
+    #[test]
+    fn a_group_box_holds_its_power_symbols_pin_ends_and_net_label_flags() {
+        let b = two_regions();
+        let layout = layout(&b);
+        for group in ["Input", "Output"] {
+            let box_ = box_of(&layout, group);
+            let drawn = drawn_rects(&b, &layout, group);
+            assert!(!drawn.is_empty());
+            for (x0, y0, x1, y1) in drawn {
+                assert!(
+                    x0 >= box_.min_mm.0 - 1e-6
+                        && y0 >= box_.min_mm.1 - 1e-6
+                        && x1 <= box_.max_mm.0 + 1e-6
+                        && y1 <= box_.max_mm.1 + 1e-6,
+                    "{group}: ({x0}, {y0}, {x1}, {y1}) leaves the box {box_:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_caption_has_a_grid_step_of_room_above_the_content() {
+        let b = two_regions();
+        let layout = layout(&b);
+        for group in ["Input", "Output"] {
+            let baseline = layout
+                .annotations
+                .iter()
+                .find(|a| a.text == group && a.kind == TextKind::Caption)
+                .expect("caption")
+                .at_mm
+                .1;
+            let bodies = layout
+                .components
+                .iter()
+                .filter(|p| effective_group(&b, p.id) == Some(group))
+                .map(|p| {
+                    let part = b
+                        .component(p.id)
+                        .and_then(|c| c.part.as_ref())
+                        .expect("part");
+                    p.center_mm.1 - body_size_for_part(part).1 / 2.0
+                });
+            let top = drawn_rects(&b, &layout, group)
+                .into_iter()
+                .map(|r| r.1)
+                .chain(bodies)
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                top - baseline >= 2.54 - 1e-6,
+                "{group}: content starts {} mm under the caption",
+                top - baseline
+            );
+        }
+    }
+
+    #[test]
+    fn neighbouring_boxes_are_one_line_apart_and_never_overlap() {
+        let layout = layout(&two_regions());
+        let (a, c) = (&layout.group_boxes[0], &layout.group_boxes[1]);
+        let gaps = [
+            c.min_mm.0 - a.max_mm.0,
+            a.min_mm.0 - c.max_mm.0,
+            c.min_mm.1 - a.max_mm.1,
+            a.min_mm.1 - c.max_mm.1,
+        ];
+        let gap = gaps.into_iter().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            (GROUP_LINE_MM - 1e-6..=GROUP_LINE_MM + 1e-6).contains(&gap),
+            "boxes are {gap} mm apart: {:?} {:?}",
+            (a.min_mm, a.max_mm),
+            (c.min_mm, c.max_mm)
+        );
+    }
+
+    #[test]
+    fn a_box_has_room_above_and_below_a_horizontal_part_for_its_fields() {
+        let b = board_with_notes(
+            vec![component(
+                0,
+                "R1",
+                part("resistor", vec![pin("p1"), pin("p2")]),
+                Some("Input"),
+            )],
+            vec![net(0, "sig", &[(0, 0)])],
+            vec![],
+        );
+        let layout = layout(&b);
+        let box_ = &layout.group_boxes[0];
+        let cy = layout.components[0].center_mm.1;
+        let (_, body_h) = body_size_for_part(b.components[0].part.as_ref().expect("part"));
+        // The Reference sits above the body and the Value below it, each a
+        // line of text 3.81 mm off the body edge.
+        let reach = 3.81 + 0.7;
+        assert!(
+            cy - body_h / 2.0 - reach >= box_.min_mm.1 + GROUP_TITLE_BAND_MM - 1e-6,
+            "no room for the Reference above: box {box_:?}, body centre y {cy}"
+        );
+        assert!(
+            cy + body_h / 2.0 + reach <= box_.max_mm.1 + 1e-6,
+            "no room for the Value below: box {box_:?}, body centre y {cy}"
+        );
+    }
+
+    #[test]
+    fn a_box_has_room_beside_a_vertical_part_for_its_fields() {
+        let rail = |name: &str| RegPin {
+            electrical_type: ElectricalType::PowerInput,
+            ..pin(name)
+        };
+        let cap = |id, refdes| {
+            component(
+                id,
+                refdes,
+                part("capacitor", vec![rail("vcc"), rail("gnd")]),
+                Some("Input"),
+            )
+        };
+        let b = board_with_notes(
+            vec![cap(0, "C1"), cap(1, "C2")],
+            vec![
+                net(0, "VCC", &[(0, 0), (1, 0)]),
+                net(1, "GND", &[(0, 1), (1, 1)]),
+            ],
+            vec![],
+        );
+        let layout = layout(&b);
+        let box_ = &layout.group_boxes[0];
+        for placement in &layout.components {
+            assert!(
+                matches!(placement.rotation, Rotation::Ninety | Rotation::TwoSeventy),
+                "the capacitor is not vertical: {:?}",
+                placement.rotation
+            );
+            let cx = placement.center_mm.0;
+            // A turned two-pin body is as wide as it is tall unturned.
+            let (_, body_w) = body_size_for_part(b.components[0].part.as_ref().expect("part"));
+            // Reference to the right, Value to the left: 3.81 mm off the body
+            // edge and as long as the text.
+            let right = cx + body_w / 2.0 + 3.81 + 1.2 * "C1".len() as f64;
+            let left = cx - body_w / 2.0 - 3.81 - 1.2 * "(no value)".len() as f64;
+            assert!(
+                right <= box_.max_mm.0 + 1e-6 && left >= box_.min_mm.0 - 1e-6,
+                "fields leave the box {box_:?}: they span x {left} to {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn everything_a_region_draws_stays_inside_the_page_margin() {
+        let b = two_regions();
+        let layout = layout(&b);
+        let (min_x, _, min_y, _) = content_bounds(&b, &layout).expect("content");
+        assert!(
+            min_x >= PAGE_MARGIN - 1e-6 && min_y >= PAGE_MARGIN - 1e-6,
+            "content starts at ({min_x}, {min_y}), margin is {PAGE_MARGIN}"
+        );
+    }
+
+    #[test]
+    fn regions_an_overlay_placed_are_not_pushed_apart() {
+        let b = two_regions();
+        let pinned = layout_with_overrides(&b, &default_placer(), &|l| {
+            let first = l.components[0].center_mm;
+            l.components[1].center_mm = (first.0 + 5.08, first.1);
+        });
+        let (first, second) = (
+            pinned.components[0].center_mm,
+            pinned.components[1].center_mm,
+        );
+        assert!(
+            (second.0 - first.0 - 5.08).abs() < 1e-6 && (second.1 - first.1).abs() < 1e-6,
+            "the overlay's offset became {:?}",
+            (second.0 - first.0, second.1 - first.1)
+        );
+    }
+
+    #[test]
+    fn a_group_box_is_wide_enough_for_its_caption() {
+        let b = board_with_notes(
+            vec![component(
+                0,
+                "R1",
+                part("resistor", vec![pin("p1"), pin("p2")]),
+                Some("A_RATHER_LONG_REGION_TITLE"),
+            )],
+            vec![net(0, "sig", &[(0, 0)])],
+            vec![],
+        );
+        let layout = layout(&b);
+        let caption = layout
+            .annotations
+            .iter()
+            .find(|a| a.kind == TextKind::Caption)
+            .expect("caption");
+        let right = caption.at_mm.0
+            + caption.text.chars().count() as f64 * GROUP_CAPTION_SIZE * NOTE_CHAR_WIDTH;
+        assert!(
+            right + GROUP_BOX_PAD <= layout.group_boxes[0].max_mm.0 + 1e-6,
+            "caption ends at {right}, box ends at {}",
+            layout.group_boxes[0].max_mm.0
         );
     }
 
