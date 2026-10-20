@@ -1361,22 +1361,39 @@ fn place_board_features(
     };
 
     let mut occupied: Vec<Rect> = placements.iter().map(rect_of).collect();
+    let step_nm = mm_to_nm(GRID_PITCH_MM);
+    let gap_nm = mm_to_nm(0.5);
+    let mut ordered = features.to_vec();
+    ordered.sort_by_key(|id| id.0);
+
     let Some(envelope) = occupied.iter().copied().reduce(|a, b| {
         Rect::new(
             Point::new(a.min.x_nm.min(b.min.x_nm), a.min.y_nm.min(b.min.y_nm)),
             Point::new(a.max.x_nm.max(b.max.x_nm), a.max.y_nm.max(b.max.y_nm)),
         )
     }) else {
-        // No circuit to be on the border of. Leave the features where a
-        // caller's own sizing put them rather than inventing an envelope.
+        // No circuit, so there is no border to take: these features are the
+        // whole board. They were partitioned out of the solver, so nothing
+        // has placed them and returning here drops them from the design
+        // entirely. Lay them out in one deterministic row instead and let the
+        // caller's outline sizing fit the board around it.
+        let mut x_nm = 0;
+        for id in ordered {
+            let (w_mm, h_mm) = courtyard_lookup[&id];
+            let half_w = mm_to_nm(w_mm) / 2;
+            let half_h = mm_to_nm(h_mm) / 2;
+            placements.push(ComponentPlacement {
+                id,
+                center: Point::new(x_nm + half_w, half_h),
+                rotation: Rotation::Zero,
+                layer: Layer::Top,
+            });
+            x_nm += half_w * 2 + gap_nm;
+        }
         return;
     };
 
-    let step_nm = mm_to_nm(GRID_PITCH_MM);
-    let gap_nm = mm_to_nm(0.5);
     let mut claimed: Vec<FeatureSlot> = Vec::with_capacity(features.len());
-    let mut ordered = features.to_vec();
-    ordered.sort_by_key(|id| id.0);
 
     for id in ordered {
         let (w_mm, h_mm) = courtyard_lookup[&id];
@@ -6390,6 +6407,51 @@ board "features" {
                 on_border,
                 "{feature} is not within 6 mm of an edge of the circuit envelope"
             );
+        }
+    }
+
+    const FEATURES_ONLY_BOARD: &str = r#"
+board "features_only" {
+  layers 2
+
+  component H1: mounting_hole "mounting_hole_m2_5"
+  component H2: mounting_hole "mounting_hole_m2_5"
+  component FID1: fiducial "fiducial_1mm"
+  component FID2: fiducial "fiducial_1mm"
+}
+"#;
+
+    /// A board whose only components are net-less features still places them.
+    ///
+    /// Features are partitioned out of the solver, so the border pass is the
+    /// only thing that can place them. With no circuit there is no envelope to
+    /// hug, and returning on that absence dropped all four: the placement came
+    /// back with an outline and an empty component list, so a panel coupon
+    /// exported with neither a hole nor a fiducial on it.
+    #[test]
+    fn a_board_of_only_features_still_places_every_one_of_them() {
+        let board = board_from_source(FEATURES_ONLY_BOARD, "features_only.synth");
+        let placement = place(&board).expect("place");
+
+        assert_eq!(
+            placement.components.len(),
+            board.components.len(),
+            "every component must be placed, not only the ones carrying a net"
+        );
+
+        // And they must not be stacked on each other at the same point.
+        let courtyards = courtyards_by_refdes(&board, &placement);
+        for (left, a) in &courtyards {
+            for (right, b) in &courtyards {
+                if left >= right {
+                    continue;
+                }
+                let disjoint = a.max.x_nm <= b.min.x_nm
+                    || b.max.x_nm <= a.min.x_nm
+                    || a.max.y_nm <= b.min.y_nm
+                    || b.max.y_nm <= a.min.y_nm;
+                assert!(disjoint, "{left} and {right} overlap");
+            }
         }
     }
 
