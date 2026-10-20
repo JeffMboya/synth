@@ -236,6 +236,16 @@ x = 76.0
 y = 12.0
 rotation = 0
 
+[components.C55]
+x = 32.0
+y = 75.0
+rotation = 0
+
+[components.C56]
+x = 74.0
+y = 81.0
+rotation = 0
+
 [components.C6]
 x = 56.0
 y = 22.0
@@ -292,8 +302,8 @@ y = 5.0
 rotation = 0
 
 [components.FID2]
-x = 80.0
-y = 70.0
+x = 86.0
+y = 92.0
 rotation = 0
 
 [components.H1]
@@ -308,12 +318,12 @@ rotation = 0
 
 [components.H3]
 x = 5.0
-y = 70.0
+y = 92.0
 rotation = 0
 
 [components.H4]
 x = 101.0
-y = 70.0
+y = 92.0
 rotation = 0
 
 [components.J1]
@@ -331,6 +341,11 @@ x = 93.275
 y = 13.08
 rotation = 0
 
+[components.J4]
+x = 20.03
+y = 83.453
+rotation = 0
+
 [components.L1]
 x = 48.0
 y = 22.0
@@ -344,6 +359,11 @@ rotation = 0
 [components.L3]
 x = 48.0
 y = 10.0
+rotation = 0
+
+[components.LS1]
+x = 55.675
+y = 81.0
 rotation = 0
 
 [components.R1]
@@ -551,6 +571,26 @@ x = 76.0
 y = 64.0
 rotation = 0
 
+[components.R54]
+x = 32.0
+y = 78.0
+rotation = 0
+
+[components.R55]
+x = 32.0
+y = 81.0
+rotation = 0
+
+[components.R56]
+x = 32.0
+y = 84.0
+rotation = 0
+
+[components.R57]
+x = 61.0
+y = 75.0
+rotation = 0
+
 [components.R6]
 x = 44.0
 y = 27.0
@@ -577,33 +617,33 @@ y = 28.5
 rotation = 0
 
 [components.TP1]
-x = 24.0
-y = 70.0
+x = 40.0
+y = 92.0
 rotation = 0
 
 [components.TP2]
-x = 28.0
-y = 70.0
+x = 44.0
+y = 92.0
 rotation = 0
 
 [components.TP3]
-x = 32.0
-y = 70.0
+x = 48.0
+y = 92.0
 rotation = 0
 
 [components.TP4]
-x = 36.0
-y = 70.0
+x = 52.0
+y = 92.0
 rotation = 0
 
 [components.TP5]
-x = 40.0
-y = 70.0
+x = 56.0
+y = 92.0
 rotation = 0
 
 [components.TP6]
-x = 44.0
-y = 70.0
+x = 60.0
+y = 92.0
 rotation = 0
 
 [components.U1]
@@ -644,6 +684,11 @@ rotation = 0
 [components.U8]
 x = 40.0
 y = 21.95
+rotation = 0
+
+[components.U9]
+x = 68.0
+y = 84.81
 rotation = 0
 
 [components.Y1]
