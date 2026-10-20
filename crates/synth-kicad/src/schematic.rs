@@ -900,18 +900,14 @@ fn fanned_leg_obstacles<'a>(
 ) -> Vec<FieldObstacle> {
     let mut out = Vec::new();
     for leg in reconciled.iter().flat_map(|r| &r.power_legs) {
-        if leg_rail(leg).is_none() {
+        let Some(rail) = leg_rail(leg) else {
             continue;
-        }
+        };
         if let Some(((x, y), (flag_x, flag_y))) = fanned_leg_stub(board, leg, placements) {
-            out.push(FieldObstacle {
-                owner: None,
-                rect: power_flag_rect(flag_x, flag_y),
-            });
-            out.push(FieldObstacle {
-                owner: None,
-                rect: wire_rect((x, y), (flag_x, flag_y)),
-            });
+            out.push(FieldObstacle::fixed(power_flag_rect(
+                flag_x, flag_y, rail.kind,
+            )));
+            out.push(FieldObstacle::fixed(wire_rect((x, y), (flag_x, flag_y))));
         }
     }
     out
@@ -1929,10 +1925,7 @@ fn power_symbol_properties(
     let pos = (at.0 + dx, at.1 + dy);
     if !repeats {
         power_names.push((at, name.to_string()));
-        obstacles.push(FieldObstacle {
-            owner: None,
-            rect: text_rect_at(pos, justify, chars),
-        });
+        obstacles.push(FieldObstacle::fixed(text_rect_at(pos, justify, chars)));
     }
     let value_effects = if repeats {
         hidden_field_effects()
@@ -2043,6 +2036,13 @@ struct FieldObstacle {
     rect: field_clear::Rect,
 }
 
+impl FieldObstacle {
+    /// Something every text keeps off.
+    fn fixed(rect: field_clear::Rect) -> Self {
+        Self { owner: None, rect }
+    }
+}
+
 /// The four sides of a symbol body a field can sit on.
 const FIELD_SIDES: [FieldSide; 4] = [
     FieldSide::Top,
@@ -2054,6 +2054,9 @@ const FIELD_SIDES: [FieldSide; 4] = [
 /// when its usual spot is taken. The 5.08 is a ring spacing that happens to
 /// equal the net label stub, not a reference to it. See [`ring_distances`].
 const FIELD_RING_STEP_MM: f64 = 5.08;
+/// How far above and below the body's centre the Reference and Value sit when
+/// they stack beside a body, in mm.
+const FIELD_STACK_MM: f64 = 1.27;
 
 /// Height of a Reference or Value string in mm, from KiCad's plot of 1.27 mm text.
 const FIELD_TEXT_HEIGHT_MM: f64 = 1.4;
@@ -2063,7 +2066,7 @@ const FIELD_CHAR_WIDTH_MM: f64 = 1.2;
 const WIRE_HALF_WIDTH_MM: f64 = 0.15;
 /// Half the height of a pin line and its number, in mm.
 const PIN_TEXT_HALF_MM: f64 = 1.3;
-/// Half the side of the square a power flag symbol covers, in mm.
+/// Half the width a power flag symbol covers, in mm.
 const POWER_FLAG_HALF_MM: f64 = 1.4;
 /// Width of one caption or note character, as a share of its font size.
 const NOTE_CHAR_WIDTH: f64 = 0.95;
@@ -2142,13 +2145,18 @@ fn wire_rect(a: (f64, f64), b: (f64, f64)) -> field_clear::Rect {
     }
 }
 
-/// The square a power flag symbol at (`x`, `y`) covers.
-fn power_flag_rect(x: f64, y: f64) -> field_clear::Rect {
+/// What a power symbol at (`x`, `y`) draws: from its point to the tip of the
+/// triangle below a ground or of the arrow above a rail.
+fn power_flag_rect(x: f64, y: f64, kind: synth_layout::PowerFlagKind) -> field_clear::Rect {
+    let tip = match kind {
+        synth_layout::PowerFlagKind::Gnd => y + POWER_TIP_MM,
+        synth_layout::PowerFlagKind::Vcc => y - POWER_TIP_MM,
+    };
     field_clear::Rect {
         x0: x - POWER_FLAG_HALF_MM,
-        y0: y - POWER_FLAG_HALF_MM,
+        y0: y.min(tip),
         x1: x + POWER_FLAG_HALF_MM,
-        y1: y + POWER_FLAG_HALF_MM,
+        y1: y.max(tip),
     }
 }
 
@@ -2182,7 +2190,7 @@ fn field_obstacles(
     layout: &synth_layout::Layout,
     placements: &HashMap<ComponentId, &ComponentPlacement>,
 ) -> Vec<FieldObstacle> {
-    let fixed = |rect| FieldObstacle { owner: None, rect };
+    let fixed = FieldObstacle::fixed;
     let mut out = Vec::new();
     for wire in &layout.wires {
         for seg in wire.points.windows(2) {
@@ -2204,41 +2212,51 @@ fn field_obstacles(
         );
         out.push(FieldObstacle {
             owner: Some(component.id),
-            rect: field_clear::Rect {
+            ..FieldObstacle::fixed(field_clear::Rect {
                 x0: x - w / 2.0,
                 y0: y - h / 2.0,
                 x1: x + w / 2.0,
                 y1: y + h / 2.0,
-            },
+            })
         });
     }
     // A net label is its text and the stub that joins it to the pin; a
-    // cross-sheet label is drawn the same way.
+    // cross-sheet label is drawn the same way, but a net label on an upright
+    // pin first rises past the pin end (`build_net_label`).
     let labels = layout
         .net_labels
         .iter()
-        .map(|l| (&l.label, l.component, l.pin))
+        .map(|l| (&l.label, l.component, l.pin, true))
         .chain(
             layout
                 .hierarchical_labels
                 .iter()
-                .map(|l| (&l.label, l.component, l.pin)),
+                .map(|l| (&l.label, l.component, l.pin, false)),
         );
-    for (text, component, pin) in labels {
+    for (text, component, pin, rises) in labels {
         let Some((x0, y0, x1, y1)) =
             synth_layout::route::net_label_rect(board, text, component, pin, placements)
         else {
             continue;
         };
-        let Some((pin_x, ..)) = pin_terminal_xy(board, component, pin, placements) else {
+        let Some((pin_x, pin_y, dx, dy)) = pin_terminal_xy(board, component, pin, placements)
+        else {
             continue;
+        };
+        let rise = if rises && dx.abs() < 0.1 && dy.abs() > 0.1 {
+            dy.signum() * VERTICAL_LABEL_RISE
+        } else {
+            0.0
         };
         out.push(fixed(field_clear::Rect {
             x0: x0.min(pin_x),
-            y0,
+            y0: y0 + rise,
             x1: x1.max(pin_x),
-            y1,
+            y1: y1 + rise,
         }));
+        if rise != 0.0 {
+            out.push(fixed(wire_rect((pin_x, pin_y), (pin_x, pin_y + rise))));
+        }
     }
     for component in &board.components {
         let Some(part) = component.part.as_ref() else {
@@ -2295,7 +2313,7 @@ fn field_obstacles(
                 layout,
                 PinAnchor { x, y, dx, dy },
             );
-            out.push(fixed(power_flag_rect(cx, cy)));
+            out.push(fixed(power_flag_rect(cx, cy, flag.kind)));
             out.extend(
                 power_stub_points((x, y), corner, (cx, cy))
                     .windows(2)
@@ -2461,11 +2479,18 @@ fn build_symbol_unit(
         .into_iter()
         .flat_map(field_clear::outside_strips)
         .collect();
-    let mut place_field = |text: &str, first: FieldSide, second: FieldSide| {
+    // Beside a body the Reference and Value stack, Reference above, so the pair
+    // is centred on the body; they do not each take a side.
+    let mut place_field = |text: &str, first: FieldSide, second: FieldSide, stack: f64| {
         let candidates = field_candidates(first, second, obstacle_reach(obstacles, (x, y)));
         let spot = |(side, ring): (FieldSide, f64)| {
             let (pos, justify) = field_anchor(side, pins_on(counts, side), (x, y), body_edges);
-            (push_out(pos, side, ring), justify)
+            let pos = push_out(pos, side, ring);
+            if matches!(side, FieldSide::Left | FieldSide::Right) {
+                ((pos.0, pos.1 + stack), justify)
+            } else {
+                (pos, justify)
+            }
         };
         let rect_at = |candidate| {
             let (pos, justify) = spot(candidate);
@@ -2476,13 +2501,22 @@ fn build_symbol_unit(
             .filter(|o| o.owner != Some(component.id))
             .map(|o| &o.rect)
             .chain(outside.iter());
-        let (pos, justify) = spot(field_clear::pick_clear(&candidates, &rect_at, &others));
+        let chosen = field_clear::pick_clear(&candidates, &rect_at, &others);
+        let (pos, justify) = spot(chosen);
         let rect = text_rect_at(pos, justify, text.chars().count());
-        obstacles.push(FieldObstacle { owner: None, rect });
-        (pos, written_justify(justify, angle, field_angle))
+        obstacles.push(FieldObstacle::fixed(rect));
+        (pos, written_justify(justify, angle, field_angle), chosen.0)
     };
-    let (ref_pos, ref_justify) = place_field(&component.refdes, ref_pref, value_pref);
-    let (value_pos, value_justify) = place_field(display_value, value_pref, ref_pref);
+    let (ref_pos, ref_justify, ref_side) =
+        place_field(&component.refdes, ref_pref, value_pref, -FIELD_STACK_MM);
+    // The Value follows the Reference to the side of a body.
+    let (value_first, value_second) = match ref_side {
+        FieldSide::Right => (FieldSide::Right, FieldSide::Left),
+        FieldSide::Left => (FieldSide::Left, FieldSide::Right),
+        FieldSide::Top | FieldSide::Bottom => (value_pref, ref_pref),
+    };
+    let (value_pos, value_justify, _) =
+        place_field(display_value, value_first, value_second, FIELD_STACK_MM);
 
     let mut fields = vec![
         str_pair("lib_id", lib_id),
@@ -2816,10 +2850,13 @@ mod tests {
 
         // Text is kept off the flag where it really is drawn, not where it
         // would sit with no neighbour in the way.
+        let kind = flag.kind;
         layout.power_flags = vec![flag];
         let obstacles = field_obstacles(&board, &layout, &placements);
         assert!(
-            obstacles.iter().any(|o| o.rect == power_flag_rect(cx, cy)),
+            obstacles
+                .iter()
+                .any(|o| o.rect == power_flag_rect(cx, cy, kind)),
             "no obstacle on the moved flag at {cleared:?}"
         );
     }
@@ -3966,13 +4003,16 @@ mod tests {
             };
             let obstacles = fanned_leg_obstacles(&board, &placements, &reconciled, rail_of);
             for leg in reconciled.iter().flat_map(|r| &r.power_legs) {
-                let Some((pin, flag)) =
-                    fanned_leg_stub(&board, leg, &placements).filter(|_| rail_of(leg).is_some())
+                let (Some(rail), Some((pin, flag))) =
+                    (rail_of(leg), fanned_leg_stub(&board, leg, &placements))
                 else {
                     continue;
                 };
                 legs_seen += 1;
-                for want in [power_flag_rect(flag.0, flag.1), wire_rect(pin, flag)] {
+                for want in [
+                    power_flag_rect(flag.0, flag.1, rail.kind),
+                    wire_rect(pin, flag),
+                ] {
                     assert!(
                         obstacles.iter().any(|o| o.rect == want),
                         "{name}: no obstacle on the leg at {flag:?}"
@@ -3992,25 +4032,6 @@ mod tests {
         let reconciled = crate::pin_reconcile::reconcile_all(&board);
         let skipped = |_: &crate::pin_reconcile::PowerLeg| None;
         assert!(fanned_leg_obstacles(&board, &placements, &reconciled, skipped).is_empty());
-    }
-
-    #[test]
-    fn reference_and_value_text_stays_off_power_symbols() {
-        let mut hits = Vec::new();
-        for name in REFERENCE_BOARDS {
-            let (_board, sexp, _text) = build_reference(name);
-            let symbols: Vec<field_clear::Rect> = power_symbols(&sexp)
-                .into_iter()
-                .map(|((x, y), _)| power_flag_rect(x, y))
-                .collect();
-            for (text, x0, y0, x1, y1) in drawn_field_boxes(&sexp) {
-                let rect = field_clear::Rect { x0, y0, x1, y1 };
-                if symbols.iter().any(|s| overlaps(&rect, s)) {
-                    hits.push(format!("{name}: {text}"));
-                }
-            }
-        }
-        assert!(hits.is_empty(), "text on a power symbol: {hits:?}");
     }
 
     // ------------------------------------------------------------------
@@ -4524,6 +4545,125 @@ mod tests {
                     assert!(
                         !boxes_overlap(*rect, *other_rect),
                         "{name}: {text} {rect:?} on {other} {other_rect:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_vertical_resistor_shows_reference_above_value_beside_its_body() {
+        let board = lower_lenient(
+            r#"board "b" {
+                component R1: resistor "r_generic_0603" value "5.1k"
+                connect R1.p1 -> "VBUS"
+                connect R1.p2 -> "GND"
+            }"#,
+        );
+        let project = crate::uuid_v5::project_namespace(&board.name);
+        let mut layout = synth_layout::layout(&board);
+        layout.components[0].rotation = Rotation::TwoSeventy;
+        let sexp = build_schematic_from_layout(&board, &project, &layout);
+        let Sexp::List { children, .. } = &sexp else {
+            panic!("a schematic is a list");
+        };
+        let body = children
+            .iter()
+            .find(|c| {
+                matches!(c, Sexp::List { head, .. } if head == "symbol")
+                    && sub(c, "in_bom").is_some_and(|v| str_of(&v[0]) == "yes")
+            })
+            .expect("the resistor symbol");
+        let (cx, cy, angle) = at_of(body);
+        assert!(
+            angle.rem_euclid(180.0) == 0.0,
+            "the resistor is not vertical: angle {angle}"
+        );
+        let boxes = drawn_field_boxes(&sexp);
+        let (reference, value) = (box_of(&boxes, "R1"), box_of(&boxes, "5.1k"));
+        assert!(
+            reference.0 > cx,
+            "R1 {reference:?} is not right of the body at x {cx}"
+        );
+        assert!(
+            (reference.0 - value.0).abs() < 1e-6,
+            "R1 {reference:?} and 5.1k {value:?} do not share a left edge"
+        );
+        assert!(
+            reference.3 <= value.1,
+            "R1 {reference:?} is not above 5.1k {value:?}"
+        );
+        let middle = f64::midpoint(reference.1, value.3);
+        assert!(
+            (middle - cy).abs() < 1e-6,
+            "the pair is centred at y {middle}, the body at y {cy}"
+        );
+    }
+
+    #[test]
+    fn a_reference_and_value_in_one_row_leave_a_gap_so_they_do_not_read_as_one_string() {
+        for name in [
+            "ref_battery_charger",
+            "ref_crystal_mcu",
+            "ref_ldo_sensor",
+            "ref_led_driver",
+            "ref_secure_element",
+            "ref_spi_flash",
+            "ref_uart_bridge",
+            "ref_usb_cdc",
+            "secure_tracker",
+            "sensor_logger",
+        ] {
+            let (_board, sexp, _text) = build_reference(name);
+            // Each symbol writes its Reference, then its Value.
+            for pair in drawn_field_boxes(&sexp).chunks(2) {
+                let (a, b) = (&pair[0], &pair[1]);
+                let same_row = a.4.min(b.4) - a.2.max(b.2) > 0.0;
+                let gap = (b.1 - a.3).max(a.1 - b.3);
+                assert!(
+                    !(same_row && (0.0..1.0).contains(&gap)),
+                    "{name}: {} and {} are {gap} mm apart in one row",
+                    a.0,
+                    b.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn field_text_keeps_clear_of_the_drawing_of_power_symbols() {
+        for name in [
+            "ref_battery_charger",
+            "ref_crystal_mcu",
+            "ref_ldo_sensor",
+            "ref_led_driver",
+            "ref_secure_element",
+            "ref_spi_flash",
+            "ref_uart_bridge",
+            "ref_usb_cdc",
+            "secure_tracker",
+            "sensor_logger",
+        ] {
+            let (_board, sexp, _text) = build_reference(name);
+            // A ground triangle hangs below its point, a rail arrow rises above.
+            let drawings: Vec<(f64, f64, f64, f64)> = power_symbols(&sexp)
+                .into_iter()
+                .filter_map(|((x, y), fields)| {
+                    let value = power_value(&fields);
+                    let (y0, y1) = if value.2 .1 > y {
+                        (y, y + POWER_TIP_MM)
+                    } else {
+                        (y - POWER_TIP_MM, y)
+                    };
+                    (!value.4).then_some((x - 1.27, y0, x + 1.27, y1))
+                })
+                .collect();
+            for (field, x0, y0, x1, y1) in drawn_field_boxes(&sexp) {
+                for drawing in &drawings {
+                    assert!(
+                        !boxes_overlap((x0, y0, x1, y1), *drawing),
+                        "{name}: {field} {:?} on a power symbol {drawing:?}",
+                        (x0, y0, x1, y1)
                     );
                 }
             }

@@ -677,7 +677,7 @@ expression: schematic
 		(property
 			"Value"
 			"4.7kohm"
-			(at 158.75 104.14 90)
+			(at 158.75 105.41 90)
 			(effects
 				(font
 					(size 1.27 1.27)
