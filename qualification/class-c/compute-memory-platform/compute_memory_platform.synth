@@ -180,6 +180,16 @@ board "compute_memory_platform" {
 
     // The configuration bus is shared with the boot flash and brought out to
     // the debug header, so it is longer than it looks and gets its own class.
+    // The card's bus is its own class: it leaves the board through a socket a
+    // hand can reach, it runs at a few megahertz rather than at the
+    // configuration bus's speed, and it is the one bus here whose far end is
+    // removable.
+    netclass "SPI_CARD" {
+      trace_width 0.2mm
+      clearance 0.2mm
+      max_length 50mm
+    }
+
     netclass "SPI_CFG" {
       trace_width 0.2mm
       clearance 0.2mm
@@ -205,6 +215,37 @@ board "compute_memory_platform" {
     netclass "I2C" {
       trace_width 0.2mm
       clearance 0.25mm
+    }
+
+    // A switcher's own loop: enable, bootstrap, feedback and compensation.
+    // Short, local, and carrying no signal anyone measures — but they are
+    // nets, and a net with no class takes the default width rather than one
+    // somebody chose.
+    netclass "CONTROL" {
+      trace_width 0.25mm
+      clearance 0.2mm
+    }
+
+    // Configuration and indication: reset, done, the lights, the card detect
+    // and the two quad pins held high.
+    netclass "CONFIG" {
+      trace_width 0.25mm
+      clearance 0.2mm
+    }
+
+    // The crystal's two terminals. Kept narrow and short because what matters
+    // is the loop area, not the copper.
+    netclass "XTAL" {
+      trace_width 0.2mm
+      clearance 0.25mm
+      max_length 15mm
+    }
+
+    // Whatever the bus did not need, on the expansion header. No speed is
+    // promised, so no impedance is claimed.
+    netclass "EXPANSION" {
+      trace_width 0.25mm
+      clearance 0.2mm
     }
 
     netclass "THERMAL" {
@@ -241,9 +282,9 @@ board "compute_memory_platform" {
       connect J1.gnd_a12 -> J1.gnd as "GND"
       connect J1.gnd_b12 -> J1.gnd as "GND"
       connect J1.gnd_b1  -> J1.gnd as "GND"
-      connect J1.cc1 -> R2.p1 as "CC1"
+      connect J1.cc1 -> R2.p1 as "CC1" class "CONTROL"
       connect R2.p2 -> J1.gnd as "GND"
-      connect J1.cc2 -> R3.p1 as "CC2"
+      connect J1.cc2 -> R3.p1 as "CC2" class "CONTROL"
       connect R3.p2 -> J1.gnd as "GND"
     }
 
@@ -266,20 +307,20 @@ board "compute_memory_platform" {
       connect U7.in -> C3.p1 as "V5"
       connect C3.p2 -> U7.gnd as "GND"
       connect U7.ep -> U7.gnd as "GND"
-      connect U7.en -> R11.p1 as "EN_3V3"
+      connect U7.en -> R11.p1 as "EN_3V3" class "CONTROL"
       connect R11.p2 -> U7.in as "V5"
-      connect U7.bs -> C5.p1 as "BOOT_3V3"
+      connect U7.bs -> C5.p1 as "BOOT_3V3" class "SWITCH"
       connect C5.p2 -> U7.sw as "SWITCH_3V3" class "SWITCH"
       connect U7.sw -> L3.p1 as "SWITCH_3V3"
       connect L3.p2 -> C4.p1 as "V3V3" class "V3V3"
       connect C4.p2 -> U7.gnd as "GND"
 
       // 0.925 V reference, so 3.3 V wants 26k over 10k to ground.
-      connect U7.fb -> R10.p1 as "FB_3V3"
+      connect U7.fb -> R10.p1 as "FB_3V3" class "CONTROL"
       connect R10.p2 -> L3.p2 as "V3V3"
       connect U7.fb -> R9.p1 as "FB_3V3"
       connect R9.p2 -> U7.gnd as "GND"
-      connect U7.comp -> C10.p1 as "COMP_3V3"
+      connect U7.comp -> C10.p1 as "COMP_3V3" class "CONTROL"
       connect C10.p2 -> U7.gnd as "GND"
     }
 
@@ -302,9 +343,9 @@ board "compute_memory_platform" {
       connect U8.in -> C6.p1 as "V5"
       connect C6.p2 -> U8.gnd as "GND"
       connect U8.ep -> U8.gnd as "GND"
-      connect U8.en -> R7.p1 as "EN"
+      connect U8.en -> R7.p1 as "EN" class "CONTROL"
       connect R7.p2 -> U8.in as "V5"
-      connect U8.bs -> C8.p1 as "BOOT"
+      connect U8.bs -> C8.p1 as "BOOT" class "SWITCH"
       connect C8.p2 -> U8.sw as "SWITCH" class "SWITCH"
       connect U8.sw -> L1.p1 as "SWITCH"
       connect L1.p2 -> R4.p1 as "V1V2_SENSE" class "V1V2"
@@ -312,11 +353,11 @@ board "compute_memory_platform" {
       connect C7.p2 -> U8.gnd as "GND"
 
       // 0.925 V reference, so 1.2 V wants 20k over 10k to ground.
-      connect U8.fb -> R6.p1 as "FB"
+      connect U8.fb -> R6.p1 as "FB" class "CONTROL"
       connect R6.p2 -> R4.p2 as "V1V2"
       connect U8.fb -> R5.p1 as "FB"
       connect R5.p2 -> U8.gnd as "GND"
-      connect U8.comp -> C9.p1 as "COMP"
+      connect U8.comp -> C9.p1 as "COMP" class "CONTROL"
       connect C9.p2 -> U8.gnd as "GND"
     }
 
@@ -643,9 +684,9 @@ board "compute_memory_platform" {
       // held high through resistors rather than tied to the rail: they are
       // bidirectional pins, and a pin that can drive low must never be hard
       // against a supply.
-      connect R52.p1 -> U4.io2 as "FLASH_IO2"
+      connect R52.p1 -> U4.io2 as "FLASH_IO2" class "CONFIG"
       connect R52.p2 -> U4.vcc as "V3V3"
-      connect R53.p1 -> U4.io3 as "FLASH_IO3"
+      connect R53.p1 -> U4.io3 as "FLASH_IO3" class "CONFIG"
       connect R53.p2 -> U4.vcc as "V3V3"
     }
 
@@ -682,8 +723,8 @@ board "compute_memory_platform" {
       connect U5.v3 -> C53.p1 as "V3V3"
       connect C53.p2 -> U5.gnd as "GND"
 
-      connect U5.xi -> Y2.xtal_a as "XTAL_A"
-      connect U5.xo -> Y2.xtal_b as "XTAL_B"
+      connect U5.xi -> Y2.xtal_a as "XTAL_A" class "XTAL"
+      connect U5.xo -> Y2.xtal_b as "XTAL_B" class "XTAL"
       connect C50.p1 -> Y2.xtal_a as "XTAL_A"
       connect C50.p2 -> Y2.gnd_2 as "GND"
       connect C51.p1 -> Y2.xtal_b as "XTAL_B"
@@ -761,17 +802,17 @@ board "compute_memory_platform" {
       component R51: resistor "r_generic_0402" value "1k"
 
       connect R49.p1 -> U6.vs as "V3V3"
-      connect R49.p2 -> D3.a as "LED_PWR"
+      connect R49.p2 -> D3.a as "LED_PWR" class "CONFIG"
       connect D3.k -> U6.gnd as "GND"
 
       // CDONE is an open-drain output that releases when configuration
       // finishes, so the light is on while the part is unconfigured.
       connect R50.p1 -> U6.vs as "V3V3"
-      connect R50.p2 -> D4.a as "LED_CFG"
-      connect D4.k -> U1.cdone as "CDONE"
+      connect R50.p2 -> D4.a as "LED_CFG" class "CONFIG"
+      connect D4.k -> U1.cdone as "CDONE" class "CONFIG"
 
-      connect R51.p1 -> U1.iob_87 as "LED_USER"
-      connect R51.p2 -> D5.a as "LED_USER_A"
+      connect R51.p1 -> U1.iob_87 as "LED_USER" class "CONFIG"
+      connect R51.p2 -> D5.a as "LED_USER_A" class "CONFIG"
       connect D5.k -> U6.gnd as "GND"
     }
 
@@ -788,10 +829,73 @@ board "compute_memory_platform" {
       connect J3.p4  -> U4.io1 as "CFG_SDI"
       connect J3.p5  -> U4.io0 as "CFG_SDO"
       connect J3.p6  -> U4.cs  as "CFG_SS"
-      connect J3.p7  -> U1.creset as "CRESET"
+      connect J3.p7  -> U1.creset as "CRESET" class "CONFIG"
       connect J3.p8  -> U1.cdone  as "CDONE"
       connect J3.p9  -> U6.gnd as "GND"
       connect J3.p10 -> U6.gnd as "GND"
+    }
+
+    // Mass storage. SPI mode rather than SD mode: four signals instead of
+    // six, no licensing question, and every FPGA ball can be any of them.
+    // The card's own contact names are what the part declares, so the roles
+    // are visible here rather than hidden in the part — CMD is the select,
+    // DAT3 carries data in, DAT0 data out.
+    //
+    // The pull-ups are the card specification's, not decoration: an SD card
+    // samples CMD and DAT at power-up and a floating line is an undefined
+    // state before the host has driven anything.
+    group "STORAGE" color "#9333ea" {
+      component J4: connector "microsd_dm3at"
+      component C55: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "J4" priority: hard } }
+      component R54: resistor "r_generic_0402" value "47k"
+      component R55: resistor "r_generic_0402" value "47k"
+      component R56: resistor "r_generic_0402" value "47k"
+
+      connect J4.vdd -> C55.p1 as "V3V3"
+      connect C55.p2 -> J4.vss as "GND"
+      connect J4.shield -> J4.vss as "GND"
+
+      connect U1.iob_78        -> J4.cmd     as "SD_CS"   class "SPI_CARD"
+      connect U1.iob_86        -> J4.clk     as "SD_SCK"  class "SPI_CARD"
+      connect U1.iob_91        -> J4.dat3_cd as "SD_MOSI" class "SPI_CARD"
+      connect U1.iob_63        -> J4.dat0    as "SD_MISO" class "SPI_CARD"
+
+      connect R54.p1 -> J4.cmd as "SD_CS"
+      connect R54.p2 -> J4.vdd as "V3V3"
+      connect R55.p1 -> J4.dat3_cd as "SD_MOSI"
+      connect R55.p2 -> J4.vdd as "V3V3"
+      connect R56.p1 -> J4.dat0 as "SD_MISO"
+      connect R56.p2 -> J4.vdd as "V3V3"
+
+      // The detect switch closes to ground when a card is seated, so the
+      // fabric reads a low. DAT1 and DAT2 are unused in SPI mode.
+      connect J4.det_a -> J4.vss as "GND"
+      connect U1.iob_73        -> J4.det_b   as "SD_DETECT" class "CONFIG"
+    }
+
+    // A display, on the two-wire bus the EEPROM and the monitor already use.
+    // 128 x 64 over I2C is slow and single-ended, which is the whole reason it
+    // is here rather than an HDMI channel: this stack cannot verify a 100 Ohm
+    // differential pair, and a display nobody can measure is not evidence.
+    group "DISPLAY" color "#0891b2" {
+      component U9: display "ssd1306_oled"
+      component C56: capacitor "c_generic_0402" value "100nF" { placement_hint { near: "U9" priority: hard } }
+
+      connect U9.vdd -> C56.p1 as "V3V3"
+      connect C56.p2 -> U9.gnd as "GND"
+      connect U9.sda -> U6.sda as "I2C_SDA"
+      connect U9.scl -> U6.scl as "I2C_SCL"
+    }
+
+    // Sound, which on a board like this is how you hear a fault before you
+    // can see one. One ball through a resistor that bounds the drive current.
+    group "SOUND" color "#ca8a04" {
+      component LS1: buzzer "piezo_buzzer"
+      component R57: resistor "r_generic_0402" value "100R"
+
+      connect U1.iob_79        -> R57.p1 as "BEEP" class "CONFIG"
+      connect R57.p2 -> LS1.p as "BEEP_DRIVE" class "CONFIG"
+      connect LS1.n -> U6.gnd as "GND"
     }
 
     // Everything the bus did not need, brought out with a ground every fourth
@@ -803,37 +907,37 @@ board "compute_memory_platform" {
 
       connect J2.p1  -> U6.vs  as "V3V3"
       connect J2.p2  -> U6.gnd as "GND"
-      connect J2.p3  -> U1.iob_78        as "EXP0"
-      connect J2.p4  -> U1.iob_86        as "EXP1"
+      connect J2.p3  -> U1.iob_89        as "EXP0" class "EXPANSION"
+      connect J2.p4  -> U1.iob_56        as "EXP1" class "EXPANSION"
       connect J2.p5  -> U6.gnd as "GND"
-      connect J2.p6  -> U1.iob_91        as "EXP2"
-      connect J2.p7  -> U1.iob_63        as "EXP3"
-      connect J2.p8  -> U1.iob_73        as "EXP4"
-      connect J2.p9  -> U1.iob_79        as "EXP5"
+      connect J2.p6  -> U1.iob_61        as "EXP2" class "EXPANSION"
+      connect J2.p7  -> U1.iob_71        as "EXP3" class "EXPANSION"
+      connect J2.p8  -> U1.iob_72        as "EXP4" class "EXPANSION"
+      connect J2.p9  -> U1.iob_94        as "EXP5" class "EXPANSION"
       connect J2.p10 -> U6.gnd as "GND"
-      connect J2.p11 -> U1.iob_89        as "EXP6"
-      connect J2.p12 -> U1.iob_56        as "EXP7"
-      connect J2.p13 -> U1.iob_61        as "EXP8"
-      connect J2.p14 -> U1.iob_71        as "EXP9"
+      connect J2.p11 -> U1.ior_119       as "EXP6" class "EXPANSION"
+      connect J2.p12 -> U1.ior_117       as "EXP7" class "EXPANSION"
+      connect J2.p13 -> U1.ior_114       as "EXP8" class "EXPANSION"
+      connect J2.p14 -> U1.ior_115       as "EXP9" class "EXPANSION"
       connect J2.p15 -> U6.gnd as "GND"
-      connect J2.p16 -> U1.iob_72        as "EXP10"
-      connect J2.p17 -> U1.iob_94        as "EXP11"
-      connect J2.p18 -> U1.ior_119       as "EXP12"
-      connect J2.p19 -> U1.ior_117       as "EXP13"
+      connect J2.p16 -> U1.iob_103_cbsel0 as "EXP10" class "EXPANSION"
+      connect J2.p17 -> U1.iob_104_cbsel1 as "EXP11" class "EXPANSION"
+      connect J2.p18 -> U1.iob_81_gbin5  as "EXP12" class "EXPANSION"
+      connect J2.p19 -> U1.iob_82_gbin4  as "EXP13" class "EXPANSION"
       connect J2.p20 -> U6.gnd as "GND"
-      connect J2.p21 -> U1.ior_114       as "EXP14"
-      connect J2.p22 -> U1.ior_115       as "EXP15"
-      connect J2.p23 -> U1.iob_103_cbsel0 as "EXP16"
-      connect J2.p24 -> U1.iob_104_cbsel1 as "EXP17"
+      connect J2.p21 -> U1.iol_13b_gbin7 as "EXP14" class "EXPANSION"
+      connect J2.p22 -> U1.iol_14a_gbin6 as "EXP15" class "EXPANSION"
+      connect J2.p23 -> U1.ior_140_gbin3 as "EXP16" class "EXPANSION"
+      connect J2.p24 -> U1.ior_141_gbin2 as "EXP17" class "EXPANSION"
       connect J2.p25 -> U6.gnd as "GND"
-      connect J2.p26 -> U1.iob_81_gbin5  as "EXP18"
-      connect J2.p27 -> U1.iob_82_gbin4  as "EXP19"
-      connect J2.p28 -> U1.iol_13b_gbin7 as "EXP20"
-      connect J2.p29 -> U1.iol_14a_gbin6 as "EXP21"
+      connect J2.p26 -> U1.iot_197_gbin1 as "EXP18" class "EXPANSION"
+      connect J2.p27 -> U6.gnd as "GND"
+      connect J2.p28 -> U6.gnd as "GND"
+      connect J2.p29 -> U6.gnd as "GND"
       connect J2.p30 -> U6.gnd as "GND"
-      connect J2.p31 -> U1.ior_140_gbin3 as "EXP22"
-      connect J2.p32 -> U1.ior_141_gbin2 as "EXP23"
-      connect J2.p33 -> U1.iot_197_gbin1 as "EXP24"
+      connect J2.p31 -> U6.gnd as "GND"
+      connect J2.p32 -> U6.gnd as "GND"
+      connect J2.p33 -> U6.gnd as "GND"
       connect J2.p34 -> U6.gnd as "GND"
       connect J2.p35 -> U6.gnd as "GND"
       connect J2.p36 -> U6.gnd as "GND"
