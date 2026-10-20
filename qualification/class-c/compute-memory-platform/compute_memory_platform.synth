@@ -56,6 +56,16 @@ board "compute_memory_platform" {
     revision "A"
     requires via_in_pad
 
+    // One sheet per region rather than one enormous page. The default grows a
+    // single sheet through the standard ladder up to A0, and 138 components
+    // fit on it — which is the wrong answer for a reviewer: eighteen
+    // subsystems on one A0 is not something anyone reads. `hierarchy` splits
+    // at the declared page instead, so each group gets its own sheet.
+    schematic {
+      paper = "A3"
+      overflow = "hierarchy"
+    }
+
     // 1.6 mm, six copper layers. The 0.15 mm prepreg under F.Cu is what the
     // bus geometry is derived from, and 0.22 mm is the narrowest width whose
     // estimate lands on 50 Ohm over it — which is why the bus classes declare
