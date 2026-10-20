@@ -1,0 +1,99 @@
+# Push-pull microSD socket with card detect, Hirose DM3AT.
+#
+# Pin names and numbers are the stock symbol's, which names the card's own
+# contacts: in SPI mode CMD is the chip select, DAT0 is the data out, DAT3 the
+# data in and CLK the clock, which is why the names here are the card's rather
+# than the bus's — a board's `connect` says which role it uses them for.
+#
+# DET_A and DET_B are the mechanical detect switch, closed when a card is
+# seated. They are not `required`: a board that never ejects a card can leave
+# them, and one that cares ties DET_A low and reads DET_B.
+#
+# SH is the shell. Declared so the pin map covers every copper pad, and left
+# optional because whether the shield goes to ground or to a split is the
+# board's decision.
+id = "microsd_dm3at"
+kind = "connector"
+description = "Hirose DM3AT microSD socket, push-pull, with card detect"
+mpn = "DM3AT-SF-PEJM5"
+kicad_symbol = "Connector:Micro_SD_Card_Det_Hirose_DM3AT"
+kicad_footprint = "Connector_Card:microSD_HC_Hirose_DM3AT-SF-PEJM5"
+
+[footprint_dimensions]
+width_mm = 14.65
+height_mm = 16.65
+courtyard_margin_mm = 0.25
+
+[operating_conditions]
+min_voltage_v = 2.7
+max_voltage_v = 3.6
+max_current_ma = 200.0
+
+[[pins]]
+name = "dat2"
+number = "1"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "dat3_cd"
+number = "2"
+electrical_type = "bidirectional"
+capabilities = ["spi_mosi"]
+
+[[pins]]
+name = "cmd"
+number = "3"
+electrical_type = "input"
+capabilities = ["spi_cs"]
+required = true
+
+[[pins]]
+name = "vdd"
+number = "4"
+electrical_type = "power_input"
+required = true
+
+[[pins]]
+name = "clk"
+number = "5"
+electrical_type = "input"
+capabilities = ["spi_sck"]
+required = true
+
+[[pins]]
+name = "vss"
+number = "6"
+electrical_type = "power_input"
+required = true
+
+[[pins]]
+name = "dat0"
+number = "7"
+electrical_type = "bidirectional"
+capabilities = ["spi_miso"]
+required = true
+
+[[pins]]
+name = "dat1"
+number = "8"
+electrical_type = "bidirectional"
+
+[[pins]]
+name = "det_b"
+number = "9"
+electrical_type = "passive"
+
+[[pins]]
+name = "det_a"
+number = "10"
+electrical_type = "passive"
+
+[[pins]]
+name = "shield"
+number = "SH"
+electrical_type = "passive"
+
+[[required_decoupling]]
+net = "vdd"
+value = "100nf"
+count = 1
