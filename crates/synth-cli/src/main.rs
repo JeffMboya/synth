@@ -1924,22 +1924,81 @@ fn run_check_child(
     args: &[String],
     timeout_seconds: u64,
 ) -> anyhow::Result<(std::process::Output, bool)> {
+    use std::io::Read;
+
     let mut child = ProcessCommand::new(exe)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
+
+    // Each pipe is drained by its own thread, which is what keeps the loop
+    // below honest. A child that fills a pipe buffer blocks in `write` until
+    // someone reads it, and a parent that only polls `try_wait` never does:
+    // the child then never exits, the budget expires, and the output the
+    // stage was run to collect is lost. `synth validate --format json`
+    // passes the 64 KiB a pipe holds on an ordinary board, so this is
+    // reached by real designs rather than pathological ones.
+    //
+    // Nothing is capped here. The caller parses stdout as JSON, so a
+    // truncated stream is worse than a large one: it is indistinguishable
+    // from a board that does not parse.
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        let _ = stdout_tx.send(buf);
+    });
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        let _ = stderr_tx.send(buf);
+    });
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_seconds);
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok((child.wait_with_output()?, false));
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
-            return Ok((child.wait_with_output()?, true));
+            timed_out = true;
+            break child.wait()?;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    };
+
+    // The readers are collected over a channel rather than joined, because
+    // killing the child does not always close the pipes: anything it spawned
+    // inherits the write ends and can hold them open well past the budget.
+    // Joining would then wait for the grandchild and defeat the timeout.
+    // A reader that misses the grace period is left detached with whatever
+    // it had; on the ordinary path the child has exited, both pipes are at
+    // EOF, and both arrive at once.
+    let grace = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let collect = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
+        rx.recv_timeout(grace.saturating_duration_since(std::time::Instant::now()))
+            .unwrap_or_default()
+    };
+    let stdout = collect(&stdout_rx);
+    let stderr = collect(&stderr_rx);
+
+    Ok((
+        std::process::Output {
+            status,
+            stdout,
+            stderr,
+        },
+        timed_out,
+    ))
 }
 
 /// Handler for `synth registry {path,list,doctor}` (Phase 15, R15.2).
@@ -5690,6 +5749,50 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stage that writes more than a pipe holds must still be read.
+    ///
+    /// The parent used to capture both pipes and poll `try_wait` without
+    /// reading either. A child that fills the 64 KiB buffer blocks in
+    /// `write`, so it never exits, `try_wait` never fires, and the stage
+    /// burned its whole budget at 0% CPU before being killed — its output
+    /// truncated and then rejected as unparseable JSON.
+    ///
+    /// 200 KiB on each stream is about what `synth validate --format json`
+    /// emits for a dense board: 137626 bytes on the Class-C SDRAM card.
+    #[cfg(unix)]
+    #[test]
+    fn a_chatty_child_does_not_deadlock_the_check_loop() {
+        let args = [
+            "-c".to_string(),
+            "yes x | head -c 200000; yes e | head -c 200000 >&2".to_string(),
+        ];
+        let (output, timed_out) =
+            run_check_child(Path::new("/bin/sh"), &args, 30).expect("run the child");
+
+        assert!(!timed_out, "draining readers must prevent the deadlock");
+        assert_eq!(output.stdout.len(), 200_000, "stdout must arrive whole");
+        assert_eq!(output.stderr.len(), 200_000, "stderr must arrive whole");
+        assert!(output.status.success());
+    }
+
+    /// The budget still has to end a child that genuinely hangs, and a
+    /// killed child is reported as timed out rather than as a clean run.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_child_is_killed_at_the_budget() {
+        let args = ["-c".to_string(), "sleep 30".to_string()];
+        let started = std::time::Instant::now();
+        let (output, timed_out) =
+            run_check_child(Path::new("/bin/sh"), &args, 1).expect("run the child");
+
+        assert!(timed_out, "a child past its budget is a timeout");
+        assert!(!output.status.success());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the budget must cut the child off, not wait for it"
+        );
+    }
 
     #[test]
     fn maps_kicad_electrical_types() {
