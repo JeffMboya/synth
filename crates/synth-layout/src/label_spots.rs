@@ -13,6 +13,10 @@
 //! A wire that touches another wire or pin joins their nets in KiCad, so a spot
 //! where one would is never taken, and wires get no tolerance. Two flags may
 //! touch: flags on a 2.54 mm pin pitch are 0.11 mm taller than the pitch.
+//!
+//! Only [`Layout::net_labels`] are planned. A cross-sheet stub is a
+//! hierarchical label made when a sheet is split, after this pass, and it keeps
+//! the default spot.
 
 use std::collections::{HashMap, HashSet};
 

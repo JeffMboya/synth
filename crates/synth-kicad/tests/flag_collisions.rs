@@ -250,15 +250,7 @@ fn no_flag_is_drawn_on_another_flag_or_on_a_pin_number_in_the_reference_boards()
     for path in reference_boards() {
         let file = path.file_name().unwrap().to_string_lossy().to_string();
         let found = collisions(&load_board(&path));
-        report.extend(
-            found
-                .into_iter()
-                // R1 and R3 stand in the 17 mm corridor between J1 and U1, and
-                // every flag in it crosses them: the placer's spacing, not a
-                // flag's spot, so only flags on flags are held to account.
-                .filter(|line| file != "ref_usb_cdc.synth" || !line.contains(" covers "))
-                .map(|line| format!("{file}: {line}")),
-        );
+        report.extend(found.into_iter().map(|line| format!("{file}: {line}")));
     }
     assert!(report.is_empty(), "colliding flags:\n{}", report.join("\n"));
 }

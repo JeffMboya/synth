@@ -3564,6 +3564,71 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
         };
         let col_left_growth = column_growth(MemberSide::Left);
         let col_right_growth = column_growth(MemberSide::Right);
+        // A part standing left of its anchor puts its flag on the left when the
+        // right is taken, so between the labels of the pins facing it from the
+        // previous column and the part there is room for that flag too.
+        let corridor_need = |prev: usize, next: usize| -> f64 {
+            let mut need = 0.0_f64;
+            for &b in &col_groups[next] {
+                let cluster = &clusters[b];
+                let left: Vec<ComponentId> = cluster
+                    .members
+                    .iter()
+                    .filter(|m| m.side == MemberSide::Left)
+                    .map(|m| m.id)
+                    .collect();
+                if left.is_empty() {
+                    continue;
+                }
+                let half_w = board
+                    .component(cluster.anchor)
+                    .and_then(|c| c.part.as_ref())
+                    .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
+                    / 2.0;
+                let flag = left
+                    .iter()
+                    .flat_map(|&id| {
+                        board
+                            .nets
+                            .iter()
+                            .filter(move |n| n.endpoints.iter().any(|e| e.component == id))
+                            .map(net_label_extent)
+                    })
+                    .fold(0.0_f64, f64::max);
+                let reach = side_column_offset(board, cluster.anchor, PinSide::Left, &left, half_w);
+                for &a in &col_groups[prev] {
+                    let anchor = clusters[a].anchor;
+                    let right: Vec<ComponentId> = clusters[a]
+                        .members
+                        .iter()
+                        .filter(|m| m.side == MemberSide::Right)
+                        .map(|m| m.id)
+                        .collect();
+                    let half_w = board
+                        .component(anchor)
+                        .and_then(|c| c.part.as_ref())
+                        .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
+                        / 2.0;
+                    // Its own right-hand parts stand there; past them or not,
+                    // the labels of its pins run at least as far.
+                    let own = right
+                        .iter()
+                        .flat_map(|&id| {
+                            board
+                                .nets
+                                .iter()
+                                .filter(move |n| n.endpoints.iter().any(|e| e.component == id))
+                                .map(net_label_extent)
+                        })
+                        .fold(0.0_f64, f64::max);
+                    let out = (side_column_offset(board, anchor, PinSide::Right, &right, half_w)
+                        + own)
+                        .max(pin_label_reach(board, anchor, PinSide::Right) + flag);
+                    need = need.max(out + reach);
+                }
+            }
+            need
+        };
         // Gap BETWEEN consecutive columns: must clear column i's own
         // rightward extent (its anchor's half-width, symmetric around
         // its centre) *and* column i+1's anchor extending back leftward
@@ -3634,9 +3699,10 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
             for col in start..end {
                 if col > start {
                     let gap = snap_grid(
-                        floor.max(col_max_half_w[col - 1] + col_max_half_w[col] + WIRE_MARGIN)
+                        (floor.max(col_max_half_w[col - 1] + col_max_half_w[col] + WIRE_MARGIN)
                             + col_right_growth[col - 1]
-                            + col_left_growth[col],
+                            + col_left_growth[col])
+                            .max(corridor_need(col - 1, col)),
                     );
                     cum += gap;
                 }
@@ -4161,20 +4227,10 @@ fn side_text_reach(board: &Board, id: ComponentId) -> f64 {
     SIDE_TEXT_OFFSET_MM + chars as f64 * route::LABEL_CHAR_WIDTH_MM
 }
 
-/// How far from the anchor's centre a member in a column beside its `side`
-/// pins has to sit: past the net labels those pins can carry (pin tip, stub,
-/// widest text). A member on the left has its own labels facing those pins,
-/// since a vertical part's label points right, so they need room too. The
-/// member's own text goes in that room. Never less than the usual clearance
-/// from the body.
-fn side_column_offset(
-    board: &Board,
-    anchor: ComponentId,
-    side: PinSide,
-    members: &[ComponentId],
-    anchor_half_w: f64,
-) -> f64 {
-    let label_reach = board
+/// How far from the anchor's centre the net labels of its `side` pins reach:
+/// pin tip, stub, widest text.
+pub(crate) fn pin_label_reach(board: &Board, anchor: ComponentId, side: PinSide) -> f64 {
+    board
         .component(anchor)
         .and_then(|c| c.part.as_ref())
         .map_or(0.0, |part| {
@@ -4188,20 +4244,32 @@ fn side_column_offset(
                     Some(px.abs() + net_label_extent(net))
                 })
                 .fold(0.0, f64::max)
-        });
+        })
+}
+
+/// How far from the anchor's centre a member in a column beside its `side`
+/// pins has to sit: past the net labels those pins can carry (pin tip, stub,
+/// widest text). A member on the left has its own labels facing those pins,
+/// since a vertical part's label points right, so they need room too. The
+/// member's own text goes in that room. Never less than the usual clearance
+/// from the body.
+fn side_column_offset(
+    board: &Board,
+    anchor: ComponentId,
+    side: PinSide,
+    members: &[ComponentId],
+    anchor_half_w: f64,
+) -> f64 {
+    let label_reach = pin_label_reach(board, anchor, side);
     let member_reach = members
         .iter()
         .map(|&id| {
-            let own_labels = if side == PinSide::Left {
-                board
-                    .nets
-                    .iter()
-                    .filter(|n| n.endpoints.iter().any(|e| e.component == id))
-                    .map(net_label_extent)
-                    .fold(0.0, f64::max)
-            } else {
-                0.0
-            };
+            let own_labels = board
+                .nets
+                .iter()
+                .filter(|n| n.endpoints.iter().any(|e| e.component == id))
+                .map(net_label_extent)
+                .fold(0.0, f64::max);
             side_text_reach(board, id).max(own_labels)
         })
         .fold(0.0, f64::max);
