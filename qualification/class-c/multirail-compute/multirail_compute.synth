@@ -66,6 +66,23 @@ board "multirail_compute" {
     manufacturer "jlc-advanced"
     revision "B"
 
+    // Two independent reasons this board cannot be built without a filled
+    // via, which is why it says so here rather than taking a CLI flag:
+    //
+    // The module's paddle. Every KiCad ESP32-WROOM-32 footprint drills
+    // twelve 0.2 mm thermal vias inside pad 39, and a via inside an SMD pad
+    // is a solder-bridging defect on a process that cannot fill and cap it.
+    //
+    // The plane pads. V5 and V3V3 are poured planes, and a plane pad needs a
+    // stitching via beside it to reach its layer. On a board this dense some
+    // pads have no legal position beside them -- every candidate is inside
+    // another pad's clearance -- and the only place left for the via is the
+    // pad itself.
+    //
+    // `jlc-advanced` offers the fill, so ERC accepts the requirement; it
+    // would refuse a tier that does not.
+    requires via_in_pad
+
     // Six layers, not four. The Ethernet MDI pairs need a continuous
     // reference under them for their whole run, and the two plane rails each
     // want a layer, which on four layers leaves the pairs referenced to a
@@ -153,6 +170,9 @@ board "multirail_compute" {
       // sinks the fuse's current instead of a transient's.
       component D2: diode     "smaj15a_tvs"
       component C1: capacitor "c_electrolytic_100uf" value "100uF"
+      // The 12 V sense divider, beside the rail it measures.
+      component R32: resistor  "r_generic_0603" value "100k"
+      component R33: resistor  "r_generic_0603" value "10k"
       component TP1: testpoint "testpoint_pad_1_5" {
         placement_hint { region: top_edge edge: top priority: soft }
       }
@@ -191,6 +211,9 @@ board "multirail_compute" {
       component C12: capacitor "c_generic_0603" value "3.9nF"
       component C14: capacitor "c_generic_0603" value "100nF"
       component R10: resistor  "r_generic_0603" value "100k"
+      // The 5 V sense divider, beside the rail it measures.
+      component R34: resistor  "r_generic_0603" value "22k"
+      component R35: resistor  "r_generic_0603" value "10k"
       component TP2: testpoint "testpoint_pad_1_5" {
         placement_hint { region: top_edge edge: top priority: soft }
       }
@@ -228,23 +251,60 @@ board "multirail_compute" {
       connect C14.p2 -> U1.gnd as "GND"
     }
 
+    // The digital rail is a switcher, not a linear, and the arithmetic is why.
+    // Summed, the parts on V3V3 draw 320 mA with the Ethernet island on its
+    // own supply. An AMS1117 dropping 5 V to 3.3 V at that current dissipates
+    // 1.7 V x 0.32 A = 0.54 W in a SOT-223, and at the 620 mA this rail
+    // carried before the island was split off it was 1.05 W -- 25 + 1.05 x 60
+    // = 88 C, past the 85 C the thermal rule warns at, in the one package on
+    // the board with no exposed pad. A second MP2307 loses about 0.23 W at
+    // the same current, which is 37 C, and brings 800 mA of headroom instead
+    // of a thermal limit.
     group "3V3 RAIL" color "#0369a1" {
-      component U2: regulator "ams1117_3v3"
+      component U2: regulator "mp2307_buck"
+      component L2: inductor  "l_generic_1210" value "10uH"
       component C5: capacitor "c_generic_0805" value "22uF"
       component C6: capacitor "c_generic_0603" value "100nF"
       component C39: capacitor "c_generic_0805" value "22uF"
+      component C41: capacitor "c_generic_0603" value "100nF"
+      component R41: resistor  "r_generic_0603" value "25.5k"
+      component R42: resistor  "r_generic_0603" value "10k"
+      component R43: resistor  "r_generic_0603" value "6.8k"
+      component C42: capacitor "c_generic_0603" value "3.9nF"
+      component C43: capacitor "c_generic_0603" value "100nF"
+      component R44: resistor  "r_generic_0603" value "100k"
       component TP3: testpoint "testpoint_pad_1_5" {
         placement_hint { region: top_edge edge: top priority: soft }
       }
 
-      connect L1.p2 -> U2.vin
-      connect U2.vin -> C39.p1
+      connect L1.p2 -> U2.in
+      connect L1.p2 -> C39.p1
       connect C39.p2 -> U2.gnd as "GND"
-      connect U2.vout -> C5.p1 as "V3V3" class "V3V3"
+      // EN through 100k from the 5 V rail. Unlike the 12 V stage this input
+      // is already inside the part's 6 V maximum, so the resistor is feeding
+      // the pin's zener rather than protecting it.
+      connect U2.en -> R44.p1
+      connect R44.p2 -> L1.p2
+      connect U2.bs -> C41.p1
+      connect C41.p2 -> U2.sw
+      connect U2.sw -> L2.p1
+      connect L2.p2 -> C5.p1 as "V3V3" class "V3V3"
+      // 0.925 V reference, so 25.5k over 10k sets 3.29 V. The divider taps
+      // the output after the inductor, not the switch node.
+      connect L2.p2 -> R41.p1
+      connect R41.p2 -> U2.fb
+      connect U2.fb -> R42.p1
+      connect R42.p2 -> U2.gnd as "GND"
       connect C5.p2 -> U2.gnd as "GND"
-      connect U2.vout -> C6.p1
+      connect L2.p2 -> C6.p1
       connect C6.p2 -> U2.gnd as "GND"
-      connect U2.vout -> TP3.p1
+      connect L2.p2 -> TP3.p1
+      connect U2.ep -> U2.gnd as "GND"
+      connect U2.comp -> R43.p1
+      connect R43.p2 -> C42.p1
+      connect C42.p2 -> U2.gnd as "GND"
+      connect U2.ss -> C43.p1
+      connect C43.p2 -> U2.gnd as "GND"
     }
 
     group "3V3 ANALOG" color "#047857" {
@@ -258,7 +318,7 @@ board "multirail_compute" {
         placement_hint { region: bottom_edge edge: bottom priority: soft }
       }
 
-      connect U2.vout -> FB1.p1
+      connect L2.p2 -> FB1.p1
       connect FB1.p2 -> U3.vin
       connect U3.vin -> C7.p1
       connect C7.p2 -> U3.gnd as "GND"
@@ -302,7 +362,7 @@ board "multirail_compute" {
       component SW1: switch    "spst_tactile"
       component SW2: switch    "spst_tactile"
 
-      connect U2.vout -> U5.vdd
+      connect L2.p2 -> U5.vdd
       // All four ground pads. The footprint has four and the paddle at 39 is
       // the module's only thermal path.
       connect U5.gnd -> U2.gnd as "GND"
@@ -365,7 +425,7 @@ board "multirail_compute" {
 
       // The bridge runs from the 3.3 V rail, so V3 ties to VCC and the logic
       // levels match the module without a shifter.
-      connect U2.vout -> U6.vcc
+      connect L2.p2 -> U6.vcc
       connect U6.v3 -> U6.vcc
       connect U6.vcc -> C16.p1
       connect C16.p2 -> U6.gnd as "GND"
@@ -422,7 +482,7 @@ board "multirail_compute" {
 
       // HSPI, not the module's own flash bus. Pads 17-22 are bonded to the
       // die inside the shield and carry `do_not_connect`.
-      connect U2.vout -> U7.vcc
+      connect L2.p2 -> U7.vcc
       connect U7.gnd -> U2.gnd as "GND"
       connect U7.vcc -> C20.p1
       connect C20.p2 -> U7.gnd as "GND"
@@ -432,17 +492,17 @@ board "multirail_compute" {
       connect U5.io15 -> U7.cs as "FLASH_CS" class "SPI_FLASH"
       // CS idles high so the part ignores the bus while the module boots.
       connect U7.cs -> R18.p1
-      connect R18.p2 -> U2.vout
+      connect R18.p2 -> L2.p2
       // The quad lines are held high through resistors, not strapped: in SPI
       // mode they are /WP and /HOLD and a floating /HOLD stalls the part, but
       // tying a bidirectional pin hard to a rail forbids ever driving it.
       connect U7.io2 -> R22.p1
-      connect R22.p2 -> U2.vout
+      connect R22.p2 -> L2.p2
       connect U7.io3 -> R23.p1
-      connect R23.p2 -> U2.vout
+      connect R23.p2 -> L2.p2
 
       // Board identity and configuration, on the I2C bus at address 0x50.
-      connect U2.vout -> U8.vdd
+      connect L2.p2 -> U8.vdd
       connect U8.gnd -> U2.gnd as "GND"
       connect U8.vdd -> C21.p1
       connect C21.p2 -> U8.gnd as "GND"
@@ -598,7 +658,7 @@ board "multirail_compute" {
 
       // The expander: sixteen GPIO at address 0x20, with reset and interrupt
       // on module pins rather than strapped.
-      connect U2.vout -> U10.vdd
+      connect L2.p2 -> U10.vdd
       connect U10.v_ss -> U2.gnd as "GND"
       connect U10.vdd -> C31.p1
       connect C31.p2 -> U10.v_ss as "GND"
@@ -614,13 +674,13 @@ board "multirail_compute" {
       // it -- the EEPROM, the expander, the PWM driver and the sensor -- and
       // one pair of pull-ups is what a shared bus wants.
       connect U10.sda -> R27.p1
-      connect R27.p2 -> U2.vout
+      connect R27.p2 -> L2.p2
       connect U10.sck -> R28.p1
-      connect R28.p2 -> U2.vout
+      connect R28.p2 -> L2.p2
 
       // Sixteen PWM channels at address 0x40, output-enabled from a GPIO so
       // the outputs are inert until software asks for them.
-      connect U2.vout -> U11.vdd
+      connect L2.p2 -> U11.vdd
       connect U11.vss -> U2.gnd as "GND"
       connect U11.vdd -> C32.p1
       connect C32.p2 -> U11.vss as "GND"
@@ -638,7 +698,7 @@ board "multirail_compute" {
       // The level shifter gives the header a 5 V side. A is the module's
       // 3.3 V, B is the switched 5 V rail, so a 5 V peripheral can be driven
       // and powered down together.
-      connect U2.vout -> U12.vcca
+      connect L2.p2 -> U12.vcca
       connect U4.vout -> U12.vccb
       connect U12.gnd -> U2.gnd as "GND"
       connect U12.vcca -> C33.p1
@@ -653,10 +713,6 @@ board "multirail_compute" {
     group "MONITORING" color "#065f46" {
       component U13: sensor   "tmp117_temperature"
       component C35: capacitor "c_generic_0603" value "100nF"
-      component R32: resistor  "r_generic_0603" value "100k"
-      component R33: resistor  "r_generic_0603" value "10k"
-      component R34: resistor  "r_generic_0603" value "22k"
-      component R35: resistor  "r_generic_0603" value "10k"
       component R40: resistor  "r_generic_0603" value "10k"
 
       // The sensor runs from the analog rail, because a board that measures
@@ -675,7 +731,7 @@ board "multirail_compute" {
       // rail the sensor runs from, because the pin that reads this line is
       // the module's, and an open-drain level is referenced to the receiver.
       connect U13.alert -> R40.p1
-      connect R40.p2 -> U2.vout
+      connect R40.p2 -> L2.p2
       // The buck's thermistor tap. 10k over a 10k NTC puts 2.5 V at 25 C and
       // falls as the regulator warms, so the firmware reads the rise at the
       // part rather than inferring it from the die sensor across the board.
@@ -707,13 +763,13 @@ board "multirail_compute" {
       component R38: resistor  "r_generic_0603" value "10k"
 
       // The status display sits on the shared I2C bus at 0x3C.
-      connect U2.vout -> U14.vdd
+      connect L2.p2 -> U14.vdd
       connect U14.gnd -> U2.gnd as "GND"
       connect U5.io21_sda -> U14.sda as "I2C_SDA"
       connect U5.io22_scl -> U14.scl as "I2C_SCL"
 
       // Power on, and a user LED the firmware drives.
-      connect U2.vout -> R36.p1
+      connect L2.p2 -> R36.p1
       connect R36.p2 -> LED1.anode
       connect LED1.cathode -> U2.gnd as "GND"
       connect U5.io25 -> R37.p1
@@ -723,7 +779,7 @@ board "multirail_compute" {
       // A user button on an input-only pin, which therefore needs its
       // pull-up on the board rather than in the pad.
       connect U5.io34 -> R38.p1
-      connect R38.p2 -> U2.vout
+      connect R38.p2 -> L2.p2
       connect U5.io34 -> SW3.p1
       connect SW3.p2 -> U2.gnd as "GND"
     }
