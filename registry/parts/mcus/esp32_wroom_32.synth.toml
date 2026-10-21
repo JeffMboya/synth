@@ -18,6 +18,25 @@ max_current_ma = 150.0
 max_power_mw = 500
 thermal_resistance_c_per_w = 40
 
+# Pin map: all 39 pads of the module, in pad order.
+#
+# Pads 17-22 are the module's own SPI flash bus. They are bonded to the
+# flash die inside the shield, so a design that connects them corrupts the
+# firmware it is trying to run; `do_not_connect` is what makes a board that
+# wires one of them a diagnostic rather than a silent fault. Pad 32 is marked
+# NC by Espressif and carries the same type.
+#
+# Pads 1, 15, 38 and 39 are all GND. 39 is the ground paddle under the
+# shield, which is the module's only thermal path. They are modelled
+# separately rather than as one pin because the footprint has four pads and a
+# board has to reach all four; they are not `required`, because the eight-pin
+# model that shipped before this did not require them and the ERC fixtures
+# that use this part connect only pad 1.
+#
+# Pads 4-7 are input-only — GPIO36, 39, 34 and 35 have no output driver and
+# no internal pull-up or pull-down. They carry `input` rather than
+# `bidirectional` so a design that drives one is caught.
+
 [[pins]]
 name = "gnd"
 number = "1"
@@ -38,22 +57,182 @@ capabilities = ["reset"]
 required = true
 
 [[pins]]
+# GPIO36, ADC1_CH0. Input only: no output driver.
+name = "sensor_vp"
+number = "4"
+electrical_type = "input"
+capabilities = ["gpio"]
+
+[[pins]]
+# GPIO39, ADC1_CH3. Input only.
+name = "sensor_vn"
+number = "5"
+electrical_type = "input"
+capabilities = ["gpio"]
+
+[[pins]]
+# ADC1_CH6. Input only, and no internal pull.
+name = "io34"
+number = "6"
+electrical_type = "input"
+capabilities = ["gpio"]
+
+[[pins]]
+# ADC1_CH7. Input only, and no internal pull.
+name = "io35"
+number = "7"
+electrical_type = "input"
+capabilities = ["gpio"]
+
+[[pins]]
+name = "io32"
+number = "8"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+name = "io33"
+number = "9"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+# DAC_1.
+name = "io25"
+number = "10"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+# DAC_2.
+name = "io26"
+number = "11"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+name = "io27"
+number = "12"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+# Outputs a boot-time clock burst; see the strapping note.
+name = "io14"
+number = "13"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+# MTDI strapping pin: selects the flash voltage at reset.
+name = "io12"
+number = "14"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+name = "gnd_b"
+number = "15"
+electrical_type = "power_input"
+
+[[pins]]
+name = "io13"
+number = "16"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+name = "shd_sd2"
+number = "17"
+electrical_type = "do_not_connect"
+
+[[pins]]
+name = "swp_sd3"
+number = "18"
+electrical_type = "do_not_connect"
+
+[[pins]]
+name = "scs_cmd"
+number = "19"
+electrical_type = "do_not_connect"
+
+[[pins]]
+name = "sck_clk"
+number = "20"
+electrical_type = "do_not_connect"
+
+[[pins]]
+name = "sdo_sd0"
+number = "21"
+electrical_type = "do_not_connect"
+
+[[pins]]
+name = "sdi_sd1"
+number = "22"
+electrical_type = "do_not_connect"
+
+[[pins]]
+# MTDO strapping pin: silences the boot log when held low.
+name = "io15"
+number = "23"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+# Strapping pin: must be low or floating to enter download mode.
+name = "io2"
+number = "24"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
 name = "io0"
 number = "25"
 electrical_type = "bidirectional"
 capabilities = ["gpio", "boot_mode"]
 
 [[pins]]
-name = "io1_tx"
-number = "35"
+name = "io4"
+number = "26"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "uart_tx"]
+capabilities = ["gpio"]
 
 [[pins]]
-name = "io3_rx"
-number = "34"
+name = "io16"
+number = "27"
 electrical_type = "bidirectional"
-capabilities = ["gpio", "uart_rx"]
+capabilities = ["gpio"]
+
+[[pins]]
+name = "io17"
+number = "28"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+# Strapping pin: sets the SDIO timing. Drives a boot-time glitch.
+name = "io5"
+number = "29"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+name = "io18"
+number = "30"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+name = "io19"
+number = "31"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+# Marked NC by Espressif. Leave the pad unconnected.
+name = "nc"
+number = "32"
+electrical_type = "do_not_connect"
 
 [[pins]]
 name = "io21_sda"
@@ -62,13 +241,40 @@ electrical_type = "bidirectional"
 capabilities = ["gpio", "i2c_sda"]
 
 [[pins]]
+name = "io3_rx"
+number = "34"
+electrical_type = "bidirectional"
+capabilities = ["gpio", "uart_rx"]
+
+[[pins]]
+name = "io1_tx"
+number = "35"
+electrical_type = "bidirectional"
+capabilities = ["gpio", "uart_tx"]
+
+[[pins]]
 name = "io22_scl"
 number = "36"
 electrical_type = "bidirectional"
 capabilities = ["gpio", "i2c_scl"]
 
+[[pins]]
+name = "io23"
+number = "37"
+electrical_type = "bidirectional"
+capabilities = ["gpio"]
+
+[[pins]]
+name = "gnd_c"
+number = "38"
+electrical_type = "power_input"
+
+[[pins]]
+name = "gnd_pad"
+number = "39"
+electrical_type = "power_input"
+
 [[required_decoupling]]
 net = "vdd"
 value = "10uf"
 count = 1
-
