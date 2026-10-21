@@ -1740,7 +1740,23 @@ impl ErcRule for ClockInputNoSourceRule {
                                             PinId(u32::try_from(idx).unwrap_or(u32::MAX)),
                                         )
                                         .any(|(id, other)| {
-                                            id != net.id && net_carries_clock_source(board, other)
+                                            // A pull-up is not a series
+                                            // element. Both topologies look
+                                            // identical from here -- a
+                                            // resistor with the clock input
+                                            // on one terminal and something
+                                            // the board edge feeds on the
+                                            // other -- and the rail is what
+                                            // tells them apart. A supply is
+                                            // not a clock however it got onto
+                                            // the board, so a clock input
+                                            // whose only neighbour is a
+                                            // resistor to 3V3 is still driven
+                                            // by nothing, and this rule still
+                                            // has to say so.
+                                            id != net.id
+                                                && !net_is_power_rail(board, other)
+                                                && net_carries_clock_source(board, other)
                                         })
                                 })
                             })
