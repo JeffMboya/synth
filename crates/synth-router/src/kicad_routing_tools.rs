@@ -160,6 +160,15 @@ pub fn build_command(
             format!("{:.4}", options.same_net_pad_clearance_mm)
         },
     ];
+    // That sentinel reaches the general router only. The escape stage runs
+    // before it and decides on its own whether to put a via under a pad, so
+    // the permission has to arrive as the permission rather than as a
+    // clearance encoding the adapter happens to understand. Without it the
+    // fanout escaped under-pad on every dense grid, including boards that
+    // never declared `requires via_in_pad` and tiers that cannot fill one.
+    if request.policy.allow_via_in_pad {
+        args.push("--allow-via-in-pad".to_string());
+    }
     if let Some(overrides) = &options.fab_overrides {
         args.extend([
             "--fab-overrides".to_string(),
@@ -208,6 +217,19 @@ pub fn build_command(
         ]);
         for spec in candidates {
             args.extend(["--fanout-component".to_string(), spec]);
+        }
+        // Which of those the design asked for, as opposed to which the
+        // geometry selected. A declared escape that cannot be performed is a
+        // failed route: the board said how this package leaves its pads, and
+        // quietly handing it to the maze router instead answers a question
+        // nobody asked. An inferred one may still degrade to a warning,
+        // because nothing was promised about it.
+        let off: std::collections::BTreeSet<&str> =
+            request.escapes_off.iter().map(String::as_str).collect();
+        for escape in &request.escapes {
+            if !off.contains(escape.refdes.as_str()) {
+                args.extend(["--escape-required".to_string(), escape.refdes.clone()]);
+            }
         }
     }
     args
@@ -597,6 +619,55 @@ mod tests {
             Path::new("/opt/krt"),
         )
         .join(" ")
+    }
+
+    /// A declared escape is a promise the route has to keep or fail on, so
+    /// the adapter has to say which packages were declared rather than
+    /// selected by geometry.
+    #[test]
+    fn a_declared_escape_is_marked_required_and_an_inferred_one_is_not() {
+        let (mut request, dir) = with_baseline(&grid_pads(11, 11, 0.8));
+        // U1 is selected by geometry alone: no declaration, so a failed
+        // escape may degrade to the general router.
+        let joined = argv(&request);
+        assert!(joined.contains("--fanout-component U1"), "{joined}");
+        assert!(
+            !joined.contains("--escape-required"),
+            "nothing was declared, so nothing is required: {joined}"
+        );
+
+        request.escapes.push(crate::contract::EscapeRequest {
+            refdes: "U1".to_string(),
+            method: None,
+            layers: Vec::new(),
+        });
+        let joined = argv(&request);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            joined.contains("--escape-required U1"),
+            "a declared escape must be marked required: {joined}"
+        );
+    }
+
+    /// Under-pad escape is a fabrication decision, so the stage that makes it
+    /// has to be told whether the board permits one.
+    #[test]
+    fn the_escape_stage_is_told_whether_via_in_pad_is_permitted() {
+        let mut allowed = request();
+        allowed.policy.allow_via_in_pad = true;
+        let joined = argv(&allowed);
+        assert!(
+            joined.contains("--allow-via-in-pad"),
+            "a board permitting via-in-pad must say so to the escape stage: {joined}"
+        );
+
+        let mut refused = request();
+        refused.policy.allow_via_in_pad = false;
+        let joined = argv(&refused);
+        assert!(
+            !joined.contains("--allow-via-in-pad"),
+            "a board that does not permit via-in-pad must not: {joined}"
+        );
     }
 
     #[test]

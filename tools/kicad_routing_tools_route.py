@@ -66,7 +66,8 @@ def _plane_zones(board: Path) -> list[tuple[str, str]]:
 def _fanout(python: str, repo: Path, board: Path, components: list[str],
             method: str, clearance: float, via_size: float | None,
             via_drill: float | None, fab_tier: str, strict_sizes: bool,
-            escalation: str) -> Path:
+            escalation: str, allow_via_in_pad: bool,
+            required: set[str]) -> Path:
     """Escape every named package, returning the board to route next.
 
     Two stages, in the order KiCadRoutingTools documents (#562): pour the
@@ -87,6 +88,26 @@ def _fanout(python: str, repo: Path, board: Path, components: list[str],
     flags, escaping a 121-ball BGA rewrote the project's own minimums from
     0.56/0.3 down to 0.35/0.2 and placed 11 vias there.
     """
+    # Under-pad escape puts a via inside a pad, which is a fabrication
+    # decision and not the escape engine's to make. The board declares
+    # `requires via_in_pad` and the manufacturer profile offers it, or it does
+    # not; when it does not, escaping under-pad produces geometry that is
+    # invalid before anything validates it.
+    if method == "underpad" and not allow_via_in_pad:
+        if required:
+            raise RuntimeError(
+                "declared escape needs via-in-pad, which this board does not "
+                f"permit: {', '.join(sorted(required))}. Declare `requires "
+                "via_in_pad` and choose a tier that offers it, or escape "
+                "another way."
+            )
+        print(
+            "skipping under-pad escape: the board does not permit via-in-pad, "
+            "so these packages route unescaped",
+            file=sys.stderr,
+        )
+        return board
+
     planes = repo / "py_router" / "route_planes.py"
     pairs = _plane_zones(board)
     fanout = repo / "py_router" / "bga_fanout.py"
@@ -141,6 +162,12 @@ def _fanout(python: str, repo: Path, board: Path, components: list[str],
         if subprocess.run(command, check=False).returncode == 0 and fanned.is_file():
             current = fanned
         else:
+            if refdes in required:
+                raise RuntimeError(
+                    f"declared escape of {refdes} failed; the board asked for "
+                    "it explicitly, so the route fails rather than silently "
+                    "handing the package to the general router"
+                )
             print(f"warning: fanout of {refdes} failed; routing it unescaped", file=sys.stderr)
 
     return current
@@ -252,6 +279,9 @@ def main() -> int:
         "underpad is the one that escapes fully populated arrays.",
     )
     parser.add_argument("--escape-clearance", type=float, default=0.1)
+    # Packages the design declared an escape for. Failing one of these fails
+    # the route; failing a geometrically selected one only warns.
+    parser.add_argument("--escape-required", action="append", default=[])
     parser.add_argument("--escape-via-size", type=float)
     parser.add_argument("--escape-via-drill", type=float)
     args = parser.parse_args()
@@ -275,6 +305,8 @@ def main() -> int:
             args.fab_tier,
             args.strict_sizes,
             args.escalation,
+            args.allow_via_in_pad,
+            {r.split(":", 1)[0] for r in (args.escape_required or [])},
         )
     command = [
         args.python,
