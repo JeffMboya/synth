@@ -28,7 +28,7 @@
     "texts": 205
   },
   "ref_secure_element": {
-    "sha256": "f81f6352d3ec097cf8356d17c05b1e350a580db7a12f884f080e9122121dd112",
+    "sha256": "837ec276a8302da7c96318bc486e8ccb26c7e3e87fa7d0226bc6597a5735eb49",
     "width": "297.0022mm",
     "height": "210.0072mm",
     "paths": 9818,
@@ -42,7 +42,7 @@
     "texts": 223
   },
   "ref_uart_bridge": {
-    "sha256": "5dc4315b2bb92578b9e6cb24da0ba05e00011f24e959c25c67fbf1c80da988d8",
+    "sha256": "941e070c8b04ce53e2ba8405250413ea6f1a5bf34d3ffd52d51032c9f99cf9d6",
     "width": "419.9890mm",
     "height": "297.0022mm",
     "paths": 18217,
@@ -56,17 +56,17 @@
     "texts": 303
   },
   "secure_tracker": {
-    "sha256": "ed3340bd5ee5cb7e2b23bd6423168f034611140c5b656ca4097bbb10b3e5508d",
+    "sha256": "798348dba8ec4f5ad4065591525b9e79ca658226c6d2a747ee6796d82f0a641c",
     "width": "419.9890mm",
     "height": "297.0022mm",
     "paths": 26122,
     "texts": 689
   },
   "sensor_logger": {
-    "sha256": "a17a01256bed9d41c4957674cb46a3ad7f76c996686508088f935a3d46811655",
+    "sha256": "6780b0bd04f20b39bdfadf270c45e664b7f8c2c55d422aa77584119b00430008",
     "width": "297.0022mm",
     "height": "210.0072mm",
-    "paths": 13271,
-    "texts": 392
+    "paths": 13209,
+    "texts": 390
   }
 }
