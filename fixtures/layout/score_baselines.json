@@ -20,8 +20,8 @@
     },
     "full_board_combo": {
       "crossing_count": 0,
-      "total_wire_length_mm": 370.8399999999999,
-      "label_stub_count": 17,
+      "total_wire_length_mm": 380.9999999999999,
+      "label_stub_count": 15,
       "aesthetic_violations": []
     },
     "i2c_bus": {
@@ -38,8 +38,8 @@
     },
     "led_indicator": {
       "crossing_count": 0,
-      "total_wire_length_mm": 198.11999999999995,
-      "label_stub_count": 2,
+      "total_wire_length_mm": 210.81999999999994,
+      "label_stub_count": 0,
       "aesthetic_violations": []
     },
     "mcu": {
@@ -50,8 +50,8 @@
     },
     "multi_pattern_combo": {
       "crossing_count": 0,
-      "total_wire_length_mm": 283.21,
-      "label_stub_count": 11,
+      "total_wire_length_mm": 295.9100000000001,
+      "label_stub_count": 9,
       "aesthetic_violations": []
     },
     "usb_diff_pair": {

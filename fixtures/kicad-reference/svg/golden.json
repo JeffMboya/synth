@@ -21,11 +21,11 @@
     "texts": 113
   },
   "ref_led_driver": {
-    "sha256": "5f36eb9d832a1dd2cf7dc6f73bcd6efe73ff5e01ce0aaf6ab524bd5a80ab5273",
+    "sha256": "3204504436c4eb1b3940164e314f733097ec1c9a7b4b91e02028e6e3e77e50e8",
     "width": "297.0022mm",
     "height": "210.0072mm",
-    "paths": 8699,
-    "texts": 209
+    "paths": 8565,
+    "texts": 205
   },
   "ref_secure_element": {
     "sha256": "f81f6352d3ec097cf8356d17c05b1e350a580db7a12f884f080e9122121dd112",

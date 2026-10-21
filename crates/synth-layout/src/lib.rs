@@ -2469,12 +2469,24 @@ fn rotate_led_chains(board: &Board, clusters: &[Cluster], layout: &mut Layout) {
         if !cluster.anchor_vertical {
             continue;
         }
-        // Anchor (the LED): pin 0 is the anode, which should point
-        // up toward the signal source.
+        // Anchor (the LED): the pin on the resistor's net, the anode,
+        // should point up toward the signal source. Registry parts list
+        // the anode first or second, so the pin is looked up, not assumed.
+        let anode = cluster
+            .members
+            .iter()
+            .find_map(|m| find_connecting_active_pin(board, cluster.anchor, m.id))
+            .or_else(|| {
+                board
+                    .component(cluster.anchor)
+                    .and_then(|c| c.part.as_ref())
+                    .and_then(|p| p.pins.iter().position(|pin| pin.name == "anode"))
+            })
+            .unwrap_or(0);
         let anchor_rotation = board
             .component(cluster.anchor)
             .and_then(|c| c.part.as_ref())
-            .map_or(Rotation::TwoSeventy, |p| top_rotation(p, 0));
+            .map_or(Rotation::TwoSeventy, |p| top_rotation(p, anode));
         rot.insert(cluster.anchor, anchor_rotation);
         // Resistor members of an LED-indicator cluster: pin 0 is
         // signal-side, pin 1 connects down to the LED's anode.
@@ -4429,10 +4441,12 @@ fn place_cluster_into(
     // position can both leave less room than a member's own
     // Reference/Value text needs, overlapping its neighbour.
     if !right.is_empty() {
-        let default_col_x = snap_grid(
+        let flag_dx = flag_column_dx(board, cluster.anchor, PinSide::Right);
+        let clear_of_flags = |x: f64| flag_dx.map_or(x, |dx| x.max(snap_grid(anchor_x + dx)));
+        let default_col_x = clear_of_flags(snap_grid(
             anchor_x
                 + side_column_offset(board, cluster.anchor, PinSide::Right, &right, anchor_half_w),
-        );
+        ));
         let total_height: f64 = right
             .windows(2)
             .map(|pair| min_member_dy(board, pair[0], pair[1]))
@@ -4469,8 +4483,8 @@ fn place_cluster_into(
                             // would pick that wrong pin and yank
                             // the member up-and-inside the body.
                             if side == PinSide::Right {
-                                col_x =
-                                    snap_grid(anchor_x + px + MEMBER_CLEARANCE).max(default_col_x);
+                                col_x = clear_of_flags(snap_grid(anchor_x + px + MEMBER_CLEARANCE))
+                                    .max(default_col_x);
                                 let target_y = snap_grid(anchor_y + py);
                                 let coord_key = (
                                     (col_x * 10.0).round() as i64,
@@ -4530,13 +4544,14 @@ fn place_cluster_into(
                     placed_x = placed_x.max(snap_grid(lx + member_dx));
                 }
             }
-            if let Some(pin_idx) = find_connecting_active_pin(board, cluster.anchor, *id) {
+            // A turned anchor shows its pins on its own centre line, so the
+            // unturned pin offset would only push the member off that line.
+            let aligning_pin = find_connecting_active_pin(board, cluster.anchor, *id)
+                .filter(|_| !cluster.anchor_vertical);
+            if let Some(pin_idx) = aligning_pin {
                 if let Some(anchor) = board.component(cluster.anchor) {
                     if let Some(part) = anchor.part.as_ref() {
-                        let (mut px, _py, _side) = compute_anchor_pin_offset(part, pin_idx);
-                        if cluster.anchor_vertical && !pin_is_left_at_zero(part, pin_idx) {
-                            px = -px;
-                        }
+                        let (px, _py, _side) = compute_anchor_pin_offset(part, pin_idx);
                         let target_x = snap_grid(anchor_x + px);
                         let coord_key = (
                             (target_x * 10.0).round() as i64,
@@ -4590,6 +4605,8 @@ fn place_cluster_into(
             anchor_x
                 - side_column_offset(board, cluster.anchor, PinSide::Left, &left, anchor_half_w),
         );
+        let col_x = flag_column_dx(board, cluster.anchor, PinSide::Left)
+            .map_or(col_x, |dx| col_x.min(snap_grid(anchor_x + dx)));
         let total_height: f64 = left
             .windows(2)
             .map(|pair| min_member_dy(board, pair[0], pair[1]))
@@ -5713,6 +5730,67 @@ fn find_connecting_active_pin(
         }
     }
     best_pin_idx
+}
+
+/// Passives of a column stand this far (body half length plus a grid step)
+/// clear of the flags beside it.
+const FLAG_COLUMN_PASSIVE_REACH_MM: f64 = 6.35;
+
+/// The text each net that may get a flag will carry, as the label pass renders it.
+///
+/// Which nets get flags is decided after placement, from where the clusters end
+/// up. A net with three or more pins always does. A 2-pin net does when it
+/// leaves its first pin's group, or when it runs [`LABEL_SPAN_THRESHOLD_MM`] or
+/// more, and that length is not known yet. So every signal net counts, and the
+/// labels go through [`uniquify_net_labels`] because a name shared by two nets
+/// gains a suffix there and the flag is that much wider.
+fn possible_flag_names(board: &Board) -> std::collections::HashMap<NetId, String> {
+    let mut labels = Vec::new();
+    for net in &board.nets {
+        if net.endpoints.len() < 2 || classify_power_net(board, net).is_some() {
+            continue;
+        }
+        let name = pick_net_label(board, net).unwrap_or_else(|| format!("NET_{}", net.id.0));
+        labels.extend(net.endpoints.iter().map(|e| NetLabel {
+            net: net.id,
+            component: e.component,
+            pin: e.pin,
+            label: name.clone(),
+            spot: LabelSpot::default(),
+        }));
+    }
+    uniquify_net_labels(board, &mut labels);
+    labels.into_iter().map(|l| (l.net, l.label)).collect()
+}
+
+/// Where a column of passives on `side` of `anchor` must stand, as an offset
+/// from the anchor's x, to keep its bodies out of the flags the anchor's
+/// other pins on that side hang. `None` when no pin on that side carries one.
+///
+/// A flag runs from its pin by the stub and the boxed net name.
+fn flag_column_dx(board: &Board, anchor: ComponentId, side: PinSide) -> Option<f64> {
+    let part = board.component(anchor)?.part.as_ref()?;
+    let names = possible_flag_names(board);
+    let outward = if side == PinSide::Left { -1.0 } else { 1.0 };
+    let mut column: Option<f64> = None;
+    for net in &board.nets {
+        let Some(name) = names.get(&net.id) else {
+            continue;
+        };
+        let reach = route::LABEL_STUB_MM
+            + route::FLAG_CHAR_MM * name.chars().count() as f64
+            + route::FLAG_PAD_MM
+            + FLAG_COLUMN_PASSIVE_REACH_MM;
+        for pin in net.endpoints.iter().filter(|e| e.component == anchor) {
+            let (px, _, pin_side) = compute_anchor_pin_offset(part, pin.pin.0 as usize);
+            if pin_side == side {
+                let dx = px + outward * reach;
+                column =
+                    Some(column.map_or(dx, |c| if outward > 0.0 { c.max(dx) } else { c.min(dx) }));
+            }
+        }
+    }
+    column
 }
 
 #[cfg(test)]
