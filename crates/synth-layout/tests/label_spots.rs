@@ -145,6 +145,11 @@ fn move_to(layout: &mut Layout, component: u32, x: f64, y: f64) {
 /// R1's pin 2 and J1's pin 1 face each other, 11.43 mm apart on one row, with
 /// J2 far away.
 fn head_on(board: &Board) -> Layout {
+    head_on_apart(board, 11.43)
+}
+
+/// [`head_on`] with the two pins `gap` mm apart.
+fn head_on_apart(board: &Board, gap: f64) -> Layout {
     layout_with_overrides(board, &default_placer(), &|layout| {
         move_to(layout, 0, 50.0, 50.0);
         move_to(layout, 1, 100.0, 50.0);
@@ -152,7 +157,7 @@ fn head_on(board: &Board) -> Layout {
         let (r_x, r_y, ..) = tip(board, layout, 0, 1);
         let (j_x, j_y, ..) = tip(board, layout, 1, 0);
         let (cx, cy) = layout.components[1].center_mm;
-        move_to(layout, 1, cx + r_x + 11.43 - j_x, cy + r_y - j_y);
+        move_to(layout, 1, cx + r_x + gap - j_x, cy + r_y - j_y);
     })
 }
 
@@ -272,5 +277,39 @@ fn no_label_wire_meets_the_wire_of_another_label() {
                 assert!(!meet(*wa, *wb), "wires {wa:?} and {wb:?} meet");
             }
         }
+    }
+}
+
+/// Two nets that carry the same name: the one that loses it gets a suffix.
+/// Its spot must be the one it gets when the board already holds the suffixed
+/// name, so the flag is placed at the width it is drawn at. Swept over name
+/// lengths, since only some put the widened flag in reach of a neighbour.
+#[test]
+fn spots_are_chosen_for_the_renamed_flags() {
+    for (len, gap) in (1..=24).flat_map(|len| (0..40).map(move |g| (len, 4.0 + f64::from(g) * 0.5)))
+    {
+        let name = "N".repeat(len);
+        let mut clashing = board();
+        clashing.nets[0].name = name.clone();
+        clashing.nets[1].name = name;
+        let renamed = head_on_apart(&clashing, gap);
+        assert!(
+            renamed.net_labels.iter().any(|l| l.label.len() > len),
+            "no label was renamed at length {len}"
+        );
+        let mut settled = clashing.clone();
+        for net in &mut settled.nets {
+            let label = renamed.net_labels.iter().find(|l| l.net == net.id);
+            net.name = label.map_or(net.name.clone(), |l| l.label.clone());
+        }
+        let expected = head_on_apart(&settled, gap);
+        let spots = |layout: &Layout| -> Vec<_> {
+            layout
+                .net_labels
+                .iter()
+                .map(|l| (l.net, l.pin, l.spot))
+                .collect()
+        };
+        assert_eq!(spots(&renamed), spots(&expected), "length {len}, gap {gap}");
     }
 }

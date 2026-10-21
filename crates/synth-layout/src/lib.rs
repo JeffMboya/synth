@@ -2255,7 +2255,7 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
     // Labels are classified AFTER placement so we know each
     // endpoint's coordinates and can measure span.
     layout.net_labels = classify_net_labels(board, layout);
-    label_spots::clear_net_labels(board, layout, 0);
+    uniquify_and_place(board, layout, 0);
     // Route every signal net over the placed sheet. Both consumers —
     // the browser preview and the KiCad export — share this router.
     let route = route::route_board(board, layout);
@@ -2282,11 +2282,24 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
             });
         }
     }
-    // Distinct nets must never render the same label string — KiCad
-    // merges same-named local labels into one net. The uniquify pass
-    // is a no-op on collision-free boards.
+    uniquify_and_place(board, layout, classified);
+}
+
+/// Distinct nets must never render the same label string — KiCad merges
+/// same-named local labels into one net. The uniquify pass is a no-op on
+/// collision-free boards. A rename widens a flag, so the spots are chosen
+/// after it; `net_labels[..placed]` keep theirs unless one of them was renamed.
+fn uniquify_and_place(board: &Board, layout: &mut Layout, placed: usize) {
+    let before: Vec<String> = layout.net_labels[..placed]
+        .iter()
+        .map(|l| l.label.clone())
+        .collect();
     uniquify_net_labels(board, &mut layout.net_labels);
-    label_spots::clear_net_labels(board, layout, classified);
+    let renamed = layout.net_labels[..placed]
+        .iter()
+        .zip(&before)
+        .any(|(l, old)| l.label != *old);
+    label_spots::clear_net_labels(board, layout, if renamed { 0 } else { placed });
 }
 
 /// Connectors must preserve ascending pin numbers (1 → 2 → 3 → 4) top-to-bottom.
@@ -2366,8 +2379,7 @@ pub fn force_net_label(board: &Board, layout: &mut Layout, net: NetId) {
     }
     // A hand-forced label can collide with labels the last routing pass
     // produced; re-run the uniqueness pass so the sheet-wide guarantee holds.
-    uniquify_net_labels(board, &mut layout.net_labels);
-    label_spots::clear_net_labels(board, layout, kept);
+    uniquify_and_place(board, layout, kept);
 }
 
 /// USB ESD diodes sit in a column to the LEFT of the USB
