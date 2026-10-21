@@ -27,165 +27,165 @@ schema_version = 2
 # --- power entry and protection ------------------------------------
 [components.J1]
 x = 5.00
-y = 57.00
+y = 50.00
 rotation = 0
 
 [components.D1]
 x = 12.00
-y = 57.00
+y = 50.00
 rotation = 0
 
 [components.F1]
 x = 22.00
-y = 57.00
+y = 50.00
 rotation = 0
 
 [components.C1]
 x = 12.00
-y = 62.00
+y = 55.00
 rotation = 0
 
 [components.D2]
 x = 22.00
-y = 62.00
+y = 55.00
 rotation = 0
 
 # --- the switching stages ------------------------------------------
 [components.U1]
 x = 14.00
-y = 46.00
+y = 40.00
 rotation = 0
 
 [components.L1]
 x = 23.00
-y = 46.00
+y = 40.00
 rotation = 0
 
 [components.U2]
 x = 14.00
-y = 34.00
+y = 29.00
 rotation = 0
 
 [components.L2]
 x = 23.00
-y = 34.00
+y = 29.00
 rotation = 0
 
 # --- linear rails and the load switch ------------------------------
 [components.U4]
 x = 14.00
-y = 72.00
+y = 62.00
 rotation = 0
 
 [components.U3]
 x = 14.00
-y = 80.00
+y = 70.00
 rotation = 0
 
 [components.U15]
-x = 83.00
-y = 57.00
+x = 77.00
+y = 51.00
 rotation = 0
 
 # --- the module and its buttons ------------------------------------
 [components.U5]
-x = 52.00
-y = 50.00
+x = 50.00
+y = 44.00
 rotation = 0
 
 [components.SW1]
-x = 42.00
-y = 68.00
+x = 40.00
+y = 60.00
 rotation = 0
 
 [components.SW2]
-x = 52.00
-y = 68.00
+x = 50.00
+y = 60.00
 rotation = 0
 
 [components.SW3]
-x = 62.00
-y = 68.00
+x = 60.00
+y = 60.00
 rotation = 0
 
 # --- storage and the die sensor ------------------------------------
 [components.U7]
-x = 42.00
-y = 33.00
+x = 40.00
+y = 28.00
 rotation = 0
 
 [components.U8]
-x = 52.00
-y = 33.00
+x = 50.00
+y = 28.00
 rotation = 0
 
 [components.U13]
-x = 61.00
-y = 33.00
+x = 59.00
+y = 28.00
 rotation = 0
 
 # --- the USB programming path --------------------------------------
 [components.J2]
-x = 50.00
-y = 107.00
+x = 48.00
+y = 92.00
 rotation = 0
 
 [components.U6]
-x = 50.00
-y = 90.00
+x = 48.00
+y = 80.00
 rotation = 0
 
 [components.Y1]
-x = 60.00
-y = 90.00
+x = 58.00
+y = 80.00
 rotation = 0
 
 # --- Ethernet ------------------------------------------------------
 [components.U9]
-x = 95.00
-y = 45.00
+x = 88.00
+y = 40.00
 rotation = 0
 
 [components.Y2]
-x = 95.00
-y = 57.00
+x = 88.00
+y = 51.00
 rotation = 0
 
 [components.J3]
-x = 139.00
-y = 45.00
+x = 126.00
+y = 40.00
 rotation = 0
 
 # --- expansion silicon and the display -----------------------------
 [components.U10]
-x = 90.00
-y = 85.00
+x = 84.00
+y = 72.00
 rotation = 0
 
 [components.U11]
-x = 105.00
-y = 85.00
+x = 99.00
+y = 72.00
 rotation = 0
 
 [components.U12]
-x = 118.00
-y = 85.00
+x = 112.00
+y = 72.00
 rotation = 0
 
 [components.U14]
-x = 70.00
-y = 20.00
+x = 66.00
+y = 16.00
 rotation = 0
 
 # --- headers -------------------------------------------------------
 [components.J4]
-x = 100.00
+x = 90.00
 y = 6.00
 rotation = 90
 
 [components.J5]
-x = 100.00
-y = 108.00
+x = 90.00
+y = 93.00
 rotation = 90
 
 # --- mounting holes ------------------------------------------------
@@ -195,477 +195,477 @@ y = 6.00
 rotation = 0
 
 [components.H2]
-x = 144.00
+x = 134.00
 y = 6.00
 rotation = 0
 
 [components.H3]
 x = 6.00
-y = 109.00
+y = 94.00
 rotation = 0
 
 [components.H4]
-x = 144.00
-y = 109.00
+x = 134.00
+y = 94.00
 rotation = 0
 
 # --- passives, packed around the anchors above --------------------
 [components.C10]
-x = 54.34
-y = 60.24
+x = 52.34
+y = 54.24
 rotation = 0
 
 [components.C11]
-x = 51.22
-y = 40.03
+x = 49.22
+y = 34.03
 rotation = 0
 
 [components.C12]
-x = 8.28
-y = 44.70
+x = 14.00
+y = 48.00
 rotation = 0
 
 [components.C14]
-x = 14.00
-y = 52.00
+x = 8.20
+y = 41.55
 rotation = 0
 
 [components.C15]
-x = 55.09
-y = 39.97
+x = 53.09
+y = 33.97
 rotation = 0
 
 [components.C16]
-x = 55.80
-y = 91.55
+x = 53.80
+y = 81.55
 rotation = 0
 
 [components.C17]
-x = 44.20
-y = 91.55
+x = 42.20
+y = 81.55
 rotation = 0
 
 [components.C2]
 x = 18.50
-y = 51.50
-rotation = 0
-
-[components.C20]
-x = 42.00
-y = 36.50
-rotation = 0
-
-[components.C21]
-x = 52.00
-y = 36.50
-rotation = 0
-
-[components.C22]
-x = 96.56
-y = 51.31
-rotation = 0
-
-[components.C23]
-x = 93.44
-y = 38.69
-rotation = 0
-
-[components.C24]
-x = 102.00
 y = 45.00
 rotation = 0
 
+[components.C20]
+x = 40.00
+y = 31.50
+rotation = 0
+
+[components.C21]
+x = 50.00
+y = 31.50
+rotation = 0
+
+[components.C22]
+x = 89.56
+y = 46.31
+rotation = 0
+
+[components.C23]
+x = 86.44
+y = 33.69
+rotation = 0
+
+[components.C24]
+x = 95.00
+y = 40.00
+rotation = 0
+
 [components.C25]
-x = 92.69
-y = 51.61
+x = 85.69
+y = 46.61
 rotation = 0
 
 [components.C26]
-x = 88.04
-y = 45.78
+x = 81.04
+y = 40.78
 rotation = 0
 
 [components.C27]
-x = 97.31
-y = 38.39
+x = 90.31
+y = 33.39
 rotation = 0
 
 [components.C28]
-x = 95.78
-y = 60.41
+x = 88.78
+y = 54.41
 rotation = 0
 
 [components.C29]
-x = 77.00
-y = 39.50
+x = 70.50
+y = 34.50
 rotation = 0
 
 [components.C3]
 x = 20.02
-y = 42.85
+y = 36.85
 rotation = 0
 
 [components.C30]
-x = 76.50
-y = 41.50
+x = 70.00
+y = 36.50
 rotation = 0
 
 [components.C31]
-x = 98.00
-y = 85.00
+x = 92.00
+y = 72.00
 rotation = 0
 
 [components.C32]
-x = 111.00
-y = 85.00
+x = 105.00
+y = 72.00
 rotation = 0
 
 [components.C33]
-x = 118.00
-y = 88.50
+x = 112.00
+y = 75.50
 rotation = 0
 
 [components.C34]
-x = 118.00
-y = 81.50
+x = 112.00
+y = 68.50
 rotation = 0
 
 [components.C35]
-x = 61.77
-y = 35.38
+x = 59.77
+y = 30.38
 rotation = 0
 
 [components.C37]
-x = 84.55
-y = 61.76
+x = 78.55
+y = 55.76
 rotation = 0
 
 [components.C38]
-x = 80.73
-y = 61.46
+x = 74.73
+y = 55.46
 rotation = 0
 
 [components.C39]
-x = 19.00
-y = 40.00
+x = 16.12
+y = 35.27
 rotation = 0
 
 [components.C4]
-x = 14.00
-y = 42.00
+x = 11.06
+y = 35.95
 rotation = 0
 
 [components.C40]
-x = 81.45
-y = 52.24
+x = 75.45
+y = 46.24
 rotation = 0
 
 [components.C41]
 x = 14.00
-y = 38.00
+y = 33.00
 rotation = 0
 
 [components.C42]
 x = 8.20
-y = 36.08
+y = 31.08
 rotation = 0
 
 [components.C43]
-x = 14.00
-y = 40.00
+x = 8.00
+y = 29.00
 rotation = 0
 
 [components.C5]
 x = 20.02
-y = 37.15
+y = 32.15
 rotation = 0
 
 [components.C6]
 x = 20.02
-y = 30.85
+y = 25.85
 rotation = 0
 
 [components.C7]
 x = 14.00
-y = 82.50
+y = 72.50
 rotation = 0
 
 [components.C8]
 x = 14.00
-y = 77.50
+y = 67.50
 rotation = 0
 
 [components.C9]
 x = 13.22
-y = 68.08
+y = 58.08
 rotation = 0
 
 [components.D3]
-x = 32.50
-y = 70.50
+x = 31.50
+y = 60.50
 rotation = 0
 
 [components.D4]
-x = 32.00
-y = 73.00
+x = 31.00
+y = 63.00
 rotation = 0
 
 [components.D5]
-x = 32.00
-y = 68.00
+x = 31.00
+y = 58.00
 rotation = 0
 
 [components.D6]
-x = 28.50
-y = 70.50
+x = 27.50
+y = 60.50
 rotation = 0
 
 [components.FB1]
 x = 16.12
-y = 57.77
+y = 50.27
 rotation = 0
 
 [components.FID1]
-x = 75.50
-y = 56.00
+x = 70.50
+y = 50.00
 rotation = 0
 
 [components.FID2]
-x = 74.00
-y = 56.00
+x = 69.00
+y = 50.00
 rotation = 0
 
 [components.FID3]
-x = 75.00
-y = 57.50
+x = 70.00
+y = 51.50
 rotation = 0
 
 [components.LED1]
-x = 15.56
-y = 27.69
+x = 7.39
+y = 26.69
 rotation = 0
 
 [components.LED2]
-x = 7.39
-y = 31.69
+x = 7.35
+y = 24.56
 rotation = 0
 
 [components.LED3]
-x = 8.00
-y = 34.00
+x = 11.70
+y = 22.92
 rotation = 0
 
 [components.LED4]
-x = 11.70
-y = 27.92
+x = 15.56
+y = 22.69
 rotation = 0
 
 [components.NTC1]
 x = 10.40
-y = 50.16
+y = 44.16
 rotation = 0
 
 [components.Q1]
-x = 33.50
-y = 42.00
+x = 32.50
+y = 36.50
 rotation = 0
 
 [components.Q2]
-x = 33.00
-y = 44.00
+x = 32.00
+y = 38.50
 rotation = 0
 
 [components.R1]
-x = 20.02
-y = 49.15
+x = 22.55
+y = 42.94
 rotation = 0
 
 [components.R10]
-x = 18.77
-y = 53.88
+x = 22.50
+y = 45.00
 rotation = 0
 
 [components.R11]
-x = 47.43
-y = 39.99
+x = 45.43
+y = 33.99
 rotation = 0
 
 [components.R12]
-x = 40.98
-y = 64.15
+x = 40.25
+y = 56.25
 rotation = 0
 
 [components.R13]
-x = 37.50
-y = 67.00
+x = 44.50
+y = 59.25
 rotation = 0
 
 [components.R16]
-x = 36.50
-y = 70.50
+x = 35.50
+y = 60.50
 rotation = 0
 
 [components.R17]
-x = 35.90
-y = 72.75
+x = 34.90
+y = 62.75
 rotation = 0
 
 [components.R18]
-x = 33.00
-y = 33.50
+x = 32.00
+y = 28.50
 rotation = 0
 
 [components.R2]
 x = 14.00
-y = 50.00
+y = 44.00
 rotation = 0
 
 [components.R20]
-x = 55.97
-y = 37.48
+x = 53.83
+y = 31.67
 rotation = 0
 
 [components.R21]
-x = 89.00
-y = 51.50
+x = 81.79
+y = 46.21
 rotation = 0
 
 [components.R22]
-x = 32.50
-y = 35.50
+x = 31.50
+y = 30.50
 rotation = 0
 
 [components.R23]
-x = 32.50
-y = 31.50
+x = 31.50
+y = 26.50
 rotation = 0
 
 [components.R25]
-x = 48.35
-y = 37.98
+x = 46.35
+y = 31.46
 rotation = 0
 
 [components.R26]
-x = 57.58
-y = 34.92
+x = 55.68
+y = 29.09
 rotation = 0
 
 [components.R27]
-x = 58.35
-y = 60.27
+x = 56.39
+y = 53.95
 rotation = 0
 
 [components.R28]
-x = 56.50
-y = 62.50
+x = 56.52
+y = 56.26
 rotation = 0
 
 [components.R3]
 x = 18.50
-y = 72.00
+y = 62.00
 rotation = 0
 
 [components.R32]
-x = 37.50
-y = 53.50
+x = 36.50
+y = 47.00
 rotation = 0
 
 [components.R33]
-x = 33.00
-y = 40.00
+x = 32.00
+y = 34.50
 rotation = 0
 
 [components.R34]
-x = 38.00
-y = 48.00
+x = 37.00
+y = 42.00
 rotation = 0
 
 [components.R35]
-x = 29.50
-y = 42.00
+x = 28.50
+y = 36.50
 rotation = 0
 
 [components.R36]
-x = 19.28
-y = 28.84
+x = 19.44
+y = 23.60
 rotation = 0
 
 [components.R37]
-x = 28.95
-y = 39.55
+x = 28.18
+y = 34.28
 rotation = 0
 
 [components.R38]
-x = 38.00
-y = 42.00
+x = 37.00
+y = 36.50
 rotation = 0
 
 [components.R39]
-x = 28.97
-y = 48.72
+x = 28.30
+y = 42.72
 rotation = 0
 
 [components.R4]
-x = 50.44
-y = 60.38
+x = 48.44
+y = 54.38
 rotation = 0
 
 [components.R40]
-x = 42.00
-y = 29.50
+x = 41.00
+y = 24.50
 rotation = 0
 
 [components.R41]
 x = 15.56
-y = 29.95
+y = 24.95
 rotation = 0
 
 [components.R42]
 x = 11.06
-y = 29.95
+y = 24.95
 rotation = 0
 
 [components.R43]
 x = 10.40
-y = 38.16
+y = 33.16
 rotation = 0
 
 [components.R44]
-x = 23.00
-y = 40.00
+x = 20.00
+y = 34.50
 rotation = 0
 
 [components.R9]
-x = 10.40
-y = 41.84
+x = 14.00
+y = 46.00
 rotation = 0
 
 [components.TP1]
 x = 22.00
-y = 54.00
+y = 47.00
 rotation = 0
 
 [components.TP2]
-x = 23.78
-y = 48.90
+x = 23.00
+y = 37.00
 rotation = 0
 
 [components.TP3]
 x = 23.78
-y = 36.90
+y = 31.90
 rotation = 0
 
 [components.TP4]
 x = 17.50
-y = 80.00
+y = 70.00
 rotation = 0
 
 [components.TP5]
 x = 10.08
-y = 72.78
+y = 62.78
 rotation = 0
 
 [components.TP6]
-x = 84.55
-y = 52.24
+x = 78.55
+y = 46.24
 rotation = 0
