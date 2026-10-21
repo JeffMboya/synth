@@ -3571,59 +3571,31 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
             let mut need = 0.0_f64;
             for &b in &col_groups[next] {
                 let cluster = &clusters[b];
-                let left: Vec<ComponentId> = cluster
-                    .members
-                    .iter()
-                    .filter(|m| m.side == MemberSide::Left)
-                    .map(|m| m.id)
-                    .collect();
+                let left = members_on(cluster, MemberSide::Left);
                 if left.is_empty() {
                     continue;
                 }
-                let half_w = board
-                    .component(cluster.anchor)
-                    .and_then(|c| c.part.as_ref())
-                    .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
-                    / 2.0;
-                let flag = left
-                    .iter()
-                    .flat_map(|&id| {
-                        board
-                            .nets
-                            .iter()
-                            .filter(move |n| n.endpoints.iter().any(|e| e.component == id))
-                            .map(net_label_extent)
-                    })
-                    .fold(0.0_f64, f64::max);
-                let reach = side_column_offset(board, cluster.anchor, PinSide::Left, &left, half_w);
+                let flag = own_label_reach(board, &left);
+                let reach = side_column_offset(
+                    board,
+                    cluster.anchor,
+                    PinSide::Left,
+                    &left,
+                    half_width_of(board, cluster.anchor),
+                );
                 for &a in &col_groups[prev] {
                     let anchor = clusters[a].anchor;
-                    let right: Vec<ComponentId> = clusters[a]
-                        .members
-                        .iter()
-                        .filter(|m| m.side == MemberSide::Right)
-                        .map(|m| m.id)
-                        .collect();
-                    let half_w = board
-                        .component(anchor)
-                        .and_then(|c| c.part.as_ref())
-                        .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
-                        / 2.0;
+                    let right = members_on(&clusters[a], MemberSide::Right);
                     // Its own right-hand parts stand there; past them or not,
                     // the labels of its pins run at least as far.
-                    let own = right
-                        .iter()
-                        .flat_map(|&id| {
-                            board
-                                .nets
-                                .iter()
-                                .filter(move |n| n.endpoints.iter().any(|e| e.component == id))
-                                .map(net_label_extent)
-                        })
-                        .fold(0.0_f64, f64::max);
-                    let out = (side_column_offset(board, anchor, PinSide::Right, &right, half_w)
-                        + own)
-                        .max(pin_label_reach(board, anchor, PinSide::Right) + flag);
+                    let out = (side_column_offset(
+                        board,
+                        anchor,
+                        PinSide::Right,
+                        &right,
+                        half_width_of(board, anchor),
+                    ) + own_label_reach(board, &right))
+                    .max(pin_label_reach(board, anchor, PinSide::Right) + flag);
                     need = need.max(out + reach);
                 }
             }
@@ -4227,9 +4199,41 @@ fn side_text_reach(board: &Board, id: ComponentId) -> f64 {
     SIDE_TEXT_OFFSET_MM + chars as f64 * route::LABEL_CHAR_WIDTH_MM
 }
 
+/// The ids of the cluster's members on `side` of its anchor.
+fn members_on(cluster: &Cluster, side: MemberSide) -> Vec<ComponentId> {
+    cluster
+        .members
+        .iter()
+        .filter(|m| m.side == side)
+        .map(|m| m.id)
+        .collect()
+}
+
+/// Half the body width of `anchor`.
+fn half_width_of(board: &Board, anchor: ComponentId) -> f64 {
+    board
+        .component(anchor)
+        .and_then(|c| c.part.as_ref())
+        .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
+        / 2.0
+}
+
+/// How far the widest net label of any of `ids` reaches from its pin.
+fn own_label_reach(board: &Board, ids: &[ComponentId]) -> f64 {
+    ids.iter()
+        .flat_map(|&id| {
+            board
+                .nets
+                .iter()
+                .filter(move |n| n.endpoints.iter().any(|e| e.component == id))
+                .map(net_label_extent)
+        })
+        .fold(0.0, f64::max)
+}
+
 /// How far from the anchor's centre the net labels of its `side` pins reach:
 /// pin tip, stub, widest text.
-pub(crate) fn pin_label_reach(board: &Board, anchor: ComponentId, side: PinSide) -> f64 {
+fn pin_label_reach(board: &Board, anchor: ComponentId, side: PinSide) -> f64 {
     board
         .component(anchor)
         .and_then(|c| c.part.as_ref())
@@ -4263,15 +4267,7 @@ fn side_column_offset(
     let label_reach = pin_label_reach(board, anchor, side);
     let member_reach = members
         .iter()
-        .map(|&id| {
-            let own_labels = board
-                .nets
-                .iter()
-                .filter(|n| n.endpoints.iter().any(|e| e.component == id))
-                .map(net_label_extent)
-                .fold(0.0, f64::max);
-            side_text_reach(board, id).max(own_labels)
-        })
+        .map(|&id| side_text_reach(board, id).max(own_label_reach(board, &[id])))
         .fold(0.0, f64::max);
     (anchor_half_w + MEMBER_CLEARANCE).max(label_reach + member_reach)
 }

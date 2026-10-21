@@ -50,8 +50,8 @@
     },
     "multi_pattern_combo": {
       "crossing_count": 0,
-      "total_wire_length_mm": 231.14000000000004,
-      "label_stub_count": 13,
+      "total_wire_length_mm": 283.21,
+      "label_stub_count": 11,
       "aesthetic_violations": []
     },
     "usb_diff_pair": {
