@@ -12,7 +12,8 @@ use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
 
-pub const DEFAULT_LCSC_ENDPOINT: &str = "https://wwwapi.lcsc.com/v1/search/search-product-list";
+pub const DEFAULT_LCSC_ENDPOINT: &str =
+    "https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/smtGood/selectSmtComponentList/v2";
 
 /// LCSC API client.
 #[derive(Debug, Clone)]
@@ -55,6 +56,18 @@ impl Default for LcscDistributor {
 struct LcscResponse {
     code: Option<i32>,
     result: Option<LcscResult>,
+    data: Option<LcscData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LcscData {
+    #[serde(rename = "componentPageInfo")]
+    component_page_info: Option<LcscPage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LcscPage {
+    list: Option<Vec<LcscProduct>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,17 +78,17 @@ struct LcscResult {
 
 #[derive(Debug, Deserialize)]
 struct LcscProduct {
-    #[serde(rename = "productCode")]
+    #[serde(rename = "productCode", alias = "componentCode")]
     product_code: Option<String>,
-    #[serde(rename = "stockNumber")]
+    #[serde(rename = "stockNumber", alias = "stockCount")]
     stock_number: Option<u64>,
-    #[serde(rename = "minBuyNumber")]
+    #[serde(rename = "minBuyNumber", alias = "minPurchaseNum")]
     min_buy_number: Option<u32>,
-    #[serde(rename = "orderMultiple")]
+    #[serde(rename = "orderMultiple", alias = "leastPatchNumber")]
     order_multiple: Option<u32>,
     #[serde(rename = "productStatus")]
     product_status: Option<String>,
-    #[serde(rename = "productPriceList")]
+    #[serde(rename = "productPriceList", alias = "componentPrices")]
     product_price_list: Option<Vec<LcscPrice>>,
 }
 
@@ -86,7 +99,7 @@ struct LcscPrice {
     #[serde(rename = "startNumber", alias = "qFrom")]
     minimum_quantity: Option<u32>,
     #[serde(rename = "endNumber", alias = "qTo")]
-    maximum_quantity: Option<u32>,
+    maximum_quantity: Option<i64>,
 }
 
 #[async_trait]
@@ -102,8 +115,32 @@ impl Distributor for LcscDistributor {
             return Ok(None);
         }
 
-        let url = format!("{}?keyword={}", self.endpoint, urlencoding::encode(&pn));
-        let resp = self.client.get(&url).send().await?;
+        let resp = if self.endpoint.contains("/search") {
+            let url = format!("{}?keyword={}", self.endpoint, urlencoding::encode(&pn));
+            self.client.get(&url).send().await?
+        } else {
+            self.client
+                .post(&self.endpoint)
+                .header("Origin", "https://jlcpcb.com")
+                .header("Referer", "https://jlcpcb.com/parts/basic_parts")
+                .json(&serde_json::json!({
+                    "currentPage": 1,
+                    "pageSize": 30,
+                    "keyword": pn,
+                    "componentLibraryType": null,
+                    "preferredComponentFlag": null,
+                    "stockFlag": null,
+                    "stockSort": null,
+                    "firstSortName": null,
+                    "secondSortName": null,
+                    "componentBrand": null,
+                    "componentSpecification": null,
+                    "componentAttributes": [],
+                    "searchSource": "search"
+                }))
+                .send()
+                .await?
+        };
 
         if !resp.status().is_success() {
             return Err(SupplyError::ProviderUnavailable {
@@ -120,7 +157,12 @@ impl Distributor for LcscDistributor {
             });
         }
 
-        let products = match data.result.and_then(|r| r.product_list) {
+        let products = match data
+            .data
+            .and_then(|d| d.component_page_info)
+            .and_then(|p| p.list)
+            .or_else(|| data.result.and_then(|r| r.product_list))
+        {
             Some(list) if !list.is_empty() => list,
             _ => {
                 return Err(SupplyError::NoExactMatch {
@@ -170,7 +212,9 @@ impl Distributor for LcscDistributor {
                     .filter_map(|price| {
                         price.product_price.map(|unit_price_usd| PriceTier {
                             minimum_quantity: price.minimum_quantity.unwrap_or(moq.max(1)),
-                            maximum_quantity: price.maximum_quantity,
+                            maximum_quantity: price
+                                .maximum_quantity
+                                .and_then(|value| u32::try_from(value).ok()),
                             unit_price_usd,
                         })
                     })
