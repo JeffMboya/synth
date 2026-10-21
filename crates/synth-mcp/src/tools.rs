@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use synth_supply::Distributor;
 
@@ -727,16 +728,7 @@ fn execute_cost_budget_plan(args: &Value) -> Result<Value, String> {
         left["_rank"]
             .as_u64()
             .cmp(&right["_rank"].as_u64())
-            .then_with(|| {
-                left["complete_total"]["micros"]
-                    .as_i64()
-                    .unwrap_or(i64::MAX)
-                    .cmp(
-                        &right["complete_total"]["micros"]
-                            .as_i64()
-                            .unwrap_or(i64::MAX),
-                    )
-            })
+            .then_with(|| compare_complete_totals(left, right))
             .then_with(|| {
                 left["candidate_index"]
                     .as_u64()
@@ -748,14 +740,36 @@ fn execute_cost_budget_plan(args: &Value) -> Result<Value, String> {
             map.remove("_rank");
         }
     }
-    let selected_candidate_index = candidates
-        .first()
-        .and_then(|candidate| candidate["candidate_index"].as_u64());
+    let selected_candidate_index = candidates.first().and_then(|candidate| {
+        (candidate["review_status"] == "complete" && candidate["budget_outcome"] == "within_budget")
+            .then(|| candidate["candidate_index"].as_u64())
+            .flatten()
+    });
     Ok(serde_json::json!({
         "schema_version": "synth.cost-budget-plan.v1",
         "candidates": candidates,
         "selected_candidate_index": selected_candidate_index
     }))
+}
+
+/// Compare totals only when both values are typed Money in the same currency.
+/// A raw `micros` comparison across currencies would produce a false ranking.
+fn compare_complete_totals(left: &Value, right: &Value) -> Ordering {
+    let left_money = left
+        .get("complete_total")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<synth_cost::Money>(value).ok());
+    let right_money = right
+        .get("complete_total")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<synth_cost::Money>(value).ok());
+
+    match (left_money, right_money) {
+        (Some(left), Some(right)) if left.currency == right.currency => {
+            left.micros.cmp(&right.micros)
+        }
+        _ => Ordering::Equal,
+    }
 }
 
 /// Attempt to find workspace root containing `registry/parts`.
@@ -4789,7 +4803,7 @@ electrical_type = "input"
             "pcb_quote": null,
             "assembly": null,
             "delivery": null,
-            "budget": {"currency": "Usd", "micros": 250000000},
+            "budget": {"currency": "Usd", "micros": 250_000_000},
             "evaluated_at": "2026-10-16T00:00:00Z"
         });
         let result = call_tool(
@@ -4798,7 +4812,7 @@ electrical_type = "input"
             None,
         )
         .expect("budget target should be accepted even when evidence is incomplete");
-        assert_eq!(result["budget"]["micros"], 250000000);
+        assert_eq!(result["budget"]["micros"], 250_000_000);
         assert_eq!(result["budget_outcome"], "indeterminate");
         assert_eq!(result["review_status"], "unresolved");
     }
@@ -4830,7 +4844,7 @@ electrical_type = "input"
                 "duties": {"currency": "Usd", "micros": 0},
                 "taxes": {"currency": "Usd", "micros": 0}
             },
-            "budget": {"currency": "Usd", "micros": 1000000},
+            "budget": {"currency": "Usd", "micros": 1_000_000},
             "evaluated_at": "2026-10-16T00:00:00Z"
         });
         let unresolved = serde_json::json!({
@@ -4839,7 +4853,7 @@ electrical_type = "input"
             "scenario": {"fabricated_boards": 1, "assembled_boards": 1},
             "currency": "Usd", "parts": [], "pcb_specification": null,
             "pcb_profile": null, "pcb_quote": null, "assembly": null,
-            "delivery": null, "budget": {"currency": "Usd", "micros": 1000000},
+            "delivery": null, "budget": {"currency": "Usd", "micros": 1_000_000},
             "evaluated_at": "2026-10-16T00:00:00Z"
         });
         let result = call_tool(
@@ -4851,6 +4865,55 @@ electrical_type = "input"
         assert_eq!(result["selected_candidate_index"], 1);
         assert_eq!(result["candidates"][0]["review_status"], "complete");
         assert_eq!(result["candidates"][0]["budget_outcome"], "within_budget");
+    }
+
+    #[test]
+    fn budget_plan_does_not_select_rejected_candidates() {
+        let result = call_tool(
+            "synth_cost_budget_plan",
+            &serde_json::json!({"inputs": [{"not": "a synth.cost-input.v1"}]}),
+            None,
+        )
+        .expect("invalid candidates are reported in the plan");
+
+        assert!(result["selected_candidate_index"].is_null());
+        assert_eq!(result["candidates"][0]["review_status"], "rejected");
+    }
+
+    #[test]
+    fn budget_plan_does_not_compare_micros_across_currencies() {
+        let usd = serde_json::json!({
+            "schema_version": "synth.cost-input.v1",
+            "snapshot_id": "usd-candidate",
+            "scenario": {"fabricated_boards": 1, "assembled_boards": 0},
+            "currency": "Usd", "parts": [],
+            "pcb_specification": {"width_mm": 10.0, "height_mm": 10.0, "layers": 2, "material": "FR4", "thickness_mm": 1.6, "copper_oz": 1.0, "finish": "HASL", "solder_mask": "green", "panel_count": 1},
+            "pcb_profile": {"name": "rate-card", "currency": "Usd", "max_width_mm": 100.0, "max_height_mm": 100.0, "supported_layers": [2], "setup_fee": {"currency": "Usd", "micros": 0}, "per_board_fee": {"currency": "Usd", "micros": 1_000_000}, "per_cm2_fee": {"currency": "Usd", "micros": 0}},
+            "pcb_quote": null,
+            "assembly": null,
+            "delivery": {"shipping": {"currency": "Usd", "micros": 0}, "duties": {"currency": "Usd", "micros": 0}, "taxes": {"currency": "Usd", "micros": 0}},
+            "budget": {"currency": "Usd", "micros": 2_000_000},
+            "evaluated_at": "2026-10-16T00:00:00Z"
+        });
+        let mut eur = usd.clone();
+        eur["snapshot_id"] = serde_json::json!("eur-candidate");
+        eur["currency"] = serde_json::json!("Eur");
+        eur["pcb_profile"]["currency"] = serde_json::json!("Eur");
+        eur["pcb_profile"]["per_board_fee"]["currency"] = serde_json::json!("Eur");
+        eur["delivery"]["shipping"]["currency"] = serde_json::json!("Eur");
+        eur["delivery"]["duties"]["currency"] = serde_json::json!("Eur");
+        eur["delivery"]["taxes"]["currency"] = serde_json::json!("Eur");
+        eur["budget"]["currency"] = serde_json::json!("Eur");
+
+        let result = call_tool(
+            "synth_cost_budget_plan",
+            &serde_json::json!({"inputs": [usd, eur]}),
+            None,
+        )
+        .expect("same-shaped candidates should evaluate");
+
+        assert_eq!(result["candidates"][0]["candidate_index"], 0);
+        assert_eq!(result["selected_candidate_index"], 0);
     }
 }
 
