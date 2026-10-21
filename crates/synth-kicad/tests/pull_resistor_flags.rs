@@ -97,6 +97,37 @@ const SUFFIXED_NAME: &str = r#"board "pull_flags" {
 }
 "#;
 
+/// Two 2-pin TX nets, each more than 80 mm long, so each is drawn as a flag.
+/// Both infer the name `TX`; the second renders as
+/// `TX_BRIDGE_WITH_A_LONG_REFDES_TWO`. The pull-down on that bridge has to clear
+/// the longer name even though no net here has three pins.
+const LONG_TWO_PIN: &str = r#"board "pull_flags" {
+  layers 2
+  manufacturer "jlcpcb"
+
+  component A1: ic "ch340g"
+  component BRIDGE_WITH_A_LONG_REFDES_TWO: ic "ch340g"
+  component U3: ic "ch340g"
+  component U4: ic "ch340g"
+  component U5: ic "ch340g"
+  component U6: ic "ch340g"
+  component R9: resistor "r_generic_0603"
+
+  net "GND" {
+    BRIDGE_WITH_A_LONG_REFDES_TWO.gnd, R9.p2
+  }
+
+  connect BRIDGE_WITH_A_LONG_REFDES_TWO.cts -> R9.p1 as "CTS_LOW"
+  connect BRIDGE_WITH_A_LONG_REFDES_TWO.txd -> U5.rxd
+  connect A1.txd -> U6.rxd
+  connect A1.dtr -> U3.rxd as "E"
+  connect U3.txd -> U4.rxd as "A"
+  connect U4.txd -> U5.cts as "B"
+  connect U5.txd -> U6.cts as "C"
+  connect A1.rts -> BRIDGE_WITH_A_LONG_REFDES_TWO.rts as "D"
+}
+"#;
+
 fn load_board(source: &str) -> synth_ir::Board {
     let registry =
         synth_registry::load_dir(&workspace_root().join("registry").join("parts")).unwrap();
@@ -227,5 +258,11 @@ fn no_flag_is_drawn_over_a_pull_up_or_its_wire() {
 #[test]
 fn no_flag_is_drawn_over_a_pull_down_beside_a_suffixed_name() {
     let found = flags_in_the_way(SUFFIXED_NAME, "R9");
+    assert!(found.is_empty(), "flags in the way:\n{}", found.join("\n"));
+}
+
+#[test]
+fn no_flag_is_drawn_over_a_pull_down_beside_a_long_two_pin_net() {
+    let found = flags_in_the_way(LONG_TWO_PIN, "R9");
     assert!(found.is_empty(), "flags in the way:\n{}", found.join("\n"));
 }
