@@ -5736,31 +5736,58 @@ fn find_connecting_active_pin(
 /// clear of the flags beside it.
 const FLAG_COLUMN_PASSIVE_REACH_MM: f64 = 6.35;
 
+/// The text each flagged net will carry, as the label pass renders it.
+///
+/// Which nets get flags is decided after placement, so this applies the same
+/// test by net: a net with three or more pins, or one that leaves its first
+/// pin's group on a board that declares groups. It runs the labels through
+/// [`uniquify_net_labels`] too, because a name shared by two nets gains a
+/// suffix there and the flag is that much wider.
+fn flagged_net_names(board: &Board) -> std::collections::HashMap<NetId, String> {
+    let has_groups = board.components.iter().any(|c| c.group.is_some());
+    let mut labels = Vec::new();
+    for net in &board.nets {
+        if net.endpoints.len() < 2 || classify_power_net(board, net).is_some() {
+            continue;
+        }
+        let flagged = if has_groups {
+            let first = effective_group(board, net.endpoints[0].component);
+            net.endpoints
+                .iter()
+                .any(|e| effective_group(board, e.component) != first)
+        } else {
+            net.endpoints.len() >= LABEL_MIN_ENDPOINTS_MULTIDROP
+        };
+        if !flagged {
+            continue;
+        }
+        let name = pick_net_label(board, net).unwrap_or_else(|| format!("NET_{}", net.id.0));
+        labels.extend(net.endpoints.iter().map(|e| NetLabel {
+            net: net.id,
+            component: e.component,
+            pin: e.pin,
+            label: name.clone(),
+            spot: LabelSpot::default(),
+        }));
+    }
+    uniquify_net_labels(board, &mut labels);
+    labels.into_iter().map(|l| (l.net, l.label)).collect()
+}
+
 /// Where a column of passives on `side` of `anchor` must stand, as an offset
 /// from the anchor's x, to keep its bodies out of the flags the anchor's
 /// other pins on that side hang. `None` when no pin on that side carries one.
 ///
-/// A flag runs from its pin by the stub and the boxed net name, and which
-/// nets get flags is decided after placement, so this applies the same test
-/// by net: a net with three or more pins, or one that leaves the anchor's
-/// group on a board that declares groups.
+/// A flag runs from its pin by the stub and the boxed net name.
 fn flag_column_dx(board: &Board, anchor: ComponentId, side: PinSide) -> Option<f64> {
     let part = board.component(anchor)?.part.as_ref()?;
-    let has_groups = board.components.iter().any(|c| c.group.is_some());
+    let names = flagged_net_names(board);
     let outward = if side == PinSide::Left { -1.0 } else { 1.0 };
     let mut column: Option<f64> = None;
     for net in &board.nets {
-        let flagged = if has_groups {
-            net.endpoints
-                .iter()
-                .any(|e| effective_group(board, e.component) != effective_group(board, anchor))
-        } else {
-            net.endpoints.len() >= LABEL_MIN_ENDPOINTS_MULTIDROP
-        };
-        if !flagged || classify_power_net(board, net).is_some() {
+        let Some(name) = names.get(&net.id) else {
             continue;
-        }
-        let name = pick_net_label(board, net).unwrap_or_else(|| format!("NET_{}", net.id.0));
+        };
         let reach = route::LABEL_STUB_MM
             + route::FLAG_CHAR_MM * name.chars().count() as f64
             + route::FLAG_PAD_MM

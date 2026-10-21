@@ -73,6 +73,30 @@ const PULL_UP: &str = r#"board "pull_flags" {
 }
 "#;
 
+/// Two bridges whose TX nets are both inferred as `TX`. The second renders as
+/// `TX_BRIDGE_WITH_A_LONG_REFDES_TWO`, so a pull-down beside it has to clear the longer flag.
+const SUFFIXED_NAME: &str = r#"board "pull_flags" {
+  layers 2
+  manufacturer "jlcpcb"
+
+  component BRIDGE_ONE: ic "ch340g"
+  component BRIDGE_WITH_A_LONG_REFDES_TWO: ic "ch340g"
+  component J2: connector "header_1x4"
+  component J3: connector "header_1x4"
+  component R9: resistor "r_generic_0603"
+
+  net "GND" {
+    BRIDGE_WITH_A_LONG_REFDES_TWO.gnd, R9.p2
+  }
+
+  connect BRIDGE_ONE.txd -> J2.p1
+  connect BRIDGE_ONE.txd -> J2.p2
+  connect BRIDGE_WITH_A_LONG_REFDES_TWO.txd -> J3.p1
+  connect BRIDGE_WITH_A_LONG_REFDES_TWO.txd -> J3.p2
+  connect BRIDGE_WITH_A_LONG_REFDES_TWO.cts -> R9.p1 as "CTS_LOW"
+}
+"#;
+
 fn load_board(source: &str) -> synth_ir::Board {
     let registry =
         synth_registry::load_dir(&workspace_root().join("registry").join("parts")).unwrap();
@@ -197,5 +221,11 @@ fn no_flag_is_drawn_over_a_pull_down_or_its_wire() {
 #[test]
 fn no_flag_is_drawn_over_a_pull_up_or_its_wire() {
     let found = flags_in_the_way(PULL_UP, "R8");
+    assert!(found.is_empty(), "flags in the way:\n{}", found.join("\n"));
+}
+
+#[test]
+fn no_flag_is_drawn_over_a_pull_down_beside_a_suffixed_name() {
+    let found = flags_in_the_way(SUFFIXED_NAME, "R9");
     assert!(found.is_empty(), "flags in the way:\n{}", found.join("\n"));
 }
