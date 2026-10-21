@@ -379,19 +379,28 @@ fn offer_line(
         unit.checked_mul(purchase)?,
         CostSource::FrozenOffer,
     );
-    line.uncertain = input.offer.status.stock_status != StockStatus::InStock
+    let mut uncertainty_reasons = Vec::new();
+    if input.offer.status.stock_status != StockStatus::InStock
         || input.offer.status.stock_qty < purchase
-        || input.offer.status.lifecycle.is_problematic()
-        || !matches!(
-            input.offer.status.assembly_eligibility,
-            synth_supply::AssemblyEligibility::Eligible
-        );
+    {
+        uncertainty_reasons.push("supplier stock is unavailable or insufficient");
+    }
+    if input.offer.status.lifecycle.is_problematic() {
+        uncertainty_reasons.push("supplier lifecycle is not active");
+    }
+    match input.offer.status.assembly_eligibility {
+        synth_supply::AssemblyEligibility::Eligible => {}
+        synth_supply::AssemblyEligibility::Ineligible => {
+            uncertainty_reasons.push("supplier assembly service marks this part ineligible");
+        }
+        synth_supply::AssemblyEligibility::Unknown => {
+            uncertainty_reasons.push("supplier assembly eligibility is unknown");
+        }
+    }
+    line.uncertain = !uncertainty_reasons.is_empty();
     line.expires_at.clone_from(&input.offer.expires_at);
     if line.uncertain {
-        line.reason = Some(
-            "supplier stock, lifecycle, or assembly eligibility is not sufficient for this purchase"
-                .into(),
-        );
+        line.reason = Some(uncertainty_reasons.join("; "));
     }
     Ok(line)
 }
@@ -771,6 +780,36 @@ mod tests {
         assert_eq!(report.known_subtotal.micros, 800_000);
         assert!(report.complete_total.is_none());
         assert_eq!(report.lines[0].quantity, 10);
+    }
+
+    #[test]
+    fn ineligible_assembly_is_explained_in_the_cost_line() {
+        let mut input = incomplete_input();
+        input.scenario = QuantityScenario {
+            fabricated_boards: 1,
+            assembled_boards: 1,
+        };
+        input.parts = vec![PartCostInput {
+            sku: "C1".into(),
+            units_per_board: 1,
+            allowance: 0,
+            offer: offer(
+                vec![PriceTier {
+                    minimum_quantity: 1,
+                    maximum_quantity: None,
+                    unit_price_usd: 0.10,
+                }],
+                StockStatus::InStock,
+            ),
+        }];
+        input.parts[0].offer.status.assembly_eligibility = AssemblyEligibility::Ineligible;
+
+        let report = calculate(&input).expect("cost report");
+        assert!(report.lines[0].uncertain);
+        assert_eq!(
+            report.lines[0].reason.as_deref(),
+            Some("supplier assembly service marks this part ineligible")
+        );
     }
 
     #[test]
