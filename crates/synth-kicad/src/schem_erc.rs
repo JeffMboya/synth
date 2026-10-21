@@ -1836,6 +1836,7 @@ mod tests {
             component: ComponentId(0),
             pin: PinId(0),
             label: "LONG_SIG".to_string(),
+            spot: synth_layout::LabelSpot::default(),
         };
         let layout = layout(Vec::new(), Vec::new(), Vec::new(), vec![net_label]);
         assert!(check_long_nets(&layout, 100.0).is_empty());
@@ -2108,6 +2109,7 @@ mod tests {
             component,
             pin: PinId(0),
             label: label.to_string(),
+            spot: synth_layout::LabelSpot::default(),
         }
     }
 

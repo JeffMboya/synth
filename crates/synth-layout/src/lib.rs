@@ -55,6 +55,7 @@ pub mod footprint_resolve;
 pub mod kicad_footprint_loader;
 pub mod kicad_lib_loader;
 pub mod kicad_zip;
+mod label_spots;
 pub mod maxrects;
 pub mod netclass;
 pub mod ops;
@@ -228,6 +229,20 @@ pub struct NetLabel {
     /// Text drawn next to the pin's stub end. Same for every
     /// endpoint of the same net.
     pub label: String,
+    /// Where the flag hangs when the default spot is taken.
+    #[serde(default)]
+    pub spot: LabelSpot,
+}
+
+/// How a net label's flag is moved off its default spot, a 5.08 mm stub
+/// straight out of the pin. All zero is the default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LabelSpot {
+    /// A flag on a pin beside its part rises this many grid steps (2.54 mm;
+    /// negative is up) from the end of its stub.
+    pub lift: i8,
+    /// A flag on a pin above or below its part runs left instead of right.
+    pub flipped: bool,
 }
 
 /// A cross-sheet signal net stub (§P26 multi-sheet).
@@ -1652,16 +1667,16 @@ fn drawn_beyond_bodies(board: &Board, layout: &Layout) -> Vec<(ComponentId, (f64
     let labels = layout
         .net_labels
         .iter()
-        .map(|l| (&l.label, l.component, l.pin))
+        .map(|l| (&l.label, l.component, l.pin, l.spot))
         .chain(
             layout
                 .hierarchical_labels
                 .iter()
-                .map(|l| (&l.label, l.component, l.pin)),
+                .map(|l| (&l.label, l.component, l.pin, LabelSpot::default())),
         );
-    for (text, component, pin) in labels {
+    for (text, component, pin, spot) in labels {
         let Some((x0, y0, x1, y1)) =
-            route::net_label_rect(board, text, component, pin, &placements)
+            route::net_label_rect(board, text, component, pin, &placements, spot)
         else {
             continue;
         };
@@ -2240,6 +2255,7 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
     // Labels are classified AFTER placement so we know each
     // endpoint's coordinates and can measure span.
     layout.net_labels = classify_net_labels(board, layout);
+    uniquify_and_place(board, layout, 0);
     // Route every signal net over the placed sheet. Both consumers —
     // the browser preview and the KiCad export — share this router.
     let route = route::route_board(board, layout);
@@ -2250,6 +2266,7 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
     // found nothing) or routed but crossing too many other nets
     // (§7.7.3) — get the same escape hatch a human uses when a wire
     // would tangle. Same-named labels connect them electrically.
+    let classified = layout.net_labels.len();
     for net_id in route.nets_truncated_to_labels {
         let Some(net) = board.net(net_id) else {
             continue;
@@ -2261,13 +2278,28 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
                 component: ep.component,
                 pin: ep.pin,
                 label: text.clone(),
+                spot: LabelSpot::default(),
             });
         }
     }
-    // Distinct nets must never render the same label string — KiCad
-    // merges same-named local labels into one net. The uniquify pass
-    // is a no-op on collision-free boards.
+    uniquify_and_place(board, layout, classified);
+}
+
+/// Distinct nets must never render the same label string — KiCad merges
+/// same-named local labels into one net. The uniquify pass is a no-op on
+/// collision-free boards. A rename widens a flag, so the spots are chosen
+/// after it; `net_labels[..placed]` keep theirs unless one of them was renamed.
+fn uniquify_and_place(board: &Board, layout: &mut Layout, placed: usize) {
+    let before: Vec<String> = layout.net_labels[..placed]
+        .iter()
+        .map(|l| l.label.clone())
+        .collect();
     uniquify_net_labels(board, &mut layout.net_labels);
+    let renamed = layout.net_labels[..placed]
+        .iter()
+        .zip(&before)
+        .any(|(l, old)| l.label != *old);
+    label_spots::clear_net_labels(board, layout, if renamed { 0 } else { placed });
 }
 
 /// Connectors must preserve ascending pin numbers (1 → 2 → 3 → 4) top-to-bottom.
@@ -2334,6 +2366,7 @@ pub fn force_net_label(board: &Board, layout: &mut Layout, net: NetId) {
     };
     layout.wires.retain(|w| w.net != net);
     layout.net_labels.retain(|l| l.net != net);
+    let kept = layout.net_labels.len();
     let text = pick_net_label(board, net_ir).unwrap_or_else(|| format!("NET_{}", net.0));
     for ep in &net_ir.endpoints {
         layout.net_labels.push(NetLabel {
@@ -2341,11 +2374,12 @@ pub fn force_net_label(board: &Board, layout: &mut Layout, net: NetId) {
             component: ep.component,
             pin: ep.pin,
             label: text.clone(),
+            spot: LabelSpot::default(),
         });
     }
     // A hand-forced label can collide with labels the last routing pass
     // produced; re-run the uniqueness pass so the sheet-wide guarantee holds.
-    uniquify_net_labels(board, &mut layout.net_labels);
+    uniquify_and_place(board, layout, kept);
 }
 
 /// USB ESD diodes sit in a column to the LEFT of the USB
@@ -3530,6 +3564,43 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
         };
         let col_left_growth = column_growth(MemberSide::Left);
         let col_right_growth = column_growth(MemberSide::Right);
+        // A part standing left of its anchor puts its flag on the left when the
+        // right is taken, so between the labels of the pins facing it from the
+        // previous column and the part there is room for that flag too.
+        let corridor_need = |prev: usize, next: usize| -> f64 {
+            let mut need = 0.0_f64;
+            for &b in &col_groups[next] {
+                let cluster = &clusters[b];
+                let left = members_on(cluster, MemberSide::Left);
+                if left.is_empty() {
+                    continue;
+                }
+                let flag = own_label_reach(board, &left);
+                let next_left_extent = side_column_offset(
+                    board,
+                    cluster.anchor,
+                    PinSide::Left,
+                    &left,
+                    half_width_of(board, cluster.anchor),
+                );
+                for &a in &col_groups[prev] {
+                    let anchor = clusters[a].anchor;
+                    let right = members_on(&clusters[a], MemberSide::Right);
+                    // Its own right-hand parts stand there; past them or not,
+                    // the labels of its pins run at least as far.
+                    let prev_right_extent = (side_column_offset(
+                        board,
+                        anchor,
+                        PinSide::Right,
+                        &right,
+                        half_width_of(board, anchor),
+                    ) + own_label_reach(board, &right))
+                    .max(pin_label_reach(board, anchor, PinSide::Right) + flag);
+                    need = need.max(prev_right_extent + next_left_extent);
+                }
+            }
+            need
+        };
         // Gap BETWEEN consecutive columns: must clear column i's own
         // rightward extent (its anchor's half-width, symmetric around
         // its centre) *and* column i+1's anchor extending back leftward
@@ -3600,9 +3671,10 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
             for col in start..end {
                 if col > start {
                     let gap = snap_grid(
-                        floor.max(col_max_half_w[col - 1] + col_max_half_w[col] + WIRE_MARGIN)
+                        (floor.max(col_max_half_w[col - 1] + col_max_half_w[col] + WIRE_MARGIN)
                             + col_right_growth[col - 1]
-                            + col_left_growth[col],
+                            + col_left_growth[col])
+                            .max(corridor_need(col - 1, col)),
                     );
                     cum += gap;
                 }
@@ -4127,20 +4199,42 @@ fn side_text_reach(board: &Board, id: ComponentId) -> f64 {
     SIDE_TEXT_OFFSET_MM + chars as f64 * route::LABEL_CHAR_WIDTH_MM
 }
 
-/// How far from the anchor's centre a member in a column beside its `side`
-/// pins has to sit: past the net labels those pins can carry (pin tip, stub,
-/// widest text). A member on the left has its own labels facing those pins,
-/// since a vertical part's label points right, so they need room too. The
-/// member's own text goes in that room. Never less than the usual clearance
-/// from the body.
-fn side_column_offset(
-    board: &Board,
-    anchor: ComponentId,
-    side: PinSide,
-    members: &[ComponentId],
-    anchor_half_w: f64,
-) -> f64 {
-    let label_reach = board
+/// The ids of the cluster's members on `side` of its anchor.
+fn members_on(cluster: &Cluster, side: MemberSide) -> Vec<ComponentId> {
+    cluster
+        .members
+        .iter()
+        .filter(|m| m.side == side)
+        .map(|m| m.id)
+        .collect()
+}
+
+/// Half the body width of `anchor`.
+fn half_width_of(board: &Board, anchor: ComponentId) -> f64 {
+    board
+        .component(anchor)
+        .and_then(|c| c.part.as_ref())
+        .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
+        / 2.0
+}
+
+/// How far the widest net label of any of `ids` reaches from its pin.
+fn own_label_reach(board: &Board, ids: &[ComponentId]) -> f64 {
+    ids.iter()
+        .flat_map(|&id| {
+            board
+                .nets
+                .iter()
+                .filter(move |n| n.endpoints.iter().any(|e| e.component == id))
+                .map(net_label_extent)
+        })
+        .fold(0.0, f64::max)
+}
+
+/// How far from the anchor's centre the net labels of its `side` pins reach:
+/// pin tip, stub, widest text.
+fn pin_label_reach(board: &Board, anchor: ComponentId, side: PinSide) -> f64 {
+    board
         .component(anchor)
         .and_then(|c| c.part.as_ref())
         .map_or(0.0, |part| {
@@ -4154,22 +4248,27 @@ fn side_column_offset(
                     Some(px.abs() + net_label_extent(net))
                 })
                 .fold(0.0, f64::max)
-        });
+        })
+}
+
+/// How far from the anchor's centre a member in a column beside its `side`
+/// pins has to sit: past the net labels those pins can carry (pin tip, stub,
+/// widest text). A member has its own labels too: on the left a vertical
+/// part's label points right, at those pins, and on either side its flag runs
+/// the other way when the near side is taken. They need room, and the
+/// member's own text goes in that room. Never less than the usual clearance
+/// from the body.
+fn side_column_offset(
+    board: &Board,
+    anchor: ComponentId,
+    side: PinSide,
+    members: &[ComponentId],
+    anchor_half_w: f64,
+) -> f64 {
+    let label_reach = pin_label_reach(board, anchor, side);
     let member_reach = members
         .iter()
-        .map(|&id| {
-            let own_labels = if side == PinSide::Left {
-                board
-                    .nets
-                    .iter()
-                    .filter(|n| n.endpoints.iter().any(|e| e.component == id))
-                    .map(net_label_extent)
-                    .fold(0.0, f64::max)
-            } else {
-                0.0
-            };
-            side_text_reach(board, id).max(own_labels)
-        })
+        .map(|&id| side_text_reach(board, id).max(own_label_reach(board, &[id])))
         .fold(0.0, f64::max);
     (anchor_half_w + MEMBER_CLEARANCE).max(label_reach + member_reach)
 }
@@ -4192,11 +4291,7 @@ fn side_column_growth(board: &Board, cluster: &Cluster, member_side: MemberSide)
     } else {
         PinSide::Right
     };
-    let half_w = board
-        .component(cluster.anchor)
-        .and_then(|c| c.part.as_ref())
-        .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
-        / 2.0;
+    let half_w = half_width_of(board, cluster.anchor);
     side_column_offset(board, cluster.anchor, pin_side, &members, half_w)
         - (half_w + MEMBER_CLEARANCE)
 }
@@ -4922,6 +5017,7 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
                 component: ep.component,
                 pin: ep.pin,
                 label: label.clone(),
+                spot: LabelSpot::default(),
             });
         }
     }
@@ -8627,6 +8723,7 @@ mod documentation_tests {
             component: ComponentId(0),
             pin: pin_id,
             label: "MODEM_IDLE".to_string(),
+            spot: LabelSpot::default(),
         });
         // The text runs left from the end of the 5.08 mm stub, about 11 mm.
         let stub_end = x - 5.08;
@@ -8752,9 +8849,15 @@ mod documentation_tests {
             out.push((sx - half_w, name_y, sx + half_w, name_y));
         }
         for label in layout.net_labels.iter().filter(|l| in_group(l.component)) {
-            let (x0, y0, x1, y1) =
-                route::net_label_rect(b, &label.label, label.component, label.pin, &placements)
-                    .expect("label");
+            let (x0, y0, x1, y1) = route::net_label_rect(
+                b,
+                &label.label,
+                label.component,
+                label.pin,
+                &placements,
+                label.spot,
+            )
+            .expect("label");
             let (pin_x, ..) =
                 route::pin_terminal_xy(b, label.component, label.pin, &placements).expect("pin");
             out.push((x0.min(pin_x), y0, x1.max(pin_x), y1));

@@ -624,5 +624,50 @@ class LabelAlignment(unittest.TestCase):
         self.assertEqual(label_numbers(labels_sch()), (0, 0))
 
 
+def flags_sch(*flags):
+    """A `.kicad_sch` with global labels given as (text, x, y, angle)."""
+    out = ["(kicad_sch"]
+    for text, x, y, angle in flags:
+        out.append(
+            f'\t(global_label "{text}"\n\t\t(shape output)\n\t\t(at {x} {y} {angle})\n\t)'
+        )
+    out.append(")")
+    return "\n".join(out)
+
+
+def flag_pairs(*flags):
+    return sq.score([], [], (0.0, 0.0), flags=sq.parse_flags(flags_sch(*flags)))[
+        "flag_pairs_overlapping"
+    ]
+
+
+class FlagOverlap(unittest.TestCase):
+    """A flag is 1.12 mm per character plus 2.9 mm wide and 2.65 mm tall, and runs
+    from its anchor to the right at angle 0, to the left at angle 180."""
+
+    def test_two_flags_in_one_place_are_counted(self):
+        self.assertEqual(flag_pairs(("SIG", 10, 10, 0), ("SIG", 10, 10, 0)), 1)
+
+    def test_flags_facing_each_other_across_their_anchors_are_counted(self):
+        self.assertEqual(flag_pairs(("SIG_A", 20, 10, 180), ("SIG_A", 14, 10, 0)), 1)
+
+    def test_flags_on_a_pin_pitch_only_touch(self):
+        self.assertEqual(flag_pairs(("SIG", 10, 10, 0), ("SIG", 10, 12.54, 0)), 0)
+
+    def test_flags_one_above_the_other_are_clear(self):
+        self.assertEqual(flag_pairs(("SIG", 10, 10, 0), ("SIG", 10, 15.08, 0)), 0)
+
+    def test_flags_end_to_end_are_clear(self):
+        self.assertEqual(flag_pairs(("AB", 10, 10, 0), ("AB", 5.14, 10, 180)), 0)
+
+    def test_each_overlapping_pair_counts(self):
+        self.assertEqual(
+            flag_pairs(("S", 10, 10, 0), ("S", 10, 10, 0), ("S", 10, 10.5, 0)), 3
+        )
+
+    def test_a_schematic_without_flags_scores_zero(self):
+        self.assertEqual(flag_pairs(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

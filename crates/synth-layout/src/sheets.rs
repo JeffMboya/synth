@@ -222,6 +222,7 @@ fn split_layout(board: &Board, global: &Layout, partitions: &[SheetPartition]) -
                     endpoint.component,
                     endpoint.pin,
                     &placements,
+                    crate::LabelSpot::default(),
                 ) {
                     let (reach_x, reach_y) = box_reach(endpoint.component);
                     min_x = min_x.min(x0 - reach_x);
@@ -796,6 +797,7 @@ mod tests {
                     label.component,
                     label.pin,
                     &placements,
+                    crate::LabelSpot::default(),
                 )
                 .expect("a label has a rectangle");
                 assert!(

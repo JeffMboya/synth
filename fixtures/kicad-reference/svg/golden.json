@@ -1,6 +1,6 @@
 {
   "ref_battery_charger": {
-    "sha256": "1353e65d989f68b00743bd86196a464e085f01b67ed848e2220e14a5d9329269",
+    "sha256": "6e6c00ef3d85a22c75a334e5be47e19bd6c35fe7b58a82920c0489cb6de1e636",
     "width": "297.0022mm",
     "height": "210.0072mm",
     "paths": 6791,
@@ -28,45 +28,45 @@
     "texts": 209
   },
   "ref_secure_element": {
-    "sha256": "91c176a96258c0833029631339eb9cf8cdd3ec5b988fddcedbbe0bb730573ac7",
+    "sha256": "f81f6352d3ec097cf8356d17c05b1e350a580db7a12f884f080e9122121dd112",
     "width": "297.0022mm",
     "height": "210.0072mm",
-    "paths": 14651,
-    "texts": 347
+    "paths": 9818,
+    "texts": 237
   },
   "ref_spi_flash": {
-    "sha256": "35208ddb0ec8b3ae57be1c0a4ed97806fcaed4833f492b577368438bc8bf68fa",
+    "sha256": "360aaa243fcedb382b9f7fa73c12389c2309e05ed8aed56fcebf86ea6b872256",
     "width": "297.0022mm",
     "height": "210.0072mm",
     "paths": 9127,
     "texts": 223
   },
   "ref_uart_bridge": {
-    "sha256": "17f46fe8bf964c86f99773c9393db49486bd27c8bf7ed53eb61c8140fe742876",
+    "sha256": "5dc4315b2bb92578b9e6cb24da0ba05e00011f24e959c25c67fbf1c80da988d8",
     "width": "419.9890mm",
     "height": "297.0022mm",
     "paths": 18217,
     "texts": 450
   },
   "ref_usb_cdc": {
-    "sha256": "66a867c0ae490e97aa7a3206141a9e7b8ff3dc67b20e922b2ad4b8dcff9a8e72",
-    "width": "297.0022mm",
-    "height": "210.0072mm",
-    "paths": 11576,
-    "texts": 300
+    "sha256": "a5bbdf5e27ddfc61fce99d2e424d304dd2ed25d3102ea21e31b250cf34835e7e",
+    "width": "419.9890mm",
+    "height": "297.0022mm",
+    "paths": 11461,
+    "texts": 303
   },
   "secure_tracker": {
-    "sha256": "76fb1fd0eaf0192cd5d778d43025dadeb2db89b5b2562d84a22c09a3790df8aa",
-    "width": "594.0044mm",
-    "height": "419.9890mm",
-    "paths": 25782,
+    "sha256": "ed3340bd5ee5cb7e2b23bd6423168f034611140c5b656ca4097bbb10b3e5508d",
+    "width": "419.9890mm",
+    "height": "297.0022mm",
+    "paths": 26122,
     "texts": 689
   },
   "sensor_logger": {
-    "sha256": "a7c6e7ad046fa791718165e30dec6e01215ef93c2cacf42e0dae9b4e94a6a6fe",
+    "sha256": "a17a01256bed9d41c4957674cb46a3ad7f76c996686508088f935a3d46811655",
     "width": "297.0022mm",
     "height": "210.0072mm",
-    "paths": 13335,
-    "texts": 394
+    "paths": 13271,
+    "texts": 392
   }
 }
