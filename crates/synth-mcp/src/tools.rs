@@ -740,7 +740,9 @@ fn execute_cost_budget_plan(args: &Value) -> Result<Value, String> {
             map.remove("_rank");
         }
     }
-    let selected_candidate_index = candidates.first().and_then(|candidate| {
+    // Selection is an eligibility query, not an assumption about sort order:
+    // a plan may contain only rejected, over-budget, or indeterminate inputs.
+    let selected_candidate_index = candidates.iter().find_map(|candidate| {
         (candidate["review_status"] == "complete" && candidate["budget_outcome"] == "within_budget")
             .then(|| candidate["candidate_index"].as_u64())
             .flatten()
