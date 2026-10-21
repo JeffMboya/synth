@@ -68,6 +68,15 @@ pub struct ErcConfig {
     /// `E-SYNTH-ESD-001`: require ESD/reverse-polarity protection on
     /// external connector nets.
     pub require_connector_protection: bool,
+    /// `E-SYNTH-PROCESS-002`: an operator has taken responsibility for
+    /// via-in-pad on a tier that does not offer it.
+    ///
+    /// This is `--krt-allow-via-in-pad`, and it has to arrive here rather
+    /// than only at the router. ERC runs first, so without it the override
+    /// was unreachable: a board declaring `requires via_in_pad` against an
+    /// incapable profile failed this rule and the export stopped long before
+    /// anything consulted the operator's decision.
+    pub via_in_pad_override: bool,
     /// `E-SYNTH-CAP-001`: fraction of a Class-II ceramic capacitor's
     /// rated voltage above which DC-bias derating is warned about.
     pub ceramic_dc_bias_threshold: f64,
@@ -121,6 +130,9 @@ impl Default for ErcConfig {
             power_budget_headroom_pct: 0.0,
             open_drain_no_pullup: Severity::Warning,
             require_connector_protection: true,
+            // Off by default: the override is an operator taking
+            // responsibility for one panel, never a standing policy.
+            via_in_pad_override: false,
             ceramic_dc_bias_threshold: 0.5,
             schematic: SchematicSettings::default(),
         }

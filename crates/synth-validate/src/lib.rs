@@ -135,7 +135,9 @@ fn all_rules(config: &ErcConfig) -> Vec<Box<dyn ErcRule>> {
         Box::new(RefdesFormatRule),
         Box::new(RefdesPrefixRule),
         Box::new(BoardZeroLayersRule),
-        Box::new(RequiredProcessOfferedRule),
+        Box::new(RequiredProcessOfferedRule {
+            via_in_pad_override: config.via_in_pad_override,
+        }),
         Box::new(DeclaredViaGeometryRule),
         Box::new(stackup::StackupLayerCountRule),
         Box::new(stackup::StackupAlternationRule),
@@ -2303,7 +2305,12 @@ impl ErcRule for RefdesFormatRule {
 /// fails `synth check` without waiting for copper. The router's own refusal
 /// quotes the escape arithmetic, which needs geometry this stage does not
 /// have.
-struct RequiredProcessOfferedRule;
+struct RequiredProcessOfferedRule {
+    /// `--krt-allow-via-in-pad`. An operator who has taken responsibility for
+    /// via-in-pad on an incapable tier silences this rule for that
+    /// requirement, and only that one.
+    via_in_pad_override: bool,
+}
 
 impl ErcRule for RequiredProcessOfferedRule {
     fn code(&self) -> &'static str {
@@ -2329,7 +2336,9 @@ impl ErcRule for RequiredProcessOfferedRule {
             .required_processes
             .iter()
             .filter(|requirement| match requirement {
-                synth_ir::ProcessRequirement::ViaInPad => !profile.via_in_pad,
+                synth_ir::ProcessRequirement::ViaInPad => {
+                    !profile.via_in_pad && !self.via_in_pad_override
+                }
             })
             .map(|requirement| {
                 DiagnosticBuilder::new(
@@ -4168,15 +4177,45 @@ mod tests {
     fn a_tier_that_sells_the_fill_satisfies_the_requirement() {
         let board = board_requiring_via_in_pad(Some("jlc-filled-via"));
 
-        assert!(RequiredProcessOfferedRule
-            .check(&board, "test.synth")
-            .is_empty());
+        assert!(RequiredProcessOfferedRule {
+            via_in_pad_override: false
+        }
+        .check(&board, "test.synth")
+        .is_empty());
+    }
+
+    #[test]
+    fn an_operator_override_silences_only_the_requirement_it_signed_for() {
+        // `--krt-allow-via-in-pad` is an operator taking responsibility for
+        // one panel. It has to reach this rule, or the override is
+        // documentation for something that cannot happen: ERC runs before the
+        // router, so the board failed here and the export stopped first.
+        let board = board_requiring_via_in_pad(Some("jlcpcb"));
+
+        let reported = RequiredProcessOfferedRule {
+            via_in_pad_override: false,
+        }
+        .check(&board, "test.synth");
+        assert_eq!(reported.len(), 1, "without the override the rule reports");
+        assert_eq!(reported[0].code, "E-SYNTH-PROCESS-002");
+
+        let overridden = RequiredProcessOfferedRule {
+            via_in_pad_override: true,
+        }
+        .check(&board, "test.synth");
+        assert!(
+            overridden.is_empty(),
+            "an operator who signed for via-in-pad silences it: {overridden:?}"
+        );
     }
 
     #[test]
     fn a_standard_tier_cannot_build_what_the_board_requires() {
         let board = board_requiring_via_in_pad(Some("jlcpcb"));
-        let found = RequiredProcessOfferedRule.check(&board, "test.synth");
+        let found = RequiredProcessOfferedRule {
+            via_in_pad_override: false,
+        }
+        .check(&board, "test.synth");
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].code, "E-SYNTH-PROCESS-002");
@@ -4199,7 +4238,11 @@ mod tests {
         let board = board_requiring_via_in_pad(None);
 
         assert_eq!(
-            RequiredProcessOfferedRule.check(&board, "test.synth").len(),
+            RequiredProcessOfferedRule {
+                via_in_pad_override: false
+            }
+            .check(&board, "test.synth")
+            .len(),
             1
         );
     }
@@ -4297,9 +4340,11 @@ mod tests {
     fn a_board_requiring_nothing_is_not_judged() {
         let board = bare_board(Some("jlcpcb"));
 
-        assert!(RequiredProcessOfferedRule
-            .check(&board, "test.synth")
-            .is_empty());
+        assert!(RequiredProcessOfferedRule {
+            via_in_pad_override: false
+        }
+        .check(&board, "test.synth")
+        .is_empty());
     }
 
     fn pin(name: &str, t: ElectricalType) -> Pin {
