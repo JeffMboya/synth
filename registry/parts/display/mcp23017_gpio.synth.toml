@@ -82,6 +82,7 @@ electrical_type = "do_not_connect"
 name = "sck"
 number = "12"
 electrical_type = "input"
+capabilities = ["i2c_scl"]
 
 [[pins]]
 name = "sda"
