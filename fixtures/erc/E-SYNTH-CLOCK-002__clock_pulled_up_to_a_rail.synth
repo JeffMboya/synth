@@ -1,0 +1,30 @@
+// A clock input pulled up to a rail through a resistor. The traversal that
+// accepts a clock source on the far terminal of a series resistor must not
+// accept this one: R2's other net is the 3V3 supply, and a supply is not a
+// clock however it got onto the board.
+//
+// The two topologies are indistinguishable by shape. In both a resistor has
+// the clock input on one terminal and a net the connector feeds on the other;
+// only the rail tells them apart. Without that test the connector on V3V3
+// would count as the source and E-SYNTH-CLOCK-002 would go silent on a board
+// whose clock input is driven by nothing at all.
+board "clock_pulled_up_to_a_rail" {
+  layers 2
+
+  component J1: connector "header_1x4"
+  component R2: resistor "r_generic_0603" value "10k"
+  component U1: ic "sn74hc165_pload"
+  component C1: capacitor "c_generic_0603" value "100nF"
+
+  connect J1.p1 -> U1.vcc as "V3V3"
+  connect J1.p2 -> U1.gnd as "GND"
+  connect U1.vcc -> C1.p1 as "V3V3"
+  connect C1.p2 -> U1.gnd as "GND"
+
+  // Nothing drives CLK. Its only neighbour is a 10k to the 3V3 rail.
+  connect U1.clk -> R2.p1 as "CLK"
+  connect R2.p2 -> U1.vcc as "V3V3"
+
+  connect J1.p3 -> U1.shld as "nSHLD"
+  connect J1.p4 -> U1.gnd as "GND"
+}
