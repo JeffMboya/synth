@@ -186,6 +186,72 @@ fn pullup_to_the_devices_own_rail_is_clean() {
     );
 }
 
+/// A rail-monitoring divider is not a bus pull-up either.
+///
+/// Reading a 5 V rail on a 3.3 V ADC pin through a divider is the ordinary
+/// way to do it, and the top resistor alone looks exactly like a pull-up to a
+/// rail above the device's supply. What the pin sees is the divided voltage.
+#[test]
+fn a_rail_sense_divider_onto_a_lower_voltage_pin_is_clean() {
+    let src = r#"board "t" {
+      layers 2
+      component U1: regulator "ams1117_3v3"
+      component U2: regulator "ams1117_5v"
+      component U3: sensor "bmp280_pressure"
+      component R1: resistor "r_generic_0603" value "22k"
+      component R2: resistor "r_generic_0603" value "10k"
+      component C1: capacitor "c_generic_0805" value "10u"
+      component C2: capacitor "c_generic_0805" value "10u"
+      component C3: capacitor "c_generic_0805" value "10u"
+      component C4: capacitor "c_generic_0805" value "10u"
+      connect U1.vout -> U3.vdd
+      connect U1.vout -> U3.scl
+      // 22k/10k from the 5 V rail puts 1.56 V on the pin, not 5 V.
+      connect U2.vout -> R1.p1
+      connect R1.p2 -> U3.sda
+      connect U3.sda -> R2.p1
+      connect R2.p2 -> U1.gnd as "GND"
+    }"#;
+    let diags = validate(src);
+    assert!(
+        codes(&diags, "E-SYNTH-POWER-008").is_empty(),
+        "a 22k/10k divider from 5 V presents 1.56 V, which a 3.3 V part is fine with: {:?}",
+        codes(&diags, "E-SYNTH-POWER-008")
+    );
+}
+
+/// And the rule still bites when the divider really does deliver too much.
+/// This is what keeps the exemption from being a hole: the ratio is computed,
+/// not waved through because two resistors were found.
+#[test]
+fn a_divider_that_still_delivers_too_much_is_an_error() {
+    let src = r#"board "t" {
+      layers 2
+      component U1: regulator "ams1117_3v3"
+      component U2: regulator "ams1117_5v"
+      component U3: sensor "bmp280_pressure"
+      component R1: resistor "r_generic_0603" value "1k"
+      component R2: resistor "r_generic_0603" value "100k"
+      component C1: capacitor "c_generic_0805" value "10u"
+      component C2: capacitor "c_generic_0805" value "10u"
+      component C3: capacitor "c_generic_0805" value "10u"
+      component C4: capacitor "c_generic_0805" value "10u"
+      connect U1.vout -> U3.vdd
+      connect U1.vout -> U3.scl
+      // 1k/100k from 5 V is 4.95 V at the pin: a divider in name only.
+      connect U2.vout -> R1.p1
+      connect R1.p2 -> U3.sda
+      connect U3.sda -> R2.p1
+      connect R2.p2 -> U1.gnd as "GND"
+    }"#;
+    let diags = validate(src);
+    assert_eq!(
+        codes(&diags, "E-SYNTH-POWER-008").len(),
+        1,
+        "4.95 V on a 3.3 V part is still an overstress"
+    );
+}
+
 /// An adjustable regulator's feedback divider is not a bus pull-up.
 ///
 /// The divider from the output rail down to `fb` is how the part is told what
