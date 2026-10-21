@@ -3576,7 +3576,7 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                     continue;
                 }
                 let flag = own_label_reach(board, &left);
-                let reach = side_column_offset(
+                let next_left_extent = side_column_offset(
                     board,
                     cluster.anchor,
                     PinSide::Left,
@@ -3588,7 +3588,7 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                     let right = members_on(&clusters[a], MemberSide::Right);
                     // Its own right-hand parts stand there; past them or not,
                     // the labels of its pins run at least as far.
-                    let out = (side_column_offset(
+                    let prev_right_extent = (side_column_offset(
                         board,
                         anchor,
                         PinSide::Right,
@@ -3596,7 +3596,7 @@ fn place_clusters(board: &Board, clusters: &[Cluster]) -> Layout {
                         half_width_of(board, anchor),
                     ) + own_label_reach(board, &right))
                     .max(pin_label_reach(board, anchor, PinSide::Right) + flag);
-                    need = need.max(out + reach);
+                    need = need.max(prev_right_extent + next_left_extent);
                 }
             }
             need
@@ -4253,8 +4253,9 @@ fn pin_label_reach(board: &Board, anchor: ComponentId, side: PinSide) -> f64 {
 
 /// How far from the anchor's centre a member in a column beside its `side`
 /// pins has to sit: past the net labels those pins can carry (pin tip, stub,
-/// widest text). A member on the left has its own labels facing those pins,
-/// since a vertical part's label points right, so they need room too. The
+/// widest text). A member has its own labels too: on the left a vertical
+/// part's label points right, at those pins, and on either side its flag runs
+/// the other way when the near side is taken. They need room, and the
 /// member's own text goes in that room. Never less than the usual clearance
 /// from the body.
 fn side_column_offset(
@@ -4290,11 +4291,7 @@ fn side_column_growth(board: &Board, cluster: &Cluster, member_side: MemberSide)
     } else {
         PinSide::Right
     };
-    let half_w = board
-        .component(cluster.anchor)
-        .and_then(|c| c.part.as_ref())
-        .map_or(BODY_FALLBACK_W, |part| body_size_for_part(part).0)
-        / 2.0;
+    let half_w = half_width_of(board, cluster.anchor);
     side_column_offset(board, cluster.anchor, pin_side, &members, half_w)
         - (half_w + MEMBER_CLEARANCE)
 }

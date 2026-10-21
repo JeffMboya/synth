@@ -212,11 +212,14 @@ fn board_nets(board: &synth_ir::Board) -> Vec<BTreeSet<String>> {
 /// A flag moved to a new spot reaches over other pins' wires. One that touches
 /// a wire joins two nets, and one that stops short of its pin splits one. The
 /// boards are ones with a flag off its default spot, by reach, rise and side.
-/// (`ref_usb_cdc` is left out: its flags cross R1 and R3, which joins nets at
-/// the default spots too.)
 #[test]
 fn moving_flags_neither_joins_two_nets_nor_splits_one() {
-    for name in ["ref_ldo_sensor", "ref_crystal_mcu", "secure_tracker"] {
+    for name in [
+        "ref_ldo_sensor",
+        "ref_crystal_mcu",
+        "secure_tracker",
+        "ref_usb_cdc",
+    ] {
         let path = workspace_root()
             .join("fixtures")
             .join("kicad-reference")
