@@ -160,6 +160,15 @@ pub fn build_command(
             format!("{:.4}", options.same_net_pad_clearance_mm)
         },
     ];
+    // That sentinel reaches the general router only. The escape stage runs
+    // before it and decides on its own whether to put a via under a pad, so
+    // the permission has to arrive as the permission rather than as a
+    // clearance encoding the adapter happens to understand. Without it the
+    // fanout escaped under-pad on every dense grid, including boards that
+    // never declared `requires via_in_pad` and tiers that cannot fill one.
+    if request.policy.allow_via_in_pad {
+        args.push("--allow-via-in-pad".to_string());
+    }
     if let Some(overrides) = &options.fab_overrides {
         args.extend([
             "--fab-overrides".to_string(),
@@ -582,6 +591,27 @@ mod tests {
         // And the clearance, which the adapter would otherwise default to
         // 0.1 mm — under this board's own 0.127 mm floor.
         assert!(joined.contains("--escape-clearance 0.1270"), "{joined}");
+    }
+
+    /// Under-pad escape is a fabrication decision, so the stage that makes it
+    /// has to be told whether the board permits one.
+    #[test]
+    fn the_escape_stage_is_told_whether_via_in_pad_is_permitted() {
+        let mut allowed = request();
+        allowed.policy.allow_via_in_pad = true;
+        let joined = argv(&allowed);
+        assert!(
+            joined.contains("--allow-via-in-pad"),
+            "a board permitting via-in-pad must say so to the escape stage: {joined}"
+        );
+
+        let mut refused = request();
+        refused.policy.allow_via_in_pad = false;
+        let joined = argv(&refused);
+        assert!(
+            !joined.contains("--allow-via-in-pad"),
+            "a board that does not permit via-in-pad must not: {joined}"
+        );
     }
 
     /// The escape clearance is the board's, not a constant. A tier with a

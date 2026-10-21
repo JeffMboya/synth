@@ -63,7 +63,7 @@ def _plane_zones(board: Path) -> list[tuple[str, str]]:
 def _fanout(python: str, repo: Path, board: Path, components: list[str],
             method: str, clearance: float, via_size: float | None,
             via_drill: float | None, fab_tier: str, strict_sizes: bool,
-            escalation: str) -> Path:
+            escalation: str, allow_via_in_pad: bool) -> Path:
     """Escape every named package, returning the board to route next.
 
     Two stages, in the order KiCadRoutingTools documents (#562): pour the
@@ -84,6 +84,20 @@ def _fanout(python: str, repo: Path, board: Path, components: list[str],
     flags, escaping a 121-ball BGA rewrote the project's own minimums from
     0.56/0.3 down to 0.35/0.2 and placed 11 vias there.
     """
+    # Under-pad escape puts a via inside a pad, which is a fabrication
+    # decision and not the escape engine's to make. The board declares
+    # `requires via_in_pad` and the manufacturer profile offers it, or it does
+    # not; when it does not, escaping under-pad produces geometry that is
+    # invalid before anything validates it. Skipping leaves the package to the
+    # general router, which routes it worse and legally.
+    if method == "underpad" and not allow_via_in_pad:
+        print(
+            "skipping under-pad escape: the board does not permit via-in-pad, "
+            "so these packages route unescaped",
+            file=sys.stderr,
+        )
+        return board
+
     planes = repo / "py_router" / "route_planes.py"
     pairs = _plane_zones(board)
     fanout = repo / "py_router" / "bga_fanout.py"
@@ -239,6 +253,7 @@ def main() -> int:
             args.fab_tier,
             args.strict_sizes,
             args.escalation,
+            args.allow_via_in_pad,
         )
     command = [
         args.python,
