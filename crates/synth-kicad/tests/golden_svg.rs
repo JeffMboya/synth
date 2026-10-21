@@ -188,15 +188,20 @@ fn reference_schematics_match_golden_fingerprints() {
     let golden: BTreeMap<String, Fingerprint> =
         serde_json::from_str(&raw).unwrap_or_else(|e| panic!("invalid golden manifest: {e}"));
 
+    let mut differing = Vec::new();
     for (stem, live_fp) in &live {
         let base = golden.get(stem).unwrap_or_else(|| {
             panic!("no golden for `{stem}` — regenerate with SYNTH_REGEN_SVG_GOLDEN=1")
         });
-        assert_eq!(
-            live_fp, base,
-            "{stem}: rendered schematic differs from its golden fingerprint"
-        );
+        if live_fp != base {
+            differing.push(format!("{stem}: live {live_fp:?}, golden {base:?}"));
+        }
     }
+    assert!(
+        differing.is_empty(),
+        "rendered schematics differ from their golden fingerprints:\n{}",
+        differing.join("\n")
+    );
     for stem in golden.keys() {
         assert!(
             live.contains_key(stem),
