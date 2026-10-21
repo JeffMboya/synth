@@ -18,7 +18,7 @@ board_outline_mm: 90.57 x 76.16
   J3  (   8.30,   36.71) mm  rot=Ninety layer=Top
   J4  (   5.80,   48.21) mm  rot=Zero layer=Top
   J5  (  84.80,   38.21) mm  rot=Zero layer=Top
-  Y1  (  24.30,   19.71) mm  rot=Zero layer=Top
+  Y1  (  23.80,   19.21) mm  rot=Zero layer=Top
  SW1  (  45.80,   49.71) mm  rot=Zero layer=Top
  SW2  (  24.30,   43.21) mm  rot=Zero layer=Top
   C1  (  16.30,   19.71) mm  rot=Zero layer=Top
