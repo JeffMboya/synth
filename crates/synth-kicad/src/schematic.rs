@@ -578,6 +578,32 @@ pub(crate) fn build_sheet_schematic(
         }
     }
 
+    // A net the author named and the router drew only as wires has no flag to
+    // carry its name; a local label on its longest segment keeps it, so KiCad
+    // and the PCB use the same name instead of `Net-(...)`.
+    let flagged = layout.labeled_net_ids();
+    let power = layout.power_net_ids();
+    for net in board
+        .nets
+        .iter()
+        .filter(|n| !n.auto_named && !flagged.contains(&n.id) && !power.contains(&n.id))
+    {
+        let longest = layout
+            .wires
+            .iter()
+            .filter(|w| w.net == net.id)
+            .flat_map(|w| w.points.windows(2))
+            .max_by(|a, b| segment_len(a).total_cmp(&segment_len(b)));
+        if let Some(seg) = longest {
+            let at = (
+                f64::midpoint(seg[0].0, seg[1].0),
+                f64::midpoint(seg[0].1, seg[1].1),
+            );
+            let uuid = derive_entity_uuid(project, "wire_name_label", &net.name);
+            children.push(build_local_label(&net.name, at, uuid));
+        }
+    }
+
     // Cross-sheet stubs (§P26): one stub per in-sheet endpoint of a
     // net that continues elsewhere. Empty on single-sheet layouts.
     // On a sub-sheet the stub carries a hierarchical label, which the
@@ -1260,6 +1286,10 @@ fn build_sheet_instance(
         )],
     ));
     Sexp::list("sheet", children)
+}
+
+fn segment_len(seg: &[(f64, f64)]) -> f64 {
+    (seg[1].0 - seg[0].0).hypot(seg[1].1 - seg[0].1)
 }
 
 /// A local label at `at_mm`, text anchored left. Same-named local
@@ -5274,6 +5304,42 @@ mod tests {
         for (_, fields) in power_symbols(&sexp) {
             let reference = fields.iter().find(|f| f.0 == "Reference").unwrap();
             assert!(reference.4, "{} is shown", reference.1);
+        }
+    }
+
+    /// A net the author named and the schematic draws only as wires has no
+    /// flag to carry the name, so KiCad would call it `Net-(...)` and the PCB
+    /// would disagree. It carries a local label instead.
+    #[test]
+    fn a_named_net_drawn_only_as_wires_carries_its_name() {
+        let (mut board, _sexp, _text) = build_reference("sensor_logger");
+        let layout = synth_layout::layout(&board);
+        let flagged = layout.labeled_net_ids();
+        let power = layout.power_net_ids();
+        let wired: Vec<NetId> = board
+            .nets
+            .iter()
+            .filter(|n| {
+                !flagged.contains(&n.id)
+                    && !power.contains(&n.id)
+                    && layout.wires.iter().any(|w| w.net == n.id)
+            })
+            .map(|n| n.id)
+            .collect();
+        assert!(!wired.is_empty(), "no wired signal net to name");
+        for net in board.nets.iter_mut().filter(|n| wired.contains(&n.id)) {
+            net.name = format!("WIRED_{}", net.id.0);
+            net.auto_named = false;
+        }
+        let project = crate::uuid_v5::project_namespace(&board.name);
+        let text = build_schematic(&board, &project).to_string_pretty();
+        let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for id in wired {
+            assert!(
+                flat.contains(&format!("(label \"WIRED_{}\"", id.0)),
+                "wired net {} has no name label",
+                id.0
+            );
         }
     }
 
