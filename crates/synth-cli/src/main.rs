@@ -3666,8 +3666,9 @@ fn route_design(
     // Signal/power-integrity on the delivered copper, so `synth route` and
     // `synth drc` see the same findings the export gate does instead of only
     // the geometry kicad-cli judges.
-    let profile = synth_drc::ManufacturerProfile::from_name(
+    let profile = synth_drc::ManufacturerProfile::for_layers(
         board.manufacturer.as_deref().unwrap_or("jlc-standard"),
+        board.layers,
     );
     let delivered = report
         .artifacts
@@ -4226,8 +4227,9 @@ fn export_kicad(
     // Signal integrity and power integrity on the routed copper. The rules
     // need the routed board, not the placement, so they run here on the file
     // the router produced. Blocking findings stop the export unless --force.
-    let drc_profile = synth_drc::ManufacturerProfile::from_name(
+    let drc_profile = synth_drc::ManufacturerProfile::for_layers(
         board.manufacturer.as_deref().unwrap_or("jlc-standard"),
+        board.layers,
     );
     // Read the delivered copper, not the baseline path: the router may deliver
     // its board elsewhere, and reading the un-routed baseline would make these
