@@ -4100,7 +4100,17 @@ fn export_kicad(
     let mut overrides: Vec<release::OverrideRecord> = Vec::new();
 
     // Slice 7: Run Synth ERC validation before exporting
-    let erc_diags = synth_validate::run_erc(board, &file);
+    // The operator's via-in-pad decision has to reach this gate, not only the
+    // router. ERC runs first, so `--krt-allow-via-in-pad` was documented as an
+    // override that could never fire: a board declaring `requires via_in_pad`
+    // against an incapable tier failed `E-SYNTH-PROCESS-002` here and the
+    // export stopped before anything asked whether an operator had signed for
+    // it.
+    let erc_config = synth_validate::ErcConfig {
+        via_in_pad_override: krt_allow_via_in_pad,
+        ..synth_validate::ErcConfig::default()
+    };
+    let erc_diags = synth_validate::run_erc_with_config(board, &file, &erc_config);
     write_diagnostics_to_stderr(&erc_diags)?;
     let has_erc_errors = erc_diags.iter().any(|d| d.severity.is_blocking());
     if has_erc_errors {
