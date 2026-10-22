@@ -312,7 +312,7 @@ pub struct TextAnnotation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextKind {
-    /// A declared `group`'s title: bold, group-hued box, inside top-left.
+    /// A declared `group`'s title: bold, group-hued box, inside the top, centred.
     Caption,
     /// A `notes` block title.
     NoteTitle,
@@ -335,12 +335,12 @@ pub struct GroupBox {
     pub group: String,
     pub min_mm: (f64, f64),
     pub max_mm: (f64, f64),
-    /// Outline + tint hue, assigned deterministically from the group
-    /// name ([`group_color`]). The schematic exporter strokes the box
-    /// as a thin solid line in this hue with a translucent fill of the same hue.
+    /// Hue assigned deterministically from the group name ([`group_color`]).
+    /// The schematic exporter no longer uses it: every region is drawn in one
+    /// colour. Kept because sidecar layouts serialise it.
     #[serde(default = "default_group_color")]
     pub color: [u8; 3],
-    /// The caption sits inside the box at the top-left (Phase B2).
+    /// The caption sits inside the box at the top, centred (Phase B2).
     /// Always true; carried so other consumers (preview renderer)
     /// place captions without re-deriving the convention.
     #[serde(default = "default_caption_inside")]
@@ -428,10 +428,10 @@ const MEMBER_CLEARANCE: f64 = 17.78;
 /// side; 20 mm covers most variants.
 const PAGE_MARGIN: f64 = 20.0;
 /// Height of a group caption's glyphs. Captions render bold at this
-/// size (Phase B typography: captions 2.0 bold, refdes/value 1.27,
+/// size (Phase B typography: captions 2.54 bold, refdes/value 1.27,
 /// note/legend lines 1.0) so a sub-circuit name reads as a heading
 /// rather than as another component label.
-const GROUP_CAPTION_SIZE: f64 = 2.0;
+const GROUP_CAPTION_SIZE: f64 = 2.54;
 /// Gap between the box's top edge and the caption baseline, in mm:
 /// one glyph height plus this gap keeps the caption fully inside the
 /// box while clearing the edge stroke.
@@ -1036,10 +1036,12 @@ pub fn layout_with_overrides(
     if !stretched {
         tile_boxes_to_content(board, &mut layout);
     }
+    center_captions(board, &mut layout);
     resolve_text_overlaps(board, &mut layout);
     grow_sheet_to_fit(board, &mut layout);
     compact_sheet_to_fit(board, &mut layout);
     settle_sheet_size(board, &mut layout);
+    extend_boxes_to_frame_bottom(&mut layout);
     clamp_annotations_to_sheet(&mut layout);
     layout
 }
@@ -1142,7 +1144,7 @@ fn mechanical_groups(board: &Board) -> std::collections::HashSet<&str> {
 /// Caption every declared `group` on the sheet, and draw its titled
 /// outline box (§21.1).
 ///
-/// One text run per group, sitting inside the box at the top-left —
+/// One text run per group, sitting inside the box at the top —
 /// the device the SIM7080G reference schematic uses ("VBAT
 /// DECOUPLING + ESD", "NANO SIM (1.8V only) + ESD"): a sub-circuit
 /// is named where it is drawn, so a reader can see what a cluster of
@@ -1173,8 +1175,9 @@ fn annotate_groups(board: &Board, layout: &mut Layout) {
             .unwrap_or_else(|| group_color(&group));
         let (min_mm, max_mm) = group_box_rect(&caption, (min_x, max_x, min_y, max_y));
         layout.annotations.push(TextAnnotation {
-            // Inside the box at the top-left, one glyph plus an
-            // inset below the top edge stroke.
+            // Inside the box at the top, one glyph plus an inset below
+            // the top edge stroke. [`center_captions`] moves it to the
+            // middle once the box is final.
             at_mm: (
                 min_mm.0 + GROUP_BOX_PAD,
                 (min_mm.1 + GROUP_CAPTION_SIZE + GROUP_CAPTION_INSET).max(GROUP_CAPTION_SIZE),
@@ -1190,6 +1193,23 @@ fn annotate_groups(board: &Board, layout: &mut Layout) {
             color,
             caption_inside: true,
         });
+    }
+}
+
+/// Put each region's caption in the middle of its box. The boxes reach their
+/// final width only once the page is cut into cells, so this runs after that.
+fn center_captions(board: &Board, layout: &mut Layout) {
+    for b in &layout.group_boxes {
+        let text = group_caption(board, &b.group);
+        let Some(caption) = layout
+            .annotations
+            .iter_mut()
+            .find(|a| a.kind == TextKind::Caption && a.text == text)
+        else {
+            continue;
+        };
+        let width = text.chars().count() as f64 * caption.size_mm * NOTE_CHAR_WIDTH;
+        caption.at_mm.0 = (b.min_mm.0 + b.max_mm.0 - width) / 2.0;
     }
 }
 
@@ -1392,14 +1412,44 @@ const FLOOR_EPS: f64 = 1e-6;
 /// flipping a comparison or a `ceil`.
 const FLOOR_NOISE: f64 = 1e-9;
 
-/// The part of a page the region boxes fill: inside the margin and above the
-/// title block band, the same area [`sheet_needs`] keeps clear.
+/// Where the inner line of a sheet's frame sits, in mm from the paper's edge:
+/// KiCad draws an outer line at 10 and the frame proper 2 mm inside it.
+pub const SHEET_BORDER_MM: f64 = FRAME_INSET + 2.0;
+
+/// Where KiCad's title block starts on a sheet `sheet` mm across: its top-left
+/// corner. The block is anchored to the bottom-right corner of the paper's
+/// outer frame line, so a region must stay above this y wherever it reaches
+/// past this x.
+pub fn title_block_origin(sheet: (f64, f64)) -> (f64, f64) {
+    (
+        sheet.0 - FRAME_INSET - TITLE_BLOCK_W,
+        sheet.1 - FRAME_INSET - TITLE_BLOCK_H,
+    )
+}
+
+/// The part of a page the region boxes fill: out to the sheet frame on the
+/// left, top and right so the boxes start at the edge of the drawing, and down
+/// to the top of the title block at the bottom.
 fn page_frame(size: SheetSize) -> Rect {
     let (w, h) = size.dims_mm();
     (
-        (PAGE_MARGIN, PAGE_MARGIN),
-        (w - PAGE_MARGIN, h - TITLE_BLOCK_H - TEXT_MARGIN_Y),
+        (SHEET_BORDER_MM, SHEET_BORDER_MM),
+        (w - SHEET_BORDER_MM, title_block_origin((w, h)).1),
     )
+}
+
+/// Stretch the regions on the bottom row down to the sheet frame, so the page
+/// has no empty strip under them. A region that reaches over the title block
+/// stays above it.
+fn extend_boxes_to_frame_bottom(layout: &mut Layout) {
+    let sheet = layout.sheet_size.dims_mm();
+    let (block_x, block_y) = title_block_origin(sheet);
+    for box_ in &mut layout.group_boxes {
+        let on_the_bottom_row = (box_.max_mm.1 - block_y).abs() < GROUP_TILE_GAP;
+        if on_the_bottom_row && box_.max_mm.0 <= block_x + GROUP_TILE_GAP {
+            box_.max_mm.1 = sheet.1 - SHEET_BORDER_MM;
+        }
+    }
 }
 
 /// One way to cut a set of regions into two: which regions go first, how the
@@ -2497,6 +2547,11 @@ fn content_bottom(board: &Board, layout: &Layout) -> f64 {
 /// margin can never disagree about where the content is. The
 /// `E-SYNTH-SCHEM-012` fill rule measures through [`drawing_bounds`].
 pub fn content_bounds(board: &Board, layout: &Layout) -> Option<(f64, f64, f64, f64)> {
+    bounds_of(board, layout, true)
+}
+
+/// [`content_bounds`], with or without the region boxes.
+fn bounds_of(board: &Board, layout: &Layout, with_boxes: bool) -> Option<(f64, f64, f64, f64)> {
     let mut min_x = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
     let mut min_y = f64::INFINITY;
@@ -2536,16 +2591,44 @@ pub fn content_bounds(board: &Board, layout: &Layout) -> Option<(f64, f64, f64, 
         min_y = min_y.min(y - text.size_mm);
         max_y = max_y.max(y);
     }
-    for box_ in &layout.group_boxes {
-        min_x = min_x.min(box_.min_mm.0);
-        max_x = max_x.max(box_.max_mm.0);
-        min_y = min_y.min(box_.min_mm.1);
-        max_y = max_y.max(box_.max_mm.1);
+    if with_boxes {
+        for box_ in &layout.group_boxes {
+            min_x = min_x.min(box_.min_mm.0);
+            max_x = max_x.max(box_.max_mm.0);
+            min_y = min_y.min(box_.min_mm.1);
+            max_y = max_y.max(box_.max_mm.1);
+        }
     }
     if !min_x.is_finite() {
         return None;
     }
     Some((min_x, max_x, min_y, max_y))
+}
+
+/// The page the layout needs: its content clear of the margin, and its region
+/// boxes out to the sheet border, since they are meant to fill the page.
+fn page_needs(board: &Board, layout: &Layout) -> Option<(f64, f64)> {
+    // Content inside region boxes sits on the sheet border, not the wider
+    // page margin, so only the far edges need room.
+    let boxed = !layout.group_boxes.is_empty();
+    let mut need = bounds_of(board, layout, false).map(|(min_x, max_x, min_y, max_y)| {
+        if boxed {
+            (
+                max_x + SHEET_BORDER_MM,
+                max_y + TITLE_BLOCK_H + TEXT_MARGIN_Y,
+            )
+        } else {
+            sheet_needs(min_x, max_x, min_y, max_y)
+        }
+    });
+    for box_ in &layout.group_boxes {
+        let (w, h) = need.unwrap_or((0.0, 0.0));
+        need = Some((
+            w.max(box_.max_mm.0 + SHEET_BORDER_MM),
+            h.max(box_.max_mm.1 + FRAME_INSET + TITLE_BLOCK_H),
+        ));
+    }
+    need
 }
 
 /// Grow `layout.sheet_size` if anything ended up past the edge of the
@@ -2567,10 +2650,9 @@ pub fn content_bounds(board: &Board, layout: &Layout) -> Option<(f64, f64, f64, 
 /// (The Phase A5 companion [`compact_sheet_to_fit`] shrinks only to a
 /// sheet the content provably fits, so the two never fight.)
 fn grow_sheet_to_fit(board: &Board, layout: &mut Layout) {
-    let Some((min_x, max_x, min_y, max_y)) = content_bounds(board, layout) else {
+    let Some((need_w, need_h)) = page_needs(board, layout) else {
         return;
     };
-    let (need_w, need_h) = sheet_needs(min_x, max_x, min_y, max_y);
     let required = sheet_size_for(need_w, need_h);
     let (have_w, have_h) = layout.sheet_size.dims_mm();
     let (want_w, want_h) = required.dims_mm();
@@ -2594,10 +2676,9 @@ fn grow_sheet_to_fit(board: &Board, layout: &mut Layout) {
 /// are content like any other: if they fit a smaller sheet the sheet
 /// shrinks around them; if not, it stays.
 fn compact_sheet_to_fit(board: &Board, layout: &mut Layout) {
-    let Some((min_x, max_x, min_y, max_y)) = content_bounds(board, layout) else {
+    let Some((need_w, need_h)) = page_needs(board, layout) else {
         return;
     };
-    let (need_w, need_h) = sheet_needs(min_x, max_x, min_y, max_y);
     let smallest = sheet_size_for(need_w, need_h);
     // `sheet_size_for` ceilings at A2: beyond that the "smallest"
     // does not actually contain the content, so check the fit
@@ -2639,12 +2720,11 @@ pub fn requested_sheet(board: &Board) -> SheetSize {
 fn settle_sheet_size(board: &Board, layout: &mut Layout) {
     let requested = requested_sheet(board);
     let mut target = requested;
-    if let Some((min_x, max_x, min_y, max_y)) = content_bounds(board, layout) {
+    if let Some((content_w, content_h)) = page_needs(board, layout) {
         // Compare the *content* against the requested page, not one rung of
         // the ladder against another: `sheet_size_for` never returns A5, so
         // comparing its result with an A5 request would report an overflow
         // for a design that fits A5 with room to spare.
-        let (content_w, content_h) = sheet_needs(min_x, max_x, min_y, max_y);
         // `hierarchy` caps growth at the requested page, so content beyond it
         // is split into more sheets rather than drawn on a larger one.
         let (ceiling_w, ceiling_h) = max_single_sheet(board).dims_mm();
@@ -2694,6 +2774,14 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
         };
         let text = pick_net_label(board, net).unwrap_or_else(|| format!("NET_{}", net_id.0));
         for ep in &net.endpoints {
+            // A net flagged once per region already has a flag on some pins.
+            if layout
+                .net_labels
+                .iter()
+                .any(|l| l.net == net_id && l.component == ep.component && l.pin == ep.pin)
+            {
+                continue;
+            }
             layout.net_labels.push(NetLabel {
                 net: net_id,
                 component: ep.component,
@@ -5394,8 +5482,9 @@ const LABEL_MIN_ENDPOINTS_MULTIDROP: usize = 3;
 ///   a net whose endpoints live in different regions becomes a label —
 ///   *"wires inside a region, labels between regions"*, the mechanism
 ///   that makes the reference sheet readable. A net entirely inside one
-///   region is drawn. The distance threshold below stays as a secondary
-///   guard for a large single region.
+///   region is drawn however far it runs; the router flags it only when it
+///   cannot draw it. Such a net is flagged once per region it touches, and
+///   wired inside each (see [`wired_subnets`]).
 /// - **Ungrouped boards** keep the historic rule verbatim: a multi-drop
 ///   net (≥3 endpoints) or one spanning more than
 ///   [`LABEL_SPAN_THRESHOLD_MM`] gets labelled, so their output is
@@ -5433,15 +5522,17 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
         let span_x = max_x - min_x;
         let span_y = max_y - min_y;
         let spans_far = span_x > LABEL_SPAN_THRESHOLD_MM || span_y > LABEL_SPAN_THRESHOLD_MM;
-        let label_it = if has_regions {
-            // Region crossing is the primary test; the span guard is a
-            // secondary backstop for one very large region.
-            let first = region_of(net.endpoints[0].component);
-            let crosses = net
+        let first = region_of(net.endpoints[0].component);
+        let crosses = has_regions
+            && net
                 .endpoints
                 .iter()
                 .any(|ep| region_of(ep.component) != first);
-            crosses || spans_far
+        let label_it = if has_regions {
+            // Region crossing is the only test: regions fill the page, so a
+            // net can run far inside one, and the router flags a net it
+            // cannot draw.
+            crosses
         } else {
             net.endpoints.len() >= LABEL_MIN_ENDPOINTS_MULTIDROP || spans_far
         };
@@ -5449,7 +5540,17 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
             continue;
         }
         let label = pick_net_label(board, net).unwrap_or_else(|| format!("NET_{}", net.id.0));
+        // A net that leaves its region is wired inside each region it touches
+        // (see [`wired_subnets`]) and flagged once there, where it leaves.
+        let mut flagged_regions: Vec<Option<&str>> = Vec::new();
         for ep in &net.endpoints {
+            if crosses {
+                let region = region_of(ep.component);
+                if flagged_regions.contains(&region) {
+                    continue;
+                }
+                flagged_regions.push(region);
+            }
             labels.push(NetLabel {
                 net: net.id,
                 component: ep.component,
@@ -5460,6 +5561,41 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
         }
     }
     labels
+}
+
+/// The pieces of a labelled net that are drawn as wires: the pins of one
+/// region that [`classify_net_labels`] flagged only once. A region whose pins
+/// are all flagged (an unroutable or hand-forced net) has no piece here.
+pub(crate) fn wired_subnets(board: &Board, layout: &Layout) -> Vec<synth_ir::Net> {
+    let labeled = layout.labeled_net_ids();
+    let mut subnets = Vec::new();
+    for net in board.nets.iter().filter(|n| labeled.contains(&n.id)) {
+        let mut regions: Vec<(Option<&str>, Vec<&synth_ir::NetEndpoint>)> = Vec::new();
+        for ep in &net.endpoints {
+            let region = effective_group(board, ep.component);
+            match regions.iter_mut().find(|(r, _)| *r == region) {
+                Some((_, pins)) => pins.push(ep),
+                None => regions.push((region, vec![ep])),
+            }
+        }
+        for (_, pins) in regions {
+            let flags =
+                pins.iter()
+                    .filter(|ep| {
+                        layout.net_labels.iter().any(|l| {
+                            l.net == net.id && l.component == ep.component && l.pin == ep.pin
+                        })
+                    })
+                    .count();
+            if pins.len() >= 2 && flags == 1 {
+                subnets.push(synth_ir::Net {
+                    endpoints: pins.into_iter().cloned().collect(),
+                    ..net.clone()
+                });
+            }
+        }
+    }
+    subnets
 }
 
 /// Pick a human-meaningful label for a signal net.
@@ -8768,6 +8904,49 @@ mod documentation_tests {
         }
     }
 
+    /// SDA joins R1 and R2 in "Sensor" to R3 in "Mcu".
+    fn net_across_two_groups() -> Board {
+        let r = || part("resistor", vec![pin("p1"), pin("p2")]);
+        board_with_notes(
+            vec![
+                component(0, "R1", r(), Some("Sensor")),
+                component(1, "R2", r(), Some("Sensor")),
+                component(2, "R3", r(), Some("Mcu")),
+            ],
+            vec![net(0, "SDA", &[(0, 0), (1, 0), (2, 0)])],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn a_net_between_groups_is_wired_inside_each_group_and_flagged_once_per_group() {
+        let b = net_across_two_groups();
+        let layout = layout(&b);
+        let flagged: Vec<&str> = layout
+            .net_labels
+            .iter()
+            .filter(|l| l.net == NetId(0))
+            .map(|l| effective_group(&b, l.component).expect("grouped"))
+            .collect();
+        assert_eq!(flagged.len(), 2, "one flag per group, got {flagged:?}");
+        assert!(flagged.contains(&"Sensor") && flagged.contains(&"Mcu"));
+        assert!(
+            layout.wires.iter().any(|w| w.net == NetId(0)),
+            "the two pins in Sensor are wired together"
+        );
+    }
+
+    #[test]
+    fn a_net_forced_to_flags_has_no_wired_piece() {
+        let b = net_across_two_groups();
+        let mut layout = layout(&b);
+        force_net_label(&b, &mut layout, NetId(0));
+        let flags = layout.net_labels.iter().filter(|l| l.net == NetId(0));
+        assert_eq!(flags.count(), 3, "a flag on every pin");
+        assert!(wired_subnets(&b, &layout).is_empty());
+        assert!(layout.wires.iter().all(|w| w.net != NetId(0)));
+    }
+
     #[test]
     fn ungrouped_board_has_no_boxes() {
         let b = board_with_notes(
@@ -9466,6 +9645,23 @@ mod documentation_tests {
     const FOUR_REGIONS: [(&str, u32); 4] =
         [("Input", 3), ("Filter", 5), ("Output", 2), ("Debug", 1)];
 
+    /// The frame the boxes should fill on `layout`'s sheet: out to the sheet
+    /// frame on every side, less the corner the title block takes.
+    fn sheet_frame(layout: &Layout) -> Rect {
+        let (w, h) = layout.sheet_size.dims_mm();
+        (
+            (SHEET_BORDER_MM, SHEET_BORDER_MM),
+            (w - SHEET_BORDER_MM, h - SHEET_BORDER_MM),
+        )
+    }
+
+    /// The area of the frame under the title block.
+    fn title_block_area(layout: &Layout) -> f64 {
+        let (w, h) = layout.sheet_size.dims_mm();
+        let (x, y) = title_block_origin((w, h));
+        (w - SHEET_BORDER_MM - x) * (h - SHEET_BORDER_MM - y)
+    }
+
     fn area(r: &Rect) -> f64 {
         (r.1 .0 - r.0 .0) * (r.1 .1 - r.0 .1)
     }
@@ -9489,15 +9685,20 @@ mod documentation_tests {
             .map(|b| (b.min_mm, b.max_mm))
             .collect();
         assert_eq!(boxes.len(), 4);
-        let covered = boxes_area(&layout);
+        let covered: f64 = boxes.iter().map(area).sum();
+        let to_fill = area(&frame) - title_block_area(&layout);
+        // A region over the title block's left edge stops above the block, which
+        // leaves the strip beside it empty.
         assert!(
-            covered >= 0.99 * area(&frame),
-            "boxes cover {covered} of the frame {}",
-            area(&frame)
+            covered >= 0.9 * to_fill,
+            "boxes cover {covered} of the {to_fill} the frame leaves the regions"
         );
         let hull = bounds(&boxes);
         assert!((hull.0 .0 - frame.0 .0).abs() < 1e-6 && (hull.1 .0 - frame.1 .0).abs() < 1e-6);
-        assert!((hull.0 .1 - frame.0 .1).abs() < 1e-6 && (hull.1 .1 - frame.1 .1).abs() < 1e-6);
+        // The bottom row runs on down beside the title block to the frame.
+        let sheet_bottom = layout.sheet_size.dims_mm().1 - SHEET_BORDER_MM;
+        assert!((hull.0 .1 - frame.0 .1).abs() < 1e-6);
+        assert!(hull.1 .1 >= frame.1 .1 - 1e-6 && hull.1 .1 <= sheet_bottom + 1e-6);
     }
 
     #[test]
@@ -9563,8 +9764,38 @@ mod documentation_tests {
         let layout = layout(&resistor_groups(&crowded, 0));
         let (w, h) = layout.sheet_size.dims_mm();
         assert!(w > 297.0 && h > 210.0, "{:?}", layout.sheet_size);
-        let frame = page_frame(layout.sheet_size);
-        assert!(boxes_area(&layout) >= 0.99 * area(&frame));
+        let frame = sheet_frame(&layout);
+        let covered: f64 = layout
+            .group_boxes
+            .iter()
+            .map(|b| area(&(b.min_mm, b.max_mm)))
+            .sum();
+        let to_fill = area(&frame) - title_block_area(&layout);
+        assert!(
+            covered >= 0.9 * to_fill,
+            "boxes cover {covered} of the {to_fill} the frame leaves the regions"
+        );
+    }
+
+    #[test]
+    fn a_region_caption_is_centred_on_its_box_and_bigger_than_a_label() {
+        let layout = layout(&resistor_groups(&FOUR_REGIONS, 0));
+        for b in &layout.group_boxes {
+            let caption = layout
+                .annotations
+                .iter()
+                .find(|a| a.kind == TextKind::Caption && a.text == b.group)
+                .expect("a caption for every region");
+            let width = caption.text.chars().count() as f64 * caption.size_mm * NOTE_CHAR_WIDTH;
+            let centre = caption.at_mm.0 + width / 2.0;
+            let box_centre = f64::midpoint(b.min_mm.0, b.max_mm.0);
+            assert!(
+                (centre - box_centre).abs() < 1.0,
+                "{}: caption centre {centre} vs box centre {box_centre}",
+                b.group
+            );
+            assert!(caption.size_mm >= 2.5, "{}: {}", b.group, caption.size_mm);
+        }
     }
 
     #[test]
@@ -9662,13 +9893,13 @@ mod documentation_tests {
     }
 
     #[test]
-    fn everything_a_region_draws_stays_inside_the_page_margin() {
+    fn everything_a_region_draws_stays_inside_the_sheet_border() {
         let b = two_regions();
         let layout = layout(&b);
         let (min_x, _, min_y, _) = content_bounds(&b, &layout).expect("content");
         assert!(
-            min_x >= PAGE_MARGIN - 1e-6 && min_y >= PAGE_MARGIN - 1e-6,
-            "content starts at ({min_x}, {min_y}), margin is {PAGE_MARGIN}"
+            min_x >= SHEET_BORDER_MM - 1e-6 && min_y >= SHEET_BORDER_MM - 1e-6,
+            "content starts at ({min_x}, {min_y}), the border is {SHEET_BORDER_MM}"
         );
     }
 
