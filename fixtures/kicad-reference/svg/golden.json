@@ -16,11 +16,11 @@
     "distinct_texts": 190
   },
   "ref_ldo_sensor": {
-    "sha256": "ddc6da0eaed81602d4a90b7c6d9e222e09ed507b7e3b63db4f002e548ea71948",
+    "sha256": "022a1c9ae917df5626a283ee5284a6118b5574df336752f02d89d886aa19dfe4",
     "width": "297.0022mm",
     "height": "210.0072mm",
-    "paths": 3946,
-    "texts": 113,
+    "paths": 3985,
+    "texts": 115,
     "distinct_texts": 94
   },
   "ref_led_driver": {
