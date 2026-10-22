@@ -148,6 +148,82 @@ fn pullup_on_net<'a>(
     None
 }
 
+/// The voltage a resistor divider presents at `net`, when the net is pulled
+/// up to a rail through one resistor and down to ground through another.
+///
+/// [`pullup_on_net`] cannot tell a divider from a pull-up: it finds a
+/// resistor whose far end sits on a rail and reports that rail's voltage. On
+/// a divider that is never the voltage the pin sees. This is the same shape
+/// the feedback exemption in [`PullupRailMismatchRule`] already forgives for
+/// an adjustable regulator -- a divider from a 5 V rail to a 1.2 V reference
+/// is not a 5 V pull-up -- and it arises again whenever a board monitors a
+/// rail above its own logic level, which is the ordinary way to read a 12 V
+/// input on a 3.3 V ADC pin.
+///
+/// Returns `None` for anything that is not exactly one readable resistor to a
+/// rail and exactly one readable resistor to ground. A rule must not claim a
+/// violation it cannot compute, and it must not clear one either, so the
+/// caller keeps the conservative rail voltage in every other case.
+///
+/// "Exactly" is the whole guarantee. Keeping the last resistor found on each
+/// side turned any resistor network with a branch to a rail and a branch to
+/// ground into a two-resistor divider, and the arithmetic that followed was
+/// about a circuit the board does not have -- which suppresses a real
+/// overvoltage rather than reporting it. A third branch, a second resistor to
+/// either side, or one whose value cannot be read all mean the same thing
+/// here: this is not a divider that can be reasoned about from two values.
+fn divider_output_v(board: &Board, domains: &Domains, net: NetId, rail_v: f64) -> Option<f64> {
+    let target = board.net(net)?;
+    let mut to_rail: Vec<f64> = Vec::new();
+    let mut to_ground: Vec<f64> = Vec::new();
+    for ep in &target.endpoints {
+        let Some(component) = board.component(ep.component) else {
+            continue;
+        };
+        let Some(part) = component.part.as_ref() else {
+            continue;
+        };
+        if !part.kind.eq_ignore_ascii_case("resistor") {
+            continue;
+        }
+        let Some(other_id) = other_pin_net(board, component, ep.pin) else {
+            continue;
+        };
+        if other_id == net {
+            continue;
+        }
+        let Some(other) = board.net(other_id) else {
+            continue;
+        };
+        let to_ground_branch = is_ground_net(domains, other);
+        if !to_ground_branch && !is_rail_net(domains, other_id) {
+            // A resistor off to somewhere that is neither a rail nor ground
+            // is a third branch, and the divider ratio is not two values any
+            // more.
+            return None;
+        }
+        // Read the value only once the branch is known to matter, and refuse
+        // the whole network if it cannot be read: an unknown resistance in
+        // the ladder is not a divider whose output can be computed.
+        let ohms = component
+            .value
+            .as_deref()
+            .and_then(crate::value::parse_resistance)?;
+        if to_ground_branch {
+            to_ground.push(ohms);
+        } else {
+            to_rail.push(ohms);
+        }
+    }
+    let ([top], [bottom]) = (to_rail.as_slice(), to_ground.as_slice()) else {
+        return None;
+    };
+    if top + bottom <= 0.0 {
+        return None;
+    }
+    Some(rail_v * bottom / (top + bottom))
+}
+
 /// True when `part` is a protection device — a TVS/ESD diode, a varistor, a
 /// fuse, or a reverse-polarity / ideal-diode path.
 ///
@@ -377,6 +453,11 @@ impl ErcRule for PullupRailMismatchRule {
             else {
                 continue;
             };
+            // A divider is not a pull-up. When the net is also tied to ground
+            // through a resistor, the pin sees the divided voltage, not the
+            // rail's, and comparing the rail against the device's supply
+            // condemns the ordinary way to monitor a rail above logic level.
+            let applied_v = divider_output_v(board, &domains, net.id, rail_v).unwrap_or(rail_v);
             // Victim: a device pin on this net whose own supply we know.
             for ep in &net.endpoints {
                 let Some(component) = board.component(ep.component) else {
@@ -410,10 +491,25 @@ impl ErcRule for PullupRailMismatchRule {
                 {
                     continue;
                 }
+                // A pin that states what it tolerates is the authority on
+                // what it tolerates. A high-side current monitor runs from
+                // 3.3 V and specifies 26 V common mode on its sense inputs;
+                // a 5 V-tolerant input on a 3.3 V part is the same shape.
+                // Comparing the rail against the device's *supply* condemns
+                // both, which is why the pin's own rating comes first.
+                //
+                // And the rating is about the pin, so it is compared against
+                // what reaches the pin. Comparing the *rail* instead undoes
+                // the divider this rule just computed: 12 V divided to 4 V on
+                // a 5 V-tolerant input was still reported, because 12 V > 5 V,
+                // while the pin was inside its rating the whole time.
+                if pin.voltage_max_v.is_some_and(|max| applied_v <= max) {
+                    continue;
+                }
                 let Some(device_v) = component_supply_v(board, &domains, component) else {
                     continue;
                 };
-                if rail_v > device_v + self.margin_v {
+                if applied_v > device_v + self.margin_v {
                     out.push(
                         DiagnosticBuilder::new(
                             self.code(),
@@ -427,15 +523,16 @@ impl ErcRule for PullupRailMismatchRule {
                             component.describe()
                         ))
                         .found(format!(
-                            "pull-up {} to a {rail_v:.1}V rail on net `{}`, which carries {} \
-                             running at {device_v:.1}V",
+                            "pull-up {} to a {rail_v:.1}V rail on net `{}`, presenting \
+                             {applied_v:.1}V to {} running at {device_v:.1}V",
                             resistor.describe(),
                             net.name,
                             component.describe_pin(&pin.name),
                         ))
                         .message(format!(
-                            "pull net `{}` up to {device_v:.1}V instead, or level-shift it; a \
-                             {rail_v:.1}V pull-up will forward-bias the input protection of {}",
+                            "pull net `{}` up to {device_v:.1}V instead, divide it down, or \
+                             level-shift it; {applied_v:.1}V will forward-bias the input \
+                             protection of {}",
                             net.name,
                             component.describe()
                         ))

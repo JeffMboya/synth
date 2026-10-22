@@ -697,20 +697,17 @@ fn check_decoupling_distance(board: &Board, layout: &Layout, max_mm: f64) -> Vec
 /// (rather than truncated to net labels) spans more than `max_mm`.
 ///
 /// A net's span is the larger of its wire bounding-box width and
-/// height. Nets truncated to labels are excluded: they carry no wires
-/// (the `labeled_net_ids` guard is a belt-and-braces filter) and are
-/// exactly the "net-label truncation" the rule wants to reward.
+/// height. Nets truncated to labels carry no wires, so they never fire,
+/// and that is the "net-label truncation" the rule wants to reward. A net
+/// that is flagged and also wired inside a region is measured on its
+/// wires, so a long wired piece still fires.
 ///
 /// Nets are aggregated across all their `WirePath`s (max span wins) and
 /// emitted in ascending net-id order for deterministic output.
 fn check_long_nets(layout: &Layout, max_mm: f64) -> Vec<Diagnostic> {
-    let labeled: HashSet<NetId> = layout.labeled_net_ids();
     let mut spans: HashMap<NetId, f64> = HashMap::new();
 
     for wire in &layout.wires {
-        if labeled.contains(&wire.net) {
-            continue;
-        }
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
@@ -1844,6 +1841,28 @@ mod tests {
         };
         let layout = layout(Vec::new(), Vec::new(), Vec::new(), vec![net_label]);
         assert!(check_long_nets(&layout, 100.0).is_empty());
+    }
+
+    #[test]
+    fn a_long_wired_piece_of_a_flagged_net_is_flagged() {
+        // A net that leaves its region is wired inside each region and
+        // flagged once there, so its wires still have to stay short.
+        let net_label = NetLabel {
+            net: NetId(0),
+            component: ComponentId(0),
+            pin: PinId(0),
+            label: "LEAVES_REGION".to_string(),
+            spot: synth_layout::LabelSpot::default(),
+        };
+        let layout = layout(
+            Vec::new(),
+            vec![wire(NetId(0), vec![(0.0, 0.0), (150.0, 0.0)])],
+            Vec::new(),
+            vec![net_label],
+        );
+        let violations = check_long_nets(&layout, 100.0);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, "E-SYNTH-SCHEM-004");
     }
 
     // ----- E-SYNTH-SCHEM-005 ----------------------------------------------

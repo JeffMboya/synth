@@ -40,15 +40,7 @@ jobs:
           shared-key: ${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Install kicad-cli and the stock symbol/footprint libraries
-        run: |
-          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            kicad kicad-symbols kicad-footprints
-          kicad-cli version
-          mkdir -p "$HOME/.config/kicad/10.0"
-          cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
-          cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
+        run: .github/scripts/install-kicad.sh
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -93,14 +85,7 @@ jobs:
           shared-key: ${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Install kicad-cli and the stock symbol/footprint libraries
-        run: |
-          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            kicad kicad-symbols kicad-footprints
-          mkdir -p "$HOME/.config/kicad/10.0"
-          cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
-          cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
+        run: .github/scripts/install-kicad.sh
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -137,14 +122,7 @@ jobs:
           shared-key: ${{ runner.os }}-routability-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Install kicad-cli and the stock symbol/footprint libraries
-        run: |
-          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            kicad kicad-symbols kicad-footprints
-          mkdir -p "$HOME/.config/kicad/10.0"
-          cp /usr/share/kicad/template/sym-lib-table "$HOME/.config/kicad/10.0/sym-lib-table"
-          cp /usr/share/kicad/template/fp-lib-table "$HOME/.config/kicad/10.0/fp-lib-table"
+        run: .github/scripts/install-kicad.sh
 
       - name: Run unrouted-net no-regression gate
         run: |
