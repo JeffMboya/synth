@@ -107,7 +107,12 @@ pub fn build_pcb(
         ),
         Sexp::list("paper", vec![Sexp::str(paper_for(placement))]),
         build_layers(board.layers),
-        build_setup_with(board.stackup.as_ref()),
+        build_setup_with_profile(
+            board.stackup.as_ref(),
+            &synth_drc::ManufacturerProfile::from_name(
+                board.manufacturer.as_deref().unwrap_or("jlc-standard"),
+            ),
+        ),
         // Net 0 = unconnected (KiCad convention). Real nets get
         // ids 1..N in IR declaration order — same ordering KiCad
         // uses when it generates from an imported netlist.
@@ -1293,36 +1298,71 @@ fn layer(id: i32, name: &str, kind: &str, alias: Option<&str>) -> Sexp {
     Sexp::list(id.to_string(), children)
 }
 
-/// Minimum `(setup ...)` block KiCad 10 will accept. Default trace
-/// widths and clearances; later slices read these from a
-/// manufacturer profile (plan §9.4).
-fn build_setup() -> Sexp {
+/// The `(setup ...)` block, carrying the floors of the board's declared
+/// manufacturing profile.
+///
+/// These are the numbers `kicad-cli pcb drc` actually checks against. The
+/// project file carries the same floors, but KiCad reads the *board* for
+/// them, so writing the profile to one and defaults to the other means a
+/// board can declare a process it is then measured against the wrong way:
+/// a design on a tier that sells a 0.2 mm drill was reported as
+/// `drill_out_of_range` against a hardcoded 0.3 mm, once per via, and the
+/// same for `via_diameter` against a hardcoded 0.6 mm.
+fn build_setup_for(profile: &synth_drc::ManufacturerProfile) -> Sexp {
+    let mm = |nm: i64| synth_ir::Length(nm).to_mm();
+    // A via has to clear its own drill plus an annular ring on each side;
+    // the project file computes its minimum the same way.
+    let min_via = mm(profile.min_drill_diameter_nm + 2 * profile.min_annular_ring_nm);
     Sexp::list(
         "setup",
         vec![
-            Sexp::list("last_trace_width", vec![num(0.127)]),
-            Sexp::list("trace_clearance", vec![num(0.127)]),
+            Sexp::list(
+                "last_trace_width",
+                vec![num(mm(profile.min_trace_width_nm))],
+            ),
+            Sexp::list(
+                "trace_clearance",
+                vec![num(mm(profile.min_copper_clearance_nm))],
+            ),
             Sexp::list("pad_to_mask_clearance", vec![num(0.0)]),
             Sexp::list("solder_mask_min_width", vec![num(0.0)]),
             Sexp::list(
                 "allow_soldermask_bridges_in_footprints",
                 vec![Sexp::atom("yes")],
             ),
-            // Keep these minima aligned with the router's default signal
-            // width and the KiCad board defaults used during native DRC.
-            Sexp::list("trace_min", vec![num(0.127)]),
-            // 0.127 mm is the default profile's copper clearance; the
-            // router enforces this same value when choosing grid moves.
-            Sexp::list("clearance_min", vec![num(0.127)]),
-            Sexp::list("via_min_size", vec![num(0.60)]),
-            Sexp::list("via_min_drill", vec![num(0.30)]),
+            Sexp::list("trace_min", vec![num(mm(profile.min_trace_width_nm))]),
+            Sexp::list(
+                "clearance_min",
+                vec![num(mm(profile.min_copper_clearance_nm))],
+            ),
+            Sexp::list("via_min_size", vec![num(min_via)]),
+            Sexp::list(
+                "via_min_drill",
+                vec![num(mm(profile.min_drill_diameter_nm))],
+            ),
         ],
     )
 }
 
+/// [`build_setup_for`] on the conservative default tier, for the tests that
+/// have no board to read a manufacturer from.
+#[cfg(test)]
+fn build_setup() -> Sexp {
+    build_setup_for(&synth_drc::ManufacturerProfile::jlc_standard())
+}
+
 /// [`build_setup`], with the declared stackup (if any) as its first entry.
+#[cfg(test)]
 fn build_setup_with(stackup: Option<&Stackup>) -> Sexp {
-    let mut setup = build_setup();
+    build_setup_with_profile(stackup, &synth_drc::ManufacturerProfile::jlc_standard())
+}
+
+/// [`build_setup_with`], on a named profile.
+fn build_setup_with_profile(
+    stackup: Option<&Stackup>,
+    profile: &synth_drc::ManufacturerProfile,
+) -> Sexp {
+    let mut setup = build_setup_for(profile);
     if let (Some(stackup), Sexp::List { children, .. }) = (stackup, &mut setup) {
         children.insert(0, build_stackup(stackup));
     }
