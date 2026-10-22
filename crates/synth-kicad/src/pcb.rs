@@ -3397,6 +3397,8 @@ mod tests {
                 plane: false,
                 max_length: None,
                 max_skew: None,
+                via_diameter: None,
+                via_drill: None,
                 source_span: Span::new(0, 0),
             }],
             buses: vec![],
