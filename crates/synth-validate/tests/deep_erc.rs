@@ -1352,3 +1352,105 @@ fn derating_needs_both_dielectric_and_rating() {
     );
     assert!(codes(&diags, "E-SYNTH-CAP-001").is_empty(), "{diags:?}");
 }
+
+/// A pin's rating is about the pin, so it is compared against what reaches
+/// the pin.
+///
+/// The exemption used to test the *rail* against `voltage_max_v`, which undid
+/// the divider the rule had just computed: a 12 V rail divided to 4 V on an
+/// input rated 5 V was still reported, because 12 V exceeds 5 V, while the
+/// pin was inside its rating the whole time. The rating sits above the
+/// divided output and below the rail, so only the right comparison clears it.
+const TWELVE_VOLT_SUPPLY: &str = r#"
+id = "test_12v_supply"
+kind = "regulator"
+description = "12 V rail, declared here so the rail sits above the pin rating"
+
+[operating_conditions]
+min_voltage_v = 14.0
+max_voltage_v = 40.0
+max_current_ma = 1000.0
+
+[[pins]]
+name = "gnd"
+number = "1"
+electrical_type = "power_input"
+
+[[pins]]
+name = "vout"
+number = "2"
+electrical_type = "power_output"
+voltage_nominal_v = 12.0
+
+[[pins]]
+name = "vin"
+number = "3"
+electrical_type = "power_input"
+"#;
+
+const FIVE_VOLT_TOLERANT: &str = r#"
+id = "test_five_volt_tolerant"
+kind = "sensor"
+description = "3.3 V part with a 5 V-tolerant sense input"
+
+[operating_conditions]
+min_voltage_v = 3.0
+max_voltage_v = 3.6
+
+[[pins]]
+name = "vdd"
+number = "1"
+electrical_type = "power_input"
+
+[[pins]]
+name = "gnd"
+number = "2"
+electrical_type = "ground_reference"
+
+[[pins]]
+name = "sense"
+number = "3"
+electrical_type = "input"
+voltage_max_v = 4.5
+"#;
+
+#[test]
+fn a_divided_rail_is_judged_against_the_pin_rating_not_the_rail() {
+    let mut registry =
+        synth_registry::load_dir(&workspace_root().join("registry").join("parts")).unwrap();
+    let extra = synth_registry::load_from_strs(&[
+        ("test_five_volt_tolerant.synth.toml", FIVE_VOLT_TOLERANT),
+        ("test_12v_supply.synth.toml", TWELVE_VOLT_SUPPLY),
+    ])
+    .unwrap();
+    for (_, part) in extra.iter() {
+        registry.insert(part.clone());
+    }
+
+    // 12 V through 100k/50k puts 4.0 V on the pin: above the 3.3 V supply,
+    // so the device-supply check would report it; below the pin's 5 V
+    // rating, so the pin's own rating clears it; and below the 12 V rail,
+    // which is what the old comparison looked at and refused to clear.
+    let src = r#"board "t" {
+      layers 2
+      component U1: regulator "ams1117_3v3"
+      component U2: regulator "test_12v_supply"
+      component U3: sensor "test_five_volt_tolerant"
+      component R1: resistor "r_generic_0603" value "100k"
+      component R2: resistor "r_generic_0603" value "50k"
+      component C1: capacitor "c_generic_0805" value "10u"
+      component C2: capacitor "c_generic_0805" value "10u"
+      component C3: capacitor "c_generic_0805" value "10u"
+      connect U1.vout -> U3.vdd
+      connect U2.vout -> R1.p1
+      connect R1.p2 -> U3.sense
+      connect U3.sense -> R2.p1
+      connect R2.p2 -> U1.gnd as "GND"
+    }"#;
+    let diags = validate_in(src, &registry, &ErcConfig::default());
+    assert!(
+        codes(&diags, "E-SYNTH-POWER-008").is_empty(),
+        "4.0 V is inside the pin's declared 4.5 V rating: {:?}",
+        codes(&diags, "E-SYNTH-POWER-008")
+    );
+}
