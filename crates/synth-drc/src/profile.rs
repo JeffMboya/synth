@@ -256,6 +256,36 @@ impl ManufacturerProfile {
         }
     }
 
+    /// Resolve a declared manufacturer for a board of `layers`, refusing to
+    /// hand back a process the fabricator does not sell for that stackup.
+    ///
+    /// [`Self::from_name`] answers "what is this name", which is the right
+    /// question when printing a catalogue and the wrong one when deciding
+    /// what geometry a board may be judged against. `E-SYNTH-PROCESS-004`
+    /// reports the mismatch, but it only fires through the validator: every
+    /// other consumer -- the exporter's rule file, `synth route`, `synth
+    /// export-kicad`, the MCP signal-integrity tool -- called `from_name` and
+    /// took the floors it returned. A 2-layer board declaring `jlc-advanced`
+    /// was therefore judged against a 0.2 mm drill and via-in-pad on the
+    /// direct DRC path, and could be reported fabrication-ready against a
+    /// process no fabricator had agreed to.
+    ///
+    /// An unsupported pairing falls back to [`Self::jlc_standard`], the most
+    /// conservative floor, for the same reason an unrecognised name does: a
+    /// board gets the tier it can actually buy or the conservative one, never
+    /// a better one by accident. The fallback is visible rather than silent,
+    /// because `DrcReport` carries the profile's name and it will read
+    /// `jlc-standard` where the board said otherwise.
+    #[must_use]
+    pub fn for_layers(name: &str, layers: u32) -> Self {
+        let named = Self::from_name(name);
+        if named.supports_layers(layers) {
+            named
+        } else {
+            Self::jlc_standard()
+        }
+    }
+
     /// Load a profile from a TOML file at `path`. The TOML's
     /// numeric fields use millimetres (`min_trace_width_mm`
     /// rather than `_nm`) — match KiCad's convention so
@@ -353,6 +383,61 @@ mod tests {
                 "{} is a baseline floor and does not depend on the stackup",
                 stock.name
             );
+        }
+    }
+
+    /// The direct DRC path must not grant a process the board cannot buy.
+    ///
+    /// `E-SYNTH-PROCESS-004` reports the mismatch, but it only fires through
+    /// the validator. Every other consumer -- the exporter's rule file,
+    /// `synth route`, `synth export-kicad`, the MCP signal-integrity tool --
+    /// resolves the profile for itself, so the refusal has to live in
+    /// resolution rather than in a rule they do not run.
+    #[test]
+    fn an_unsupported_stackup_resolves_to_the_conservative_floor() {
+        let standard = ManufacturerProfile::jlc_standard();
+
+        let refused = ManufacturerProfile::for_layers("jlc-advanced", 2);
+        assert_eq!(
+            refused.name, standard.name,
+            "a 2-layer board cannot buy the advanced tier"
+        );
+        assert_eq!(
+            refused.min_drill_diameter_nm,
+            standard.min_drill_diameter_nm
+        );
+        assert!(
+            !refused.via_in_pad,
+            "nor the fill that tier is the only way to get"
+        );
+
+        for layers in [4_u32, 6] {
+            let granted = ManufacturerProfile::for_layers("jlc-advanced", layers);
+            assert_eq!(granted.name, "jlc-advanced");
+            assert_eq!(granted.min_drill_diameter_nm, mm_to_nm(0.2));
+            assert!(granted.via_in_pad);
+        }
+    }
+
+    /// A stock tier is the fabricator's baseline and resolves the same on any
+    /// stackup, so this must not start downgrading boards that were building
+    /// before the restriction existed.
+    #[test]
+    fn a_stock_tier_resolves_unchanged_on_every_stackup() {
+        for name in [
+            "jlcpcb",
+            "jlc-standard",
+            "pcbway",
+            "oshpark",
+            "unrecognised",
+        ] {
+            for layers in [2_u32, 4, 6] {
+                assert_eq!(
+                    ManufacturerProfile::for_layers(name, layers).name,
+                    ManufacturerProfile::from_name(name).name,
+                    "{name} on {layers} layers"
+                );
+            }
         }
     }
 
