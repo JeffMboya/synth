@@ -342,6 +342,10 @@ pub fn build_pcb(
     // Every pad on the board, so a generated stitching via can be kept clear of
     // one: a via dropped on another net's pad is a short. Computed once, and
     // only when a plane is actually going to be emitted.
+    // Plane pads the exporter could not stitch. They stay on the plane's net
+    // and the router connects them; the list is kept so the count can be
+    // reported rather than lost.
+    let mut unstitched: Vec<(String, synth_geometry::Point)> = Vec::new();
     let mut obstacles: Vec<(synth_geometry::Point, i64)> =
         if board.netclasses.iter().any(|class| class.plane) && !power_layers.is_empty() {
             all_pad_obstacles(board, placement)
@@ -422,6 +426,21 @@ pub fn build_pcb(
                 ));
             }
             for (pad, origin, layer) in plane_pad_targets(board, placement, net) {
+                // A pad with nowhere legal to put a via is left to the
+                // router, not refused and not shorted.
+                //
+                // Direct plane access is what a stitching via buys; it is not
+                // what makes the pad connected. The pad is already on the
+                // plane's net, so the router reaches it like any other pad,
+                // and an unreachable one shows up as an open net rather than
+                // as silence. Refusing the export instead made a board
+                // unexportable for a reason no placement could fix: a supply
+                // pad on a 0.5 mm-pitch QFN has no room beside it for a
+                // 0.6 mm via, and a stub long enough to escape the package
+                // has to cross the package's own pads to get out. Dropping
+                // the via in the pad anyway was worse -- that is this board's
+                // clearance, mask-bridge and shorting violations, every one
+                // of them a plane via sitting on someone else's pad.
                 let Some(via) = plane_via_offset(
                     pad,
                     origin,
@@ -429,18 +448,28 @@ pub fn build_pcb(
                     &obstacles,
                     via_in_pad_allowed,
                 ) else {
-                    return Err(PlaneFanoutError {
-                        net: net.name.clone(),
-                        detail: format!(
-                            "no legal stitching-via position beside the pad at ({:.2}, {:.2}) mm \
-                             on {layer:?}: every candidate is outside the board or within \
-                             clearance of another pad or via. Move the part, widen the board, \
-                             or declare `requires via_in_pad` on a manufacturer that offers it, \
-                             which lets the via go in the pad.",
-                            nm_to_mm(pad.x_nm),
-                            nm_to_mm(pad.y_nm),
-                        ),
-                    });
+                    // A board that has not opted into via-in-pad is told, and
+                    // told what to do about it: that is the case where the
+                    // author still has a choice. A board that has opted in and
+                    // still cannot be stitched has no choice left, so the pad
+                    // goes to the router instead of failing the export.
+                    if !via_in_pad_allowed {
+                        return Err(PlaneFanoutError {
+                            net: net.name.clone(),
+                            detail: format!(
+                                "no legal stitching-via position beside the pad at \
+                                 ({:.2}, {:.2}) mm on {layer:?}: every candidate is outside \
+                                 the board or within clearance of another pad or via. Move \
+                                 the part, widen the board, or declare `requires via_in_pad` \
+                                 on a manufacturer that offers it, which lets the via go in \
+                                 the pad.",
+                                nm_to_mm(pad.x_nm),
+                                nm_to_mm(pad.y_nm),
+                            ),
+                        });
+                    }
+                    unstitched.push((net.name.clone(), pad));
+                    continue;
                 };
                 obstacles.push((via, PLANE_VIA_RADIUS_NM));
                 children.push(build_plane_via(
@@ -685,15 +714,44 @@ fn plane_via_offset(
     let dy = pad.y_nm - origin.y_nm;
     let sx = if dx >= 0 { 1 } else { -1 };
     let sy = if dy >= 0 { 1 } else { -1 };
-    let axes: [(i64, i64); 4] = if dx.abs() >= dy.abs() {
+    // Four axial directions first, in the order that keeps the via on the far
+    // side of the pad from the footprint origin, then the four diagonals. The
+    // diagonals matter on a dense board: a pad in a row of pads has both
+    // neighbours on one axis and open space at 45 degrees, and without them
+    // the search gives up and falls through to the in-pad case far more often
+    // than it needs to.
+    let axial: [(i64, i64); 4] = if dx.abs() >= dy.abs() {
         [(sx, 0), (0, sy), (0, -sy), (-sx, 0)]
     } else {
         [(0, sy), (sx, 0), (-sx, 0), (0, -sy)]
     };
+    let axes: [(i64, i64); 8] = [
+        axial[0],
+        axial[1],
+        axial[2],
+        axial[3],
+        (sx, sy),
+        (sx, -sy),
+        (-sx, sy),
+        (-sx, -sy),
+    ];
+    // Nearest first, then further out. The long distances are what make a
+    // fine-pitch package stitchable at all: beside a 0.5 mm-pitch QFN pad
+    // there is no room for a 0.6 mm via between its neighbours, however many
+    // directions are tried, and the via has to reach past the package on a
+    // stub. 1 mm is the preferred spacing, not the limit.
     let distances = [
         PLANE_VIA_OFFSET_NM,
+        PLANE_VIA_OFFSET_NM * 7 / 8,
         PLANE_VIA_OFFSET_NM * 3 / 4,
+        PLANE_VIA_OFFSET_NM * 5 / 8,
         PLANE_VIA_OFFSET_NM / 2,
+        PLANE_VIA_OFFSET_NM * 5 / 4,
+        PLANE_VIA_OFFSET_NM * 3 / 2,
+        PLANE_VIA_OFFSET_NM * 2,
+        PLANE_VIA_OFFSET_NM * 5 / 2,
+        PLANE_VIA_OFFSET_NM * 3,
+        PLANE_VIA_OFFSET_NM * 4,
     ];
     // The whole fanout stub is checked, not only the via endpoint: a stub from
     // the pad to a nearby candidate can cut across another pad even when the via
@@ -722,10 +780,31 @@ fn plane_via_offset(
             }
         }
     }
-    // Boxed in on every side. In the pad if the board declared the process,
-    // and otherwise reported rather than quietly placed.
+    // Boxed in on every side. In the pad if the board declared the process --
+    // but only if the via actually fits there.
+    //
+    // Returning the pad centre unconditionally was a silent short: the via is
+    // 0.6 mm across and a plane pad on a dense board can sit 0.2 mm from its
+    // neighbour, so dropping one in the pad put copper of this net over the
+    // pad next door. On the Class-C compute board that produced most of the
+    // board's clearance, hole-clearance, mask-bridge and shorting violations
+    // at once, every one of them naming a plane via against someone else's
+    // pad. The in-pad position is a candidate like any other and is held to
+    // the same clearance; what it skips is the stub, because there is none.
     if via_in_pad {
-        return Some(pad);
+        let fits =
+            obstacles
+                .iter()
+                .filter(|(centre, _)| *centre != pad)
+                .all(|(centre, radius_nm)| {
+                    let need = PLANE_VIA_RADIUS_NM + PLANE_VIA_FAB_CLEARANCE_NM + radius_nm;
+                    let vdx = pad.x_nm - centre.x_nm;
+                    let vdy = pad.y_nm - centre.y_nm;
+                    vdx * vdx + vdy * vdy >= need * need
+                });
+        if fits && usable.contains(pad) {
+            return Some(pad);
+        }
     }
     None
 }
