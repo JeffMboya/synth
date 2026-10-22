@@ -716,9 +716,18 @@ fn place_candidates_with_margins(
     // override has to be applied here too or export reruns placement with
     // a different orientation than the placer just used.
     let rotation_overrides = flash_rotation_overrides(board);
-    let hinted =
-        synth_place::place_with_tuning_and_sidecar(board, margin, &rotation_overrides, sidecar)?;
-    let mut candidates = vec![hinted];
+    // The hinted pass is a candidate, not a precondition. Taking it with `?`
+    // refused the whole export the moment it failed, before the unhinted
+    // pass, the other margins or the other seeds had been tried — so a board
+    // the hinted pass could not pack was rejected even when one of the others
+    // would have placed it, and a complete floorplan could not rescue it.
+    // Keep the error instead, and report it only if nothing places at all.
+    let mut candidates = Vec::new();
+    let mut first_error = None;
+    match synth_place::place_with_tuning_and_sidecar(board, margin, &rotation_overrides, sidecar) {
+        Ok(hinted) => candidates.push(hinted),
+        Err(error) => first_error = Some(error),
+    }
 
     // The hinted placement is not automatically the better one. A hint pins a
     // part where the author asked, which can be worse for routing than where
@@ -768,6 +777,13 @@ fn place_candidates_with_margins(
         if !distinct.contains(&candidate) {
             distinct.push(candidate);
         }
+    }
+    if distinct.is_empty() {
+        // Every pass failed. Report the hinted one's error: that is the board
+        // as written, so it is the diagnostic the author can act on. Only a
+        // failed hinted pass can leave this empty, and that pass records its
+        // error, so there is always one to return.
+        return Err(first_error.expect("a failed hinted pass records its error"));
     }
     Ok(distinct)
 }
