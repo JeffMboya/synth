@@ -312,7 +312,7 @@ pub struct TextAnnotation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextKind {
-    /// A declared `group`'s title: bold, group-hued box, inside top-left.
+    /// A declared `group`'s title: bold, group-hued box, inside the top, centred.
     Caption,
     /// A `notes` block title.
     NoteTitle,
@@ -340,7 +340,7 @@ pub struct GroupBox {
     /// colour. Kept because sidecar layouts serialise it.
     #[serde(default = "default_group_color")]
     pub color: [u8; 3],
-    /// The caption sits inside the box at the top-left (Phase B2).
+    /// The caption sits inside the box at the top, centred (Phase B2).
     /// Always true; carried so other consumers (preview renderer)
     /// place captions without re-deriving the convention.
     #[serde(default = "default_caption_inside")]
@@ -428,10 +428,10 @@ const MEMBER_CLEARANCE: f64 = 17.78;
 /// side; 20 mm covers most variants.
 const PAGE_MARGIN: f64 = 20.0;
 /// Height of a group caption's glyphs. Captions render bold at this
-/// size (Phase B typography: captions 2.0 bold, refdes/value 1.27,
+/// size (Phase B typography: captions 2.54 bold, refdes/value 1.27,
 /// note/legend lines 1.0) so a sub-circuit name reads as a heading
 /// rather than as another component label.
-const GROUP_CAPTION_SIZE: f64 = 2.0;
+const GROUP_CAPTION_SIZE: f64 = 2.54;
 /// Gap between the box's top edge and the caption baseline, in mm:
 /// one glyph height plus this gap keeps the caption fully inside the
 /// box while clearing the edge stroke.
@@ -1036,6 +1036,7 @@ pub fn layout_with_overrides(
     if !stretched {
         tile_boxes_to_content(board, &mut layout);
     }
+    center_captions(board, &mut layout);
     resolve_text_overlaps(board, &mut layout);
     grow_sheet_to_fit(board, &mut layout);
     compact_sheet_to_fit(board, &mut layout);
@@ -1143,7 +1144,7 @@ fn mechanical_groups(board: &Board) -> std::collections::HashSet<&str> {
 /// Caption every declared `group` on the sheet, and draw its titled
 /// outline box (§21.1).
 ///
-/// One text run per group, sitting inside the box at the top-left —
+/// One text run per group, sitting inside the box at the top —
 /// the device the SIM7080G reference schematic uses ("VBAT
 /// DECOUPLING + ESD", "NANO SIM (1.8V only) + ESD"): a sub-circuit
 /// is named where it is drawn, so a reader can see what a cluster of
@@ -1174,8 +1175,9 @@ fn annotate_groups(board: &Board, layout: &mut Layout) {
             .unwrap_or_else(|| group_color(&group));
         let (min_mm, max_mm) = group_box_rect(&caption, (min_x, max_x, min_y, max_y));
         layout.annotations.push(TextAnnotation {
-            // Inside the box at the top-left, one glyph plus an
-            // inset below the top edge stroke.
+            // Inside the box at the top, one glyph plus an inset below
+            // the top edge stroke. [`center_captions`] moves it to the
+            // middle once the box is final.
             at_mm: (
                 min_mm.0 + GROUP_BOX_PAD,
                 (min_mm.1 + GROUP_CAPTION_SIZE + GROUP_CAPTION_INSET).max(GROUP_CAPTION_SIZE),
@@ -1191,6 +1193,23 @@ fn annotate_groups(board: &Board, layout: &mut Layout) {
             color,
             caption_inside: true,
         });
+    }
+}
+
+/// Put each region's caption in the middle of its box. The boxes reach their
+/// final width only once the page is cut into cells, so this runs after that.
+fn center_captions(board: &Board, layout: &mut Layout) {
+    for b in &layout.group_boxes {
+        let text = group_caption(board, &b.group);
+        let Some(caption) = layout
+            .annotations
+            .iter_mut()
+            .find(|a| a.kind == TextKind::Caption && a.text == text)
+        else {
+            continue;
+        };
+        let width = text.chars().count() as f64 * caption.size_mm * NOTE_CHAR_WIDTH;
+        caption.at_mm.0 = (b.min_mm.0 + b.max_mm.0 - width) / 2.0;
     }
 }
 
@@ -9756,6 +9775,27 @@ mod documentation_tests {
             covered >= 0.9 * to_fill,
             "boxes cover {covered} of the {to_fill} the frame leaves the regions"
         );
+    }
+
+    #[test]
+    fn a_region_caption_is_centred_on_its_box_and_bigger_than_a_label() {
+        let layout = layout(&resistor_groups(&FOUR_REGIONS, 0));
+        for b in &layout.group_boxes {
+            let caption = layout
+                .annotations
+                .iter()
+                .find(|a| a.kind == TextKind::Caption && a.text == b.group)
+                .expect("a caption for every region");
+            let width = caption.text.chars().count() as f64 * caption.size_mm * NOTE_CHAR_WIDTH;
+            let centre = caption.at_mm.0 + width / 2.0;
+            let box_centre = f64::midpoint(b.min_mm.0, b.max_mm.0);
+            assert!(
+                (centre - box_centre).abs() < 1.0,
+                "{}: caption centre {centre} vs box centre {box_centre}",
+                b.group
+            );
+            assert!(caption.size_mm >= 2.5, "{}: {}", b.group, caption.size_mm);
+        }
     }
 
     #[test]
