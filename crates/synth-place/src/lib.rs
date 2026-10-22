@@ -8077,15 +8077,40 @@ board "features_only" {
         .expect("sidecar TOML written");
 
         let with_sidecar = place_with_sidecar(&board, Some(&sidecar_path)).expect("place");
-
-        let mut expected = place_with_default_tuning(&board, false).expect("place");
         let sidecar = synth_layout::sidecar::SidecarLayout::load_from_file(&sidecar_path)
             .expect("sidecar loads");
-        apply_sidecar_overrides(&board, &mut expected, &sidecar);
-        tighten_outline_after_sidecar(&board, &mut expected);
         std::fs::remove_file(&sidecar_path).ok();
 
-        assert_eq!(with_sidecar, expected);
+        // The pin is honoured. This used to be checked by rebuilding the
+        // result from `place_with_default_tuning` plus
+        // `apply_sidecar_overrides`, which was the pipeline rather than the
+        // behaviour: the sidecar's entries now reach the solver as
+        // constraints, so the arrangement around a pinned part is not the
+        // unconstrained one with the part moved afterwards, and an oracle
+        // built that way describes a placement the function no longer
+        // produces.
+        let u1 = board
+            .components
+            .iter()
+            .find(|component| component.refdes == "U1")
+            .expect("the fixture has a U1");
+        let placed = with_sidecar
+            .components
+            .iter()
+            .find(|component| component.id == u1.id)
+            .expect("U1 placed");
+        assert_eq!(placed.rotation, Rotation::Ninety);
+        assert!(
+            (nm_to_mm(placed.center.x_nm) - 31.0).abs() < 0.001
+                && (nm_to_mm(placed.center.y_nm) - 13.0).abs() < 0.001,
+            "U1 should sit where the sidecar pinned it, not at ({:.3}, {:.3})",
+            nm_to_mm(placed.center.x_nm),
+            nm_to_mm(placed.center.y_nm),
+        );
+
+        // And compaction stays off while a sidecar is in play, which is what
+        // this test is named for: a compacted board moves parts the author
+        // has already positioned relative to one another.
         assert_ne!(
             with_sidecar,
             {
