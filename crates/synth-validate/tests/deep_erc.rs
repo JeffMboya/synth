@@ -186,6 +186,39 @@ fn pullup_to_the_devices_own_rail_is_clean() {
     );
 }
 
+/// A pin that declares what it tolerates outranks its device's supply.
+///
+/// A high-side current monitor runs from 3.3 V and specifies 26 V common mode
+/// on its sense inputs. Comparing the measured rail against the device supply
+/// condemns the part for doing its job.
+#[test]
+fn a_pin_rated_above_its_device_supply_tolerates_the_rail() {
+    let src = r#"board "t" {
+      layers 2
+      component U1: regulator "ams1117_3v3"
+      component U2: regulator "ams1117_5v"
+      component U3: sensor "ina3221_power_monitor"
+      component R1: resistor "r_generic_0603" value "0.01"
+      component C1: capacitor "c_generic_0805" value "10u"
+      component C2: capacitor "c_generic_0805" value "10u"
+      component C3: capacitor "c_generic_0805" value "10u"
+      component C4: capacitor "c_generic_0805" value "10u"
+      connect U1.vout -> U3.vs
+      connect U3.gnd -> U1.gnd as "GND"
+      // The 5 V rail reaches a sense input through the shunt. The pin is
+      // rated to 26 V, so this is the measurement working, not an overstress.
+      connect U2.vout -> R1.p1
+      connect R1.p1 -> U3.in1_p
+      connect R1.p2 -> U3.in1_n
+    }"#;
+    let diags = validate(src);
+    assert!(
+        codes(&diags, "E-SYNTH-POWER-008").is_empty(),
+        "a 26 V-rated sense pin tolerates a 5 V rail: {:?}",
+        codes(&diags, "E-SYNTH-POWER-008")
+    );
+}
+
 /// A rail-monitoring divider is not a bus pull-up either.
 ///
 /// Reading a 5 V rail on a 3.3 V ADC pin through a divider is the ordinary

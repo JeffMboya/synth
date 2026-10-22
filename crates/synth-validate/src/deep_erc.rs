@@ -474,6 +474,15 @@ impl ErcRule for PullupRailMismatchRule {
                 {
                     continue;
                 }
+                // A pin that states what it tolerates is the authority on
+                // what it tolerates. A high-side current monitor runs from
+                // 3.3 V and specifies 26 V common mode on its sense inputs;
+                // a 5 V-tolerant input on a 3.3 V part is the same shape.
+                // Comparing the rail against the device's *supply* condemns
+                // both, which is why the pin's own rating comes first.
+                if pin.voltage_max_v.is_some_and(|max| rail_v <= max) {
+                    continue;
+                }
                 let Some(device_v) = component_supply_v(board, &domains, component) else {
                     continue;
                 };
