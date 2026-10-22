@@ -4618,32 +4618,173 @@ mod tests {
         }
     }
 
-    #[test]
-    fn moving_a_power_name_away_from_a_near_miss_never_drops_it() {
-        for name in [
-            "ref_ldo_sensor",
-            "ref_usb_cdc",
-            "ref_crystal_mcu",
-            "ref_battery_charger",
-            "sensor_logger",
-        ] {
-            let (_board, sexp, _) = build_reference(name);
-            let mut shown: std::collections::BTreeMap<(i64, i64, String), usize> =
-                std::collections::BTreeMap::new();
-            for ((x, y), fields) in power_symbols(&sexp) {
-                let (_, text, _, _, hidden) = power_value(&fields).clone();
-                if text == "PWR_FLAG" {
-                    continue;
+    /// Where each power name must be drawn, from the board and its layout and
+    /// not from the schematic: one per rail flag and one per fanned power
+    /// leg, at the point the layout puts its symbol. Symbols at one point share
+    /// a name, so they count once.
+    fn expected_power_names(
+        board: &Board,
+        layout: &synth_layout::Layout,
+    ) -> Vec<(String, (f64, f64))> {
+        let placements: HashMap<ComponentId, &ComponentPlacement> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let rail_of = |net| layout.power_flags.iter().find(|f| f.net == net);
+        let mut terminals = Vec::new();
+        for flag in &layout.power_flags {
+            if let Some((x, y, dx, dy)) =
+                pin_terminal_xy(board, flag.component, flag.pin, &placements)
+            {
+                let anchor = PinAnchor { x, y, dx, dy };
+                let (symbol_x, symbol_y, _) =
+                    clear_power_flag_position(board, flag, &placements, layout, anchor);
+                terminals.push((flag.label.clone(), (symbol_x, symbol_y)));
+            }
+        }
+        for leg in crate::pin_reconcile::reconcile_all(board)
+            .iter()
+            .flat_map(|r| &r.power_legs)
+        {
+            if let (Some(rail), Some((_, symbol))) =
+                (rail_of(leg.net), fanned_leg_stub(board, leg, &placements))
+            {
+                terminals.push((rail.label.clone(), symbol));
+            }
+        }
+        terminals.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap()));
+        terminals.dedup_by(|a, b| a.0 == b.0 && (a.1 .0 - b.1 .0).hypot(a.1 .1 - b.1 .1) < 0.01);
+        terminals
+    }
+
+    /// How far a drawn power symbol may sit from its pin, in mm: a stub, plus a
+    /// bend when the symbol steps off the stub axis.
+    const POWER_SYMBOL_REACH_MM: f64 = 5.0;
+    /// How far a power name may sit from its symbol, in mm: the usual spot
+    /// past the arrow tip, plus the rings it moves out by when that is taken.
+    const POWER_NAME_REACH_MM: f64 = 9.0;
+
+    /// What is wrong with the power names `sexp` shows, given the names the
+    /// board needs. Each expected name must be matched by one shown name from
+    /// a symbol near its point, with the name beside that symbol. An expected
+    /// name nothing matches (missing or hidden) and a shown name no expected
+    /// name matches (drawn twice, or off its pin) are both reported.
+    fn power_name_problems(expected: &[(String, (f64, f64))], sexp: &Sexp) -> Vec<String> {
+        let mut shown = Vec::new();
+        for (at, fields) in power_symbols(sexp) {
+            let Some((_, text, pos, _, hidden)) = fields.iter().find(|f| f.0 == "Value") else {
+                continue;
+            };
+            if !hidden && text != "PWR_FLAG" {
+                shown.push((text.clone(), at, *pos));
+            }
+        }
+        let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+        for (s, (text, at, _)) in shown.iter().enumerate() {
+            for (e, (label, point)) in expected.iter().enumerate() {
+                let d = (at.0 - point.0).hypot(at.1 - point.1);
+                if label == text && d <= POWER_SYMBOL_REACH_MM {
+                    pairs.push((d, s, e));
                 }
-                let key = ((x * 100.0).round() as i64, (y * 100.0).round() as i64, text);
-                *shown.entry(key).or_default() += usize::from(!hidden);
             }
-            for ((x, y, text), visible) in shown {
-                assert_eq!(
-                    visible, 1,
-                    "{name}: {text} at ({x}, {y}) shows {visible} times, not once"
-                );
+        }
+        pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut shown_used = vec![false; shown.len()];
+        let mut expected_used = vec![false; expected.len()];
+        for (_, s, e) in pairs {
+            if !shown_used[s] && !expected_used[e] {
+                shown_used[s] = true;
+                expected_used[e] = true;
             }
+        }
+        let mut problems = Vec::new();
+        for ((text, at, pos), used) in shown.iter().zip(shown_used) {
+            let away = (pos.0 - at.0).hypot(pos.1 - at.1);
+            if !used {
+                problems.push(format!("{text} shown at {at:?} belongs to no pin"));
+            } else if away > POWER_NAME_REACH_MM {
+                problems.push(format!("{text} at {pos:?} is {away:.1} mm from its symbol"));
+            }
+        }
+        for ((label, point), used) in expected.iter().zip(expected_used) {
+            if !used {
+                problems.push(format!("{label} at {point:?} is shown 0 times"));
+            }
+        }
+        problems
+    }
+
+    const POWER_NAME_REFERENCES: [&str; 5] = [
+        "ref_ldo_sensor",
+        "ref_usb_cdc",
+        "ref_crystal_mcu",
+        "ref_battery_charger",
+        "sensor_logger",
+    ];
+
+    #[test]
+    fn every_power_name_the_board_needs_is_shown_once() {
+        for name in POWER_NAME_REFERENCES {
+            let (board, sexp, _) = build_reference(name);
+            let expected = expected_power_names(&board, &synth_layout::layout(&board));
+            assert!(!expected.is_empty(), "{name} needs no power name");
+            let problems = power_name_problems(&expected, &sexp);
+            assert!(problems.is_empty(), "{name}: {problems:#?}");
+        }
+    }
+
+    /// Takes the first shown power name out of `sexp`, hidden or with its Value
+    /// field removed, and says which name it was.
+    fn drop_first_power_name(sexp: &mut Sexp, hide: bool) -> String {
+        let Sexp::List { children, .. } = sexp else {
+            panic!("a schematic is a list");
+        };
+        for symbol in children.iter_mut() {
+            let is_power = sub(symbol, "lib_id").is_some_and(|v| {
+                let id = str_of(&v[0]);
+                id.starts_with("power:") || id.starts_with("synth:")
+            }) && sub(symbol, "in_bom").is_some_and(|v| str_of(&v[0]) == "no");
+            let Sexp::List {
+                children: props, ..
+            } = symbol
+            else {
+                continue;
+            };
+            let shown = props.iter().position(|p| {
+                matches!(p, Sexp::List { head, children } if head == "property"
+                    && str_of(&children[0]) == "Value"
+                    && str_of(&children[1]) != "PWR_FLAG")
+                    && sub(sub_node(p, "effects"), "hide").is_none()
+            });
+            let Some(i) = shown.filter(|_| is_power) else {
+                continue;
+            };
+            let Sexp::List { children: v, .. } = &mut props[i] else {
+                unreachable!("matched a property list")
+            };
+            let text = str_of(&v[1]);
+            if hide {
+                *v.last_mut().unwrap() = hidden_field_effects();
+            } else {
+                props.remove(i);
+            }
+            return text;
+        }
+        panic!("no shown power name to drop");
+    }
+
+    #[test]
+    fn a_power_name_that_is_hidden_or_removed_is_reported() {
+        for hide in [true, false] {
+            let (board, mut sexp, _) = build_reference("sensor_logger");
+            let expected = expected_power_names(&board, &synth_layout::layout(&board));
+            let dropped = drop_first_power_name(&mut sexp, hide);
+            let problems = power_name_problems(&expected, &sexp);
+            assert!(
+                problems
+                    .iter()
+                    .any(|p| p.starts_with(&dropped) && p.ends_with("is shown 0 times")),
+                "{dropped} was {} but the check says {problems:?}",
+                if hide { "hidden" } else { "removed" }
+            );
         }
     }
 
