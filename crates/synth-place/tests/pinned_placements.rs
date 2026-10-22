@@ -187,3 +187,81 @@ fn pinning_some_parts_still_leaves_the_rest_to_the_placer() {
         "a pinned rotation is the pinned one, not a floorplan target"
     );
 }
+
+/// A relative entry is a pin too, and the outline must not overrule it.
+///
+/// Absolute entries reach the solver as constraints, so it sizes an outline
+/// that contains them. A `relative_to` entry cannot: it is defined against an
+/// anchor that has to be placed before it can be measured from, so it is
+/// resolved in `apply_sidecar_overrides` after the outline is already fixed.
+/// `legalize_sidecar_overrides` then judged it against that outline, found it
+/// outside, and moved it to the nearest slot inside — and
+/// `tighten_outline_after_sidecar` shrank the outline around the result, so
+/// the board carried a coordinate the sidecar never asked for and said
+/// nothing about it.
+#[test]
+fn a_relative_pin_outside_the_outline_is_not_quietly_moved() {
+    let fixture = workspace_root()
+        .join("examples")
+        .join("env_logger")
+        .join("env_logger.synth");
+    let board = load_board(&fixture);
+
+    let automatic = synth_place::place(&board).expect("the fixture places");
+    let anchor = board.components[0].refdes.clone();
+    let follower = board.components[1].refdes.clone();
+    let anchor_at = automatic
+        .components
+        .iter()
+        .find(|p| p.id == board.components[0].id)
+        .expect("anchor placed")
+        .center;
+
+    // Far enough past the right edge that the outline the placer sized cannot
+    // contain it, but close enough that a legal square exists out there.
+    let span_mm = synth_geometry::nm_to_mm(
+        automatic.board_outline.max.x_nm - automatic.board_outline.min.x_nm,
+    );
+    let dx = ((span_mm / 2.0 + 12.0) * 10.0).round() / 10.0;
+
+    let dir = scratch("relative-outside");
+    let sidecar = dir.join("env_logger.placement.layout.toml");
+    fs::write(
+        &sidecar,
+        format!(
+            "schema_version = 2\n\n[components.{anchor}]\nx = {:.1}\ny = {:.1}\nrotation = 0\n\n\
+             [components.{follower}]\nrelative_to = \"{anchor}\"\ndx = {dx:.1}\ndy = 0.0\nrotation = 0\n",
+            synth_geometry::nm_to_mm(anchor_at.x_nm),
+            synth_geometry::nm_to_mm(anchor_at.y_nm),
+        ),
+    )
+    .expect("write sidecar");
+
+    let placement = synth_place::place_with_tuning_and_sidecar(
+        &board,
+        1.5,
+        &std::collections::HashMap::new(),
+        Some(&sidecar),
+    )
+    .expect("a board with a far relative entry still places");
+
+    let anchor_final = placement
+        .components
+        .iter()
+        .find(|p| p.id == board.components[0].id)
+        .expect("anchor placed")
+        .center;
+    let got = placement
+        .components
+        .iter()
+        .find(|p| p.id == board.components[1].id)
+        .expect("follower placed")
+        .center;
+    let want_x = synth_geometry::nm_to_mm(anchor_final.x_nm) + dx;
+    assert!(
+        (synth_geometry::nm_to_mm(got.x_nm) - want_x).abs() < 0.001,
+        "{follower} was placed {dx:.1} mm from {anchor}, which puts it at \
+         {want_x:.3}, but it landed at {:.3}: the outline overruled the sidecar",
+        synth_geometry::nm_to_mm(got.x_nm),
+    );
+}

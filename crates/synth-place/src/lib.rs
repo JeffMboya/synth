@@ -452,13 +452,62 @@ pub fn apply_sidecar_overrides(
         }
     }
 
+    // An outline sized for the automatic arrangement is not a verdict on a
+    // coordinate the author chose, so widen it around the pinned parts before
+    // legalisation judges them against it.
+    expand_outline_for_pinned(board, placement, sidecar);
+
     // Agent/human overrides are authoritative only within the physical
-    // placement contract. If an override collides with another courtyard or
-    // leaves the generated outline, move that component to the nearest legal
-    // half-millimetre slot. Exact legal overrides remain verbatim; this keeps
-    // sidecars expressive without allowing an invalid KiCad board to reach
-    // routing or export.
+    // placement contract. If an override collides with another courtyard,
+    // move that component to the nearest legal half-millimetre slot. Exact
+    // legal overrides remain verbatim; this keeps sidecars expressive without
+    // allowing an invalid KiCad board to reach routing or export.
     legalize_sidecar_overrides(board, placement, sidecar);
+}
+
+/// Grow the outline until every sidecar-pinned courtyard is inside it.
+///
+/// [`sidecar_position_is_legal`] rejects any candidate whose courtyard leaves
+/// `placement.board_outline`, so what that outline contains decides whether a
+/// pin survives legalisation. For an absolute entry it already does: this
+/// module hands those to the solver as constraints, and the solver sizes an
+/// outline that holds them — measured, a pin 20 mm past the automatic edge is
+/// honoured without this function. The guarantee is incidental, though: it
+/// holds because of how the outline happens to be chosen, and a relative
+/// entry does not get it at all, since `relative_to` cannot be a constraint
+/// (it is measured from an anchor that must be placed first) and is resolved
+/// here, after the outline is fixed.
+///
+/// So state it rather than rely on it. After this, the only reason
+/// legalisation moves a pinned part is a collision with another courtyard,
+/// which is a real conflict rather than an artefact of how big the board was
+/// before the sidecar was read. Widening costs nothing:
+/// [`tighten_outline_after_sidecar`] removes any perimeter the courtyards do
+/// not use.
+fn expand_outline_for_pinned(
+    board: &Board,
+    placement: &mut Placement,
+    sidecar: &synth_layout::sidecar::SidecarLayout,
+) {
+    let mut outline = placement.board_outline;
+    for component in &board.components {
+        if !sidecar.components.contains_key(&component.refdes) {
+            continue;
+        }
+        let Some(placed) = placement
+            .components
+            .iter()
+            .find(|candidate| candidate.id == component.id)
+        else {
+            continue;
+        };
+        let rect = sidecar_courtyard_rect(board, component, placed);
+        outline.min.x_nm = outline.min.x_nm.min(rect.min.x_nm);
+        outline.min.y_nm = outline.min.y_nm.min(rect.min.y_nm);
+        outline.max.x_nm = outline.max.x_nm.max(rect.max.x_nm);
+        outline.max.y_nm = outline.max.y_nm.max(rect.max.y_nm);
+    }
+    placement.board_outline = outline;
 }
 
 /// Tighten an override-aware outline around the actual footprint courtyards.
