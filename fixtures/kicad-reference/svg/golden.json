@@ -64,19 +64,19 @@
     "distinct_texts": 240
   },
   "secure_tracker": {
-    "sha256": "798348dba8ec4f5ad4065591525b9e79ca658226c6d2a747ee6796d82f0a641c",
+    "sha256": "f423a032552b02f9661b6776725ee33aadeacade29add6c0a6e338bf06bd4bcf",
     "width": "419.9890mm",
     "height": "297.0022mm",
-    "paths": 26122,
-    "texts": 689,
-    "distinct_texts": 460
+    "paths": 25960,
+    "texts": 685,
+    "distinct_texts": 456
   },
   "sensor_logger": {
-    "sha256": "6780b0bd04f20b39bdfadf270c45e664b7f8c2c55d422aa77584119b00430008",
+    "sha256": "1ebfeb698d84e8046030f40d72c64c6023de76dcde7ef1b4a88be2f999180888",
     "width": "297.0022mm",
     "height": "210.0072mm",
-    "paths": 13209,
-    "texts": 390,
-    "distinct_texts": 225
+    "paths": 13160,
+    "texts": 389,
+    "distinct_texts": 223
   }
 }
