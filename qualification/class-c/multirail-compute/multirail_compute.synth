@@ -744,7 +744,11 @@ board "multirail_compute" {
       connect C44.p2 -> U16.gnd as "GND"
       connect U5.io21_sda -> U16.sda as "I2C_SDA"
       connect U5.io22_scl -> U16.scl as "I2C_SCL"
-      connect U16.a0 -> U16.gnd as "GND"
+      // A0 to VS, not to ground. Grounded this part answers at 0x40, which
+      // is exactly where the PWM driver with all six of its address pins low
+      // already answers. Tied to VS it is 0x41. The four options are GND,
+      // VS, SDA and SCL for 0x40 through 0x43.
+      connect U16.a0 -> U16.vs
       connect L2.p2 -> U16.vpu
       connect U10.gpb0 -> U16.critical_n as "RAIL_CRITICAL"
 
