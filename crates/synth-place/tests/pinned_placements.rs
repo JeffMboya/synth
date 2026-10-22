@@ -265,3 +265,48 @@ fn a_relative_pin_outside_the_outline_is_not_quietly_moved() {
         synth_geometry::nm_to_mm(got.x_nm),
     );
 }
+
+/// The public API is the one the MCP tools place through, so it has to carry
+/// the constraint too.
+///
+/// `place_with_sidecar` ran the automatic search first and applied the
+/// sidecar to its answer, which is the bug the rest of this file is about,
+/// left on the entry point that most needs it: interactive placement refused
+/// a board the search could not pack before the author's coordinates were
+/// read. Same fixture as the first test, through the other door.
+#[test]
+fn the_public_sidecar_api_places_a_fully_pinned_board_the_search_refuses() {
+    let fixture = workspace_root()
+        .join("fixtures")
+        .join("place-errors")
+        .join("no_position_01.synth");
+    let board = load_board(&fixture);
+
+    assert!(
+        synth_place::place(&board).is_err(),
+        "fixture is only meaningful while the automatic placer refuses it"
+    );
+
+    let dir = scratch("public-api");
+    let sidecar = dir.join("no_position_01.placement.layout.toml");
+    grid_sidecar(&board, &sidecar);
+
+    let placement = synth_place::place_with_sidecar(&board, Some(&sidecar))
+        .expect("a fully pinned floorplan must place through the public API too");
+
+    assert_eq!(placement.components.len(), board.components.len());
+    for (i, component) in board.components.iter().enumerate() {
+        let (want_x, want_y) = grid_slot(i);
+        let got = placement
+            .components
+            .iter()
+            .find(|p| p.id == component.id)
+            .expect("component placed");
+        assert!(
+            (synth_geometry::nm_to_mm(got.center.x_nm) - want_x).abs() < 0.001
+                && (synth_geometry::nm_to_mm(got.center.y_nm) - want_y).abs() < 0.001,
+            "{} should sit where it was pinned",
+            component.refdes,
+        );
+    }
+}

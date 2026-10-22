@@ -926,21 +926,21 @@ pub fn place_with_sidecar(
     board: &Board,
     sidecar_path: Option<&std::path::Path>,
 ) -> Result<Placement, PlaceError> {
-    // Start from the same production defaults as `place()`, then apply the
-    // agent/human sidecar so exact coordinates and rotations can take control.
-    let has_sidecar = sidecar_path.is_some_and(std::path::Path::exists);
-    let mut placement = place_with_default_tuning(board, !has_sidecar)?;
-    if let Some(path) = sidecar_path {
-        if path.exists() {
-            if let Some(sidecar) = synth_layout::sidecar::SidecarLayout::load_from_file(path) {
-                apply_sidecar_overrides(board, &mut placement, &sidecar);
-            }
-        }
-    }
-    if has_sidecar {
-        tighten_outline_after_sidecar(board, &mut placement);
-    }
-    Ok(placement)
+    // Straight through the constraint-aware path, with the same production
+    // defaults `place()` uses.
+    //
+    // This used to run `place_with_default_tuning(board, ..)?` and apply the
+    // sidecar to its answer, which is the bug #256 is about, left on the one
+    // API that most needs it: the MCP tools place interactively through here,
+    // so a board the automatic search could not pack was refused before the
+    // author's coordinates were read, however complete the floorplan was.
+    place_with_tuning_and_sidecar_seeded(
+        board,
+        DEFAULT_MARGIN_MM,
+        &default_rotation_overrides(board),
+        sidecar_path,
+        0,
+    )
 }
 
 /// Run placement with iteration tuning (extra courtyard margin +
@@ -1044,6 +1044,28 @@ pub fn place(board: &Board) -> Result<Placement, PlaceError> {
 
 /// `place()` with the production defaults, optionally without compaction.
 fn place_with_default_tuning(board: &Board, compact: bool) -> Result<Placement, PlaceError> {
+    place_with_tuning_impl(
+        board,
+        DEFAULT_MARGIN_MM,
+        &default_rotation_overrides(board),
+        0,
+        compact,
+        &PinnedPlacements::new(),
+    )
+}
+
+/// The courtyard margin every default placement path uses.
+const DEFAULT_MARGIN_MM: f64 = 1.5;
+
+/// Orientation overrides the production defaults apply.
+///
+/// A flash beside an RP2350 is turned so its QSPI edge faces the MCU. Shared
+/// so that every entry point into the placer applies the same ones: a path
+/// that skipped them would place a board differently from the one the caller
+/// had just reviewed.
+fn default_rotation_overrides(
+    board: &Board,
+) -> std::collections::HashMap<ComponentId, synth_geometry::Rotation> {
     let mut rotation_overrides = std::collections::HashMap::new();
     let has_rp2350 = board.components.iter().any(|component| {
         component
@@ -1061,14 +1083,7 @@ fn place_with_default_tuning(board: &Board, compact: bool) -> Result<Placement, 
             rotation_overrides.insert(component.id, synth_geometry::Rotation::Zero);
         }
     }
-    place_with_tuning_impl(
-        board,
-        1.5,
-        &rotation_overrides,
-        0,
-        compact,
-        &PinnedPlacements::new(),
-    )
+    rotation_overrides
 }
 
 /// Place a board inside an explicit rectangular outline in millimetres.
