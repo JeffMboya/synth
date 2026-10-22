@@ -12,9 +12,19 @@
 // smallest the fab ladder reaches is 0.56 mm" — and the analysis names 4
 // layers as the remedy. The Raspberry Pi Pico 2 is a four-layer board for
 // the same reason. This was declared `layers 2` and was unroutable.
+//
+// `jlc-filled-via`, and `requires via_in_pad` to say so out loud. Four
+// layers get the escape out of the pad field, but three decoupling pads
+// still take their via inside the pad, and on a 0.4 mm pitch package that
+// is the geometry rather than a routing mistake: there is no 0.2 mm gap to
+// put a 0.56 mm via in. The filled-via tier carries the same track,
+// clearance, drill and annular floors as the standard one — it adds resin
+// fill and a capped plating step, nothing that relaxes a minimum — so the
+// copper is judged against exactly the same numbers it was before.
 board "rp2350_debug_target" {
     layers 4
-    manufacturer "jlcpcb"
+    manufacturer "jlc-filled-via"
+    requires via_in_pad
 
     group "POWER ENTRY" color "#c2410c" {
       component J1: connector "usb_c_receptacle"
@@ -85,14 +95,16 @@ board "rp2350_debug_target" {
     connect U2.dvdd    -> U2.dvdd3
 
     group "CLOCK AND RESET" color "#7c3aed" {
-      component Y1: crystal   "xtal_8mhz" value "12MHz"
+      component Y1: crystal   "xtal_8mhz" value "12MHz" { placement_hint { near: "U2" priority: hard } }
       component C9: capacitor "c_generic_0603" value "15pF" { placement_hint { near: "Y1" priority: hard } }
       component C10: capacitor "c_generic_0603" value "15pF" { placement_hint { near: "Y1" priority: hard } }
       component SW1: switch    "spst_tactile"
-      component R3: resistor   "r_generic_0603" value "10k"
-      component C11: capacitor "c_generic_0603" value "100nF"
+      component R3: resistor   "r_generic_0603" value "10k"   { placement_hint { near: "U2" priority: hard } }
+      component C11: capacitor "c_generic_0603" value "100nF" { placement_hint { near: "U2" priority: hard } }
       notes "" {
         "RUN is pulled up 10k and pulled low by SW1. C11 debounces the edge."
+        "Y1, R3 and C11 are hinted onto U2: XIN/XOUT and RUN are the two nets"
+        "on this board whose length is the circuit, not just the routing."
       }
     }
 
