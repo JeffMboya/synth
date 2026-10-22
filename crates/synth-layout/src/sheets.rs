@@ -27,7 +27,7 @@ use crate::{
     effective_group, grow_sheet_to_fit, place_connector_legends, place_design_notes,
     resolve_text_overlaps, settle_sheet_size, ComponentPlacement, HierarchicalLabel, Layout,
     SheetSize, BODY_FALLBACK_H, BODY_FALLBACK_W, GROUP_CONTENT_PAD, GROUP_TITLE_BAND_MM,
-    PAGE_MARGIN,
+    PAGE_MARGIN, SHEET_BORDER_MM,
 };
 
 /// One sheet's share of a board: `None` is the root sheet, `Some`
@@ -104,10 +104,9 @@ pub fn plan_sheets(board: &Board) -> Vec<SheetPartition> {
 /// the requested page under `overflow = "hierarchy"`, where more content
 /// means more sheets.
 pub fn sheet_overflow(board: &Board, layout: &Layout) -> bool {
-    let Some((min_x, max_x, min_y, max_y)) = crate::content_bounds(board, layout) else {
+    let Some((need_w, need_h)) = crate::page_needs(board, layout) else {
         return false;
     };
-    let (need_w, need_h) = crate::sheet_needs(min_x, max_x, min_y, max_y);
     let (ceiling_w, ceiling_h) = crate::max_single_sheet(board).dims_mm();
     need_w > ceiling_w || need_h > ceiling_h
 }
@@ -245,14 +244,24 @@ fn split_layout(board: &Board, global: &Layout, partitions: &[SheetPartition]) -
                     min_y = min_y.min(y);
                 }
             }
+            // A sheet with region boxes starts them at the sheet border, like a
+            // single sheet's regions; one without keeps the page margin.
+            let origin = if members
+                .iter()
+                .any(|&id| effective_group(board, id).is_some())
+            {
+                SHEET_BORDER_MM
+            } else {
+                PAGE_MARGIN
+            };
             let (dx, dy) = if min_x.is_finite() {
                 // Snapped to the 1.27 mm connection grid: the global
                 // layout is grid-aligned, and an arbitrary fractional
                 // offset would push every wire end off-grid (KiCad
                 // ERC `endpoint_off_grid` + lost pin connections).
                 (
-                    crate::route::snap_grid_127(PAGE_MARGIN - min_x),
-                    crate::route::snap_grid_127(PAGE_MARGIN - min_y),
+                    crate::route::snap_grid_127(origin - min_x),
+                    crate::route::snap_grid_127(origin - min_y),
                 )
             } else {
                 (0.0, 0.0)
@@ -694,9 +703,10 @@ mod tests {
     }
 
     /// A group's box is drawn round its parts with padding, so the box of a
-    /// split sheet starts at the margin too, not its parts.
+    /// split sheet starts at the sheet border like a single sheet's regions,
+    /// not at the wider page margin.
     #[test]
-    fn a_split_sheet_starts_its_group_boxes_at_the_margin() {
+    fn a_split_sheet_starts_its_group_boxes_at_the_sheet_border() {
         let two = || vec![pin("p1"), pin("p2")];
         let b = board(
             vec![
@@ -717,8 +727,8 @@ mod tests {
                 boxes += 1;
                 let (x, y) = group_box.min_mm;
                 assert!(
-                    x >= PAGE_MARGIN - slack && y >= PAGE_MARGIN - slack,
-                    "box {} starts at ({x:.2}, {y:.2}), off the margin",
+                    (x - SHEET_BORDER_MM).abs() <= slack && (y - SHEET_BORDER_MM).abs() <= slack,
+                    "box {} starts at ({x:.2}, {y:.2}), not on the sheet border",
                     group_box.group
                 );
             }
@@ -727,9 +737,9 @@ mod tests {
     }
 
     /// When the leftmost thing a group holds is a label of a net that crosses
-    /// to another sheet, the box round it starts at the margin too.
+    /// to another sheet, the box round it starts at the sheet border too.
     #[test]
-    fn a_split_sheet_starts_a_group_box_round_its_stub_label_at_the_margin() {
+    fn a_split_sheet_starts_a_group_box_round_its_stub_label_at_the_sheet_border() {
         let two = || vec![pin("p1"), pin("p2")];
         let b = board(
             vec![
@@ -754,8 +764,8 @@ mod tests {
                 boxes += 1;
                 let (x, y) = group_box.min_mm;
                 assert!(
-                    x >= PAGE_MARGIN - slack && y >= PAGE_MARGIN - slack,
-                    "box {} starts at ({x:.2}, {y:.2}), off the margin",
+                    (x - SHEET_BORDER_MM).abs() <= slack && (y - SHEET_BORDER_MM).abs() <= slack,
+                    "box {} starts at ({x:.2}, {y:.2}), not on the sheet border",
                     group_box.group
                 );
             }
@@ -808,6 +818,32 @@ mod tests {
             }
         }
         assert!(labels > 0, "the net crosses sheets, so it has labels");
+    }
+
+    /// Region boxes fill the page out to the sheet border, so a layout whose
+    /// boxes end inside the border fits the largest single page, however
+    /// close that leaves them to the edge.
+    #[test]
+    fn region_boxes_out_to_the_sheet_border_do_not_overflow() {
+        let two = || vec![pin("p1"), pin("p2")];
+        let mut b = board(
+            vec![grouped_component(0, "R1", "Filter", two())],
+            Vec::new(),
+        );
+        b.schematic_overflow = Some(synth_ir::SchematicOverflow::Hierarchy);
+        let (ceiling_w, _) = crate::max_single_sheet(&b).dims_mm();
+        let mut layout = layout(vec![placed(0, 40.0, 40.0)], Vec::new());
+        layout.group_boxes.push(crate::GroupBox {
+            group: "Filter".to_string(),
+            min_mm: (SHEET_BORDER_MM, SHEET_BORDER_MM),
+            max_mm: (ceiling_w - SHEET_BORDER_MM - 0.5, 80.0),
+            color: [0, 0, 0],
+            caption_inside: true,
+        });
+        assert!(
+            !sheet_overflow(&b, &layout),
+            "a box 0.5 mm inside the border fits the page"
+        );
     }
 
     /// A design whose bodies fit the largest single page, but whose pin ends
