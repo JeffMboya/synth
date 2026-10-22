@@ -111,15 +111,24 @@ board "multirail_compute" {
     // `plane` floods a zone for the class's nets on the inner layers. A
     // netclass assigns no nets by itself: each is joined by `class "NAME"` on
     // a `connect`, which is why every rail connect below carries one.
+    // Clearance is 0.15 mm on the rails, not the 0.25 mm a power net would
+    // like. A netclass clearance applies between a pad and its neighbours as
+    // well as between tracks, and a 0.5 mm-pitch package leaves about 0.2 mm
+    // between adjacent pads -- so asking 0.25 mm of every supply pin made
+    // every fine-pitch part on a rail a violation by construction, the
+    // W5500, the monitor, the level shifter and the sensor among them. At
+    // 3.3 V and 5 V, 0.15 mm is far above what IPC-2221 asks for internal
+    // conductors under 15 V, and it is still above the 0.127 mm this process
+    // can etch.
     netclass "V5" {
       trace_width 0.8mm
-      clearance 0.25mm
+      clearance 0.15mm
       plane
     }
 
     netclass "V3V3" {
       trace_width 0.6mm
-      clearance 0.25mm
+      clearance 0.15mm
       plane
     }
 
@@ -128,7 +137,7 @@ board "multirail_compute" {
     // filtered from.
     netclass "ANALOG" {
       trace_width 0.4mm
-      clearance 0.3mm
+      clearance 0.15mm
     }
 
     // 100BASE-TX is a 100 ohm differential interface. The pair budget is per
@@ -137,7 +146,7 @@ board "multirail_compute" {
     // controller together.
     netclass "MDI" {
       trace_width 0.25mm
-      clearance 0.2mm
+      clearance 0.15mm
       max_skew 0.5mm
     }
 
@@ -148,7 +157,7 @@ board "multirail_compute" {
     // controller and the card socket here, and IO12-15 become JTAG.
     netclass "SPI_BUS" {
       trace_width 0.2mm
-      clearance 0.2mm
+      clearance 0.15mm
       max_skew 2.0mm
     }
 
@@ -156,7 +165,7 @@ board "multirail_compute" {
     // wiring, so they are routed as pairs and clamped at the connector.
     netclass "FIELDBUS" {
       trace_width 0.25mm
-      clearance 0.25mm
+      clearance 0.2mm
     }
 
     group "POWER IN" color "#c2410c" {
@@ -418,7 +427,17 @@ board "multirail_compute" {
       connect J2.cc2 -> D6.io
       connect D6.gnd -> U2.gnd as "GND"
       connect J2.gnd -> U2.gnd as "GND"
+      connect J2.gnd_a12 -> U2.gnd as "GND"
+      connect J2.gnd_b1 -> U2.gnd as "GND"
+      connect J2.gnd_b12 -> U2.gnd as "GND"
       connect J2.shld -> U2.gnd as "GND"
+      // All four VBUS pads tied to each other. The board is powered from the
+      // 12 V input, so this net goes nowhere else: it is bonded rather than
+      // left as four islands, which is what a reversible connector needs and
+      // what stops four unconnected pads sitting at default clearance.
+      connect J2.vbus -> J2.vbus_a9 as "USB_VBUS"
+      connect J2.vbus -> J2.vbus_b4 as "USB_VBUS"
+      connect J2.vbus -> J2.vbus_b9 as "USB_VBUS"
 
       // The bridge runs from the 3.3 V rail, so V3 ties to VCC and the logic
       // levels match the module without a shifter.
@@ -437,6 +456,11 @@ board "multirail_compute" {
       // The data pair, clamped at the connector.
       connect J2.dp -> U6.ud_plus as "USB_DP"
       connect J2.dn -> U6.ud_minus as "USB_DN"
+      // USB-C is reversible only if the mirrored pins are tied: A6 and B6 are
+      // both D+, A7 and B7 both D-. Wiring one side makes the cable work one
+      // way up and look dead the other.
+      connect J2.dp_b6 -> J2.dp as "USB_DP"
+      connect J2.dn_b7 -> J2.dn as "USB_DN"
       connect J2.dp -> D3.io
       connect D3.gnd -> U2.gnd as "GND"
       connect J2.dn -> D4.io

@@ -59,7 +59,13 @@ def courtyard(libid):
                 if depth == 0:
                     blk = text[k:j + 1]
                     break
-        if blk and "F.CrtYd" in blk:
+        # Courtyard AND silkscreen. The courtyard is the contract, but it is
+        # not always the larger: the Keystone 1058 coin holder draws a
+        # 32.9 x 8.2 mm courtyard around its clips and a 28.6 x 16.2 mm
+        # silkscreen around the cell, so a 20 mm cell overhangs its own
+        # courtyard by 4 mm top and bottom. Packing to the courtyard alone put
+        # the RTC underneath the battery.
+        if blk and ("F.CrtYd" in blk or "F.SilkS" in blk):
             pts += [
                 (float(a), float(b))
                 for a, b in re.findall(r"\((?:start|end|center|xy) ([-0-9.]+) ([-0-9.]+)\)", blk)
@@ -84,6 +90,28 @@ def courtyard(libid):
                 x, y = float(at.group(1)), float(at.group(2))
                 w, h = float(sz.group(1)), float(sz.group(2))
                 pts += [(x - w / 2 - 0.25, y - h / 2 - 0.25), (x + w / 2 + 0.25, y + h / 2 + 0.25)]
+    # Rule areas declared inside the footprint -- a card socket's insertion
+    # envelope, a connector's latch space. Nothing may sit in them, so they
+    # bound the part as surely as its courtyard does. The microSD socket has
+    # five, and fiducials landed in them.
+    for m in re.finditer(r"\(zone\b", text):
+        k = m.start()
+        depth = 0
+        blk = None
+        for j in range(k, len(text)):
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    blk = text[k:j + 1]
+                    break
+        if blk and "keepout" in blk:
+            pts += [
+                (float(a), float(b))
+                for a, b in re.findall(r"\(xy ([-0-9.]+) ([-0-9.]+)\)", blk)
+            ]
+
     if not pts:
         return None
     xs = [p[0] for p in pts]
@@ -132,22 +160,24 @@ def geom(ref, rot=0):
 # left to right as it works: power down the left edge, the module in the
 # middle with its headers above and below, and the interfaces on the right.
 REGIONS = {
-    "POWER IN":            (3.0, 3.0, 38.0, 26.0),
-    "5V BUCK":             (3.0, 26.0, 38.0, 52.0),
-    "3V3 RAIL":            (3.0, 52.0, 38.0, 76.0),
-    "3V3 ANALOG":          (3.0, 76.0, 38.0, 88.0),
-    "SWITCHED RAIL":       (3.0, 88.0, 38.0, 97.0),
-    "COMPUTE":             (38.0, 22.0, 95.0, 74.0),
+    "POWER IN":            (3.0, 3.0, 38.0, 12.0),
+    "5V BUCK":             (3.0, 12.0, 38.0, 26.0),
+    "3V3 RAIL":            (3.0, 26.0, 38.0, 44.0),
+    "3V3 ANALOG":          (3.0, 50.0, 38.0, 60.0),
+    "SWITCHED RAIL":       (3.0, 44.0, 38.0, 50.0),
+    "COMPUTE":             (38.0, 30.0, 99.0, 74.0),
     "EXPANSION HEADERS":   (38.0, 3.0, 99.0, 97.0),
-    "USB AND PROGRAMMING": (38.0, 74.0, 95.0, 97.0),
-    "STORAGE":             (38.0, 9.0, 95.0, 22.0),
-    "ETHERNET":            (95.0, 3.0, 137.0, 52.0),
-    "IO EXPANSION":        (95.0, 52.0, 137.0, 80.0),
-    "MONITORING":          (95.0, 80.0, 137.0, 90.0),
-    "STATUS AND DISPLAY":  (95.0, 90.0, 137.0, 97.0),
+    "USB AND PROGRAMMING": (38.0, 60.0, 99.0, 74.0),
+    "STORAGE":             (38.0, 22.0, 99.0, 30.0),
+    "ETHERNET":            (99.0, 3.0, 137.0, 22.0),
+    "IO EXPANSION":        (95.0, 22.0, 137.0, 52.0),
+    "MONITORING":          (38.0, 74.0, 99.0, 88.0),
+    "STATUS AND DISPLAY":  (38.0, 88.0, 99.0, 97.0),
     "MECHANICAL":          (3.0, 3.0, 137.0, 97.0),
     "INDUSTRIAL COMMS":    (99.0, 52.0, 137.0, 97.0),
-    "RTC AND SUPERVISION": (38.0, 3.0, 95.0, 9.0),
+    "RTC AND SUPERVISION": (3.0, 60.0, 38.0, 97.0),
+    "REMOVABLE STORAGE":   (99.0, 3.0, 137.0, 52.0),
+    "DEBUG AND RECOVERY":  (38.0, 3.0, 99.0, 22.0),
 }
 
 # Parts whose rotation or position is dictated by the board edge they serve.

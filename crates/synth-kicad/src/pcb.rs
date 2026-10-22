@@ -604,8 +604,16 @@ const PLANE_VIA_RADIUS_NM: i64 = 300_000;
 
 /// Fabrication copper clearance, in nanometres, used to keep a generated via
 /// legal against the nearest pad or other via.
-const PLANE_VIA_FAB_CLEARANCE_NM: i64 = 200_000;
+const PLANE_VIA_FAB_CLEARANCE_NM: i64 = 260_000;
 
+/// 0.26 mm rather than the 0.2 mm the process asks for, because the obstacle
+/// model is a circumscribed circle and KiCad checks the real pad polygon. The
+/// circle is the smaller of the two along a pad's short axis, so a via placed
+/// exactly on the model's limit lands just inside KiCad's: violations arrived
+/// at 0.1991 mm against a 0.2 mm rule, short by under a micron. The extra
+/// 0.06 mm covers the difference without buying geometry the process cannot
+/// etch.
+///
 /// Keep a plane stitching via at least this far inside Edge.Cuts, in
 /// nanometres (via radius plus the fabrication edge clearance).
 const PLANE_EDGE_MARGIN_NM: i64 = 1_000_000;
