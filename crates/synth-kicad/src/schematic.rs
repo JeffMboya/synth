@@ -1864,6 +1864,10 @@ const POWER_NAME_SIDE_MM: f64 = 1.9;
 const POWER_NAME_RING_STEP_MM: f64 = 2.54;
 /// How far the tip of the arrow or triangle is from the pin, in mm.
 const POWER_TIP_MM: f64 = 2.54;
+/// How far clear of other things a power name has to be, in mm. Under half
+/// the 1.27 mm between the name and its own symbol's drawing, so the symbol
+/// itself does not count as in the way.
+const POWER_NAME_CLEARANCE_MM: f64 = 0.4;
 
 /// A power symbol's position and the name it prints there.
 type PowerName = ((f64, f64), String);
@@ -1912,8 +1916,14 @@ fn power_symbol_properties(
         .into_iter()
         .flat_map(field_clear::outside_strips)
         .collect();
-    let others = obstacles.iter().map(|o| &o.rect).chain(outside.iter());
-    let (dx, dy, justify) = field_clear::pick_clear(&candidates, &rect_at, &others);
+    // A name next to a pin, wire or text it only just misses reads as part of
+    // it, so a spot is clear when the margin around it is.
+    let others: Vec<field_clear::Rect> = obstacles
+        .iter()
+        .map(|o| o.rect.grown(POWER_NAME_CLEARANCE_MM))
+        .chain(outside)
+        .collect();
+    let (dx, dy, justify) = field_clear::pick_clear(&candidates, &rect_at, &others.iter());
     let pos = (at.0 + dx, at.1 + dy);
     if !repeats {
         power_names.push((at, name.to_string()));
@@ -4483,6 +4493,75 @@ mod tests {
         assert_eq!(candidates[0], (FieldSide::Right, 0.0));
     }
 
+    /// The ground symbol of C1 on a board of a regulator and C1, with its
+    /// name as written: the symbol's position, the name's position and
+    /// justify. A horizontal wire runs `gap` mm under the place a name below
+    /// the triangle would end.
+    fn ground_name_over_wire(gap: f64) -> ((f64, f64), (f64, f64), Option<String>) {
+        let board = lower_lenient(
+            r#"board "b" {
+                component U1: regulator "ams1117_3v3"
+                component C1: capacitor "c_generic_0603"
+                connect U1.vin -> C1.p1
+                connect U1.gnd -> C1.p2
+            }"#,
+        );
+        let project = crate::uuid_v5::project_namespace(&board.name);
+        let mut layout = synth_layout::layout(&board);
+        layout.wires.clear();
+        layout.net_labels.clear();
+        let index = |refdes: &str| board.components.iter().position(|c| c.refdes == refdes);
+        layout.components[index("U1").unwrap()].center_mm = (300.0, 100.0);
+        layout.components[index("C1").unwrap()].center_mm = (100.0, 100.0);
+        let ground = |layout: &synth_layout::Layout| {
+            let sexp = build_schematic_from_layout(&board, &project, layout);
+            let (at, fields) = power_symbols(&sexp)
+                .into_iter()
+                .filter(|(_, f)| power_value(f).1 == "GND")
+                .min_by(|(a, _), (b, _)| (a.0 - 100.0).abs().total_cmp(&(b.0 - 100.0).abs()))
+                .expect("C1 has a ground symbol");
+            let value = power_value(&fields).clone();
+            (at, value.2, value.3)
+        };
+        let (at, ..) = ground(&layout);
+        // The wire is as thick as an obstacle wire, so its top edge is `gap`
+        // under the name.
+        let y = at.1 + POWER_NAME_OFFSET_MM + FIELD_TEXT_HEIGHT_MM / 2.0 + gap + WIRE_HALF_WIDTH_MM;
+        layout.wires.push(synth_layout::WirePath {
+            net: board.nets[0].id,
+            points: vec![(at.0 - 5.0, y), (at.0 + 5.0, y)],
+            junctions: Vec::new(),
+        });
+        ground(&layout)
+    }
+
+    #[test]
+    fn a_ground_name_moves_beside_the_triangle_when_a_wire_is_close_below() {
+        // The wire does not touch the name below the triangle, but is only
+        // 0.2 mm from it.
+        let (at, name_at, justify) = ground_name_over_wire(0.2);
+        assert_eq!(
+            justify.as_deref(),
+            Some("left"),
+            "{name_at:?} is not at the side"
+        );
+        assert!(
+            name_at.0 > at.0,
+            "{name_at:?} is not right of the triangle {at:?}"
+        );
+        assert!(
+            (name_at.1 - (at.1 + POWER_TIP_MM)).abs() < 1e-6,
+            "{name_at:?} is not at the level of the tip of the triangle at {at:?}"
+        );
+    }
+
+    #[test]
+    fn a_ground_name_stays_below_the_triangle_when_a_wire_is_further_below() {
+        let (at, name_at, justify) = ground_name_over_wire(0.6);
+        assert_eq!(justify, None, "{name_at:?} left the spot below");
+        assert!((name_at.0 - at.0).abs() < 1e-6 && name_at.1 > at.1 + POWER_TIP_MM);
+    }
+
     #[test]
     fn power_names_keep_clear_of_wires_and_other_text() {
         for name in [
@@ -4536,6 +4615,176 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Where each power name must be drawn, from the board and its layout and
+    /// not from the schematic: one per rail flag and one per fanned power
+    /// leg, at the point the layout puts its symbol. Symbols at one point share
+    /// a name, so they count once.
+    fn expected_power_names(
+        board: &Board,
+        layout: &synth_layout::Layout,
+    ) -> Vec<(String, (f64, f64))> {
+        let placements: HashMap<ComponentId, &ComponentPlacement> =
+            layout.components.iter().map(|p| (p.id, p)).collect();
+        let rail_of = |net| layout.power_flags.iter().find(|f| f.net == net);
+        let mut terminals = Vec::new();
+        for flag in &layout.power_flags {
+            if let Some((x, y, dx, dy)) =
+                pin_terminal_xy(board, flag.component, flag.pin, &placements)
+            {
+                let anchor = PinAnchor { x, y, dx, dy };
+                let (symbol_x, symbol_y, _) =
+                    clear_power_flag_position(board, flag, &placements, layout, anchor);
+                terminals.push((flag.label.clone(), (symbol_x, symbol_y)));
+            }
+        }
+        for leg in crate::pin_reconcile::reconcile_all(board)
+            .iter()
+            .flat_map(|r| &r.power_legs)
+        {
+            if let (Some(rail), Some((_, symbol))) =
+                (rail_of(leg.net), fanned_leg_stub(board, leg, &placements))
+            {
+                terminals.push((rail.label.clone(), symbol));
+            }
+        }
+        terminals.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap()));
+        terminals.dedup_by(|a, b| a.0 == b.0 && (a.1 .0 - b.1 .0).hypot(a.1 .1 - b.1 .1) < 0.01);
+        terminals
+    }
+
+    /// How far a drawn power symbol may sit from its pin, in mm: a stub, plus a
+    /// bend when the symbol steps off the stub axis.
+    const POWER_SYMBOL_REACH_MM: f64 = 5.0;
+    /// How far a power name may sit from its symbol, in mm: the usual spot
+    /// past the arrow tip, plus the rings it moves out by when that is taken.
+    const POWER_NAME_REACH_MM: f64 = 9.0;
+
+    /// What is wrong with the power names `sexp` shows, given the names the
+    /// board needs. Each expected name must be matched by one shown name from
+    /// a symbol near its point, with the name beside that symbol. An expected
+    /// name nothing matches (missing or hidden) and a shown name no expected
+    /// name matches (drawn twice, or off its pin) are both reported.
+    fn power_name_problems(expected: &[(String, (f64, f64))], sexp: &Sexp) -> Vec<String> {
+        let mut shown = Vec::new();
+        for (at, fields) in power_symbols(sexp) {
+            let Some((_, text, pos, _, hidden)) = fields.iter().find(|f| f.0 == "Value") else {
+                continue;
+            };
+            if !hidden && text != "PWR_FLAG" {
+                shown.push((text.clone(), at, *pos));
+            }
+        }
+        let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+        for (s, (text, at, _)) in shown.iter().enumerate() {
+            for (e, (label, point)) in expected.iter().enumerate() {
+                let d = (at.0 - point.0).hypot(at.1 - point.1);
+                if label == text && d <= POWER_SYMBOL_REACH_MM {
+                    pairs.push((d, s, e));
+                }
+            }
+        }
+        pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut shown_used = vec![false; shown.len()];
+        let mut expected_used = vec![false; expected.len()];
+        for (_, s, e) in pairs {
+            if !shown_used[s] && !expected_used[e] {
+                shown_used[s] = true;
+                expected_used[e] = true;
+            }
+        }
+        let mut problems = Vec::new();
+        for ((text, at, pos), used) in shown.iter().zip(shown_used) {
+            let away = (pos.0 - at.0).hypot(pos.1 - at.1);
+            if !used {
+                problems.push(format!("{text} shown at {at:?} belongs to no pin"));
+            } else if away > POWER_NAME_REACH_MM {
+                problems.push(format!("{text} at {pos:?} is {away:.1} mm from its symbol"));
+            }
+        }
+        for ((label, point), used) in expected.iter().zip(expected_used) {
+            if !used {
+                problems.push(format!("{label} at {point:?} is shown 0 times"));
+            }
+        }
+        problems
+    }
+
+    const POWER_NAME_REFERENCES: [&str; 5] = [
+        "ref_ldo_sensor",
+        "ref_usb_cdc",
+        "ref_crystal_mcu",
+        "ref_battery_charger",
+        "sensor_logger",
+    ];
+
+    #[test]
+    fn every_power_name_the_board_needs_is_shown_once() {
+        for name in POWER_NAME_REFERENCES {
+            let (board, sexp, _) = build_reference(name);
+            let expected = expected_power_names(&board, &synth_layout::layout(&board));
+            assert!(!expected.is_empty(), "{name} needs no power name");
+            let problems = power_name_problems(&expected, &sexp);
+            assert!(problems.is_empty(), "{name}: {problems:#?}");
+        }
+    }
+
+    /// Takes the first shown power name out of `sexp`, hidden or with its Value
+    /// field removed, and says which name it was.
+    fn drop_first_power_name(sexp: &mut Sexp, hide: bool) -> String {
+        let Sexp::List { children, .. } = sexp else {
+            panic!("a schematic is a list");
+        };
+        for symbol in children.iter_mut() {
+            let is_power = sub(symbol, "lib_id").is_some_and(|v| {
+                let id = str_of(&v[0]);
+                id.starts_with("power:") || id.starts_with("synth:")
+            }) && sub(symbol, "in_bom").is_some_and(|v| str_of(&v[0]) == "no");
+            let Sexp::List {
+                children: props, ..
+            } = symbol
+            else {
+                continue;
+            };
+            let shown = props.iter().position(|p| {
+                matches!(p, Sexp::List { head, children } if head == "property"
+                    && str_of(&children[0]) == "Value"
+                    && str_of(&children[1]) != "PWR_FLAG")
+                    && sub(sub_node(p, "effects"), "hide").is_none()
+            });
+            let Some(i) = shown.filter(|_| is_power) else {
+                continue;
+            };
+            let Sexp::List { children: v, .. } = &mut props[i] else {
+                unreachable!("matched a property list")
+            };
+            let text = str_of(&v[1]);
+            if hide {
+                *v.last_mut().unwrap() = hidden_field_effects();
+            } else {
+                props.remove(i);
+            }
+            return text;
+        }
+        panic!("no shown power name to drop");
+    }
+
+    #[test]
+    fn a_power_name_that_is_hidden_or_removed_is_reported() {
+        for hide in [true, false] {
+            let (board, mut sexp, _) = build_reference("sensor_logger");
+            let expected = expected_power_names(&board, &synth_layout::layout(&board));
+            let dropped = drop_first_power_name(&mut sexp, hide);
+            let problems = power_name_problems(&expected, &sexp);
+            assert!(
+                problems
+                    .iter()
+                    .any(|p| p.starts_with(&dropped) && p.ends_with("is shown 0 times")),
+                "{dropped} was {} but the check says {problems:?}",
+                if hide { "hidden" } else { "removed" }
+            );
         }
     }
 
