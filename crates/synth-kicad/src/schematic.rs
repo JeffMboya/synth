@@ -4512,15 +4512,37 @@ mod tests {
     fn sensor_logger_no_body_crossing_wires() {
         let (board, _sexp, text) = build_reference("sensor_logger");
         let spans = wire_spans(&text);
-        // No wire segment longer than 20 mm — the sensor_logger is
-        // a compact single-row design; long wires indicate a route
-        // that crossed component bodies (the pre-fix NRST disaster
-        // spanned 74 mm; stock KiCad symbol is ~15 mm, fallback is 17.8 mm).
-        for span in &spans {
-            assert!(
-                *span <= 20.0,
-                "wire segment spans {span} mm — suspected body crossing"
+        // No wire may pass through the inside of an IC or connector body (the
+        // pre-fix NRST wire ran 74 mm straight through one). A part turned on
+        // its side is left out: its symbol size is that of the part unturned.
+        let layout = synth_layout::layout(&board);
+        for placement in &layout.components {
+            let Some(part) = board.component(placement.id).and_then(|c| c.part.as_ref()) else {
+                continue;
+            };
+            let (bw, bh) = synth_layout::body_size_for_part(part);
+            let upright = matches!(
+                placement.rotation,
+                synth_layout::Rotation::Zero | synth_layout::Rotation::OneEighty
             );
+            if bw < 1.0 || bh < 1.0 || !upright {
+                continue;
+            }
+            let (cx, cy) = placement.center_mm;
+            let (hw, hh) = (bw / 2.0 - 0.5, bh / 2.0 - 0.5);
+            for wire in &layout.wires {
+                for s in wire.points.windows(2) {
+                    let (lo_x, hi_x) = (s[0].0.min(s[1].0), s[0].0.max(s[1].0));
+                    let (lo_y, hi_y) = (s[0].1.min(s[1].1), s[0].1.max(s[1].1));
+                    assert!(
+                        hi_x <= cx - hw || lo_x >= cx + hw || hi_y <= cy - hh || lo_y >= cy + hh,
+                        "wire {s:?} runs through the body of {}",
+                        board
+                            .component(placement.id)
+                            .map_or("?", |c| c.refdes.as_str())
+                    );
+                }
+            }
         }
         // Sanity: the schematic must contain at least some signal
         // wires (the NRST reset network is a local wire, not just
@@ -4529,7 +4551,6 @@ mod tests {
             !spans.is_empty(),
             "expected at least some wires in the schematic"
         );
-        let _ = board;
     }
 
     /// One power symbol's Reference and Value as written: the symbol's `at`,

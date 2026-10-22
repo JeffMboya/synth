@@ -5463,8 +5463,9 @@ const LABEL_MIN_ENDPOINTS_MULTIDROP: usize = 3;
 ///   a net whose endpoints live in different regions becomes a label —
 ///   *"wires inside a region, labels between regions"*, the mechanism
 ///   that makes the reference sheet readable. A net entirely inside one
-///   region is drawn. The distance threshold below stays as a secondary
-///   guard for a large single region.
+///   region is drawn however far it runs; the router flags it only when it
+///   cannot draw it. Such a net is flagged once per region it touches, and
+///   wired inside each (see [`wired_subnets`]).
 /// - **Ungrouped boards** keep the historic rule verbatim: a multi-drop
 ///   net (≥3 endpoints) or one spanning more than
 ///   [`LABEL_SPAN_THRESHOLD_MM`] gets labelled, so their output is
@@ -5509,9 +5510,10 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
                 .iter()
                 .any(|ep| region_of(ep.component) != first);
         let label_it = if has_regions {
-            // Region crossing is the primary test; the span guard is a
-            // secondary backstop for one very large region.
-            crosses || spans_far
+            // Region crossing is the only test: regions fill the page, so a
+            // net can run far inside one, and the router flags a net it
+            // cannot draw.
+            crosses
         } else {
             net.endpoints.len() >= LABEL_MIN_ENDPOINTS_MULTIDROP || spans_far
         };

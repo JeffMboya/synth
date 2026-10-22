@@ -30,9 +30,10 @@ use grid::SchematicGrid;
 
 /// A* obstacle-grid step (mm) — matches KiCad's 50 mil schematic grid.
 pub const GRID_STEP: f64 = 1.27;
-/// Maximum depth of the pin-approach corridor (mm). Cluster spacing
-/// (~17 mm) keeps the walk inside a part's own text-margin zone.
-pub const CORRIDOR_MAX_MM: f64 = 14.0;
+/// Maximum depth of the pin-approach corridor (mm). Deep enough to pass the
+/// longest net flag beside a pin (about 20 mm) and a text margin; the walk
+/// also stops at another part's body.
+pub const CORRIDOR_MAX_MM: f64 = 30.0;
 
 pub const PIN_PITCH: f64 = 2.54;
 pub const BODY_HALF_WIDTH: f64 = 7.62;
@@ -344,12 +345,15 @@ fn endpoint_xy(
 }
 
 /// Whether a single orthogonal segment passes through any component
-/// body (with a 1 mm safety margin).
+/// body (with a 1 mm safety margin). A part in `own` is checked without the
+/// margin: a wire lands on its own part's pins, and on a 2-pin passive the
+/// pin tip sits at the body edge, so the margin would reject every wire.
 fn segment_crosses_component(
     p1: (f64, f64),
     p2: (f64, f64),
     board: &Board,
     placements: &HashMap<ComponentId, &ComponentPlacement>,
+    own: &[ComponentId],
 ) -> bool {
     let x_min = p1.0.min(p2.0);
     let x_max = p1.0.max(p2.0);
@@ -369,7 +373,11 @@ fn segment_crosses_component(
         let bx = cx - bw / 2.0;
         let by = cy - bh / 2.0;
 
-        let margin = 1.0;
+        let margin = if own.contains(&component.id) {
+            0.0
+        } else {
+            1.0
+        };
         let lo_x = bx - margin;
         let hi_x = bx + bw + margin;
         let lo_y = by - margin;
@@ -395,10 +403,21 @@ fn path_crosses_component(
     board: &Board,
     placements: &HashMap<ComponentId, &ComponentPlacement>,
 ) -> bool {
+    path_crosses_component_except(pts, board, placements, &[])
+}
+
+/// [`path_crosses_component`], with the parts in `own` checked without the
+/// safety margin.
+fn path_crosses_component_except(
+    pts: &[(f64, f64)],
+    board: &Board,
+    placements: &HashMap<ComponentId, &ComponentPlacement>,
+    own: &[ComponentId],
+) -> bool {
     for i in 0..pts.len().saturating_sub(1) {
         let p1 = pts[i];
         let p2 = pts[i + 1];
-        if segment_crosses_component(p1, p2, board, placements) {
+        if segment_crosses_component(p1, p2, board, placements, own) {
             return true;
         }
     }
@@ -1127,6 +1146,23 @@ fn build_wires_for_net(
     let root_xy_data = terminals[0];
     let root_xy = (root_xy_data.0, root_xy_data.1);
 
+    // The cells of every pin this net does not use: a wire must not run over
+    // them.
+    let own_pins: HashSet<(ComponentId, PinId)> =
+        net.endpoints.iter().map(|e| (e.component, e.pin)).collect();
+    let avoid: HashSet<(i32, i32)> = board
+        .components
+        .iter()
+        .flat_map(|c| {
+            let pins = c.part.as_ref().map_or(0, |p| p.pins.len());
+            (0..pins).map(move |i| (c.id, PinId(i as u32)))
+        })
+        .filter(|key| !own_pins.contains(key))
+        .filter_map(|(c, p)| pin_terminal_xy(board, c, p, placements))
+        .map(|(x, y, _, _)| grid.to_grid_pos(x, y))
+        .collect();
+    let own_parts: Vec<ComponentId> = net.endpoints.iter().map(|e| e.component).collect();
+
     for (_endpoint, &(ox, oy, odx, ody)) in net.endpoints.iter().skip(1).zip(&terminals[1..]) {
         let other_xy_data = (ox, oy, odx, ody);
         let other_xy = (other_xy_data.0, other_xy_data.1);
@@ -1146,7 +1182,8 @@ fn build_wires_for_net(
                 grid,
                 net.id,
             );
-            if path_crosses_component(&fallback, board, placements)
+            if reads_worse_than_a_flag(&fallback, root_xy, other_xy)
+                || path_crosses_component_except(&fallback, board, placements, &own_parts)
                 || grid.path_overlaps_other_net_wire(&fallback, net.id)
                 || path_passes_over_unrelated_pin(&fallback, net.id, board, placements)
             {
@@ -1170,14 +1207,25 @@ fn build_wires_for_net(
                 channel_route_points(root_xy_data, other_xy_data, channel, level, 2.54)
             });
         let channel_ok = channel_candidate.as_deref().is_some_and(|pts| {
-            !path_crosses_component(pts, board, placements)
+            !reads_worse_than_a_flag(pts, root_xy, other_xy)
+                && !path_crosses_component(pts, board, placements)
                 && !grid.path_overlaps_other_net_wire(pts, net.id)
                 && !path_passes_over_unrelated_pin(pts, net.id, board, placements)
         });
 
         let pts = if channel_ok {
             channel_candidate.expect("channel_ok implies a candidate")
-        } else if let Some(pts) = grid.find_path(root_xy, other_xy, net.id) {
+        } else if let Some(pts) = grid
+            .find_path(root_xy, other_xy, net.id, false, &avoid)
+            .filter(|pts| !reads_worse_than_a_flag(pts, root_xy, other_xy))
+            // Room reserved for a part's text can wall a pin in; the text
+            // moves clear of the wire afterwards, a body could not.
+            .or_else(|| {
+                grid.find_path(root_xy, other_xy, net.id, true, &avoid)
+                    .filter(|pts| !path_crosses_component_except(pts, board, placements, &own_parts))
+                    .filter(|pts| !reads_worse_than_a_flag(pts, root_xy, other_xy))
+            })
+        {
             if path_passes_over_unrelated_pin(&pts, net.id, board, placements) {
                 // The A* path crossed an unrelated pin terminal (it is
                 // not pin-aware). Re-route via the pin-aware L-route
@@ -1206,6 +1254,30 @@ fn build_wires_for_net(
         });
     }
     Some(out)
+}
+
+// The three limits below are tuned by eye on the reference boards and #103:
+// a hop round a part stays a wire, a wire that loops round half a region
+// does not.
+/// A routed path shorter than this is never a detour (mm).
+const DETOUR_FREE_MM: f64 = 50.0;
+/// How many times the straight Manhattan distance a long path may run.
+const MAX_DETOUR_RATIO: f64 = 1.4;
+/// The longest wire drawn at all (mm). Regions can be as wide as the page, so
+/// a net inside one can run farther than a reader can follow. The wires that
+/// looped round the RS485 region of #103 were over 300 mm.
+const MAX_WIRE_MM: f64 = 150.0;
+
+/// Whether `pts` reads worse than a flag at each end: longer than
+/// [`MAX_WIRE_MM`], or long and snaking round parts, well over the Manhattan
+/// distance to `to`.
+fn reads_worse_than_a_flag(pts: &[(f64, f64)], from: (f64, f64), to: (f64, f64)) -> bool {
+    let length: f64 = pts
+        .windows(2)
+        .map(|w| (w[0].0 - w[1].0).abs() + (w[0].1 - w[1].1).abs())
+        .sum();
+    let direct = (from.0 - to.0).abs() + (from.1 - to.1).abs();
+    length > MAX_WIRE_MM || (length > DETOUR_FREE_MM && length > MAX_DETOUR_RATIO * direct)
 }
 
 /// Drop redundant collinear waypoints from a routed path (turn
@@ -1503,6 +1575,7 @@ pub fn route_board(board: &Board, layout: &Layout) -> RouteResult {
     let mut grid = SchematicGrid::new(min_x, min_y, max_x, max_y);
 
     // 1. Mark component body and text label (Reference/Value) obstacles.
+    let mut bodies: Vec<(ComponentId, (f64, f64, f64, f64))> = Vec::new();
     for component in &board.components {
         if let Some(part) = component.part.as_ref() {
             if let Some(placement) = placements.get(&component.id) {
@@ -1510,7 +1583,7 @@ pub fn route_board(board: &Board, layout: &Layout) -> RouteResult {
                     snap_grid_127(placement.center_mm.0),
                     snap_grid_127(placement.center_mm.1),
                 );
-                let (_, bh) = body_size_for_part(part);
+                let (bw, bh) = body_size_for_part(part);
                 let margin = 0.635;
 
                 // Text-inclusive half-width — the exact sizing
@@ -1524,12 +1597,18 @@ pub fn route_board(board: &Board, layout: &Layout) -> RouteResult {
                 // Reference text sits ~3.81 mm above top edge; Value text sits ~3.81 mm below bottom edge
                 let text_margin_y = 6.35;
 
-                grid.mark_obstacle_rect(
+                grid.mark_soft_rect(
                     cx - half_w - margin,
                     cy - bh / 2.0 - text_margin_y - margin,
                     cx + half_w + margin,
                     cy + bh / 2.0 + text_margin_y + margin,
                 );
+                // The body itself, square: the symbol size is that of the
+                // part unturned, so a part on its side needs both ways.
+                let reach = bw.max(bh) / 2.0 + margin;
+                let body = (cx - reach, cy - reach, cx + reach, cy + reach);
+                grid.mark_obstacle_rect(body.0, body.1, body.2, body.3);
+                bodies.push((component.id, body));
             }
         }
     }
@@ -1566,9 +1645,8 @@ pub fn route_board(board: &Board, layout: &Layout) -> RouteResult {
     // margins extend *past* the pin tip, leaving the tip walled in
     // by the part's own obstacle rect (A* then fails and the L-route
     // fallback draws across bodies). Walk outward from each tip,
-    // unmarking cells until we clear the part's own obstacle —
-    // cluster spacing (~17 mm) keeps the walk inside soft text-
-    // margin space, never into another body.
+    // unmarking cells until we clear the part's own obstacle, or reach
+    // another part's body.
     let corridor_steps = (CORRIDOR_MAX_MM / GRID_STEP).round() as i32;
     for component in &board.components {
         if let Some(part) = component.part.as_ref() {
@@ -1585,6 +1663,14 @@ pub fn route_board(board: &Board, layout: &Layout) -> RouteResult {
                         // the cell is already free, the corridor is
                         // open, no need to punch further.
                         if !grid.is_blocked(cx, cy) {
+                            break;
+                        }
+                        // The corridor reaches past long flags, but never
+                        // into another part's body.
+                        let in_other_body = bodies.iter().any(|(id, r)| {
+                            *id != component.id && cx >= r.0 && cx <= r.2 && cy >= r.1 && cy <= r.3
+                        });
+                        if in_other_body {
                             break;
                         }
                         grid.unmark_pos(cx, cy);
@@ -1688,18 +1774,11 @@ pub fn route_board(board: &Board, layout: &Layout) -> RouteResult {
     // Nets that DID route but tangle the sheet — crossing more than
     // `CROSSING_TRUNCATION_THRESHOLD` other-net segments — get the
     // same truncate-to-label treatment a human reaches for rather
-    // than leaving a rat's nest of crossings (§7.7.3). A single pass
-    // over the crossing counts computed from the full initial wire
-    // set: nets are flagged and removed together, not iteratively
-    // re-checked against each other's removal, to keep this
-    // deterministic and bounded (no risk of oscillation/cascading
-    // re-routing decisions).
-    let high_crossing_nets = nets_exceeding_crossing_threshold(&wires);
-    if !high_crossing_nets.is_empty() {
-        let flagged: HashSet<NetId> = high_crossing_nets.iter().copied().collect();
-        wires.retain(|w| !flagged.contains(&w.net));
-        nets_truncated_to_labels.extend(high_crossing_nets);
-    }
+    // than leaving a rat's nest of crossings (§7.7.3). The net with the
+    // most crossings goes first and the rest are counted again, so a net is
+    // not lost for crossing one that is already gone; ties go to the lower
+    // id, which keeps the result deterministic.
+    nets_truncated_to_labels.extend(shed_crossing_nets(&mut wires));
 
     // Every-net-terminates invariant (see `build_wires_for_net`): each
     // signal net must carry at least one wire or be truncated to
@@ -2009,16 +2088,34 @@ fn align_bus_rails(
 const CROSSING_TRUNCATION_THRESHOLD: u32 = 2;
 
 /// A wire segment tagged with the net it belongs to, for crossing
-/// detection in [`nets_exceeding_crossing_threshold`].
+/// detection in [`crossings_by_net`].
 type TaggedSegment = (NetId, (f64, f64), (f64, f64));
 
-/// Net ids whose routed wires cross more than
-/// [`CROSSING_TRUNCATION_THRESHOLD`] segments belonging to other
-/// nets. Same-net segment pairs are skipped (a wire's own bends and
-/// junctions aren't crossings). Deterministic: iterates `wires` in
-/// order and returns ids in ascending numeric order regardless of
-/// hash/iteration order.
-fn nets_exceeding_crossing_threshold(wires: &[WirePath]) -> Vec<NetId> {
+/// Drop from `wires` the net with the most crossings, then count again, until
+/// no net crosses more than [`CROSSING_TRUNCATION_THRESHOLD`] segments of
+/// other nets; returns the nets dropped, in order. Two nets that cross each
+/// other each count the other, so dropping both at once would throw away a
+/// wire that is fine once its partner is gone. Ties go to the lower net id,
+/// so the result is deterministic.
+fn shed_crossing_nets(wires: &mut Vec<WirePath>) -> Vec<NetId> {
+    let mut shed = Vec::new();
+    loop {
+        let worst = crossings_by_net(wires)
+            .into_iter()
+            .filter(|&(_, count)| count > CROSSING_TRUNCATION_THRESHOLD)
+            .max_by_key(|&(id, count)| (count, std::cmp::Reverse(id)));
+        let Some((id, _)) = worst else {
+            return shed;
+        };
+        wires.retain(|w| w.net != NetId(id));
+        shed.push(NetId(id));
+    }
+}
+
+/// How many segments of other nets each net's wires cross, by net id.
+/// Same-net segment pairs are skipped (a wire's own bends and junctions
+/// aren't crossings).
+fn crossings_by_net(wires: &[WirePath]) -> BTreeMap<u32, u32> {
     let mut segments: Vec<TaggedSegment> = Vec::new();
     for wire in wires {
         for pair in wire.points.windows(2) {
@@ -2040,12 +2137,7 @@ fn nets_exceeding_crossing_threshold(wires: &[WirePath]) -> Vec<NetId> {
             }
         }
     }
-
     crossings_by_net
-        .into_iter()
-        .filter(|&(_, count)| count > CROSSING_TRUNCATION_THRESHOLD)
-        .map(|(net_id, _)| NetId(net_id))
-        .collect()
 }
 
 #[cfg(test)]
@@ -2104,13 +2196,13 @@ mod cleanup_tests {
         // once with a short vertical stub — 3 crossings exceeds the
         // threshold of 2, so net 0 (and each of the 3 crossers) gets
         // flagged.
-        let wires = vec![
+        let mut wires = vec![
             wire(0, &[(0.0, 5.0), (40.0, 5.0)]),
             wire(1, &[(10.0, 0.0), (10.0, 10.0)]),
             wire(2, &[(20.0, 0.0), (20.0, 10.0)]),
             wire(3, &[(30.0, 0.0), (30.0, 10.0)]),
         ];
-        let flagged = nets_exceeding_crossing_threshold(&wires);
+        let flagged = shed_crossing_nets(&mut wires);
         assert_eq!(
             flagged,
             vec![NetId(0)],
@@ -2119,13 +2211,56 @@ mod cleanup_tests {
     }
 
     #[test]
+    fn shedding_the_worst_net_first_keeps_the_net_it_was_crossing() {
+        // Nets 0 and 1 cross each other and two more each, so both are over
+        // the limit in one pass. Dropping net 0 leaves net 1 with two.
+        let mut wires = vec![
+            wire(0, &[(0.0, 0.0), (10.0, 0.0)]),
+            wire(2, &[(3.0, -1.0), (3.0, 1.0)]),
+            wire(3, &[(5.0, -1.0), (5.0, 1.0)]),
+            wire(1, &[(8.0, -5.0), (8.0, 5.0)]),
+            wire(4, &[(7.0, 3.0), (9.0, 3.0)]),
+            wire(5, &[(7.0, -3.0), (9.0, -3.0)]),
+        ];
+        let counts = crossings_by_net(&wires);
+        assert_eq!((counts[&0], counts[&1]), (3, 3));
+        assert_eq!(shed_crossing_nets(&mut wires), vec![NetId(0)]);
+        assert!(wires.iter().all(|w| w.net != NetId(0)));
+        assert_eq!(wires.len(), 5);
+    }
+
+    #[test]
+    fn a_long_wire_that_snakes_round_parts_is_a_detour_a_short_one_is_not() {
+        let (from, to) = ((0.0, 0.0), (60.0, 20.0));
+        let direct = [from, (60.0, 0.0), to];
+        assert!(!reads_worse_than_a_flag(&direct, from, to));
+        let snake = [from, (0.0, -30.0), (90.0, -30.0), (90.0, 20.0), to];
+        assert!(reads_worse_than_a_flag(&snake, from, to));
+        // A small hop round a part is fine however big the ratio.
+        let (near, far) = ((0.0, 0.0), (5.0, 0.0));
+        let hop = [near, (0.0, -10.0), (5.0, -10.0), far];
+        assert!(!reads_worse_than_a_flag(&hop, near, far));
+        // A straight wire is too long past 150 mm, not before.
+        assert!(!reads_worse_than_a_flag(
+            &[from, (140.0, 0.0)],
+            from,
+            (140.0, 0.0)
+        ));
+        assert!(reads_worse_than_a_flag(
+            &[from, (160.0, 0.0)],
+            from,
+            (160.0, 0.0)
+        ));
+    }
+
+    #[test]
     fn crossing_threshold_does_not_flag_two_crossings() {
-        let wires = vec![
+        let mut wires = vec![
             wire(0, &[(0.0, 5.0), (40.0, 5.0)]),
             wire(1, &[(10.0, 0.0), (10.0, 10.0)]),
             wire(2, &[(20.0, 0.0), (20.0, 10.0)]),
         ];
-        assert!(nets_exceeding_crossing_threshold(&wires).is_empty());
+        assert!(shed_crossing_nets(&mut wires).is_empty());
     }
 
     #[test]
@@ -2133,11 +2268,11 @@ mod cleanup_tests {
         // A net whose own two disjoint routes happen to cross each
         // other (e.g. two endpoint-pairs of a multi-drop net) must
         // not count against itself.
-        let wires = vec![
+        let mut wires = vec![
             wire(0, &[(0.0, 5.0), (40.0, 5.0)]),
             wire(0, &[(20.0, 0.0), (20.0, 10.0)]),
         ];
-        assert!(nets_exceeding_crossing_threshold(&wires).is_empty());
+        assert!(shed_crossing_nets(&mut wires).is_empty());
     }
 
     // ---- net-scoped junctions ---------------------------------------------
