@@ -1672,6 +1672,19 @@ pub fn route_board(board: &Board, layout: &Layout) -> RouteResult {
         }
     }
 
+    // A net flagged once per region is wired inside each region. When one
+    // piece cannot be routed the whole net falls back to a flag on every pin.
+    let mut unrouted_subnets: Vec<NetId> = Vec::new();
+    for subnet in crate::wired_subnets(board, layout) {
+        match build_wires_for_net(board, &subnet, &placements, &mut grid, &channel_assignment) {
+            Some(mut net_wires) => wires.append(&mut net_wires),
+            None if !unrouted_subnets.contains(&subnet.id) => unrouted_subnets.push(subnet.id),
+            None => {}
+        }
+    }
+    wires.retain(|w| !unrouted_subnets.contains(&w.net));
+    nets_truncated_to_labels.extend(unrouted_subnets);
+
     // Nets that DID route but tangle the sheet — crossing more than
     // `CROSSING_TRUNCATION_THRESHOLD` other-net segments — get the
     // same truncate-to-label treatment a human reaches for rather

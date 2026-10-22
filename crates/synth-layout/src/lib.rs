@@ -335,9 +335,9 @@ pub struct GroupBox {
     pub group: String,
     pub min_mm: (f64, f64),
     pub max_mm: (f64, f64),
-    /// Outline + tint hue, assigned deterministically from the group
-    /// name ([`group_color`]). The schematic exporter strokes the box
-    /// as a thin solid line in this hue with a translucent fill of the same hue.
+    /// Hue assigned deterministically from the group name ([`group_color`]).
+    /// The schematic exporter no longer uses it: every region is drawn in one
+    /// colour. Kept because sidecar layouts serialise it.
     #[serde(default = "default_group_color")]
     pub color: [u8; 3],
     /// The caption sits inside the box at the top-left (Phase B2).
@@ -1395,7 +1395,7 @@ const FLOOR_NOISE: f64 = 1e-9;
 
 /// Where the inner line of a sheet's frame sits, in mm from the paper's edge:
 /// KiCad draws an outer line at 10 and the frame proper 2 mm inside it.
-pub const SHEET_BORDER_MM: f64 = 12.0;
+pub const SHEET_BORDER_MM: f64 = FRAME_INSET + 2.0;
 
 /// Where KiCad's title block starts on a sheet `sheet` mm across: its top-left
 /// corner. The block is anchored to the bottom-right corner of the paper's
@@ -2572,11 +2572,13 @@ fn bounds_of(board: &Board, layout: &Layout, with_boxes: bool) -> Option<(f64, f
         min_y = min_y.min(y - text.size_mm);
         max_y = max_y.max(y);
     }
-    for box_ in layout.group_boxes.iter().filter(|_| with_boxes) {
-        min_x = min_x.min(box_.min_mm.0);
-        max_x = max_x.max(box_.max_mm.0);
-        min_y = min_y.min(box_.min_mm.1);
-        max_y = max_y.max(box_.max_mm.1);
+    if with_boxes {
+        for box_ in &layout.group_boxes {
+            min_x = min_x.min(box_.min_mm.0);
+            max_x = max_x.max(box_.max_mm.0);
+            min_y = min_y.min(box_.min_mm.1);
+            max_y = max_y.max(box_.max_mm.1);
+        }
     }
     if !min_x.is_finite() {
         return None;
@@ -2587,8 +2589,19 @@ fn bounds_of(board: &Board, layout: &Layout, with_boxes: bool) -> Option<(f64, f
 /// The page the layout needs: its content clear of the margin, and its region
 /// boxes out to the sheet border, since they are meant to fill the page.
 fn page_needs(board: &Board, layout: &Layout) -> Option<(f64, f64)> {
-    let mut need = bounds_of(board, layout, false)
-        .map(|(min_x, max_x, min_y, max_y)| sheet_needs(min_x, max_x, min_y, max_y));
+    // Content inside region boxes sits on the sheet border, not the wider
+    // page margin, so only the far edges need room.
+    let boxed = !layout.group_boxes.is_empty();
+    let mut need = bounds_of(board, layout, false).map(|(min_x, max_x, min_y, max_y)| {
+        if boxed {
+            (
+                max_x + SHEET_BORDER_MM,
+                max_y + TITLE_BLOCK_H + TEXT_MARGIN_Y,
+            )
+        } else {
+            sheet_needs(min_x, max_x, min_y, max_y)
+        }
+    });
     for box_ in &layout.group_boxes {
         let (w, h) = need.unwrap_or((0.0, 0.0));
         need = Some((
@@ -2742,6 +2755,14 @@ pub(crate) fn route_and_label(board: &Board, layout: &mut Layout) {
         };
         let text = pick_net_label(board, net).unwrap_or_else(|| format!("NET_{}", net_id.0));
         for ep in &net.endpoints {
+            // A net flagged once per region already has a flag on some pins.
+            if layout
+                .net_labels
+                .iter()
+                .any(|l| l.net == net_id && l.component == ep.component && l.pin == ep.pin)
+            {
+                continue;
+            }
             layout.net_labels.push(NetLabel {
                 net: net_id,
                 component: ep.component,
@@ -5481,14 +5502,15 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
         let span_x = max_x - min_x;
         let span_y = max_y - min_y;
         let spans_far = span_x > LABEL_SPAN_THRESHOLD_MM || span_y > LABEL_SPAN_THRESHOLD_MM;
-        let label_it = if has_regions {
-            // Region crossing is the primary test; the span guard is a
-            // secondary backstop for one very large region.
-            let first = region_of(net.endpoints[0].component);
-            let crosses = net
+        let first = region_of(net.endpoints[0].component);
+        let crosses = has_regions
+            && net
                 .endpoints
                 .iter()
                 .any(|ep| region_of(ep.component) != first);
+        let label_it = if has_regions {
+            // Region crossing is the primary test; the span guard is a
+            // secondary backstop for one very large region.
             crosses || spans_far
         } else {
             net.endpoints.len() >= LABEL_MIN_ENDPOINTS_MULTIDROP || spans_far
@@ -5497,7 +5519,17 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
             continue;
         }
         let label = pick_net_label(board, net).unwrap_or_else(|| format!("NET_{}", net.id.0));
+        // A net that leaves its region is wired inside each region it touches
+        // (see [`wired_subnets`]) and flagged once there, where it leaves.
+        let mut flagged_regions: Vec<Option<&str>> = Vec::new();
         for ep in &net.endpoints {
+            if crosses {
+                let region = region_of(ep.component);
+                if flagged_regions.contains(&region) {
+                    continue;
+                }
+                flagged_regions.push(region);
+            }
             labels.push(NetLabel {
                 net: net.id,
                 component: ep.component,
@@ -5508,6 +5540,41 @@ fn classify_net_labels(board: &Board, layout: &Layout) -> Vec<NetLabel> {
         }
     }
     labels
+}
+
+/// The pieces of a labelled net that are drawn as wires: the pins of one
+/// region that [`classify_net_labels`] flagged only once. A region whose pins
+/// are all flagged (an unroutable or hand-forced net) has no piece here.
+pub(crate) fn wired_subnets(board: &Board, layout: &Layout) -> Vec<synth_ir::Net> {
+    let labeled = layout.labeled_net_ids();
+    let mut subnets = Vec::new();
+    for net in board.nets.iter().filter(|n| labeled.contains(&n.id)) {
+        let mut regions: Vec<(Option<&str>, Vec<&synth_ir::NetEndpoint>)> = Vec::new();
+        for ep in &net.endpoints {
+            let region = effective_group(board, ep.component);
+            match regions.iter_mut().find(|(r, _)| *r == region) {
+                Some((_, pins)) => pins.push(ep),
+                None => regions.push((region, vec![ep])),
+            }
+        }
+        for (_, pins) in regions {
+            let flags =
+                pins.iter()
+                    .filter(|ep| {
+                        layout.net_labels.iter().any(|l| {
+                            l.net == net.id && l.component == ep.component && l.pin == ep.pin
+                        })
+                    })
+                    .count();
+            if pins.len() >= 2 && flags == 1 {
+                subnets.push(synth_ir::Net {
+                    endpoints: pins.into_iter().cloned().collect(),
+                    ..net.clone()
+                });
+            }
+        }
+    }
+    subnets
 }
 
 /// Pick a human-meaningful label for a signal net.
@@ -8816,6 +8883,49 @@ mod documentation_tests {
         }
     }
 
+    /// SDA joins R1 and R2 in "Sensor" to R3 in "Mcu".
+    fn net_across_two_groups() -> Board {
+        let r = || part("resistor", vec![pin("p1"), pin("p2")]);
+        board_with_notes(
+            vec![
+                component(0, "R1", r(), Some("Sensor")),
+                component(1, "R2", r(), Some("Sensor")),
+                component(2, "R3", r(), Some("Mcu")),
+            ],
+            vec![net(0, "SDA", &[(0, 0), (1, 0), (2, 0)])],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn a_net_between_groups_is_wired_inside_each_group_and_flagged_once_per_group() {
+        let b = net_across_two_groups();
+        let layout = layout(&b);
+        let flagged: Vec<&str> = layout
+            .net_labels
+            .iter()
+            .filter(|l| l.net == NetId(0))
+            .map(|l| effective_group(&b, l.component).expect("grouped"))
+            .collect();
+        assert_eq!(flagged.len(), 2, "one flag per group, got {flagged:?}");
+        assert!(flagged.contains(&"Sensor") && flagged.contains(&"Mcu"));
+        assert!(
+            layout.wires.iter().any(|w| w.net == NetId(0)),
+            "the two pins in Sensor are wired together"
+        );
+    }
+
+    #[test]
+    fn a_net_forced_to_flags_has_no_wired_piece() {
+        let b = net_across_two_groups();
+        let mut layout = layout(&b);
+        force_net_label(&b, &mut layout, NetId(0));
+        let flags = layout.net_labels.iter().filter(|l| l.net == NetId(0));
+        assert_eq!(flags.count(), 3, "a flag on every pin");
+        assert!(wired_subnets(&b, &layout).is_empty());
+        assert!(layout.wires.iter().all(|w| w.net != NetId(0)));
+    }
+
     #[test]
     fn ungrouped_board_has_no_boxes() {
         let b = board_with_notes(
@@ -9564,7 +9674,10 @@ mod documentation_tests {
         );
         let hull = bounds(&boxes);
         assert!((hull.0 .0 - frame.0 .0).abs() < 1e-6 && (hull.1 .0 - frame.1 .0).abs() < 1e-6);
-        assert!((hull.0 .1 - frame.0 .1).abs() < 1e-6 && (hull.1 .1 - frame.1 .1).abs() < 1e-6);
+        // The bottom row runs on down beside the title block to the frame.
+        let sheet_bottom = layout.sheet_size.dims_mm().1 - SHEET_BORDER_MM;
+        assert!((hull.0 .1 - frame.0 .1).abs() < 1e-6);
+        assert!(hull.1 .1 >= frame.1 .1 - 1e-6 && hull.1 .1 <= sheet_bottom + 1e-6);
     }
 
     #[test]
@@ -9636,7 +9749,11 @@ mod documentation_tests {
             .iter()
             .map(|b| area(&(b.min_mm, b.max_mm)))
             .sum();
-        assert!(covered >= 0.9 * (area(&frame) - title_block_area(&layout)));
+        let to_fill = area(&frame) - title_block_area(&layout);
+        assert!(
+            covered >= 0.9 * to_fill,
+            "boxes cover {covered} of the {to_fill} the frame leaves the regions"
+        );
     }
 
     #[test]
