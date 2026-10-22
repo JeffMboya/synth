@@ -117,13 +117,13 @@ capabilities = ["gpio"]
 name = "io25"
 number = "10"
 electrical_type = "bidirectional"
-capabilities = ["gpio"]
+capabilities = ["gpio", "spi_cs"]
 
 [[pins]]
 name = "io26"
 number = "11"
 electrical_type = "bidirectional"
-capabilities = ["gpio"]
+capabilities = ["gpio", "spi_cs"]
 
 [[pins]]
 name = "io27"
