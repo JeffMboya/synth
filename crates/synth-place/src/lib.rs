@@ -387,6 +387,16 @@ pub const DENSE_BOARD_COMPONENTS: usize = 18;
 /// 2-layer boards. Manufacturer profiles will tune this later.
 const FILL_RATIO: f64 = 0.45;
 
+/// Aspect of the second packing canvas, tried at the same area as the square
+/// one so the packer starts from a different row structure. A 0.8 transpose
+/// and a third canvas changed no corpus board (tuning corpus, Oct 2026).
+const WIDE_CANVAS_ASPECT: f64 = 1.25;
+
+/// Canvas shapes tried for one automatic placement. The first two are the
+/// square and the wide canvas above; raising it to three with the 0.8
+/// transpose changed no board, so more would only repeat the same packing.
+const CANVAS_SHAPES_TRIED: usize = 2;
+
 /// Lay out `board`'s components on the PCB.
 ///
 /// Phase 7 slice 2: greedy first-fit constraint solver. Returns
@@ -1405,14 +1415,25 @@ fn place_with_tuning_impl<S: ::std::hash::BuildHasher>(
     let needed_area = total_courtyard_mm2 / FILL_RATIO;
     let compact_side = (needed_area.sqrt() + 15.0).clamp(40.0, 230.0);
 
+    // The greedy packer wraps rows at the canvas width, so the canvas aspect
+    // picks the arrangement it starts from. A square and a wider canvas of the
+    // same area are compared and the smaller finished outline kept; the fixed
+    // canvases stay as fallbacks for shapes the greedy search cannot fill.
+    let wide_side = compact_side * WIDE_CANVAS_ASPECT;
     let candidates = [
         (compact_side, compact_side),
+        (wide_side, compact_side / WIDE_CANVAS_ASPECT),
         (100.0, 80.0),
         (120.0, 100.0),
         (160.0, 120.0),
     ];
 
+    let outline_area = |placement: &Placement| {
+        placement.board_outline.width_nm().max(0) * placement.board_outline.height_nm().max(0)
+    };
     let mut last_err = None;
+    let mut best: Option<Placement> = None;
+    let mut filled = 0;
     for (board_w_mm, board_h_mm) in candidates {
         let board_outline = Rect::new(
             Point::new(0, 0),
@@ -1433,10 +1454,23 @@ fn place_with_tuning_impl<S: ::std::hash::BuildHasher>(
                 } else {
                     p
                 };
-                return Ok(refine_placement(board, &packed, rotation_overrides, pinned));
+                let candidate = refine_placement(board, &packed, rotation_overrides, pinned);
+                if best
+                    .as_ref()
+                    .is_none_or(|current| outline_area(&candidate) < outline_area(current))
+                {
+                    best = Some(candidate);
+                }
+                filled += 1;
+                if !compact || filled >= CANVAS_SHAPES_TRIED {
+                    break;
+                }
             }
             Err(e) => last_err = Some(e),
         }
+    }
+    if let Some(best) = best {
+        return Ok(best);
     }
     Err(last_err.unwrap_or(PlaceError::AreaInsufficient {
         placed_mm2: total_courtyard_mm2,
