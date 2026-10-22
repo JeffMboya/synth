@@ -549,6 +549,29 @@ fn build_via(
     )
 }
 
+/// The pad geometry the exporter will actually emit for `part`.
+///
+/// [`build_footprint_instance`] inlines the real `.kicad_mod` body whenever the
+/// part names a KiCad footprint, and reaches for
+/// [`synth_layout::kicad_footprint_loader::synth_part_pads`] only when there is
+/// no library module to inline. Anything that reasons about where that copper
+/// lands has to resolve the pads the same way round, or it plans against a
+/// footprint the board does not have: the synthesized fallback lays every pin
+/// out as a 0.6 x 0.45 mm pad in two columns on a pitch derived from the
+/// declared body, which for a real SOIC-8 puts pin 8 over 3 mm from its pad.
+/// A stitching via sited against that phantom lands on a neighbour's copper.
+///
+/// Same order of preference as `synth-route`'s grid stamping and
+/// `synth-place`'s courtyard arithmetic.
+fn exported_pads(
+    part: &synth_registry::Part,
+) -> Option<Vec<synth_layout::kicad_footprint_loader::Pad>> {
+    part.kicad_footprint
+        .as_deref()
+        .and_then(synth_layout::kicad_footprint_loader::pads)
+        .or_else(|| synth_layout::kicad_footprint_loader::synth_part_pads(part))
+}
+
 /// Board-space targets for a declared power plane: one
 /// `(pad centre, footprint origin, pad layer)` per pad the net connects.
 ///
@@ -581,7 +604,7 @@ fn plane_pad_targets(
         let Some(pin) = part.pins.get(endpoint.pin.0 as usize) else {
             continue;
         };
-        let Some(pads) = synth_layout::kicad_footprint_loader::synth_part_pads(part) else {
+        let Some(pads) = exported_pads(part) else {
             continue;
         };
         let origin = synth_place::footprint_origin(Some(part), placed);
@@ -636,7 +659,7 @@ fn all_pad_obstacles(board: &Board, placement: &Placement) -> Vec<(synth_geometr
         else {
             continue;
         };
-        let Some(pads) = synth_layout::kicad_footprint_loader::synth_part_pads(part) else {
+        let Some(pads) = exported_pads(part) else {
             continue;
         };
         let origin = synth_place::footprint_origin(Some(part), placed);
@@ -2201,6 +2224,7 @@ fn build_footprint_instance(
         // project's fp-lib-table and produces a spurious DRC error.
         let body = strip_footprint_head(body);
         let body = add_footprint_angle_to_pads(&body, pad_angle);
+        let body = absolutize_footprint_zones(&body, origin, placement.rotation);
         let body_with_nets = inject_pad_nets(&body, component.id, pad_net_lookup);
         let body_with_nets = ensure_body_uuids(&body_with_nets, project, lib_id);
         let has_model = body_with_nets.contains("(model ");
@@ -2769,6 +2793,107 @@ fn inject_pad_nets(body: &str, component: ComponentId, lookup: &PadNetLookup) ->
         pos = block_end;
     }
     out.push_str(&body[pos..]);
+    out
+}
+
+/// A millimetre figure in the exact text form [`num`] writes, for the places
+/// that assemble raw s-expression text rather than a [`Sexp`] tree.
+fn mm_atom(value_mm: f64) -> String {
+    match num(value_mm) {
+        Sexp::Atom(text) => text,
+        other => other.to_string_pretty().trim().to_string(),
+    }
+}
+
+/// Rewrite every `(zone ...)` polygon in an inlined footprint body from
+/// footprint-local into board coordinates.
+///
+/// A footprint's graphics and pads stay *local* in a `.kicad_pcb` — KiCad
+/// applies the module's `(at x y angle)` to them when it loads the board. Its
+/// zones do not: a board file stores a footprint's rule areas in board
+/// coordinates, and only the library `.kicad_mod` keeps them relative to the
+/// footprint origin. Inlining a library body verbatim therefore drops every
+/// rule area it carries onto the board origin.
+///
+/// The DM3AT microSD socket is the case that found this: its five insertion
+/// keepouts span footprint-local x -7.22..5.47 mm, so with the socket at
+/// (106.82, 11.82) they landed over the board's top-left corner, and
+/// `kicad-cli pcb drc` reported `items_not_allowed` for the mounting hole
+/// 100 mm away while the socket's own insertion envelope went unprotected.
+///
+/// Only the `(xy ...)` points inside a `(zone ...)` are touched; an `fp_poly`
+/// outside one is local and must stay that way. The rotation is the same
+/// [`Rotation::rotate_offset`] the pads and the router's grid use, so the
+/// transformed area sits exactly where the part does.
+fn absolutize_footprint_zones(
+    body: &str,
+    origin: synth_geometry::Point,
+    rotation: Rotation,
+) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut pos = 0;
+    while let Some(idx) = body[pos..].find("(zone") {
+        let zone_start = pos + idx;
+        // `(zone_connect 2)` is a pad property, not a rule area. Only a head
+        // that ends there is the zone itself.
+        if !body[zone_start + "(zone".len()..].starts_with(|c: char| c.is_whitespace() || c == '(')
+        {
+            out.push_str(&body[pos..zone_start + "(zone".len()]);
+            pos = zone_start + "(zone".len();
+            continue;
+        }
+        let Some(zone_end) = balanced_close(body, zone_start) else {
+            break;
+        };
+        out.push_str(&body[pos..zone_start]);
+        out.push_str(&absolutize_zone_points(
+            &body[zone_start..zone_end],
+            origin,
+            rotation,
+        ));
+        pos = zone_end;
+    }
+    out.push_str(&body[pos..]);
+    out
+}
+
+/// Map every `(xy x y)` in one zone block through `rotation` and `origin`.
+#[allow(clippy::similar_names)] // dx_nm/dy_nm are the natural names for an axis pair
+fn absolutize_zone_points(zone: &str, origin: synth_geometry::Point, rotation: Rotation) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(zone.len());
+    let mut pos = 0;
+    while let Some(idx) = zone[pos..].find("(xy ") {
+        let start = pos + idx;
+        let Some(end) = balanced_close(zone, start) else {
+            break;
+        };
+        out.push_str(&zone[pos..start]);
+        let inner = &zone[start + "(xy ".len()..end - 1];
+        let mut fields = inner.split_whitespace();
+        match (
+            fields.next().and_then(|f| f.parse::<f64>().ok()),
+            fields.next().and_then(|f| f.parse::<f64>().ok()),
+            fields.next(),
+        ) {
+            (Some(x_mm), Some(y_mm), None) => {
+                let (dx_nm, dy_nm) = rotation.rotate_offset(mm_to_nm(x_mm), mm_to_nm(y_mm));
+                write!(
+                    out,
+                    "(xy {} {})",
+                    mm_atom(nm_to_mm(origin.x_nm + dx_nm)),
+                    mm_atom(nm_to_mm(origin.y_nm + dy_nm)),
+                )
+                .expect("write to String");
+            }
+            // Anything that is not a plain two-number point is left alone
+            // rather than guessed at.
+            _ => out.push_str(&zone[start..end]),
+        }
+        pos = end;
+    }
+    out.push_str(&zone[pos..]);
     out
 }
 
