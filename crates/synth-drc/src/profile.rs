@@ -69,6 +69,29 @@ pub struct ManufacturerProfile {
     /// via-in-pad; this says whether the tier offers it.
     #[serde(default)]
     pub via_in_pad: bool,
+    /// Layer counts this process is offered for, or empty for any.
+    ///
+    /// A surcharged tier is quoted against a stackup, not sold outright:
+    /// JLCPCB offers the 0.2 mm drill on its 4- and 6-layer builds and not on
+    /// a 2-layer one. Without this the name alone selected the process, so a
+    /// 2-layer board could declare `jlc-advanced`, clear the 0.2 mm and
+    /// via-in-pad checks against a floor no fabricator had agreed to, and be
+    /// reported fabrication-ready. The capability descriptor advertised the
+    /// restriction; nothing enforced it.
+    #[serde(default)]
+    pub supported_layers: Vec<u32>,
+}
+
+impl ManufacturerProfile {
+    /// Whether this process is offered for a board of `layers`.
+    ///
+    /// A profile that names no layer counts is offered for all of them, which
+    /// is every stock tier: the floors they carry are the fabricator's
+    /// baseline and do not depend on the stackup.
+    #[must_use]
+    pub fn supports_layers(&self, layers: u32) -> bool {
+        self.supported_layers.is_empty() || self.supported_layers.contains(&layers)
+    }
 }
 
 const fn default_crosstalk_run_multiple() -> i64 {
@@ -93,6 +116,9 @@ impl ManufacturerProfile {
     pub fn jlc_standard() -> Self {
         Self {
             name: "jlc-standard".to_string(),
+            // A stock tier is the fabricator's baseline and is offered on
+            // every stackup.
+            supported_layers: Vec::new(),
             min_trace_width_nm: mm_to_nm(0.127),
             min_copper_clearance_nm: mm_to_nm(0.127),
             min_copper_to_edge_nm: mm_to_nm(0.3),
@@ -113,6 +139,9 @@ impl ManufacturerProfile {
     pub fn pcbway_standard() -> Self {
         Self {
             name: "pcbway-standard".to_string(),
+            // A stock tier is the fabricator's baseline and is offered on
+            // every stackup.
+            supported_layers: Vec::new(),
             min_trace_width_nm: mm_to_nm(0.15),
             min_copper_clearance_nm: mm_to_nm(0.15),
             min_copper_to_edge_nm: mm_to_nm(0.3),
@@ -133,6 +162,9 @@ impl ManufacturerProfile {
     pub fn oshpark_4layer() -> Self {
         Self {
             name: "oshpark-4layer".to_string(),
+            // A stock tier is the fabricator's baseline and is offered on
+            // every stackup.
+            supported_layers: Vec::new(),
             min_trace_width_nm: mm_to_nm(0.125),
             min_copper_clearance_nm: mm_to_nm(0.125),
             min_copper_to_edge_nm: mm_to_nm(0.3),
@@ -186,6 +218,9 @@ impl ManufacturerProfile {
         Self {
             name: "jlc-advanced".to_string(),
             min_drill_diameter_nm: mm_to_nm(0.2),
+            // Quoted on the 4- and 6-layer builds only, which is what the
+            // capability descriptor has always advertised.
+            supported_layers: vec![4, 6],
             ..Self::jlc_filled_via()
         }
     }
@@ -235,6 +270,7 @@ impl ManufacturerProfile {
         let raw: TomlProfile = toml::from_str(text).map_err(ProfileError::Parse)?;
         Ok(Self {
             name: raw.name,
+            supported_layers: raw.supported_layers,
             min_trace_width_nm: mm_to_nm(raw.min_trace_width_mm),
             min_copper_clearance_nm: mm_to_nm(raw.min_copper_clearance_mm),
             min_copper_to_edge_nm: mm_to_nm(raw.min_copper_to_edge_mm),
@@ -268,6 +304,10 @@ struct TomlProfile {
     /// existed, and absence means the process does not offer it.
     #[serde(default)]
     via_in_pad: bool,
+    /// Layer counts the process is offered for; absent means any, which is
+    /// what every profile written before this field meant.
+    #[serde(default)]
+    supported_layers: Vec<u32>,
 }
 
 #[derive(Debug, Error)]
@@ -285,6 +325,32 @@ pub enum ProfileError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tier is quoted against a stackup, so the profile has to say which
+    /// ones and every stock tier has to stay unconstrained.
+    #[test]
+    fn jlc_advanced_is_offered_on_four_and_six_layers_only() {
+        let advanced = ManufacturerProfile::jlc_advanced();
+        assert_eq!(advanced.supported_layers, vec![4, 6]);
+        assert!(advanced.supports_layers(4));
+        assert!(advanced.supports_layers(6));
+        assert!(
+            !advanced.supports_layers(2),
+            "a 2-layer board cannot buy the 0.2 mm drill at any price"
+        );
+
+        for stock in [
+            ManufacturerProfile::jlc_standard(),
+            ManufacturerProfile::pcbway_standard(),
+            ManufacturerProfile::oshpark_4layer(),
+        ] {
+            assert!(
+                stock.supported_layers.is_empty() && stock.supports_layers(2),
+                "{} is a baseline floor and does not depend on the stackup",
+                stock.name
+            );
+        }
+    }
 
     #[test]
     fn jlc_advanced_moves_the_drill_and_nothing_else() {
