@@ -2,11 +2,11 @@ id = "tmp117_temperature"
 kind = "sensor"
 description = "TI TMP117 high-accuracy temperature sensor, I²C"
 kicad_symbol = "Sensor_Temperature:TMP117xxDRV"
-kicad_footprint = "Package_TO_SOT_SMD:SOT-563"
+kicad_footprint = "Package_SON:WSON-6-1EP_2x2mm_P0.65mm_EP1x1.6mm"
 
 [footprint_dimensions]
-width_mm = 1.6
-height_mm = 1.6
+width_mm = 2.0
+height_mm = 2.0
 courtyard_margin_mm = 0.25
 
 [operating_conditions]
@@ -40,10 +40,11 @@ electrical_type = "bidirectional"
 capabilities = ["i2c_scl"]
 required = true
 
-# `Package_TO_SOT_SMD:SOT-563` has six copper pads; pads 3 and 4 were the two
-# with no pin to own them. Names and types come from the stock symbol
-# `Sensor_Temperature:TMP117xxDRV`, which extends `TMP102xxDRL`. The four pads
-# the part already declared were on the right pins.
+# `Package_SON:WSON-6-1EP_2x2mm_P0.65mm_EP1x1.6mm` has six signal pads and an
+# exposed pad; pads 3 and 4 were the two with no pin to own them. Names and
+# types come from the stock symbol `Sensor_Temperature:TMP117xxDRV`, which
+# extends `TMP102xxDRL`. The four pads the part already declared were on the
+# right pins.
 [[pins]]
 name = "alert"
 number = "3"
@@ -53,6 +54,12 @@ electrical_type = "open_drain_low"
 name = "add0"
 number = "4"
 electrical_type = "input"
+
+# Pad 7 is the exposed thermal pad, and it is deliberately absent from this
+# map. `Sensor_Temperature:TMP117xxDRV` declares six pins, so a seventh here
+# would be a pin the schematic cannot reach — the strict registry load rejects
+# it outright. TI's datasheet allows the pad to float, which is what an
+# undeclared pad gets.
 
 [[required_decoupling]]
 net = "vdd"
