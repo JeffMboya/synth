@@ -694,6 +694,27 @@ fn place_candidates(
     place_candidates_with_margins(board, sidecar, &[1.25, 1.0], &[1, 2, 3, 4, 5, 6, 7, 8])
 }
 
+/// One step below the tightest caller margin, tried only on dense boards.
+/// Courtyard gaps this size are still far above any copper clearance the fab
+/// profile checks, and a dense board has enough parallel channels that the
+/// seeded repack gains area without stranding a net. 0.9 mm kept all 12 corpus
+/// boards clean; 0.85 and 0.8 mm changed no board (Oct 2026).
+const TIGHTEST_SEEDED_MARGIN_MM: f64 = 0.9;
+
+/// Seeds the tightest-margin sweep tries, taken from the end of the caller's
+/// list. At 0.9 mm the first four seeds never won a corpus board, while seed
+/// 7 gave sensor_logger its 2172 mm2 arrangement (Oct 2026).
+const TIGHTEST_SWEEP_SEEDS: usize = 4;
+
+/// Whether the seeded tight-margin sweep applies to a board of this size.
+///
+/// The sweep only changes the arrangement when the board has enough
+/// equal-degree peers; below the gate it trades routing room for area. The
+/// gate is the placer's dense tier so the two cannot drift apart.
+fn uses_seeded_tight_margins(component_count: usize) -> bool {
+    component_count >= synth_place::DENSE_BOARD_COMPONENTS
+}
+
 /// Generate candidates, additionally placing once per entry in `extra_margins`
 /// and once per non-zero entry in `extra_seeds`.
 ///
@@ -1219,6 +1240,20 @@ mod tests {
         assert_eq!(sanitize_filename("ok-name_42"), "ok-name_42");
         assert_eq!(sanitize_filename("../etc/passwd"), "___etc_passwd");
         assert_eq!(sanitize_filename(""), "untitled");
+    }
+
+    #[test]
+    fn seeded_tight_margins_start_exactly_at_the_dense_part_count() {
+        let gate = synth_place::DENSE_BOARD_COMPONENTS;
+        assert!(
+            !uses_seeded_tight_margins(gate - 1),
+            "a board with {} parts is below the dense gate",
+            gate - 1
+        );
+        assert!(
+            uses_seeded_tight_margins(gate),
+            "a board with {gate} parts is the first that may run the sweep"
+        );
     }
 
     fn board_from(src: &str) -> Board {
