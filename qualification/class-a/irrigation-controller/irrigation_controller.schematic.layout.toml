@@ -7,8 +7,8 @@ fit_sheet = false
 # still letting the layouter settle wires and labels around them.
 
 [components.C1]
-x = 287.02
-y = 33.02
+x = 97.52
+y = 149.93
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -16,8 +16,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C2]
-x = 119.38
-y = 116.84
+x = 163.31
+y = 241.44
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -25,8 +25,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C3]
-x = 160.02
-y = 116.84
+x = 200.08
+y = 165.94
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -34,17 +34,17 @@ dx = 0.0
 dy = 0.0
 
 [components.C4]
-x = 200.66
-y = 116.84
-rotation = 90
+x = 240.72
+y = 165.94
+rotation = 270
 source = "agent"
 priority = "soft"
 dx = 0.0
 dy = 0.0
 
 [components.C5]
-x = 241.3
-y = 116.84
+x = 86.12
+y = 318.45
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -52,8 +52,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C6]
-x = 406.4
-y = 147.32
+x = 140.26
+y = 337.99
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -61,8 +61,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C7]
-x = 426.72
-y = 147.32
+x = 138.72
+y = 345.26
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -70,8 +70,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C8]
-x = 447.04
-y = 147.32
+x = 137.66
+y = 353.17
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -79,8 +79,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C9]
-x = 365.76
-y = 147.32
+x = 149.28
+y = 341.92
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -88,8 +88,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C10]
-x = 386.08
-y = 147.32
+x = 169.60
+y = 341.92
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -97,8 +97,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C11]
-x = 467.36
-y = 147.32
+x = 250.88
+y = 341.92
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -106,8 +106,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C12]
-x = 292.1
-y = 215.9
+x = 223.87
+y = 463.18
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -115,8 +115,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C13]
-x = 332.74
-y = 215.9
+x = 225.94
+y = 470.93
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -124,8 +124,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C14]
-x = 373.38
-y = 215.9
+x = 228.42
+y = 479.38
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -133,8 +133,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C15]
-x = 327.66
-y = 33.02
+x = 100.20
+y = 159.56
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -142,8 +142,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C16]
-x = 368.3
-y = 33.02
+x = 102.25
+y = 169.11
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -151,8 +151,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C17]
-x = 165.1
-y = 271.78
+x = 203.25
+y = 546.67
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -160,8 +160,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C18]
-x = 124.46
-y = 289.56
+x = 159.44
+y = 599.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -169,8 +169,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C19]
-x = 287.02
-y = 271.78
+x = 322.00
+y = 581.53
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -178,8 +178,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C20]
-x = 327.66
-y = 271.78
+x = 362.64
+y = 581.53
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -187,8 +187,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C21]
-x = 449.58
-y = 271.78
+x = 149.28
+y = 669.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -196,8 +196,8 @@ dx = 0.0
 dy = 0.0
 
 [components.D1]
-x = 165.1
-y = 33.02
+x = 200.08
+y = 68.00
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -205,8 +205,8 @@ dx = 0.0
 dy = 0.0
 
 [components.D2]
-x = 246.38
-y = 33.02
+x = 281.36
+y = 68.00
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -214,8 +214,8 @@ dx = 0.0
 dy = 0.0
 
 [components.D3]
-x = 167.64
-y = 342.9
+x = 202.62
+y = 739.31
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -223,8 +223,8 @@ dx = 0.0
 dy = 0.0
 
 [components.D4]
-x = 452.12
-y = 358.14
+x = 68.00
+y = 829.63
 rotation = 270
 source = "agent"
 priority = "soft"
@@ -232,8 +232,8 @@ dx = 0.0
 dy = 0.0
 
 [components.D5]
-x = 492.76
-y = 358.14
+x = 108.64
+y = 829.63
 rotation = 270
 source = "agent"
 priority = "soft"
@@ -241,8 +241,8 @@ dx = 0.0
 dy = 0.0
 
 [components.D6]
-x = 332.74
-y = 342.9
+x = 367.72
+y = 739.31
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -250,8 +250,8 @@ dx = 0.0
 dy = 0.0
 
 [components.F1]
-x = 78.74
-y = 33.02
+x = 113.72
+y = 68.00
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -259,8 +259,8 @@ dx = 0.0
 dy = 0.0
 
 [components.J1]
-x = 33.02
-y = 33.02
+x = 68.00
+y = 68.00
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -268,8 +268,8 @@ dx = 0.0
 dy = 0.0
 
 [components.J2]
-x = 33.02
-y = 215.9
+x = 68.00
+y = 476.67
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -277,8 +277,8 @@ dx = 0.0
 dy = 0.0
 
 [components.J3]
-x = 284.48
-y = 127.0
+x = 68.00
+y = 321.60
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -286,8 +286,8 @@ dx = 0.0
 dy = 0.0
 
 [components.J4]
-x = 33.02
-y = 342.9
+x = 68.00
+y = 739.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -295,8 +295,8 @@ dx = 0.0
 dy = 0.0
 
 [components.J5]
-x = 78.74
-y = 342.9
+x = 113.72
+y = 739.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -304,8 +304,8 @@ dx = 0.0
 dy = 0.0
 
 [components.J6]
-x = 33.02
-y = 271.78
+x = 68.00
+y = 581.53
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -313,8 +313,8 @@ dx = 0.0
 dy = 0.0
 
 [components.J7]
-x = 78.74
-y = 271.78
+x = 113.72
+y = 581.53
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -322,8 +322,8 @@ dx = 0.0
 dy = 0.0
 
 [components.J8]
-x = 368.3
-y = 271.78
+x = 68.00
+y = 669.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -331,8 +331,8 @@ dx = 0.0
 dy = 0.0
 
 [components.L1]
-x = 78.74
-y = 116.84
+x = 118.80
+y = 165.94
 rotation = 180
 source = "agent"
 priority = "soft"
@@ -340,8 +340,8 @@ dx = 0.0
 dy = 0.0
 
 [components.Q1]
-x = 124.46
-y = 33.02
+x = 159.44
+y = 68.00
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -349,8 +349,8 @@ dx = 0.0
 dy = 0.0
 
 [components.Q2]
-x = 124.46
-y = 342.9
+x = 159.44
+y = 739.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -358,8 +358,8 @@ dx = 0.0
 dy = 0.0
 
 [components.Q3]
-x = 289.56
-y = 342.9
+x = 324.54
+y = 739.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -367,8 +367,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R1]
-x = 205.74
-y = 33.02
+x = 240.72
+y = 68.00
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -376,8 +376,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R2]
-x = 27.94
-y = 88.9
+x = 68.00
+y = 138.00
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -385,8 +385,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R3]
-x = 355.6
-y = 116.84
+x = 139.12
+y = 311.44
 rotation = 180
 source = "agent"
 priority = "soft"
@@ -394,8 +394,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R4]
-x = 355.6
-y = 134.62
+x = 139.12
+y = 329.22
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -403,8 +403,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R5]
-x = 210.82
-y = 215.9
+x = 245.80
+y = 476.67
 rotation = 180
 source = "agent"
 priority = "soft"
@@ -412,8 +412,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R6]
-x = 251.46
-y = 215.9
+x = 286.44
+y = 476.67
 rotation = 180
 source = "agent"
 priority = "soft"
@@ -421,8 +421,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R7]
-x = 452.12
-y = 337.82
+x = 68.00
+y = 809.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -430,8 +430,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R8]
-x = 492.76
-y = 337.82
+x = 108.64
+y = 809.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -439,8 +439,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R9]
-x = 48.26
-y = 88.9
+x = 88.32
+y = 138.00
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -448,8 +448,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R10]
-x = 208.28
-y = 342.9
+x = 243.26
+y = 739.31
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -457,8 +457,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R11]
-x = 248.92
-y = 342.9
+x = 283.90
+y = 739.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -466,8 +466,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R12]
-x = 373.38
-y = 342.9
+x = 408.36
+y = 739.31
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -475,8 +475,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R13]
-x = 414.02
-y = 342.9
+x = 449.00
+y = 739.31
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -484,8 +484,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R14]
-x = 205.74
-y = 271.78
+x = 240.72
+y = 581.53
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -493,8 +493,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R15]
-x = 246.38
-y = 271.78
+x = 281.36
+y = 581.53
 rotation = 90
 source = "agent"
 priority = "soft"
@@ -502,8 +502,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R16]
-x = 408.94
-y = 271.78
+x = 108.64
+y = 669.31
 rotation = 180
 source = "agent"
 priority = "soft"
@@ -511,8 +511,8 @@ dx = 0.0
 dy = 0.0
 
 [components.SW1]
-x = 416.56
-y = 127.0
+x = 200.08
+y = 321.60
 rotation = 270
 source = "agent"
 priority = "soft"
@@ -520,8 +520,8 @@ dx = 0.0
 dy = 0.0
 
 [components.U2]
-x = 38.1
-y = 116.84
+x = 78.16
+y = 165.94
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -529,8 +529,8 @@ dx = 0.0
 dy = 0.0
 
 [components.U3]
-x = 330.2
-y = 127.0
+x = 113.72
+y = 321.60
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -538,8 +538,8 @@ dx = 0.0
 dy = 0.0
 
 [components.U4]
-x = 78.74
-y = 215.9
+x = 113.72
+y = 476.67
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -547,8 +547,8 @@ dx = 0.0
 dy = 0.0
 
 [components.U5]
-x = 124.46
-y = 215.9
+x = 159.44
+y = 476.67
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -556,8 +556,8 @@ dx = 0.0
 dy = 0.0
 
 [components.U6]
-x = 170.18
-y = 215.9
+x = 205.16
+y = 476.67
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -565,8 +565,8 @@ dx = 0.0
 dy = 0.0
 
 [components.U7]
-x = 124.46
-y = 271.78
+x = 159.44
+y = 581.53
 rotation = 0
 source = "agent"
 priority = "soft"
@@ -574,8 +574,8 @@ dx = 0.0
 dy = 0.0
 
 [components.Y1]
-x = 375.92
-y = 127.0
+x = 159.44
+y = 321.60
 rotation = 0
 source = "agent"
 priority = "soft"
