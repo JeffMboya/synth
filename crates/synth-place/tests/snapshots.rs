@@ -257,3 +257,32 @@ fn jst_connectors_face_outward_on_every_edge() {
             .collect::<Vec<_>>()
     );
 }
+
+/// A connector part that goes on a board edge says which way its plug opens, or
+/// the placer has nothing to orient it by and the DRC cannot check it. Vertical
+/// pin headers are the exception: their opening faces up, not out of an edge.
+#[test]
+fn every_edge_connector_declares_which_way_its_plug_opens() {
+    let registry = synth_registry::load_dir(&workspace_root().join("registry").join("parts"))
+        .expect("registry loads");
+    let mut missing = Vec::new();
+    let mut checked = 0;
+    for (_, part) in registry.iter() {
+        if !matches!(part.kind.as_str(), "connector" | "jack") || part.id.0.starts_with("header_") {
+            continue;
+        }
+        checked += 1;
+        let face = part
+            .footprint_dimensions
+            .as_ref()
+            .and_then(|dimensions| dimensions.mating_face);
+        if face.is_none() {
+            missing.push(part.id.0.clone());
+        }
+    }
+    assert!(checked >= 8, "found only {checked} edge connectors");
+    assert!(
+        missing.is_empty(),
+        "edge connectors with no mating_face: {missing:?}"
+    );
+}
