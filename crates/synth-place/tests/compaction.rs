@@ -30,3 +30,25 @@ fn usb_cdc_outline_stays_compact() {
         "outline is {area_mm2:.0} mm2, expected under 2000"
     );
 }
+
+/// A small board takes the tight 1.0 mm rim, not the 2.0 mm one it used
+/// before. This fixture is under the 18-part dense tier and its `place()`
+/// outline was 16.78 x 16.68 mm with a 2.0 mm rim, so 1 mm less per side
+/// means neither dimension may exceed the old one minus 2 mm.
+#[test]
+fn a_small_board_fits_a_tighter_outline_than_the_old_rim() {
+    let board = load_board("../../fixtures/layout/divider.synth");
+    let mut placement = synth_place::place(&board).expect("place");
+    synth_place::fit_outline_with_margin_mm(
+        &board,
+        &mut placement,
+        synth_place::tight_edge_margin_mm(&board),
+    );
+    let width_mm = synth_geometry::nm_to_mm(placement.board_outline.width_nm());
+    let height_mm = synth_geometry::nm_to_mm(placement.board_outline.height_nm());
+    assert!(
+        width_mm <= 14.78 && height_mm <= 14.68,
+        "outline is {width_mm:.2} x {height_mm:.2} mm; the 2.0 mm rim fitted \
+         16.78 x 16.68 mm, so the 1.0 mm rim must be 2 mm smaller on both axes"
+    );
+}
