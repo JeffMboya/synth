@@ -205,11 +205,7 @@ pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
             continue;
         };
 
-        let (size_nm, drill_nm) = via_sizes
-            .iter()
-            .copied()
-            .min()
-            .unwrap_or((DEFAULT_VIA_SIZE_NM, DEFAULT_VIA_DRILL_NM));
+        let (size_nm, drill_nm) = usual_via(&via_sizes);
         let need = nm_to_mm(size_nm) / 2.0 + EDGE_SLACK_MM;
 
         let via = TieVia {
@@ -301,6 +297,21 @@ fn join_copper(
         join(&mut groups, &mut attached, &hit);
     }
     (groups, attached, via_sizes)
+}
+
+/// The via size the net uses most, the larger on a tie. The smallest would
+/// copy a router's one escalated via, which is under the board's own minimum.
+fn usual_via(sizes: &[(i64, i64)]) -> (i64, i64) {
+    let mut counts: BTreeMap<(i64, i64), usize> = BTreeMap::new();
+    for &size in sizes {
+        *counts.entry(size).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|&(size, count)| (count, size))
+        .map_or((DEFAULT_VIA_SIZE_NM, DEFAULT_VIA_DRILL_NM), |(size, _)| {
+            size
+        })
 }
 
 fn join(groups: &mut Groups, attached: &mut [bool], hit: &[usize]) {
@@ -457,6 +468,13 @@ mod tests {
             "the via must land in the island: {via:?}"
         );
         assert_eq!((via.size_nm, via.drill_nm), (600_000, 300_000));
+    }
+
+    #[test]
+    fn the_usual_via_wins_over_one_escalated_via() {
+        let sizes = [(560_000, 300_000), (600_000, 300_000), (600_000, 300_000)];
+        assert_eq!(usual_via(&sizes), (600_000, 300_000));
+        assert_eq!(usual_via(&[]), (DEFAULT_VIA_SIZE_NM, DEFAULT_VIA_DRILL_NM));
     }
 
     #[test]
