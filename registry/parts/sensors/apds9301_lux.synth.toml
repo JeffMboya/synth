@@ -3,6 +3,8 @@ kind = "sensor"
 description = "Broadcom APDS-9301 ambient light sensor, I²C"
 kicad_symbol = "Sensor_Optical:APDS-9301"
 kicad_footprint = "OptoDevice:Broadcom_APDS-9301"
+# No LCSC listing for this exact part was found; the APDS-9300-020 (C691994) is a different device.
+mpn = "APDS-9301-020"
 
 # Body from the footprint's F.Fab outline; its courtyard is 3.1 x 3.8 mm.
 [footprint_dimensions]
