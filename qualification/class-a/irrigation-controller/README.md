@@ -192,7 +192,7 @@ that true and must not be omitted.
 
 | Class | Asked | Clearance | Net | Routed | Segments |
 | --- | --- | --- | --- | --- | --- |
-| POWER | 0.6 mm | 0.25 mm | `V12` | **0.6 mm** | 77 |
+| POWER | 0.6 mm | 0.25 mm | `V12` | **0.6 mm** | 74 |
 | VALVE | 0.6 mm | 0.3 mm | `VALVE1`, `VALVE2` | **0.6 mm** | 5, 12 |
 | I2C | 0.15 mm | 0.15 mm | `SDA`, `SCL` | **0.2 mm** | 33, 27 |
 
@@ -219,16 +219,20 @@ but the I2C width in the table is a request the router did not honour.
 | U4 | HDC1080DMBR | `hdc1080_humidity` |
 | U5 | APDS-9301 | `apds9301_lux` |
 | U6 | 24LC256-I/SN | `24lc256_eeprom` |
-| Y1 | 8 MHz crystal | `xtal_8mhz` |
+| Y1 | 8 MHz crystal, X32258MOB4SI | `xtal_8mhz` |
 | Q1 | Si2301 | `p_mosfet_si2301` |
 | Q2, Q3 | IRLML6244 | `n_mosfet_irlml6244` |
 | D2 | SMAJ15A TVS | `smaj15a_tvs` |
 | D3, D6 | 1N5819 | `d_schottky` |
+| F1 | MF-MSMF110/16-2, 1.1 A hold | `polyfuse_1r1a` |
+| L1 | CBC3225T100MR, 10 µH | `l_1210_10uh` |
 
-The generated `bom.csv` is the bill of materials. This table lists 13 of the
-67 components; the other 54 are passives, connectors, LEDs, a switch and a
-fuse. Nineteen components carry no distributor identity, so the BOM cannot be
-ordered as it stands — they are listed under *Limitations*.
+The generated `bom.csv` is the bill of materials. This table lists 15 of the
+67 components; the other 52 are passives, connectors, LEDs and a switch. Every
+part the supply check covers names a manufacturer part number. Generic
+resistors and capacitors are exempt from that check and are specified by value,
+so they do not. See *Limitations* for what a part number does and does not
+establish.
 
 ## Measured
 
@@ -241,7 +245,7 @@ reviewer, #51). Every figure below was identical in all three.
 | --- | --- |
 | Nets closed | **37 of 37** |
 | Open | **0** |
-| Routed copper | 2087.2 mm over 571 segments and 106 vias |
+| Routed copper | 2112.0 mm over 574 segments and 105 vias |
 | Tracks below the 0.127 mm floor | **0** |
 | Vias below the 0.3 mm drill or 0.13 mm ring | **0** |
 | Vias inside pads | **0** |
@@ -269,19 +273,19 @@ on the wrong pad, and no routing output showed it.
 | Artifact | Run A | Run B | Run C | |
 | --- | --- | --- | --- | --- |
 | Schematic, root sheet | `67253e3a5eeb` | `67253e3a5eeb` | `67253e3a5eeb` | identical |
-| Schematic, 8 sub-sheets | `7e3266f4a912` | `7e3266f4a912` | `7e3266f4a912` | identical |
+| Schematic, 8 sub-sheets | `6af83e602ed2` | `6af83e602ed2` | `6af83e602ed2` | identical |
 | Symbol library | `9c451b25de5a` | `9c451b25de5a` | `9c451b25de5a` | identical |
-| BOM | `1786ac2ee338` | `1786ac2ee338` | `1786ac2ee338` | identical |
-| Position file | `cccb01667176` | `cccb01667176` | `cccb01667176` | identical |
+| BOM | `45b3881ebd9d` | `45b3881ebd9d` | `45b3881ebd9d` | identical |
+| Position file | `139e8898a0dd` | `139e8898a0dd` | `139e8898a0dd` | identical |
 | Project file | `7c277a56a5b2` | `7c277a56a5b2` | `7c277a56a5b2` | identical |
-| Routed board | `ca97c656409f` | `f02b7665a72a` | `5a8b48bfff9d` | **differs** |
+| Routed board | `0cdde1eedbc1` | `0219326f0550` | `f6736af6a5f9` | **differs** |
 
 **Byte-identical:** the schematic and all eight sub-sheets, the symbol
 library, the BOM, the position file and the project file.
 
 **Not byte-identical, and why:**
 
-- **The routed board.** The copper is the same — 677 segments and vias, each
+- **The routed board.** The copper is the same — 679 segments and vias, each
   present the same number of times in all three runs, and the 67 footprints sit
   at identical positions — but the router writes its tracks in a different
   order each run. That is #277.
@@ -299,7 +303,10 @@ timestamp KiCad embeds and a track ordering that is #277. It cannot yet make
 the claim that every fabrication file hashes the same.
 
 **Placement.** 64 of the 67 parts are pinned in
-`irrigation_controller.placement.layout.toml`. The three added in review — the
+`irrigation_controller.placement.layout.toml`. `F1`'s pinned y was moved to the
+row of `J1`'s pad 1 when the fuse changed footprint; with the old y the router
+ended the input net's track 0.04 mm off the pad's rounded corner, which
+`kicad-cli` accepts and Synth's own validator does not. The three added in review — the
 compensation resistor, the enable pull-up and the soft-start capacitor — are
 not, and the placer put them in the same place in all three runs.
 
@@ -311,9 +318,9 @@ and the board is `experimental` in the qualification matrix (#247) for that reas
 
 ## Limitations
 
-- **Return paths are not addressed.** `W-SYNTH-DRC-016` reports 106
+- **Return paths are not addressed.** `W-SYNTH-DRC-016` reports 105
   layer changes with no ground-return via nearby, one for every via on the
-  board: no ground via was placed anywhere. 33 of the 106 are on the DC rails,
+  board: no ground via was placed anywhere. 33 of the 105 are on the DC rails,
   15 on I²C, 2 on a valve return. Synth has no way to add one and the check
   does not credit a ground plane; a 4-layer stackup with ground on every layer
   was tried and is recorded in #280, with the figures. This is the open P1
@@ -323,23 +330,29 @@ and the board is `experimental` in the qualification matrix (#247) for that reas
 - **The loop compensation is calculated, not measured.** R17 and C4 come from
   the datasheet's procedure with an assumed 22 µF of effective output
   capacitance. An X5R 0805 loses a good part of that at 3.3 V of bias.
-- **Valve FET voltage rating.** The SMAJ15A clamps at 24.4 V on the 12 V rail,
-  and the valve drivers' drain-source rating must be checked against that. The
-  registry declares no rating for `n_mosfet_irlml6244`, so Synth cannot.
+- **The valve FETs are rated below the clamp.** `IRLML6244` is a 20 V part
+  (LCSC lists it as 20 V N-channel). With a valve off, its drain sits at the
+  12 V rail, and a surge that the SMAJ15A clamps at 24.4 V puts 24.4 V across
+  it. A 12 V rail leaves little margin on a 20 V FET to begin with. Either a
+  30 V FET or a lower-clamp TVS is needed; this has not been changed here.
 - **Parts operated outside the envelope their registry entries declare.**
-  `jst_xh_2pin`, `p_mosfet_si2301`, `polyfuse` and `d_zener_5v1` each declare
-  5 V and 100 mA, a template default and not a datasheet figure; the real
-  devices are fine. Filed as #275. Until it is corrected, the current
+  `jst_xh_2pin`, `p_mosfet_si2301` and `d_zener_5v1` each declare 5 V and
+  100 mA, a template default and not a datasheet figure; the real devices are
+  fine. Filed as #275. Until it is corrected, the current
   capability of this board's 12 V path cannot be checked by anything but a
   reader.
-- **The BOM is not orderable as it stands.** 19 components, of 14 distinct
-  parts, carry neither an `mpn` nor an `lcsc_pn`: `apds9301_lux`,
-  `d_zener_5v1`, `header_1x4`, `jst_ph_3pin`, `jst_ph_4pin`, `jst_xh_2pin`,
-  `l_generic_1210`, `mp2307_buck`, `n_mosfet_irlml6244`, `p_mosfet_si2301`,
-  `polyfuse`, `spst_tactile`, `tps22918_loadswitch` and `xtal_8mhz`. Part numbers have not been invented to make the
-  warning go away: choosing a real device for a generic polyfuse, connector or
-  tactile switch is a sourcing decision, and a wrong number is worse than a
-  missing one.
+- **Part numbers are chosen, not purchased.** Every part the supply check
+  covers now names a manufacturer part number, and all but the APDS-9301 name an
+  LCSC number that JLCPCB also uses. Generic resistors and capacitors are
+  specified by value and are exempt from that check. They come from LCSC and JLCPCB listings and
+  were not checked against a stock or price page, so confirm the exact suffix
+  before ordering. The APDS-9301 has a manufacturer number and no LCSC one:
+  LCSC lists the APDS-9300-020, which is a different device. The fuse and the
+  inductor are per-value parts (`polyfuse_1r1a`, `l_1210_10uh`) because the
+  generic ones could not honestly carry a single product.
+- **The inductor is rated, not proven.** The CBC3225T100MR is listed at 900 mA
+  rated current. That is not a saturation current, and the buck's load has not
+  been bounded against it.
 - **The analogue path is unverified.** `stm32g030` declares no `analog_input`
   capability, so PA1 and PA2 are ordinary GPIO to validation. Reference,
   source impedance and settling against the 10 kΩ filter are a reviewer's job.

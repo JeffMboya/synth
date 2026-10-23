@@ -68,7 +68,7 @@ board "irrigation_controller" {
       component J1: connector "jst_xh_2pin"        value "12V IN" {
         placement_hint { region: left_edge edge: left priority: soft }
       }
-      component F1: fuse      "polyfuse"            value "1.1A hold"
+      component F1: fuse      "polyfuse_1r1a"       value "1.1A hold"
       component Q1: transistor "p_mosfet_si2301"    value "Si2301"
       component D1: diode     "d_zener_5v1"         value "5V1"
       component R1: resistor  "r_generic_0603"      value "100k"
@@ -129,7 +129,7 @@ board "irrigation_controller" {
 
     group "3V3 BUCK" color "#0369a1" {
       component U2: regulator "mp2307_buck"     value "MP2307"
-      component L1: inductor  "l_generic_1210"  value "10uH"
+      component L1: inductor  "l_1210_10uh"    value "10uH"
       component C2: capacitor "c_generic_0805"  value "22uF"
       component C3: capacitor "c_generic_0603"  value "100nF"
       component C4: capacitor "c_generic_0603"  value "15nF"

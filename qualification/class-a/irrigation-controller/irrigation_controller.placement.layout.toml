@@ -204,7 +204,7 @@ priority = "hard"
 
 [components.F1]
 x = 26.8462
-y = 51.1
+y = 50.2
 rotation = 0
 source = "agent"
 priority = "hard"
