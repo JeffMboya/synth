@@ -143,7 +143,11 @@ that true and must not be omitted.
 Declared but inert: a `netclass` block assigns nothing, and nets join a class
 through `class "NAME"` on their `connect`, `net` or `power` statement. No net
 on this board carries one, so every width and clearance above is unapplied
-and the board routed at the defaults. True of every board in this corpus.
+and the board routed at the defaults.
+
+That is this board's omission rather than a missing feature — the syntax is
+there and `fixtures/erc/pass__named_rail.synth` exercises it. The widths above
+are what the board would ask for if its nets joined the classes.
 
 ## Notable parts
 
@@ -213,8 +217,10 @@ bookkeeping, not a difference in the copper.
   one junction carries four wires where three is the limit
   (`E-SYNTH-SCHEM-005`), and the "I2C SENSORS" and "SOIL PROBES" region boxes
   overlap (`E-SYNTH-SCHEM-013`), so a caption titles another region's parts.
-- `E-SYNTH-SCHEM-010` wants an explicit rail name instead of `VDD`;
-  SynthSpec V1 has no net-naming syntax, so it cannot be acted on.
+- `E-SYNTH-SCHEM-010` wants an explicit rail name instead of `VDD`, and it is
+  right: `power "+3V3" 3.3v` and `connect … as "+3V3"` both exist, and this
+  board uses neither. The Class-A boards that were made standalone declare
+  their rails; this one still numbers them.
 - Divider ratio and the 4k7 pull-up value are datasheet and convention, not
   measurement.
 - Twenty of its parts carry no distributor identity, and no independent
