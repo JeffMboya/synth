@@ -333,14 +333,13 @@ pub fn lower(ast: &ProgramAst, registry: &Registry, file: &str) -> LowerResult {
 /// one of the switch's pins, or one resistor away from it, which is how a
 /// debounced reset is wired. The switch then gets a `near` hint on that MCU.
 ///
-/// The hint stays soft, and that is measured, not assumed. Made hard, it
-/// reordered the greedy search and grew the `sensor_logger` outline by a third
-/// (4287 to 5711 mm2); soft, the same board shrinks by 15% (to 3626 mm2) and the
-/// button still moves from 25 mm to 13.5 mm from its MCU.
-///
-/// An author's hard hint stands. A soft one is replaced, because a chain of them
-/// (button near a resistor, that near another) anchors nothing to the chip;
-/// whatever else it said (a region, an edge) is kept.
+/// Only a hint the author wrote is corrected. A soft one is a preference, and a
+/// chain of them (button near a resistor, that near another) anchors nothing to
+/// the chip, so it is replaced with a hard `near` on the MCU; whatever else it
+/// said (a region, an edge) is kept. A hard hint stands. A button with no hint
+/// at all is left to the placer: anchoring those was measured and moves
+/// routability both ways, breaking `env_logger` when hard and `sensor_logger`
+/// when soft, so it is not done on a guess.
 fn anchor_reset_buttons(components: &mut [Component], nets: &[Net]) {
     use synth_registry::PinCapability;
 
@@ -404,13 +403,17 @@ fn anchor_reset_buttons(components: &mut [Component], nets: &[Net]) {
     }
 
     for (index, mcu_refdes) in anchors {
-        let hint = components[index]
-            .placement_hint
-            .get_or_insert_with(Default::default);
+        // Only a hint the author wrote. A button with none is left where the
+        // placer puts it: anchoring those was measured and moves routability
+        // both ways (hard broke env_logger, soft broke sensor_logger).
+        let Some(hint) = components[index].placement_hint.as_mut() else {
+            continue;
+        };
         if hint.priority == crate::PlacementPriority::Hard {
             continue;
         }
         hint.near = Some(mcu_refdes);
+        hint.priority = crate::PlacementPriority::Hard;
     }
 }
 
@@ -2574,7 +2577,7 @@ mod tests {
                 component U1: mcu "stm32g030"
                 component R1: resistor "r_generic_0603" value "100"
                 component SW1: switch "spst_tactile" {hint}
-                component SW2: switch "spst_tactile"
+                component SW2: switch "spst_tactile" {{ placement_hint {{ near: R1 priority: soft }} }}
                 connect U1.nrst -> R1.p1
                 connect R1.p2 -> SW1.p1
                 connect SW1.p2 -> U1.vss
@@ -2595,24 +2598,23 @@ mod tests {
             .and_then(|c| c.placement_hint.as_ref())
     }
 
-    /// With no hint of its own, a button on a reset net is anchored to the MCU
-    /// that owns the pin.
+    /// A button the author gave no hint is left to the placer. Anchoring those
+    /// was measured and moves routability both ways.
     #[test]
-    fn a_reset_button_is_anchored_to_its_mcu() {
+    fn a_reset_button_with_no_hint_is_left_alone() {
         let board = reset_board("");
-        let hint = hint_of(&board, "SW1").expect("SW1 is anchored");
-        assert_eq!(hint.near.as_deref(), Some("U1"));
-        assert_eq!(hint.priority, PlacementPriority::Soft);
+        assert!(hint_of(&board, "SW1").is_none());
     }
 
-    /// A soft hint against a neighbouring resistor is a preference, not a
-    /// position, and chains of them are how the button ended up across the
-    /// board. It is replaced, and what else it said is kept.
+    /// A soft hint against a neighbouring resistor is a preference, and a chain
+    /// of them anchors nothing to the chip. It is replaced with a hard hint on
+    /// the MCU, and what else it said is kept.
     #[test]
     fn a_soft_hint_does_not_keep_a_reset_button_from_its_mcu() {
         let board = reset_board("{ placement_hint { near: R1 region: top_left priority: soft } }");
         let hint = hint_of(&board, "SW1").expect("SW1 is anchored");
         assert_eq!(hint.near.as_deref(), Some("U1"));
+        assert_eq!(hint.priority, PlacementPriority::Hard);
         assert_eq!(hint.region, Some(PlacementRegion::TopLeft));
     }
 
@@ -2628,6 +2630,8 @@ mod tests {
     #[test]
     fn a_button_on_a_gpio_is_left_alone() {
         let board = reset_board("");
-        assert!(hint_of(&board, "SW2").is_none());
+        let hint = hint_of(&board, "SW2").expect("SW2 keeps its hint");
+        assert_eq!(hint.near.as_deref(), Some("R1"));
+        assert_eq!(hint.priority, PlacementPriority::Soft);
     }
 }
