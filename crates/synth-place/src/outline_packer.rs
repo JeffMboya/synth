@@ -49,6 +49,7 @@ const PROBE_PITCH_NM: i64 = 500_000;
 #[derive(Debug, Clone)]
 pub struct OutlineHull {
     pub placed_rects: Vec<Rect>,
+    exact_contact: bool,
 }
 
 impl Default for OutlineHull {
@@ -61,6 +62,7 @@ impl OutlineHull {
     pub fn new() -> Self {
         Self {
             placed_rects: Vec::new(),
+            exact_contact: true,
         }
     }
 
@@ -77,6 +79,17 @@ impl OutlineHull {
             Point::new(courtyard.min.x_nm - gap, courtyard.min.y_nm - gap),
             Point::new(courtyard.max.x_nm + gap, courtyard.max.y_nm + gap),
         ));
+    }
+
+    /// Require full cover against every hull rect instead of allowing exact
+    /// contact.
+    ///
+    /// A board that docks a connector to a hard edge hint needs this: the
+    /// boundary slots along that edge are where the solver docks it, so a
+    /// passive packed exactly against a macro there can leave the connector
+    /// no free slot and the hint is dropped.
+    pub fn keep_full_clearance(&mut self) {
+        self.exact_contact = false;
     }
 
     /// Generate candidate probe points along the exposed perimeter of placed components.
@@ -122,9 +135,13 @@ impl OutlineHull {
         candidates.dedup();
         candidates.retain(|pt| {
             let cand_rect = Rect::from_center_half_extents(*pt, half_w, half_h);
-            self.placed_rects
-                .iter()
-                .all(|r| !overlaps_interior(cand_rect, *r))
+            self.placed_rects.iter().all(|r| {
+                if self.exact_contact {
+                    !overlaps_interior(cand_rect, *r)
+                } else {
+                    !cand_rect.intersects(r)
+                }
+            })
         });
         candidates.truncate(150); // Keep top 150 closest boundary candidates
         candidates
@@ -255,6 +272,9 @@ fn pack_passives_in_order(
     usable: Rect,
 ) -> Result<(), PlaceError> {
     let mut hull = OutlineHull::new();
+    if board.components.iter().any(crate::is_edge_flush_connector) {
+        hull.keep_full_clearance();
+    }
 
     // 1. Build initial hull from placed macro components
     for p in placements.iter() {

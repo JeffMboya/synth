@@ -917,7 +917,7 @@ fn padded_courtyard_rect(
     rotated_courtyard_rect(placed, lookup[&placed.id])
 }
 
-fn is_edge_flush_connector(component: &synth_ir::Component) -> bool {
+pub(crate) fn is_edge_flush_connector(component: &synth_ir::Component) -> bool {
     matches!(component.kind.as_str(), "connector" | "jack")
         && component.placement_hint.as_ref().is_some_and(|hint| {
             hint.priority == synth_ir::PlacementPriority::Hard && hint.edge.is_some()
