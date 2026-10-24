@@ -403,7 +403,7 @@ fn is_ground_name(name: &str) -> bool {
 /// Return current follows the signal's reference plane, and a signal via
 /// interrupts it, so the return has to jump layers too. A ground via beside the
 /// signal via lets it. For each non-ground via with no ground via within
-/// [`RETURN_REACH_MM`] along either axis, this finds the nearest point that lies
+/// `RETURN_REACH_MM` along either axis, this finds the nearest point that lies
 /// inside the ground pour on both layers with room for the via. The pour edge
 /// already stands off other copper by the clearance rule, so a via inside it
 /// keeps that clearance. A new via counts for the signal vias after it, so
