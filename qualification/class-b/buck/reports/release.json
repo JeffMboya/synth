@@ -23,7 +23,15 @@
       "reviewed": false
     },
     {
-      "part_id": "l_bourns_srn6045ta_100m",
+      "part_id": "jst_b2b_xh_a_4pin",
+      "reviewed": false
+    },
+    {
+      "part_id": "l_bourns_srn6045ta_6r8m",
+      "reviewed": false
+    },
+    {
+      "part_id": "lmr33640",
       "reviewed": false
     },
     {
@@ -35,19 +43,19 @@
       "reviewed": false
     },
     {
+      "part_id": "mounting_hole_m2_5",
+      "reviewed": false
+    },
+    {
       "part_id": "r_generic_0603",
       "reviewed": false
     },
     {
-      "part_id": "smbj26a",
+      "part_id": "smbj30a",
       "reviewed": false
     },
     {
       "part_id": "ss36",
-      "reviewed": false
-    },
-    {
-      "part_id": "tps54202",
       "reviewed": false
     }
   ],
@@ -55,7 +63,7 @@
     "engine": "freerouting",
     "engine_version": "tools/freerouting/freerouting-2.4.1.jar",
     "state": "routed",
-    "input_hash": "28cf0c38180c64f4086c612416d1cfc7eaa75c802ce69143338c4e07cfdead1d",
+    "input_hash": "1f13f5d349b44874688abeef59a75a9416d68816be6d2605da76be613fd25e89",
     "run_record": "out/buck-nofab/buck.routing.json"
   },
   "signal_integrity": {
@@ -64,7 +72,7 @@
     "findings": [
       {
         "code": "W-SYNTH-DRC-016",
-        "message": "net 3 changes layers at (35.97, 14.43) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "message": "net 3 changes layers at (51.67, 23.38) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
         "blocking": false
       }
     ]

@@ -17,13 +17,13 @@
     "profile": "jlcpcb",
     "command": [
       "/usr/bin/python3",
-      "/tmp/opencode/pr110/tools/freeroute_autoroute.py",
+      "/tmp/opencode/buck2/tools/freeroute_autoroute.py",
       "out/buck/buck.synth.kicad_pcb",
       "out/buck/buck.freerouting.kicad_pcb",
       "--jar",
       "tools/freerouting/freerouting-2.4.1.jar",
       "--java",
-      "/tmp/opencode/pr110/tools/jre25/bin/java",
+      "/tmp/opencode/buck2/tools/jre25/bin/java",
       "--passes",
       "40",
       "--threads",
@@ -40,22 +40,22 @@
       "threads": "4",
       "wall_clock_secs": "1200"
     },
-    "input_hash": "28cf0c38180c64f4086c612416d1cfc7eaa75c802ce69143338c4e07cfdead1d",
+    "input_hash": "1f13f5d349b44874688abeef59a75a9416d68816be6d2605da76be613fd25e89",
     "output_hash": "",
     "source_revision": null,
-    "duration_ms": 16668
+    "duration_ms": 33359
   },
   "statistics": {
-    "connected_nets": 10,
+    "connected_nets": 12,
     "open_nets": 0,
     "open_net_names": [],
-    "segments": 51,
-    "vias": 15,
-    "wire_length_mm": 155.160812,
+    "segments": 81,
+    "vias": 18,
+    "wire_length_mm": 220.570681,
     "pad_escape_rejections": 0,
     "engine_findings": {
-      "claimed_imported_segments": "51",
-      "claimed_imported_vias": "15"
+      "claimed_imported_segments": "81",
+      "claimed_imported_vias": "18"
     }
   },
   "artifacts": {
@@ -80,7 +80,7 @@
       "outline_present": true
     },
     "connectivity": {
-      "connected_nets": 10,
+      "connected_nets": 12,
       "open_nets": 0,
       "open": [],
       "unconnected_pads": [],
@@ -91,7 +91,7 @@
     "kicad_drc": {
       "errors": 0,
       "unconnected": 0,
-      "warnings": 20
+      "warnings": 30
     },
     "blocking_reasons": [],
     "unavailable_checks": []

@@ -73,19 +73,13 @@
     "netclass_assignments": {
       "+3V3": "PWR",
       "/+3V3": "PWR",
-      "/SW": "PWR",
       "GND": "PWR",
-      "SW": "PWR",
       "VIN": "PWR"
     },
     "netclass_patterns": [
       {
         "netclass": "PWR",
         "pattern": "/*/+3V3"
-      },
-      {
-        "netclass": "PWR",
-        "pattern": "/*/SW"
       }
     ]
   },
