@@ -4,7 +4,8 @@
 //!
 //! Inspired by tscircuit's `calculate-packing` solver:
 //! 1. Macro components (ICs, connectors, regulators) are placed first via CEM.
-//! 2. Passives (resistors, capacitors, small diodes) are sorted largest → smallest.
+//! 2. Passives are packed largest-first, then smallest-first; the smaller
+//!    envelope wins when it does not lengthen wiring or a decoupling distance.
 //! 3. Maintains an outline hull (union of inflated AABBs of placed components).
 //! 4. Probes boundary candidate positions that minimize distance to pads sharing `NetId`s.
 //! 5. Evaluates 4 orthogonal rotations (0°, 90°, 180°, 270°) and selects the non-overlapping

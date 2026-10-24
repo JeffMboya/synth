@@ -700,7 +700,7 @@ fn close_pinned_bands(
         .any(|placed| flush_edge_index(board, placed.id).is_some());
     let mut hpwl = total_hpwl_nm(board, placement);
     let mut decoupling = crate::score::score_placement(board, placement).max_decoupling_distance_mm;
-    let mut hits = keepout_hits(board, placement);
+    let mut hits = keepout_overlaps(board, placement);
     for _ in 0..PINNED_COMPACT_ROUNDS {
         let mut candidates: Vec<Placement> = Vec::new();
         for (along_y, toward_low) in [(true, true), (true, false), (false, true), (false, false)] {
@@ -775,7 +775,7 @@ fn close_pinned_bands(
                 crate::score::score_placement(board, &candidate).max_decoupling_distance_mm;
             if (docked && candidate_hpwl > hpwl)
                 || candidate_decoupling > decoupling
-                || keepout_hits(board, &candidate) > hits
+                || keepout_overlaps(board, &candidate) > hits
             {
                 continue;
             }
@@ -800,7 +800,7 @@ fn close_pinned_bands(
         area = area_mm2(&outline);
         hpwl = candidate_hpwl;
         decoupling = candidate_decoupling;
-        hits = keepout_hits(board, placement);
+        hits = keepout_overlaps(board, placement);
     }
 }
 
@@ -822,8 +822,7 @@ fn tighten_outline_after_sidecar(board: &Board, placement: &mut Placement) {
 }
 
 /// The edge margin to fit round an automatic placement: a dense board keeps
-/// the full perimeter channel, a sparse one takes the tight rim, and a board
-/// of [`TINY_BOARD_COMPONENTS`] or fewer takes the tightest one.
+/// the full perimeter channel, a sparse one takes the tight rim.
 fn fitted_edge_margin_nm(board: &Board) -> i64 {
     if board.components.len() >= DENSE_BOARD_COMPONENTS {
         mm_to_nm(DENSE_EDGE_MARGIN_MM)
@@ -6609,6 +6608,36 @@ fn keepout_hits(board: &Board, placement: &Placement) -> usize {
         .count()
 }
 
+/// Count parts whose courtyard overlaps a keepout circle, not just whose
+/// centre does. The pinned band pass moves parts, so it uses the same strict
+/// test as packing: a courtyard can hang its pads into the no-route zone while
+/// its centre stays outside.
+fn keepout_overlaps(board: &Board, placement: &Placement) -> usize {
+    let rects: Vec<(ComponentId, Rect)> = placement
+        .components
+        .iter()
+        .filter_map(|placed| {
+            let component = board.component(placed.id)?;
+            Some((placed.id, sidecar_courtyard_rect(board, component, placed)))
+        })
+        .collect();
+    placement
+        .components
+        .iter()
+        .filter(|placed| {
+            let Some((_, rect)) = rects.iter().find(|(id, _)| *id == placed.id) else {
+                return false;
+            };
+            overlaps_keepout(*rect, placed.id, board, placement.board_outline, |id| {
+                rects
+                    .iter()
+                    .find(|(placed_id, _)| *placed_id == id)
+                    .map(|(_, rect)| *rect)
+            })
+        })
+        .count()
+}
+
 fn apply_recommendation<S: ::std::hash::BuildHasher>(
     board: &Board,
     placement: &mut Placement,
@@ -7728,6 +7757,30 @@ board "features_only" {
         assert_eq!(keepout_hits(&board, &loose), 0, "setup is clear");
         let packed = compact_placement(&board, loose);
         assert_eq!(keepout_hits(&board, &packed), 0);
+    }
+
+    /// The pinned band gate must see a courtyard whose edge enters a keepout
+    /// even when its centre is outside: a slide could otherwise hang pads into
+    /// the no-route zone while the centre test still calls the part clear.
+    #[test]
+    fn the_pinned_band_keepout_gate_checks_the_whole_courtyard() {
+        let components = r#"
+            keepout R1 { radius 5mm }
+            component R1: resistor "r_generic_0603" value "10k"
+            component R2: resistor "r_generic_0603" value "10k"
+            connect R1.p2 -> R2.p1
+        "#;
+        let (board, mut placement) = row_board(components, &[10.0, 40.0]);
+        assert_eq!(keepout_overlaps(&board, &placement), 0, "setup is clear");
+
+        // The centre is 5.4 mm from R1, outside the 5 mm circle; the courtyard
+        // reaches back inside it.
+        move_part(&mut placement, &board, "R2", 15.4, 15.0);
+        assert_eq!(keepout_hits(&board, &placement), 0, "centre is outside");
+        assert!(
+            keepout_overlaps(&board, &placement) > 0,
+            "the courtyard overlaps the keepout"
+        );
     }
 
     /// A row of connectors along an edge is packed together, in the same

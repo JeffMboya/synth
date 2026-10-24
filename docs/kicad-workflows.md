@@ -557,10 +557,10 @@ placement sidecar only to fix specific parts. A sidecar entry gives that part
 its starting slot: the placer keeps the entry's rotation and the order of the
 pinned parts, then slides them toward the board edge to close bands no
 courtyard uses, so the finished board is no larger than the floorplan the pins
-describe. `priority = "hard"` entries win over soft ones, and pinning every
-part bypasses the placer. A floorplan that uses a `relative_to` entry keeps
-its pinned coordinates exactly, because the band pass moves one part at a
-time.
+describe. `priority = "hard"` entries win over soft ones; a fully pinned
+floorplan skips the automatic search but still gets the band pass. A floorplan
+that uses a `relative_to` entry keeps its pinned coordinates exactly, because
+the band pass moves one part at a time.
 
 ### Silkscreen reference labels
 
