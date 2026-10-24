@@ -66,7 +66,12 @@ pub fn tie_islands(candidate: &Path) -> Result<usize, String> {
             return Ok(added);
         };
         let board = PcbBoard::parse(&filled).map_err(|e| e.to_string())?;
-        let vias = islands_to_tie(&board);
+        // Islands first, on their own: a tie via and a return via chosen from
+        // the same fill could land on top of each other.
+        let mut vias = islands_to_tie(&board);
+        if vias.is_empty() {
+            vias = stitch_vias(&board);
+        }
         if vias.is_empty() {
             return Ok(added);
         }
@@ -177,10 +182,8 @@ impl Groups {
     }
 }
 
-/// The vias that would tie each unjoined, copper-bearing island of every
-/// poured net to that net's main pour. `board` must carry fills.
-#[must_use]
-pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
+/// Every poured polygon of the board, by net.
+fn pours(board: &PcbBoard) -> BTreeMap<String, Vec<Region>> {
     let mut regions: BTreeMap<String, Vec<Region>> = BTreeMap::new();
     for zone in &board.zones {
         let Some(net) = net_of(board, zone.net, zone.net_name.as_ref()) else {
@@ -194,6 +197,14 @@ pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
             }
         }
     }
+    regions
+}
+
+/// The vias that would tie each unjoined, copper-bearing island of every
+/// poured net to that net's main pour. `board` must carry fills.
+#[must_use]
+pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
+    let regions = pours(board);
 
     let copper = board.copper_layers();
     let mut out = Vec::new();
@@ -366,6 +377,141 @@ fn best_spot(regions: &[Region], island: &[usize], main: &[usize], need: f64) ->
         }
     }
     best.map(|(_, (x, y))| Point::new(mm_to_nm(x), mm_to_nm(y)))
+}
+
+/// How far from a signal via, along either axis, a return via may be put. The
+/// check that flags a layer change without one looks 1.53 mm each way on a
+/// 1.6 mm board; a little less keeps a via on the edge of that window from being
+/// lost to rounding.
+const RETURN_REACH_MM: f64 = 1.4;
+
+/// Copper kept between two ground vias' pads, which the pour does not enforce.
+const VIA_GAP_MM: f64 = 0.2;
+
+/// Spacing of the points tried for a return via.
+const RETURN_STEP_MM: f64 = 0.1;
+
+/// Whether a net name is a ground, by the same names the exporter uses for its
+/// planes.
+fn is_ground_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("gnd") || lower == "vss" || lower == "0v"
+}
+
+/// The ground vias that would give every layer change a return path.
+///
+/// Return current follows the signal's reference plane, and a signal via
+/// interrupts it, so the return has to jump layers too. A ground via beside the
+/// signal via lets it. For each non-ground via with no ground via within
+/// [`RETURN_REACH_MM`] along either axis, this finds the nearest point that lies
+/// inside the ground pour on both layers with room for the via. The pour edge
+/// already stands off other copper by the clearance rule, so a via inside it
+/// keeps that clearance. A new via counts for the signal vias after it, so
+/// neighbours share one. `board` must carry fills.
+#[must_use]
+pub fn stitch_vias(board: &PcbBoard) -> Vec<TieVia> {
+    let pours = pours(board);
+    let Some((net, regions)) =
+        pours
+            .iter()
+            .filter(|(net, _)| is_ground_name(net))
+            .max_by(|a, b| {
+                let area = |r: &Vec<Region>| r.iter().map(|x| x.area).sum::<f64>();
+                area(a.1)
+                    .partial_cmp(&area(b.1))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    else {
+        return Vec::new();
+    };
+    let is_ground = |via: &crate::pcb_read::Via| {
+        net_of(board, via.net, via.net_name.as_ref()).is_some_and(|n| is_ground_name(&n))
+    };
+
+    let mut ground: Vec<(f64, f64)> = board
+        .vias
+        .iter()
+        .filter(|via| is_ground(via))
+        .map(|via| (via.at.x_mm(), via.at.y_mm()))
+        .collect();
+    let sizes: Vec<(i64, i64)> = board
+        .vias
+        .iter()
+        .filter(|via| is_ground(via))
+        .map(|via| (via.size_nm, via.drill_nm))
+        .collect();
+    let (size_nm, drill_nm) = usual_via(&sizes);
+    let need = nm_to_mm(size_nm) / 2.0 + EDGE_SLACK_MM;
+    // Two ground vias share a pour, so nothing in the fill keeps them apart.
+    let apart = nm_to_mm(size_nm) + VIA_GAP_MM;
+
+    let copper = board.copper_layers();
+    let (Some(first), Some(last)) = (copper.first(), copper.last()) else {
+        return Vec::new();
+    };
+    let room = |layer: &str, p: (f64, f64)| -> bool {
+        regions
+            .iter()
+            .any(|r| r.layer == layer && r.contains(p) && r.edge_distance(p) >= need - EPS)
+    };
+
+    let mut out = Vec::new();
+    for via in board.vias.iter().filter(|via| !is_ground(via)) {
+        let (vx, vy) = (via.at.x_mm(), via.at.y_mm());
+        if ground
+            .iter()
+            .any(|g| (g.0 - vx).abs() <= RETURN_REACH_MM && (g.1 - vy).abs() <= RETURN_REACH_MM)
+        {
+            continue;
+        }
+        // The pour is cut away from this via already, but the cut is the
+        // clearance rule's business; the gap kept here is between pads.
+        let signals: Vec<((f64, f64), f64)> = board
+            .vias
+            .iter()
+            .filter(|other| !is_ground(other))
+            .map(|other| {
+                (
+                    (other.at.x_mm(), other.at.y_mm()),
+                    nm_to_mm(other.size_nm + size_nm) / 2.0 + VIA_GAP_MM,
+                )
+            })
+            .collect();
+        let steps = (RETURN_REACH_MM / RETURN_STEP_MM).round() as i32;
+        let mut best: Option<(f64, (f64, f64))> = None;
+        for ix in -steps..=steps {
+            for iy in -steps..=steps {
+                let p = (
+                    vx + f64::from(ix) * RETURN_STEP_MM,
+                    vy + f64::from(iy) * RETURN_STEP_MM,
+                );
+                let distance = (p.0 - vx).hypot(p.1 - vy);
+                if best.is_some_and(|(d, _)| distance >= d)
+                    || signals
+                        .iter()
+                        .any(|(at, gap)| (at.0 - p.0).hypot(at.1 - p.1) < *gap)
+                {
+                    continue;
+                }
+                if ground.iter().all(|g| (g.0 - p.0).hypot(g.1 - p.1) >= apart)
+                    && room(first, p)
+                    && room(last, p)
+                {
+                    best = Some((distance, p));
+                }
+            }
+        }
+        if let Some((_, p)) = best {
+            ground.push(p);
+            out.push(TieVia {
+                net: net.clone(),
+                at: Point::new(mm_to_nm(p.0), mm_to_nm(p.1)),
+                size_nm,
+                drill_nm,
+            });
+        }
+    }
+    out
 }
 
 /// `text` with `vias` written in, in the net spelling the board already uses.
@@ -547,6 +693,74 @@ mod tests {
             (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))"#;
         let board = PcbBoard::parse(text).expect("board must parse");
         assert_eq!(islands_to_tie(&board).len(), 1);
+    }
+
+    /// GND pours on both layers; one signal via at (10, 10) and `extra`.
+    fn stitched_board(extra: &str) -> PcbBoard {
+        let text = format!(
+            r#"(kicad_pcb
+              (layers (0 "F.Cu" signal) (2 "B.Cu" signal))
+              (net 0 "") (net 1 "GND") (net 2 "SIG")
+              (via (at 10 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 2))
+              {extra}
+              (zone (net 1) (net_name "GND") (layer "F.Cu") (fill yes)
+                (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
+                (filled_polygon (layer "F.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20))))
+              (zone (net 1) (net_name "GND") (layer "B.Cu") (fill yes)
+                (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
+                (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))
+            "#
+        );
+        PcbBoard::parse(&text).expect("board must parse")
+    }
+
+    #[test]
+    fn a_layer_change_without_a_ground_via_gets_one_beside_it() {
+        let vias = stitch_vias(&stitched_board(""));
+        assert_eq!(vias.len(), 1, "{vias:?}");
+        let at = (vias[0].at.x_mm(), vias[0].at.y_mm());
+        assert_eq!(vias[0].net, "GND");
+        assert!((at.0 - 10.0).abs() <= RETURN_REACH_MM && (at.1 - 10.0).abs() <= RETURN_REACH_MM);
+        assert!(
+            (at.0 - 10.0).hypot(at.1 - 10.0) >= 0.8,
+            "clear of the signal via: {at:?}"
+        );
+    }
+
+    #[test]
+    fn a_layer_change_with_a_ground_via_near_it_gets_nothing() {
+        let near = r#"(via (at 11 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))"#;
+        assert!(stitch_vias(&stitched_board(near)).is_empty());
+    }
+
+    #[test]
+    fn two_signal_vias_share_one_return_via() {
+        let second = r#"(via (at 10.5 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 2))"#;
+        let vias = stitch_vias(&stitched_board(second));
+        assert_eq!(vias.len(), 1, "{vias:?}");
+    }
+
+    #[test]
+    fn no_return_via_is_added_where_one_layer_has_no_pour() {
+        let text = r#"(kicad_pcb
+          (layers (0 "F.Cu" signal) (2 "B.Cu" signal))
+          (net 0 "") (net 1 "GND") (net 2 "SIG")
+          (via (at 10 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 2))
+          (zone (net 1) (net_name "GND") (layer "B.Cu") (fill yes)
+            (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
+            (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))"#;
+        assert!(stitch_vias(&PcbBoard::parse(text).expect("parses")).is_empty());
+    }
+
+    #[test]
+    fn a_return_via_keeps_clear_of_the_ground_vias_already_there() {
+        // A ground via 1.5 mm away is outside the reach, so one is added, but
+        // not on top of it.
+        let far = r#"(via (at 11.5 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))"#;
+        let vias = stitch_vias(&stitched_board(far));
+        assert_eq!(vias.len(), 1, "{vias:?}");
+        let d = (vias[0].at.x_mm() - 11.5).hypot(vias[0].at.y_mm() - 10.0);
+        assert!(d >= 0.8, "{d}");
     }
 
     #[test]
