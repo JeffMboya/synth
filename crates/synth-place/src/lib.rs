@@ -4820,17 +4820,31 @@ pub fn classify_region_name(pt: Point, usable: Rect) -> String {
     }
 }
 
-/// Farthest a reset button may sit from the MCU it resets, centre to centre.
-const RESET_BUTTON_MAX_MM: f64 = 15.0;
+/// Farthest a reset button or a crystal may sit from the MCU it serves, centre
+/// to centre. A crystal's load capacitors sit beside it, so its distance from
+/// the MCU is the length of the oscillator traces.
+const SUPPORT_PART_MAX_MM: f64 = 10.0;
 
-/// Switches wired to an MCU, directly or through one two-pin part (a debounce
-/// resistor), that sit farther from it than [`RESET_BUTTON_MAX_MM`].
+/// A part that belongs beside its MCU and is farther from it than
+/// [`SUPPORT_PART_MAX_MM`].
+struct DistantSupportPart {
+    refdes: String,
+    mcu: String,
+    mm: f64,
+    /// `reset button` or `crystal`, as the warning names it.
+    what: &'static str,
+    action: &'static str,
+}
+
+/// Switches and crystals wired to an MCU, directly or (for a switch) through
+/// one two-pin part such as a debounce resistor, that sit farther from it than
+/// [`SUPPORT_PART_MAX_MM`].
 ///
 /// Reported as advice, not as a failure of the visual review. Pulling a button
 /// into the MCU's escape area was measured to break routability on the gate
 /// boards, so the placer is not steered; the agent is told, and a `near` hint it
 /// writes is then honoured as a hard one.
-fn distant_reset_buttons(board: &Board, placement: &Placement) -> Vec<(String, String, f64)> {
+fn distant_support_parts(board: &Board, placement: &Placement) -> Vec<DistantSupportPart> {
     let center = |id: ComponentId| {
         placement
             .components
@@ -4846,15 +4860,20 @@ fn distant_reset_buttons(board: &Board, placement: &Placement) -> Vec<(String, S
         })
     };
     let mut found = Vec::new();
-    for switch in board.components.iter().filter(|c| c.kind == "switch") {
+    for part in &board.components {
+        let (what, action) = match part.kind.as_str() {
+            "switch" => ("reset button", "place_reset_button_near_mcu"),
+            "crystal" => ("crystal", "place_crystal_near_mcu"),
+            _ => continue,
+        };
         for mcu in board.components.iter().filter(|c| is_mcu(c)) {
-            let wired = on_net_with(switch.id, mcu.id)
+            let wired = on_net_with(part.id, mcu.id)
                 || board.components.iter().any(|via| {
                     matches!(via.kind.as_str(), "resistor" | "capacitor")
-                        && on_net_with(switch.id, via.id)
+                        && on_net_with(part.id, via.id)
                         && on_net_with(via.id, mcu.id)
                 });
-            let (Some(a), Some(b)) = (center(switch.id), center(mcu.id)) else {
+            let (Some(a), Some(b)) = (center(part.id), center(mcu.id)) else {
                 continue;
             };
             let mm = {
@@ -4862,8 +4881,14 @@ fn distant_reset_buttons(board: &Board, placement: &Placement) -> Vec<(String, S
                 let dy = synth_geometry::nm_to_mm(a.y_nm - b.y_nm);
                 dx.hypot(dy)
             };
-            if wired && mm > RESET_BUTTON_MAX_MM {
-                found.push((switch.refdes.clone(), mcu.refdes.clone(), mm));
+            if wired && mm > SUPPORT_PART_MAX_MM {
+                found.push(DistantSupportPart {
+                    refdes: part.refdes.clone(),
+                    mcu: mcu.refdes.clone(),
+                    mm,
+                    what,
+                    action,
+                });
             }
         }
     }
@@ -5694,18 +5719,25 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         }
     }
 
-    for (button, mcu, mm) in distant_reset_buttons(board, placement) {
+    for part in distant_support_parts(board, placement) {
+        let DistantSupportPart {
+            refdes,
+            mcu,
+            mm,
+            what,
+            action,
+        } = part;
         functional_warnings.push(format!(
-            "{button} is {mm:.0} mm from {mcu}, which it is wired to; a reset button belongs within {RESET_BUTTON_MAX_MM:.0} mm of its MCU"
+            "{refdes} is {mm:.0} mm from {mcu}, which it is wired to; a {what} belongs within {SUPPORT_PART_MAX_MM:.0} mm of its MCU"
         ));
         recommended_actions.push(PlacementRecommendation {
-            action: "place_reset_button_near_mcu".into(),
-            refdes: button,
+            action: action.into(),
+            refdes,
             relative_to: Some(mcu.clone()),
             suggested_x_mm: None,
             suggested_y_mm: None,
             suggested_rotation_deg: None,
-            rationale: format!("add a hard `near: {mcu}` placement hint to the button"),
+            rationale: format!("add a hard `near: {mcu}` placement hint to the {what}"),
         });
     }
 
@@ -7558,29 +7590,30 @@ board "features_only" {
         );
     }
 
-    /// A reset button far from its MCU is advised against, and the advice names
-    /// the hint to write. It is not a visual-review failure: that would block
-    /// routing on designs whose routability depends on the button staying put.
+    /// A reset button or crystal far from its MCU is advised against, and the
+    /// advice names the hint to write. It is not a visual-review failure: that
+    /// would block routing on designs whose routability depends on the part
+    /// staying put.
     #[test]
     fn a_distant_reset_button_is_advised_against_but_does_not_block() {
         let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
         let placement = place(&board).expect("place");
-        let far = distant_reset_buttons(&board, &placement);
+        let far = distant_support_parts(&board, &placement);
         let desc = describe_placement(&board, &placement);
-        for (button, mcu, mm) in &far {
-            assert!(*mm > RESET_BUTTON_MAX_MM);
+        for part in &far {
+            assert!(part.mm > SUPPORT_PART_MAX_MM);
             assert!(desc
                 .functional_warnings
                 .iter()
-                .any(|w| w.starts_with(&format!("{button} is "))));
+                .any(|w| w.starts_with(&format!("{} is ", part.refdes))));
             assert!(desc.visual_review.recommended_actions.iter().any(|a| {
-                a.action == "place_reset_button_near_mcu"
-                    && a.refdes == *button
-                    && a.relative_to.as_deref() == Some(mcu.as_str())
+                a.action == part.action
+                    && a.refdes == part.refdes
+                    && a.relative_to.as_deref() == Some(part.mcu.as_str())
             }));
         }
         assert!(
-            !far.is_empty(),
+            far.iter().any(|part| part.what == "reset button"),
             "sensor_logger's SW1 sits well away from U1"
         );
         assert!(!desc.visual_review.requires_revision);
