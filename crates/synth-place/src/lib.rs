@@ -638,8 +638,8 @@ fn exported_outline(board: &Board, placement: &Placement) -> Option<Rect> {
 /// it off its edge.
 ///
 /// Every slide is judged by the outline the export will fit round the result,
-/// and kept only when it is smaller and no decoupling pair has moved further
-/// apart. A docked connector pins its part to the edge, so a slide takes the
+/// and kept only when it is smaller and the maximum decoupling distance has not
+/// grown. A docked connector pins its part to the edge, so a slide takes the
 /// body away from a pin that cannot follow and lengthens the traces the router
 /// has to fit; on such a floorplan the wiring estimate is a gate too. With no
 /// docked connector every part moves, so the floorplan translates instead of

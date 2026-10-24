@@ -156,7 +156,7 @@ impl OutlineHull {
 /// pockets between macros before a large part blocks the approach. The first
 /// order is the fallback because it always finishes today; the second is kept
 /// only when it leaves a strictly smaller courtyard envelope without
-/// lengthening the wiring or any decoupling distance. A board whose parts
+/// lengthening the wiring or the maximum decoupling distance. A board whose parts
 /// already pack well therefore comes out of here unchanged.
 pub(crate) fn pack_passives_along_outline(
     board: &Board,
@@ -273,7 +273,8 @@ fn pack_passives_in_order(
     usable: Rect,
 ) -> Result<(), PlaceError> {
     let mut hull = OutlineHull::new();
-    if board.components.iter().any(crate::is_edge_flush_connector) {
+    let exact_contact = !board.components.iter().any(crate::is_edge_flush_connector);
+    if !exact_contact {
         hull.keep_full_clearance();
     }
 
@@ -340,6 +341,7 @@ fn pack_passives_in_order(
                     placements,
                     courtyard_lookup,
                     courtyard_offset_lookup,
+                    exact_contact,
                 ) {
                     continue;
                 }
@@ -420,6 +422,7 @@ fn pack_passives_in_order(
             passives,
             courtyard_lookup,
             courtyard_offset_lookup,
+            exact_contact,
         ) {
             let fallback = ComponentPlacement {
                 id: comp_id,
@@ -460,6 +463,7 @@ fn find_nearest_legal_slot(
     passives: &[ComponentId],
     courtyard_lookup: &HashMap<ComponentId, (f64, f64)>,
     courtyard_offset_lookup: &HashMap<ComponentId, (f64, f64)>,
+    exact_contact: bool,
 ) -> Option<Point> {
     let pitch = 500_000; // 0.5 mm grid step
     let temp_placed: Vec<(ComponentId, Rect)> = placements
@@ -508,6 +512,7 @@ fn find_nearest_legal_slot(
                     placements,
                     courtyard_lookup,
                     courtyard_offset_lookup,
+                    exact_contact,
                 )
                 && !overlaps_keepout(cand_rect, id, board, usable, |pid| {
                     temp_placed
@@ -643,6 +648,7 @@ fn intersects_placed(
     placements: &[ComponentPlacement],
     courtyard_lookup: &HashMap<ComponentId, (f64, f64)>,
     courtyard_offset_lookup: &HashMap<ComponentId, (f64, f64)>,
+    exact_contact: bool,
 ) -> bool {
     for p in placements {
         let (w_mm, h_mm) = courtyard_lookup[&p.id];
@@ -653,7 +659,12 @@ fn intersects_placed(
             courtyard_offset_lookup.get(&p.id).copied(),
             gap_around(p.id, passives),
         );
-        if overlaps_interior(rect, p_rect) {
+        let overlap = if exact_contact {
+            overlaps_interior(rect, p_rect)
+        } else {
+            rect.intersects(&p_rect)
+        };
+        if overlap {
             return true;
         }
     }
