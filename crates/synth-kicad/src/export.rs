@@ -831,6 +831,7 @@ fn place_candidates_with_margins(
             candidate,
             synth_place::tight_edge_margin_mm(board),
         );
+        synth_place::trim_outline_to_grid(board, candidate);
     }
 
     let mut distinct: Vec<synth_place::Placement> = Vec::with_capacity(candidates.len());
@@ -849,29 +850,126 @@ fn place_candidates_with_margins(
     Ok(distinct)
 }
 
-/// Ordering key for candidate placements: legality, then routability, then
-/// board area.
+/// Ordering key for candidate placements: legality, then the hard edge
+/// contracts, then routability, then the shape the outline would fit.
 ///
 /// Violations lead — an illegal placement is never preferred, however short
-/// its copper — then net hazards, then the box the outline would fit. Area
-/// only decides between candidates with the same legality and the same count
-/// of overlong nets, so a smaller arrangement cannot buy its size with a
-/// routing hazard.
+/// its copper — then a candidate that keeps every hard edge-hinted connector
+/// on its declared edge, then net hazards, then the layout's shape. Shape
+/// only decides between candidates with the same legality, the same connector
+/// contracts and the same count of overlong nets, so a denser arrangement
+/// cannot buy its compactness with a routing hazard.
+///
+/// On a dense board whose rim hard edge hints fix, the shape term is dead
+/// space plus a quarter of the box (in quarter square millimetres). The same
+/// box can then hide very different amounts of air between the pinned rows,
+/// and only the dead cells separate them. On every other board the box is the
+/// right term: on a sparse board a handful of raster cells flips arrangements
+/// that the box already orders correctly.
 fn placement_key(
     board: &Board,
     placement: &synth_place::Placement,
-) -> (usize, usize, usize, u64, u64) {
+) -> (usize, usize, usize, usize, u64, u64) {
     let violations = placement_score(board, placement);
+    let contracts = hard_edge_contract_violations(board, placement);
     let estimate = synth_place::routability(board, placement);
     let area_nm2 = u64::try_from(placement.board_outline.width_nm().max(0)).unwrap_or(0)
         * u64::try_from(placement.board_outline.height_nm().max(0)).unwrap_or(0);
+    let size = if board.components.len() >= synth_place::DENSE_BOARD_COMPONENTS
+        && has_hard_edge_hint(board)
+    {
+        synth_place::dead_cells(board, placement) * 4 + area_nm2 / 1_000_000_000_000
+    } else {
+        area_nm2
+    };
     (
         violations,
+        contracts,
         thermal_crowding(board, placement),
         estimate.overlong_nets,
-        area_nm2,
+        size,
         estimate.copper_length_nm,
     )
+}
+
+/// Whether the design pins at least one connector to an edge with a hard hint.
+///
+/// Such a hint fixes the rim the outline has to keep, so the box cannot shrink
+/// freely and the remaining win is the air between the pinned parts. A board
+/// without one has no fixed rim to pack around, and its box already orders
+/// candidates correctly.
+fn has_hard_edge_hint(board: &Board) -> bool {
+    board.components.iter().any(|component| {
+        matches!(component.kind.as_str(), "connector" | "jack")
+            && component.placement_hint.as_ref().is_some_and(|hint| {
+                hint.priority == synth_ir::PlacementPriority::Hard && hint.edge.is_some()
+            })
+    })
+}
+
+/// Hard edge hints are contracts, not preferences: a connector the design
+/// pins to an edge must stay in that edge's band and, when its part declares
+/// a mating face, open outward.
+///
+/// The solver enforces this while it places, but one of its escapes — the
+/// whole-canvas fallback a blocked band takes — can still leave a connector
+/// in the middle of the board. Candidates differ in whether that happened, so
+/// the export has to count it; otherwise a taller arrangement that routed
+/// marginally better used to win with the connector stranded 13 mm from its
+/// declared edge.
+fn hard_edge_contract_violations(board: &Board, placement: &synth_place::Placement) -> usize {
+    let band_cap_nm = synth_geometry::mm_to_nm(15.0);
+    board
+        .components
+        .iter()
+        .filter(|component| matches!(component.kind.as_str(), "connector" | "jack"))
+        .filter_map(|component| {
+            let hint = component.placement_hint.as_ref()?;
+            let edge = hint.edge.as_ref()?;
+            if hint.priority != synth_ir::PlacementPriority::Hard {
+                return None;
+            }
+            let placed = placement
+                .components
+                .iter()
+                .find(|candidate| candidate.id == component.id)?;
+            let outline = placement.board_outline;
+            let (distance_nm, board_edge) = match edge {
+                synth_ir::PlacementEdge::Left => (
+                    placed.center.x_nm - outline.min.x_nm,
+                    synth_place::floorplan::BoardEdge::Left,
+                ),
+                synth_ir::PlacementEdge::Right => (
+                    outline.max.x_nm - placed.center.x_nm,
+                    synth_place::floorplan::BoardEdge::Right,
+                ),
+                synth_ir::PlacementEdge::Top => (
+                    placed.center.y_nm - outline.min.y_nm,
+                    synth_place::floorplan::BoardEdge::Top,
+                ),
+                synth_ir::PlacementEdge::Bottom => (
+                    outline.max.y_nm - placed.center.y_nm,
+                    synth_place::floorplan::BoardEdge::Bottom,
+                ),
+            };
+            // The same band the solver's edge hint reserves, capped by the
+            // board so a small outline cannot make it unreachable.
+            let band_nm = band_cap_nm
+                .min(outline.width_nm() / 3)
+                .min(outline.height_nm() / 3);
+            let off_edge = distance_nm > band_nm;
+            let mis_faced = component
+                .part
+                .as_ref()
+                .and_then(|part| part.footprint_dimensions.as_ref())
+                .and_then(|dimensions| dimensions.mating_face)
+                .is_some_and(|face| {
+                    placed.rotation
+                        != synth_place::floorplan::rotation_for_mating_edge(face, board_edge)
+                });
+            (off_edge || mis_faced).then_some(())
+        })
+        .count()
 }
 
 /// Pairs of hot components placed within [`HOT_SPACING_MM`] of each other.
