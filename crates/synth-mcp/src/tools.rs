@@ -5068,6 +5068,7 @@ mod tests {
         let counts = super::counts_by_code(&found);
         assert_eq!(counts["E-SYNTH-SCHEM-013"], 8);
         assert_eq!(counts["E-SYNTH-SCHEM-001"], 1);
+    }
 
     #[test]
     fn a_placement_path_is_not_read_as_the_schematic_sidecar() {
