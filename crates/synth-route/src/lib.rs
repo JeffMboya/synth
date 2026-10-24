@@ -490,10 +490,10 @@ mod tests {
         // while the BG95 resolved to a missing footprint and the router saw a
         // 5x5 mm placeholder; with the real ~15x13 mm module the board routes
         // with 9 unrouted nets, the same as HEAD did with the real footprint.
-        // The outline packer now allows a passive courtyard to touch a hull
-        // rectangle exactly, which fits one more net's escape channel shut and
-        // makes 10; the external router still routes the board cleanly, so the
-        // guard takes that one extra net rather than giving up the packing.
+        // The combined packing (exact contact plus the stricter keepout and rim
+        // rules) fits one more net's escape channel shut and makes 10; the
+        // external router still routes the board cleanly, so the guard takes
+        // that one extra net rather than giving up the packing.
         assert!(
             r.unrouted_nets.len() <= 10,
             "iot_sensor_board routing coverage regressed: {} unrouted nets: {:?}",
