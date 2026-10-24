@@ -356,21 +356,23 @@ const DRC_REASON_FINDINGS: usize = 8;
 /// The single blocking reason for a DRC that found errors: the count, then each
 /// finding's type, description and parts.
 fn drc_reason(report: &crate::drc::DrcReport, blocking: usize) -> String {
+    // Unconnected items count toward the blocking total but are not blocking
+    // findings, so they are named here too.
     let mut named: Vec<String> = report
         .findings
         .iter()
-        .filter(|f| f.is_blocking())
+        .filter(|f| f.is_blocking() || f.severity == "unconnected")
         .take(DRC_REASON_FINDINGS)
         .map(|f| {
-            if f.references.is_empty() {
+            let who = if f.items.is_empty() {
+                f.references.join(", ")
+            } else {
+                f.items.join(" / ")
+            };
+            if who.is_empty() {
                 format!("{}: {}", f.violation_type, f.description)
             } else {
-                format!(
-                    "{}: {} ({})",
-                    f.violation_type,
-                    f.description,
-                    f.references.join(", ")
-                )
+                format!("{}: {} ({who})", f.violation_type, f.description)
             }
         })
         .collect();
@@ -1871,6 +1873,7 @@ mod tests {
             description: description.to_string(),
             nets: Vec::new(),
             references: references.iter().map(ToString::to_string).collect(),
+            items: Vec::new(),
         }
     }
 
@@ -1906,5 +1909,23 @@ mod tests {
         let reason = drc_reason(&report, 12);
         assert!(reason.contains("f7") && !reason.contains("f8"), "{reason}");
         assert!(reason.ends_with("and 4 more"), "{reason}");
+    }
+
+    #[test]
+    fn the_drc_reason_names_an_unconnected_item() {
+        let mut zone = finding("unconnected_items", "Missing connection between items", &[]);
+        zone.severity = "unconnected".to_string();
+        zone.items = vec!["Zone [GND] on F.Cu, priority 1".to_string()];
+        let report = crate::drc::DrcReport {
+            findings: vec![zone],
+            unconnected_items: 1,
+            unavailable_reason: None,
+        };
+        let reason = drc_reason(&report, 1);
+        assert!(
+            reason.contains("Missing connection between items (Zone [GND] on F.Cu, priority 1)"),
+            "{reason}"
+        );
+        assert!(!reason.contains("and "), "{reason}");
     }
 }
