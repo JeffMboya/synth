@@ -4320,6 +4320,56 @@ pub fn classify_region_name(pt: Point, usable: Rect) -> String {
     }
 }
 
+/// Farthest a reset button may sit from the MCU it resets, centre to centre.
+const RESET_BUTTON_MAX_MM: f64 = 15.0;
+
+/// Switches wired to an MCU, directly or through one two-pin part (a debounce
+/// resistor), that sit farther from it than [`RESET_BUTTON_MAX_MM`].
+///
+/// Reported as advice, not as a failure of the visual review. Pulling a button
+/// into the MCU's escape area was measured to break routability on the gate
+/// boards, so the placer is not steered; the agent is told, and a `near` hint it
+/// writes is then honoured as a hard one.
+fn distant_reset_buttons(board: &Board, placement: &Placement) -> Vec<(String, String, f64)> {
+    let center = |id: ComponentId| {
+        placement
+            .components
+            .iter()
+            .find(|placed| placed.id == id)
+            .map(|placed| placed.center)
+    };
+    let is_mcu = |c: &synth_ir::Component| matches!(c.kind.as_str(), "mcu" | "processor");
+    let on_net_with = |a: ComponentId, b: ComponentId| {
+        board.nets.iter().any(|net| {
+            net.endpoints.iter().any(|e| e.component == a)
+                && net.endpoints.iter().any(|e| e.component == b)
+        })
+    };
+    let mut found = Vec::new();
+    for switch in board.components.iter().filter(|c| c.kind == "switch") {
+        for mcu in board.components.iter().filter(|c| is_mcu(c)) {
+            let wired = on_net_with(switch.id, mcu.id)
+                || board.components.iter().any(|via| {
+                    matches!(via.kind.as_str(), "resistor" | "capacitor")
+                        && on_net_with(switch.id, via.id)
+                        && on_net_with(via.id, mcu.id)
+                });
+            let (Some(a), Some(b)) = (center(switch.id), center(mcu.id)) else {
+                continue;
+            };
+            let mm = {
+                let dx = synth_geometry::nm_to_mm(a.x_nm - b.x_nm);
+                let dy = synth_geometry::nm_to_mm(a.y_nm - b.y_nm);
+                dx.hypot(dy)
+            };
+            if wired && mm > RESET_BUTTON_MAX_MM {
+                found.push((switch.refdes.clone(), mcu.refdes.clone(), mm));
+            }
+        }
+    }
+    found
+}
+
 // Area-ratio math in the body casts nanometer integers to f64.
 // Board envelopes stay far below 2^53 nm, so the cast is exact for
 // every representable board; the allow documents that bound.
@@ -5142,6 +5192,21 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
             functional_warnings.push(finding.clone());
             visual_findings.push(finding);
         }
+    }
+
+    for (button, mcu, mm) in distant_reset_buttons(board, placement) {
+        functional_warnings.push(format!(
+            "{button} is {mm:.0} mm from {mcu}, which it is wired to; a reset button belongs within {RESET_BUTTON_MAX_MM:.0} mm of its MCU"
+        ));
+        recommended_actions.push(PlacementRecommendation {
+            action: "place_reset_button_near_mcu".into(),
+            refdes: button,
+            relative_to: Some(mcu.clone()),
+            suggested_x_mm: None,
+            suggested_y_mm: None,
+            suggested_rotation_deg: None,
+            rationale: format!("add a hard `near: {mcu}` placement hint to the button"),
+        });
     }
 
     let visual_score = 100u8.saturating_sub((visual_findings.len() as u8).saturating_mul(20));
@@ -6929,6 +6994,34 @@ board "features_only" {
             desc.unrouted_nets, None,
             "placement review must not report unrouted_nets without routing"
         );
+    }
+
+    /// A reset button far from its MCU is advised against, and the advice names
+    /// the hint to write. It is not a visual-review failure: that would block
+    /// routing on designs whose routability depends on the button staying put.
+    #[test]
+    fn a_distant_reset_button_is_advised_against_but_does_not_block() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let far = distant_reset_buttons(&board, &placement);
+        let desc = describe_placement(&board, &placement);
+        for (button, mcu, mm) in &far {
+            assert!(*mm > RESET_BUTTON_MAX_MM);
+            assert!(desc
+                .functional_warnings
+                .iter()
+                .any(|w| w.starts_with(&format!("{button} is "))));
+            assert!(desc.visual_review.recommended_actions.iter().any(|a| {
+                a.action == "place_reset_button_near_mcu"
+                    && a.refdes == *button
+                    && a.relative_to.as_deref() == Some(mcu.as_str())
+            }));
+        }
+        assert!(
+            !far.is_empty(),
+            "sensor_logger's SW1 sits well away from U1"
+        );
+        assert!(!desc.visual_review.requires_revision);
     }
 
     /// A real placement of a real design should clear the gate. If this fails,
