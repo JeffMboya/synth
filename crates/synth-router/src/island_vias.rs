@@ -29,11 +29,18 @@ const DEFAULT_VIA_DRILL_NM: i64 = 300_000;
 /// Copper kept between the via's pad and the edge of the pour, on top of the
 /// pad radius. The pour edge already stands off foreign copper by the
 /// clearance rule, so this is slack against rounding, not a second clearance.
-const EDGE_SLACK_MM: f64 = 0.1;
+///
+/// 0.1 mm left a decoupling capacitor's ground island on a 77-part board
+/// untied: its widest circle has a radius of 0.387 mm, against the 0.4 mm
+/// that a 0.6 mm via and 0.1 mm of slack asked for.
+const EDGE_SLACK_MM: f64 = 0.05;
 
 /// How many fill-and-tie rounds to run. A via added in one round can move the
 /// next fill, so the pass repeats until nothing is left to tie.
 const MAX_ROUNDS: usize = 3;
+
+/// Rounding tolerance when comparing a distance with the room a via needs.
+const EPS: f64 = 1e-6;
 
 /// A via the pass wants added.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,7 +337,9 @@ fn best_spot(regions: &[Region], island: &[usize], main: &[usize], need: f64) ->
         let a = &regions[a];
         let step = ((a.max.0 - a.min.0) * (a.max.1 - a.min.1) / 40_000.0)
             .sqrt()
-            .max(0.2);
+            // A small island has few points to try, and a coarse grid can step
+            // over the one narrow window that holds the via.
+            .max(0.02);
         let mut y = a.min.1 + need;
         while y <= a.max.1 - need {
             let mut x = a.min.0 + need;
@@ -338,7 +347,7 @@ fn best_spot(regions: &[Region], island: &[usize], main: &[usize], need: f64) ->
                 let p = (x, y);
                 if a.contains(p) {
                     let from_a = a.edge_distance(p);
-                    if from_a >= need && best.is_none_or(|(margin, _)| from_a > margin) {
+                    if from_a >= need - EPS && best.is_none_or(|(margin, _)| from_a > margin) {
                         let from_main = main
                             .iter()
                             .map(|&b| &regions[b])
@@ -346,7 +355,7 @@ fn best_spot(regions: &[Region], island: &[usize], main: &[usize], need: f64) ->
                             .map(|b| b.edge_distance(p))
                             .fold(f64::MIN, f64::max);
                         let margin = from_a.min(from_main);
-                        if margin >= need && best.is_none_or(|(m, _)| margin > m) {
+                        if margin >= need - EPS && best.is_none_or(|(m, _)| margin > m) {
                             best = Some((margin, p));
                         }
                     }
@@ -518,6 +527,26 @@ mod tests {
             (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))"#;
         let board = PcbBoard::parse(text).expect("board must parse");
         assert!(islands_to_tie(&board).is_empty());
+    }
+
+    #[test]
+    fn an_island_a_hair_wider_than_the_via_still_gets_one() {
+        // 1.5 x 0.75 mm: its widest circle has a radius of 0.375 mm, which a
+        // 0.6 mm via (0.3 mm) fits with the 0.05 mm of slack but not with 0.1.
+        let text = r#"(kicad_pcb
+          (layers (0 "F.Cu" signal) (2 "B.Cu" signal))
+          (net 0 "") (net 1 "GND")
+          (segment (start 25.2 6.6) (end 25.4 6.6) (width 0.1) (layer "F.Cu") (net 1))
+          (via (at 5 5) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))
+          (zone (net 1) (net_name "GND") (layer "F.Cu") (fill yes)
+            (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
+            (filled_polygon (layer "F.Cu") (pts (xy 0 0) (xy 20 0) (xy 20 20) (xy 0 20)))
+            (filled_polygon (layer "F.Cu") (pts (xy 25 6.25) (xy 26.5 6.25) (xy 26.5 7) (xy 25 7))))
+          (zone (net 1) (net_name "GND") (layer "B.Cu") (fill yes)
+            (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
+            (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))"#;
+        let board = PcbBoard::parse(text).expect("board must parse");
+        assert_eq!(islands_to_tie(&board).len(), 1);
     }
 
     #[test]
