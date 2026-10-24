@@ -566,6 +566,190 @@ fn expand_outline_for_pinned(
     placement.board_outline = outline;
 }
 
+/// The outline the KiCad export fits round `placement`: the tight rim the
+/// export uses, with an edge connector's flush side taken from its hint.
+fn exported_outline(board: &Board, placement: &Placement) -> Option<Rect> {
+    outline_with_flush_connectors(
+        board,
+        &placement.components,
+        mm_to_nm(tight_edge_margin_mm(board)),
+        sidecar_courtyard_rect,
+        true,
+    )
+}
+
+/// Close the empty bands a sidecar floorplan leaves between its parts.
+///
+/// The pinned coordinates place every part relative to its neighbours, but
+/// they also leave bands no courtyard uses: beside a connector, or between a
+/// row and the one below it. Sliding each pinned part toward one board edge
+/// closes them; because the parts settle in the order they are met, none
+/// passes another and a grid step stays between neighbours. A connector docked
+/// to an edge does not slide, so the body moves toward it instead of dragging
+/// it off its edge.
+///
+/// Every slide is judged by the outline the export will fit round the result,
+/// and kept only when it is smaller and no decoupling pair has moved further
+/// apart. A docked connector pins its part to the edge, so a slide takes the
+/// body away from a pin that cannot follow and lengthens the traces the router
+/// has to fit; on such a floorplan the wiring estimate is a gate too. With no
+/// docked connector every part moves, so the floorplan translates instead of
+/// tearing apart and the outline, decoupling and keepout checks are enough.
+fn close_pinned_bands(
+    board: &Board,
+    placement: &mut Placement,
+    sidecar: &synth_layout::sidecar::SidecarLayout,
+) {
+    // A relative entry states a distance from an anchor, so the pair has to
+    // move together or not at all. The slides here work one part at a time, so
+    // a floorplan that uses one keeps its pinned coordinates exactly.
+    if sidecar
+        .components
+        .values()
+        .any(|entry| entry.relative_to.is_some())
+    {
+        return;
+    }
+    let movable: Vec<bool> = placement
+        .components
+        .iter()
+        .map(|placed| {
+            flush_edge_index(board, placed.id).is_none()
+                && board.component(placed.id).is_some_and(|component| {
+                    sidecar.components.contains_key(&component.refdes)
+                })
+        })
+        .collect();
+    if movable.iter().filter(|movable| **movable).count() < 2 {
+        return;
+    }
+    // A dense part keeps the same ring here that compaction keeps: the router
+    // still has to escape its pins.
+    let sized = courtyard_sizes(board, placement);
+    let spaced: Vec<(f64, f64)> = placement
+        .components
+        .iter()
+        .zip(&sized)
+        .map(|(placed, size)| {
+            let ring = if is_dense_part(board, placed.id) {
+                DENSE_PART_RING_MM
+            } else {
+                0.0
+            };
+            (size.0 + ring, size.1 + ring)
+        })
+        .collect();
+    let Some(mut outline) = exported_outline(board, placement) else {
+        return;
+    };
+    let mut area = area_mm2(&outline);
+    // A connector is docked when its hint names an edge; that part does not
+    // slide, so the rest of the floorplan moves relative to a fixed pin.
+    let docked = placement
+        .components
+        .iter()
+        .any(|placed| flush_edge_index(board, placed.id).is_some());
+    let mut hpwl = total_hpwl_nm(board, placement);
+    let mut decoupling = crate::score::score_placement(board, placement)
+        .max_decoupling_distance_mm;
+    let mut hits = keepout_hits(board, placement);
+    for _ in 0..PINNED_COMPACT_ROUNDS {
+        let mut candidates: Vec<Placement> = Vec::new();
+        for (along_y, toward_low) in [(true, true), (true, false), (false, true), (false, false)] {
+            let mut candidate = placement.clone();
+            slide_parts(
+                &mut candidate,
+                &spaced,
+                &movable,
+                along_y,
+                toward_low,
+                PINNED_SLIDE_PITCH_MM,
+            );
+            candidates.push(candidate);
+        }
+        // A part that reaches an outline side is usually shadowed by another
+        // part on the same side, so moving either one alone leaves the area
+        // unchanged, while moving every part together drags the floorplan and
+        // lengthens the wiring to a docked connector. Close one side's band on
+        // its own: only the parts that reach that side move inward.
+        let band_nm = mm_to_nm(tight_edge_margin_mm(board)) + mm_to_nm(0.5);
+        let rects: Vec<Rect> = placement
+            .components
+            .iter()
+            .zip(&sized)
+            .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+            .collect();
+        for (along_y, toward_low, side) in [
+            (false, false, 0),
+            (true, false, 1),
+            (false, true, 2),
+            (true, true, 3),
+        ] {
+            let band: Vec<bool> = movable
+                .iter()
+                .zip(&rects)
+                .map(|(is_movable, rect)| {
+                    *is_movable
+                        && match side {
+                            0 => rect.min.x_nm <= outline.min.x_nm + band_nm,
+                            1 => rect.min.y_nm <= outline.min.y_nm + band_nm,
+                            2 => rect.max.x_nm >= outline.max.x_nm - band_nm,
+                            _ => rect.max.y_nm >= outline.max.y_nm - band_nm,
+                        }
+                })
+                .collect();
+            if !band.iter().any(|in_band| *in_band) {
+                continue;
+            }
+            let mut candidate = placement.clone();
+            slide_parts(
+                &mut candidate,
+                &spaced,
+                &band,
+                along_y,
+                toward_low,
+                PINNED_SLIDE_PITCH_MM,
+            );
+            candidates.push(candidate);
+        }
+
+        let mut best: Option<(Placement, Rect, i64, f64)> = None;
+        for candidate in candidates {
+            let Some(candidate_outline) = exported_outline(board, &candidate) else {
+                continue;
+            };
+            let candidate_area = area_mm2(&candidate_outline);
+            if candidate_area >= area {
+                continue;
+            }
+            let candidate_hpwl = total_hpwl_nm(board, &candidate);
+            let candidate_decoupling =
+                crate::score::score_placement(board, &candidate).max_decoupling_distance_mm;
+            if (docked && candidate_hpwl > hpwl)
+                || candidate_decoupling > decoupling
+                || keepout_hits(board, &candidate) > hits
+            {
+                continue;
+            }
+            let smaller = best.as_ref().is_none_or(|(_, best_outline, best_hpwl, _)| {
+                (candidate_area, candidate_hpwl) < (area_mm2(best_outline), *best_hpwl)
+            });
+            if smaller {
+                best = Some((candidate, candidate_outline, candidate_hpwl, candidate_decoupling));
+            }
+        }
+        let Some((candidate, candidate_outline, candidate_hpwl, candidate_decoupling)) = best else {
+            break;
+        };
+        *placement = candidate;
+        outline = candidate_outline;
+        area = area_mm2(&outline);
+        hpwl = candidate_hpwl;
+        decoupling = candidate_decoupling;
+        hits = keepout_hits(board, placement);
+    }
+}
+
 /// Tighten an override-aware outline around the actual footprint courtyards.
 /// The outline origin is allowed to be non-zero so absolute sidecar coordinates
 /// remain authoritative; only unused perimeter area is removed.
@@ -1138,6 +1322,9 @@ pub fn place_with_tuning_and_sidecar_seeded<S: ::std::hash::BuildHasher>(
     )?;
     if let Some(sidecar) = loaded.as_ref() {
         apply_sidecar_overrides(board, &mut placement, sidecar);
+        // The pinned coordinates are a floorplan, not a packing: they leave
+        // bands no courtyard uses. Slide them shut before the outline is fitted.
+        close_pinned_bands(board, &mut placement, sidecar);
     }
     if sidecar_path.is_some_and(std::path::Path::exists) {
         tighten_outline_after_sidecar(board, &mut placement);
@@ -3285,23 +3472,21 @@ fn enforce_edge_copper_clearance(
     }
 }
 
-/// True when `candidate` falls inside any keepout circle.
+/// Resolve the keepout circles that apply to component `id`, in board
+/// coordinates.
 ///
 /// `lookup` resolves an already-placed component's courtyard rect; callers
 /// differ in how they track placements, so this is a closure rather than a
 /// concrete slice type. A missing rect means "not placed yet", which falls back
-/// to the board centre — the same fallback used when no anchor matches.
-pub(crate) fn intersects_keepout(
-    candidate: Rect,
+/// to the board centre — the same fallback used when no anchor matches. A
+/// keepout anchored to `id` itself does not apply to it.
+fn keepout_circles(
     id: ComponentId,
     board: &Board,
     board_outline: Rect,
     lookup: impl Fn(ComponentId) -> Option<Rect>,
-) -> bool {
-    let candidate_center = Point::new(
-        (candidate.min.x_nm + candidate.max.x_nm) / 2,
-        (candidate.min.y_nm + candidate.max.y_nm) / 2,
-    );
+) -> Vec<(Point, i64)> {
+    let mut circles = Vec::new();
     for keepout in &board.keepouts {
         let radius_mm = keepout.radius.map_or(0.0, synth_ir::Length::to_mm);
         let keepout_radius_nm = mm_to_nm(radius_mm);
@@ -3336,18 +3521,56 @@ pub(crate) fn intersects_keepout(
             ))
         };
 
-        if let Some(ac) = keepout_center {
-            let dx = (candidate_center.x_nm - ac.x_nm).abs();
-            let dy = (candidate_center.y_nm - ac.y_nm).abs();
-            if dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
-                < keepout_radius_nm.saturating_mul(keepout_radius_nm)
-            {
-                return true;
-            }
+        if let Some(center) = keepout_center {
+            circles.push((center, keepout_radius_nm));
         }
     }
+    circles
+}
 
-    false
+/// True when `candidate` falls inside any keepout circle.
+pub(crate) fn intersects_keepout(
+    candidate: Rect,
+    id: ComponentId,
+    board: &Board,
+    board_outline: Rect,
+    lookup: impl Fn(ComponentId) -> Option<Rect>,
+) -> bool {
+    let candidate_center = Point::new(
+        (candidate.min.x_nm + candidate.max.x_nm) / 2,
+        (candidate.min.y_nm + candidate.max.y_nm) / 2,
+    );
+    keepout_circles(id, board, board_outline, lookup)
+        .into_iter()
+        .any(|(center, radius)| {
+            let dx = candidate_center.x_nm - center.x_nm;
+            let dy = candidate_center.y_nm - center.y_nm;
+            dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+                < radius.saturating_mul(radius)
+        })
+}
+
+/// True when any part of `candidate` overlaps a keepout circle, not just its
+/// centre. Packing uses this stricter test: a part whose centre sits just
+/// outside the circle can still hang its pads into the no-route zone, leaving
+/// the router no escape and making it drop a via inside the pad.
+pub(crate) fn overlaps_keepout(
+    candidate: Rect,
+    id: ComponentId,
+    board: &Board,
+    board_outline: Rect,
+    lookup: impl Fn(ComponentId) -> Option<Rect>,
+) -> bool {
+    keepout_circles(id, board, board_outline, lookup)
+        .into_iter()
+        .any(|(center, radius)| {
+            let nearest_x = center.x_nm.clamp(candidate.min.x_nm, candidate.max.x_nm);
+            let nearest_y = center.y_nm.clamp(candidate.min.y_nm, candidate.max.y_nm);
+            let dx = nearest_x - center.x_nm;
+            let dy = nearest_y - center.y_nm;
+            dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+                < radius.saturating_mul(radius)
+        })
 }
 
 #[allow(dead_code)]
@@ -5313,6 +5536,25 @@ fn is_dense_part(board: &Board, id: ComponentId) -> bool {
 /// the layout, so this only bounds a layout that keeps finding room.
 const COMPACT_ROUNDS: usize = 60;
 
+/// The step [`slide_parts`] leaves between two parts in an automatic
+/// placement. It keeps a channel between neighbours for the built-in router,
+/// which has to escape their pins.
+const SLIDE_PITCH_MM: f64 = 0.5;
+
+/// The same step between the parts of a sidecar floorplan. Their author
+/// already fixed every relation, so only the courtyard gap has to remain:
+/// the step is added on top of both courtyards, which already carry their
+/// footprint's copper margin, so a quarter of the automatic channel still
+/// clears the fab and DRC rules while shortening the chain that sets each
+/// board side.
+const PINNED_SLIDE_PITCH_MM: f64 = 0.125;
+
+/// Rounds [`close_pinned_bands`] gets. Halving the sliding step halves how
+/// far one round closes, so the pinned pass needs twice the rounds to reach
+/// the same bands. Only the sidecar floorplans see this bound; automatic
+/// placements keep [`COMPACT_ROUNDS`].
+const PINNED_COMPACT_ROUNDS: usize = COMPACT_ROUNDS * 2;
+
 /// Sweeps `separate_overlaps` may spend pushing courtyards apart.
 const SEPARATION_SWEEPS: usize = 200;
 
@@ -5648,15 +5890,17 @@ fn labels_without_room(board: &Board, placement: &Placement, sizes: &[(f64, f64)
 /// until it touches the part in its way or reaches the edge of the layout. A
 /// part alone in its band moves into a free spot in the next band over, which
 /// scaling toward the middle never does. Parts move in order from the target
-/// side outward, so none passes another.
+/// side outward, so none passes another. `pitch_mm` is the grid step kept
+/// between two neighbours.
 fn slide_parts(
     placement: &mut Placement,
     sizes: &[(f64, f64)],
     movable: &[bool],
     along_y: bool,
     toward_low: bool,
+    pitch_mm: f64,
 ) {
-    let pitch_nm = mm_to_nm(0.5);
+    let pitch_nm = mm_to_nm(pitch_mm);
     let Some(envelope) = courtyard_envelope(placement, sizes) else {
         return;
     };
@@ -5979,7 +6223,14 @@ fn compact_placement(board: &Board, placement: Placement) -> Placement {
                 .iter()
                 .find_map(|&(along_y, toward_low)| {
                     let mut candidate = current.clone();
-                    slide_parts(&mut candidate, &spaced, &movable, along_y, toward_low);
+                    slide_parts(
+                        &mut candidate,
+                        &spaced,
+                        &movable,
+                        along_y,
+                        toward_low,
+                        SLIDE_PITCH_MM,
+                    );
                     shift_rows_inward(&mut candidate, &spaced, &flush_edge);
                     settle(candidate)
                 })
@@ -7436,7 +7687,14 @@ board "features_only" {
         let movable = vec![true; loose.components.len()];
 
         let mut slid = loose.clone();
-        slide_parts(&mut slid, &sizes, &movable, true, true);
+        slide_parts(
+            &mut slid,
+            &sizes,
+            &movable,
+            true,
+            true,
+            SLIDE_PITCH_MM,
+        );
 
         let y = |p: &Placement, r| centre_of(&board, p, r).y_nm;
         assert_eq!(y(&slid, "R3"), y(&slid, "R1"), "R3 joins the band above");
@@ -7457,7 +7715,14 @@ board "features_only" {
         let movable = vec![true; loose.components.len()];
 
         let mut slid = loose.clone();
-        slide_parts(&mut slid, &sizes, &movable, true, true);
+        slide_parts(
+            &mut slid,
+            &sizes,
+            &movable,
+            true,
+            true,
+            SLIDE_PITCH_MM,
+        );
 
         let y = |p: &Placement, r| centre_of(&board, p, r).y_nm;
         assert!(y(&slid, "R2") > y(&slid, "R1"), "order kept");
