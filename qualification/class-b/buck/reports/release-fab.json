@@ -1,0 +1,90 @@
+{
+  "schema_version": "synth.release.v1",
+  "tool_version": "synth-cli 0.1.1",
+  "input": "qualification/class-b/buck/buck.synth",
+  "fab_requested": true,
+  "production_status": "untrusted",
+  "release_ready": false,
+  "overrides": [
+    {
+      "kind": "unverified_parts",
+      "flag": "--allow-unverified-parts",
+      "code": "W-SYNTH-PART-UNVERIFIED",
+      "consequence": "no reviewer has checked these part definitions against their datasheets",
+      "affected_parts": [
+        "jst_b2b_xh_a_2pin",
+        "mf_msmf110_33x",
+        "ss36",
+        "smbj26a",
+        "tps54202",
+        "l_bourns_srn6045ta_100m",
+        "ltst_c190kgkt"
+      ],
+      "detail": "7 part(s) have no reviewer"
+    }
+  ],
+  "reviewer_state": [
+    {
+      "part_id": "c_electrolytic_smd_8x10",
+      "reviewed": false
+    },
+    {
+      "part_id": "c_generic_0603",
+      "reviewed": false
+    },
+    {
+      "part_id": "c_generic_1206",
+      "reviewed": false
+    },
+    {
+      "part_id": "jst_b2b_xh_a_2pin",
+      "reviewed": false
+    },
+    {
+      "part_id": "l_bourns_srn6045ta_100m",
+      "reviewed": false
+    },
+    {
+      "part_id": "ltst_c190kgkt",
+      "reviewed": false
+    },
+    {
+      "part_id": "mf_msmf110_33x",
+      "reviewed": false
+    },
+    {
+      "part_id": "r_generic_0603",
+      "reviewed": false
+    },
+    {
+      "part_id": "smbj26a",
+      "reviewed": false
+    },
+    {
+      "part_id": "ss36",
+      "reviewed": false
+    },
+    {
+      "part_id": "tps54202",
+      "reviewed": false
+    }
+  ],
+  "routing": {
+    "engine": "freerouting",
+    "engine_version": "tools/freerouting/freerouting-2.4.1.jar",
+    "state": "routed",
+    "input_hash": "28cf0c38180c64f4086c612416d1cfc7eaa75c802ce69143338c4e07cfdead1d",
+    "run_record": "out/buck/buck.routing.json"
+  },
+  "signal_integrity": {
+    "blocking": 0,
+    "warnings": 1,
+    "findings": [
+      {
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 3 changes layers at (35.97, 14.43) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "blocking": false
+      }
+    ]
+  }
+}

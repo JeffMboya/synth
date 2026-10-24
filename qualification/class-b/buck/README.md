@@ -1,7 +1,8 @@
 # 24 V in, 3.3 V out buck with input parts (PTC, reverse-block diode, TVS) (SYN-67)
 
-Status: designed, placed, routed, DRC and ERC counted. Not fabricated, not powered, no hardware test.
-All new parts are UNVERIFIED (imported, no reviewer). No reviewer has signed off this board.
+Status: designed, placed, routed, DRC and ERC counted, Gerber and drill files generated. Not fabricated,
+not powered, no hardware test. All new parts are UNVERIFIED (imported, no reviewer). No reviewer has
+signed off this board, so the fab package reports `release_ready: false` by design.
 Intended for 24 V +10% in and 1 A out. 1 A at 70 C is not shown (see Limits, thermal). Not an overvoltage-safe or 2 A design.
 
 ## Purpose
@@ -11,14 +12,19 @@ and a power LED, plus a negative variant that the feedback-safety rule (E-SYNTH-
 
 ## What
 
-- `buck.synth`, board-mm sidecar `buck.placement.layout.toml`, negative `buck_neg_fb_sw.synth`, hashes in `SHA256SUMS`, matrix in `QUALIFICATION.md`, evidence in `kicad/`, `reports/`, `images/`.
+- `buck.synth`, board-mm sidecar `buck.placement.layout.toml`, negative `buck_neg_fb_sw.synth`, hashes in `SHA256SUMS`, matrix and `#38` traceability in `QUALIFICATION.md`, evidence in `kicad/`, `reports/`, `images/`.
+- `kicad/`: the KiCad project, BOM, pick-and-place, `gerbers/` (22 Gerbers plus the job file, 4 copper layers) and `drill/` (PTH and NPTH). `reports/`: `release.json` (source/DRC gate) and `release-fab.json` (fab package, untrusted), DRC, ERC, routing and connectivity.
 - Chain: J1 (JST XH) -> F1 PTC -> D1 SS36 Schottky (reverse block) -> VIN node.
   VIN node: D2 SMBJ26A TVS, C1 47 uF bulk, C2 10 uF, C3 100 nF (on the U1 VIN pin), U1 TPS54202, UVLO divider.
 - U1 -> L1 10 uH -> C5, C6 (2x 22 uF, 25 V X7R) -> J2. C4 100 nF boot. D3 green LED + R_LED 470.
 - Feedback: R_FB_T 100k from the output node (L1 pad 2 side), R_FB_B 22.1k, C7 56 pF across R_FB_T.
   Vout = 0.596 x (1 + 100k/22.1k) = 3.293 V typical, 3.21 to 3.376 V over Vref 0.581 to 0.611 V (ideal resistors).
-- Negative file: identical except R_FB_T and C7 hang from SW. Besides E-SYNTH-POWER-011 it emits the same 14 warnings as the good board.
-- Board: 63.0 x 37.6 mm (the SMC diode, the 8 x 10 mm electrolytic and the placer's 4 mm margin take room; the auto placer gave a similar area, see QUALIFICATION.md B9), 4 layers, GND pours on all layers. Power tracks 0.5 mm, signal 0.127 mm.
+- Negative file: identical except R_FB_T and C7 hang from SW. Besides E-SYNTH-POWER-011 it emits 13 of the good board's 14 warnings.
+- Board: 58.0 x 32.605 mm (1891 mm2) with the 1.5 mm edge rim from #272. The part positions come from the
+  sidecar, so the placer's margin no longer sets the outline; the SMC diode, the 8 x 10 mm electrolytic and
+  the six-part input chain set it instead. 4 layers, GND pours on all layers. Power tracks 0.5 mm, signal
+  0.127 mm. J1 sits 1.5 mm from the top and left edges and J2 1.6 mm from the right edge, which is the rim,
+  not a chosen connector position.
 
 ## UVLO (TPS54202 SLVSD26C section 6.3.5, Eq 1 and 2, Figure 6-1)
 
@@ -74,30 +80,40 @@ scripts/setup-routing-engines.sh --freerouting-only          # FreeRouting jar +
 B=$(pwd)/qualification/class-b/buck   # absolute path, set from the repo root before any cd
 synth validate $B/buck.synth
 synth route $B/buck.synth --router free-routing
-synth export-kicad $B/buck.synth --out OUT --allow-unverified-parts --validate-erc --router free-routing
-kicad-cli pcb drc --severity-all --refill-zones --format json -o OUT/drc.json OUT/buck.kicad_pcb
-kicad-cli sch erc --severity-all --format json -o OUT/erc.json OUT/buck.kicad_sch
+synth export-kicad $B/buck.synth --out out/buck --allow-unverified-parts --validate-erc \
+  --router free-routing --pnp --gerbers --drill             # fab package: reports/release-fab.json
+synth export-kicad $B/buck.synth --out out/buck-nofab --allow-unverified-parts --validate-erc \
+  --router free-routing                                     # source/DRC gate: reports/release.json
+kicad-cli pcb drc --severity-all --refill-zones --format json -o $B/reports/buck.kicad-drc.json $B/kicad/buck.kicad_pcb
+kicad-cli sch erc --severity-all --format json -o $B/reports/buck.kicad-erc.json $B/kicad/buck.kicad_sch
 synth validate $B/buck_neg_fb_sw.synth
-python3 -I $B/pad_gaps.py OUT/buck.kicad_pcb
+python3 -I $B/pad_gaps.py $B/kicad/buck.kicad_pcb
 ```
+
+`out/` is gitignored scratch. The two `export-kicad` runs produce a byte-identical `.kicad_pcb` and
+`.kicad_sch`; they differ only in whether the fab gate is asked, which is why there are two release
+reports.
 Registry import: `synth part import-kicad Regulator_Switching:TPS54202DDC --id tps54202 --footprint Package_TO_SOT_SMD:SOT-23-6`;
 likewise `Diode:SS36` (Diode_SMD:D_SMC), `Device:D_Zener` (SMBJ26A, Diode_SMD:D_SMB), `Device:Polyfuse`, `Device:L`, `Device:C_Polarized`, `Connector_Generic:Conn_01x02`.
 The files were then edited by hand (names, MPN, dimensions, datasheet URL, `switch_node` on SW and `feedback` on FB as for `mp2307_buck`).
 
 ## Measured results
 
-The export routes with FreeRouting 2.4.1; the routed board is written as `OUT/buck.kicad_pcb` when Synth's gate passes (state `routed`). Numbers below are from that file.
+The export routes with FreeRouting 2.4.1; the routed board is written as `out/buck/buck.kicad_pcb` when Synth's gate passes (state `routed`). Numbers below are from that file, on Synth `main` `1eac8a1`, 2026-10-24.
 
 | Number | Value | Command |
 | --- | --- | --- |
-| validate, good board | exit 0, 0 errors, 14 warnings (8 part-unverified, 3 E-SYNTH-SCHEM-003 (schematic-sheet distance of a cap to U1, not PCB distance), 1 anomaly, 1 supply, 1 power symbol) | `synth validate $B/buck.synth 2>&1 \| grep -c '^warning'` and `grep -c '^error'` |
-| validate, negative | exit 1, 1 error (E-SYNTH-POWER-011), same 14 warnings | same on `buck_neg_fb_sw.synth` |
-| routing | `routed`, 10 nets connected, 0 open, 52 segments, 5 vias | `synth route $B/buck.synth` (JSON `state`, `statistics`); cross-check `grep -cP '^\t\(segment' OUT/buck.kicad_pcb`, `grep -cP '^\t\(via' ...` |
+| validate, good board | exit 0, 0 errors, 14 warnings (8 part-unverified, 3 E-SYNTH-SCHEM-003 (schematic-sheet distance of a cap to U1, not PCB distance), 1 E-SYNTH-SCHEM-005 junction fan-out, 1 anomaly, 1 supply) | `synth validate $B/buck.synth 2>&1 \| grep -c '^warning'` and `grep -c '^error'` |
+| validate, negative | exit 1, 1 error (E-SYNTH-POWER-011), 13 warnings | same on `buck_neg_fb_sw.synth` |
+| routing | `routed`, 10 nets connected, 0 open, 51 segments, 15 vias, 155.16 mm | `synth route $B/buck.synth` (JSON `state`, `statistics`); cross-check `grep -c '^\t(segment' out/buck/buck.kicad_pcb`, `grep -c '^\t(via' ...` |
 | Synth routing check | kicad_drc 0 errors, 0 unconnected, 20 warnings; `fabrication_ready` true (routing check only) | `synth route` JSON `validation` |
-| DRC | 0 errors, 0 unconnected, 20 warnings, all lib_footprint_issues | `kicad-cli pcb drc ... -o OUT/drc.json`, then `python3 -I -c "import json,collections as c;d=json.load(open('OUT/drc.json'));print(c.Counter((v['severity'],v['type']) for v in d['violations']),len(d['unconnected_items']))"` |
-| ERC | 0 errors, 54 warnings: 34 lib_symbol_issues, 20 footprint_link_issues (libraries not in the KiCad config) | `kicad-cli sch erc ... -o OUT/erc.json`, same one-liner over `sheets[].violations` |
-| Outline | 63.0 x 37.6 mm (x -2.2 to 60.8, y -1.375 to 36.23) | `grep -A3 gr_line OUT/buck.kicad_pcb \| grep start` |
-| Hashes | pcb b0aaaa111a15..., sch 47b7451740a8..., two exports identical | `cd $B && sha256sum -c SHA256SUMS` (full values in `SHA256SUMS` and `QUALIFICATION.md`) |
+| Release gate | `release_ready` true, `production_status` production, 0 blocking signal-integrity findings; with `--gerbers --drill` the same board reports `release_ready` false and `untrusted` because 7 parts have no reviewer | `reports/release.json`, `reports/release-fab.json` |
+| DRC | 0 errors, 0 unconnected, 20 warnings, all lib_footprint_issues | `kicad-cli pcb drc ... -o reports/buck.kicad-drc.json`, then `python3 -I -c "import json,collections as c;d=json.load(open('$B/reports/buck.kicad-drc.json'));print(c.Counter((v['severity'],v['type']) for v in d['violations']),len(d['unconnected_items']))"` |
+| ERC | 0 errors, 54 warnings: 34 lib_symbol_issues, 20 footprint_link_issues (libraries not in the KiCad config) | `kicad-cli sch erc ... -o reports/buck.kicad-erc.json`, same one-liner over `sheets[].violations` |
+| Schematic netlist | 10 nets, equal to the source's 5 nets and 5 `connect`s node for node | `kicad-cli sch export netlist --format kicadsexpr -o /tmp/buck.net $B/kicad/buck.kicad_sch` |
+| Outline | 58.0 x 32.605 mm (x 0.3 to 58.3, y 1.125 to 33.73) | `grep -A3 gr_line $B/kicad/buck.kicad_pcb \| grep start` |
+| Manufacturing exports | 22 Gerbers plus the job file (4 copper layers), PTH 19 holes (15 x 0.3 mm vias, 4 x 1.0 mm pins), NPTH none | `ls $B/kicad/gerbers $B/kicad/drill`; `grep -c '^X' $B/kicad/drill/buck-PTH.drl` |
+| Hashes | pcb eda864e33ca1..., sch 19a2f15154fa..., three exports identical | `cd $B && sha256sum -c SHA256SUMS` (full values in `SHA256SUMS` and `QUALIFICATION.md`) |
 
 Pad-edge gaps in the placed, routed board, from `pad_gaps.py` (pcbnew pad bounding boxes, edge to edge):
 
@@ -115,8 +131,8 @@ Pad-edge gaps in the placed, routed board, from `pad_gaps.py` (pcbnew pad boundi
 | R_FB_B ground pad to U1 GND | 4.25 |
 | R_FB_T FB pad to L1 pad 1 (SW) | 7.53 |
 
-The sidecar holds the placed positions (checked against the file; only the JST connectors differ, by their fixed anchor offset of (-1.25, -0.525) mm).
-Synth moves a sidecar position that collides with a neighbour's courtyard plus margin, so `pad_gaps.py` on the final routed file is the reference, not the sidecar coordinates.
+The sidecar holds the placed positions. All 20 parts in the routed file match it within 0.01 mm; only the JST connectors differ, by their fixed anchor offset of (-1.25, -0.525) mm (QUALIFICATION.md A13).
+`pad_gaps.py` on the final routed file is the reference for gaps, not the sidecar coordinates.
 
 ## Negative case: feedback from the switch node
 
@@ -130,22 +146,38 @@ error: [E-SYNTH-POWER-011] regulator feedback is taken from the switching node
 
 ## Qualification matrix
 
-The matrix (A: checked by tools, B: needs an expert) is in [`QUALIFICATION.md`](QUALIFICATION.md). Evidence files: `kicad/`, `reports/`, `images/`.
+The matrix (A: checked by tools, B: needs an expert) is in [`QUALIFICATION.md`](QUALIFICATION.md),
+together with the `#38` checklist traceability for this board and the row it declares for
+`qualification/matrix.toml` when that corpus lands on `main`. Evidence files: `kicad/`,
+`reports/`, `images/`.
 
 ## Not true yet
 
-- Not fabricable on this evidence: parts UNVERIFIED, overvoltage case open, nothing built.
-- Layout: the +3V3 sense path to R_FB_T was routed by FreeRouting on B.Cu (0.5 mm), crossing under the buck core above the inner ground planes; not hand-tuned. FB is 0.127 mm and 8.3 mm long.
-  C3 sits on the VIN pin and C7 against R_FB_T, but R_FB_B's ground is 4.25 mm from U1 pin 1: pin 1 and pin 4 are on opposite sides of the SOT-23-6, so the ground return goes through a via to the plane.
-- Schematic (rendered and read): readable, but value text overlaps (TPS54202DDCR on the GND symbol, 47uF on C1's wire), the BUCK title crowds U1, and a wire loops over the top of J1/F1.
-  Synth labels signal nets from pin names, so +3V3 is drawn as `P2` and LED_PWR as `P2_R_LED`; the schematic netlist names (`/P2`, `Net-(D1-A)`) differ from the PCB names (`+3V3`, `LED_PWR`). No schematic sidecar is used (default layout).
+- Not fabricable on this evidence: parts UNVERIFIED, overvoltage case open, nothing built. The fab
+  package says so itself (`release_ready: false`, `production_status: untrusted`).
+- Layout: `+3V3` is 50.2 mm of copper split over F.Cu and B.Cu and crosses under the buck core on
+  B.Cu; FB is 8.29 mm on F.Cu only. C3 sits on the VIN pin and C7 against R_FB_T, but R_FB_B's ground
+  is 4.25 mm from U1 pin 1, so it reaches it through a via to the plane. The one layer change with no
+  ground return via within 0.64 mm is `+3V3` at (35.97, 14.43) mm, reported as `W-SYNTH-DRC-016`
+  (the report calls it "net 3", which is Synth's numbering; in the `.kicad_pcb` net 3 is FB).
+- Schematic (rendered and read): readable, not tidy. `tools/schematic_quality.py` counts 1
+  overlapping text pair, 3 texts with a wire through them, 5 wire crossings and 803.9 mm of wire;
+  mean passive-to-pin distance is 83.8 mm (max 148.3). The `+3V3` wire to C5 runs past the BOOT pin
+  stub without a junction and at print size reads like a boot capacitor. The netlist is correct:
+  BOOT is U1 pin 6 and C4 pin 1, and both 22 uF output capacitors are on `+3V3`. No schematic sidecar
+  is used (default layout).
+- There are no mounting holes, so the board cannot be fixed down as it stands.
 - Routing used FreeRouting defaults, no length or coupling constraints.
 
 ## Not verified
 
 - Nothing powered, measured or thermally tested. Efficiency (85%) and the 0.58 W loss are assumptions.
-- The MCP placement tool `synth_place_with_hints` reports a stale outline (57.15 x 55.51 mm, no tightening after the sidecar) and a matching "unused area" finding, so no placement-review result is claimed.
+- The MCP placement review (`synth_describe_placement` with this sidecar) returns score 100,
+  `requires_revision` false and no findings, but it reports a 63.0 x 37.6 mm outline because it does
+  not include #272's 1.5 mm rim. The verdict is used, the outline figure is not.
 - No reviewer. Availability, LCSC numbers and assembly not checked.
 - LED datasheet unreachable. J1/J2, C1, and all generic passives have no MPN or manufacturer sheet.
 - PTC behaviour with the TVS in a surge, and inrush into C1 and the output caps, are not analysed.
-- Hash reproducibility on another machine depends on FreeRouting 2.4.1 and the Java build.
+- The Gerbers and drill files were not opened in a fab's DFM tool and no fab accepted them.
+- Hash reproducibility on another machine depends on FreeRouting 2.4.1, the Java build and KiCad
+  10.0.7. Three exports at this revision gave byte-identical `.kicad_pcb` and `.kicad_sch` here.

@@ -53,10 +53,10 @@
   ],
   "routing": {
     "engine": "freerouting",
-    "engine_version": "/home/steve/work/synth/.claude/worktrees/buck-67/tools/freerouting/freerouting-2.4.1.jar",
+    "engine_version": "tools/freerouting/freerouting-2.4.1.jar",
     "state": "routed",
-    "input_hash": "a4fe738838eabcf05890d9036bcd252f2bc953224318f67a0f83df256ecd079e",
-    "run_record": "/tmp/claude-1000/-home-steve-work-synth/3243ecc1-3f76-4e29-825e-a63779cac97a/scratchpad/buck-out/e1/buck.routing.json"
+    "input_hash": "28cf0c38180c64f4086c612416d1cfc7eaa75c802ce69143338c4e07cfdead1d",
+    "run_record": "out/buck-nofab/buck.routing.json"
   },
   "signal_integrity": {
     "blocking": 0,
