@@ -76,7 +76,8 @@ expression: project
     "net_colors": null,
     "netclass_assignments": {
       "/CS": "SPI",
-      "CS": "SPI"
+      "CS": "SPI",
+      "MOSI": "SPI"
     },
     "netclass_patterns": [
       {
