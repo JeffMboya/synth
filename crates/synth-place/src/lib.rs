@@ -7789,6 +7789,127 @@ board "features_only" {
         assert_eq!(overlaps(&board, &slid), 0);
     }
 
+    /// A board with `parts` components. The rim schedule reads only the part
+    /// count, so the parts themselves are placeholders.
+    fn board_with_part_count(parts: usize) -> Board {
+        let mut board = load_board("../../fixtures/layout/divider.synth");
+        board.nets.clear();
+        let template = board.components[0].clone();
+        while board.components.len() < parts {
+            let index = board.components.len();
+            let mut component = template.clone();
+            component.id = ComponentId(u32::try_from(index).expect("id fits"));
+            component.refdes = format!("R{index}");
+            board.components.push(component);
+        }
+        board.components.truncate(parts);
+        board
+    }
+
+    /// The export rim is a schedule over board size, and a dense board keeps
+    /// the board rim for its edge passives too.
+    ///
+    /// The dense passive rule is the one sensor_logger needs: at the tighter
+    /// passive rim the router strands a via inside pad C9.1.
+    #[test]
+    fn export_rim_tiers_step_by_board_size() {
+        for (parts, tight, passive) in [
+            (2usize, 0.65, 0.65),
+            (15, 1.0, 0.9),
+            (20, 1.3, 1.3),
+            (29, 1.3, 1.3),
+            (32, 1.25, 1.25),
+        ] {
+            let board = board_with_part_count(parts);
+            assert_eq!(tight_edge_margin_mm(&board), tight, "{parts} parts");
+            assert_eq!(passive_edge_margin_mm(&board), passive, "{parts} parts");
+        }
+    }
+
+    /// A sidecar floorplan leaves bands no courtyard uses. The pinned pass
+    /// closes the one between these two parts, so the outline the export fits
+    /// round the result is smaller than the pinned coordinates alone.
+    #[test]
+    fn pinned_band_closing_shrinks_the_exported_outline() {
+        let components = r#"
+            component R1: resistor "r_generic_0603" value "10k"
+            component R2: resistor "r_generic_0603" value "10k"
+        "#;
+        let (board, pinned_layout) = row_board(components, &[10.0, 40.0]);
+        let before = area_mm2(&exported_outline(&board, &pinned_layout).expect("outline"));
+
+        let sidecar_path = std::env::temp_dir().join(format!(
+            "synth-place-band-close-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &sidecar_path,
+            "schema_version = 2\n\n[components.R1]\nx = 10.0\ny = 15.0\nrotation = 0\n\
+             source = \"human_drag\"\npriority = \"hard\"\n\n[components.R2]\nx = 40.0\n\
+             y = 15.0\nrotation = 0\nsource = \"human_drag\"\npriority = \"hard\"\n",
+        )
+        .expect("sidecar TOML written");
+        let closed = place_with_tuning_and_sidecar_seeded(
+            &board,
+            1.5,
+            &std::collections::HashMap::new(),
+            Some(&sidecar_path),
+            0,
+        )
+        .expect("place");
+        std::fs::remove_file(&sidecar_path).ok();
+
+        let after = area_mm2(&exported_outline(&board, &closed).expect("outline"));
+        assert!(after < before, "band closed: {after} < {before}");
+    }
+
+    /// The combined outline on a small board must come in under the best
+    /// single arm fit for the same board.
+    ///
+    /// The best single arm (outline packing) fitted exactly 180.96 mm2 on this
+    /// two-part board at the 1.0 mm sparse rim; the tiny tier fits 161.99 mm2.
+    #[test]
+    fn combined_outline_is_not_larger_than_the_best_arm() {
+        let board = load_board("../../fixtures/designs/connect_single.synth");
+        let mut placement = place(&board).expect("place");
+        fit_outline_with_passive_margin_mm(
+            &board,
+            &mut placement,
+            tight_edge_margin_mm(&board),
+            passive_edge_margin_mm(&board),
+        );
+        let area = area_mm2(&placement.board_outline);
+        assert!(area < 175.0, "combined outline {area} mm2");
+    }
+
+    /// A decoupling cap further from its IC than the limit is reported. The
+    /// scorer measures the IC-to-cap distance, so a placement that strands one
+    /// cannot pass silently.
+    #[test]
+    fn a_decoupling_cap_beyond_the_limit_is_reported() {
+        let components = r#"
+            component U1: opamp "lm358_dual"
+            component C1: capacitor "c_generic_0603" value "100n"
+            connect U1.vcc_pos -> C1.p1
+        "#;
+        let (board, mut placement) = row_board(components, &[10.0, 10.0]);
+
+        move_part(&mut placement, &board, "C1", 12.0, 15.0);
+        let near = crate::score::score_placement(&board, &placement);
+        assert!(
+            (near.max_decoupling_distance_mm - 2.0).abs() < 0.01,
+            "2 mm apart, measured {}",
+            near.max_decoupling_distance_mm
+        );
+
+        move_part(&mut placement, &board, "C1", 14.0, 15.0);
+        let far = crate::score::score_placement(&board, &placement);
+        assert!(
+            far.max_decoupling_distance_mm > 3.0,
+            "4 mm apart, measured {}",
+            far.max_decoupling_distance_mm
+        );
+    }
 
     /// A part cannot slide through one that is in its way.
     #[test]
