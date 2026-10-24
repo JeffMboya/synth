@@ -1,9 +1,9 @@
-id = "smbj26a"
+id = "smbj30a"
 kind = "diode"
 version = 0
 lifecycle = "active"
-description = "Vishay SMBJ26A 600 W unidirectional TVS, SMB (DO-214AA). max_voltage_v is the 26 V standoff VWM, not a clamp or abs max: VBR 28.9-31.9 V at 1 mA, VC 42.1 V at 14.3 A"
-mpn = "SMBJ26A"
+description = "Vishay SMBJ30A 600 W unidirectional TVS, SMB (DO-214AA). max_voltage_v is the 30 V standoff VWM, not a clamp or abs max: VBR 33.3-36.8 V at 1 mA, VC 48.4 V at 12.4 A"
+mpn = "SMBJ30A"
 kicad_symbol = "Device:D_Zener"
 kicad_footprint = "Diode_SMD:D_SMB"
 
@@ -13,7 +13,7 @@ height_mm = 4.5
 courtyard_margin_mm = 0.25
 
 [operating_conditions]
-max_voltage_v = 26.0
+max_voltage_v = 30.0
 
 [[pins]]
 name = "cathode"

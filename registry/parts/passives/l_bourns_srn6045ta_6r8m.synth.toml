@@ -1,9 +1,9 @@
-id = "l_bourns_srn6045ta_100m"
+id = "l_bourns_srn6045ta_6r8m"
 kind = "inductor"
 version = 0
 lifecycle = "active"
-description = "Bourns SRN6045TA-100M 10 uH semi-shielded power inductor, 6.0 x 6.0 mm. Datasheet typ: Isat 4.6 A (L drops 30%), Irms 3.2 A (max_current_ma is Irms), DCR 52 mOhm +-20%"
-mpn = "SRN6045TA-100M"
+description = "Bourns SRN6045TA-6R8M 6.8 uH semi-shielded power inductor, 6.0 x 6.0 mm. Datasheet typ: Isat 5.7 A (L drops 30%), Irms 3.6 A (max_current_ma is Irms), DCR 30 mOhm +-20%"
+mpn = "SRN6045TA-6R8M"
 kicad_symbol = "Device:L"
 kicad_footprint = "Inductor_SMD:L_Bourns_SRN6045TA"
 
@@ -13,7 +13,7 @@ height_mm = 6.5
 courtyard_margin_mm = 0.25
 
 [operating_conditions]
-max_current_ma = 3200.0
+max_current_ma = 3600.0
 
 [[pins]]
 name = "p1"
