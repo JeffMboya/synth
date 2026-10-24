@@ -528,18 +528,24 @@ pub fn check_return_path_vias(
 /// connected pin. Mirrors the exporter's plane-net classifier, so a return via
 /// is judged against the same ground the planes are built from.
 pub(crate) fn net_name_or_pin_is_ground(board: &Board, net: &Net) -> bool {
-    fn named(text: &str) -> bool {
-        let text = text.to_ascii_lowercase();
-        text.contains("gnd") || text.contains("vss") || text == "0v"
-    }
-    named(&net.name)
+    is_ground_name(&net.name)
         || net.endpoints.iter().any(|endpoint| {
             board
                 .component(endpoint.component)
                 .and_then(|component| component.part.as_ref())
                 .and_then(|part| part.pins.get(endpoint.pin.0 as usize))
-                .is_some_and(|pin| named(&pin.name))
+                .is_some_and(|pin| is_ground_name(&pin.name))
         })
+}
+
+/// Whether a net or pin name is a ground: it contains `gnd` or `vss`, or is
+/// `0v`, in any case. The one rule the return-path check, the exporter's plane
+/// classifier and the router's ground-via passes share, so `VSSA` and `VSS_IO`
+/// are ground to all of them.
+#[must_use]
+pub fn is_ground_name(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("gnd") || text.contains("vss") || text == "0v"
 }
 
 /// Copper resistivity, ohm-metres.
