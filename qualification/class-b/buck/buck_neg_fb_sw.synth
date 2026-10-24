@@ -8,8 +8,7 @@
 // LMR33640: 3.8-36 V input, 4 A, 400 kHz, internal compensation, exposed thermal pad, open-drain PG.
 // The SMBJ30A (VBR 33.3-36.8 V, clamp 48.4 V) is an ESD/transient clamp at the connector, not an OVP:
 // its clamp is above U1's 38 V absolute maximum, so the board has no surge rating.
-// Feedback divider is tapped from the output node (L1.p2), never from SW.
-board "buck" {
+board "buck_neg_fb_sw" {
   layers 4
   manufacturer "jlcpcb"
   revision "A"
@@ -89,7 +88,7 @@ board "buck" {
   }
 
   group "OUTPUT" color "#be123c" {
-    component J2: connector "jst_b2b_xh_a_4pin" value "3V3_OUT"
+    component J2: connector "jst_b4b_xh_a_4pin" value "3V3_OUT"
     component D3: led "ltst_c190kgkt" value "PWR"
     component R_LED: resistor "r_generic_0603" value "470"
     notes "" {

@@ -18,7 +18,7 @@
         "smbj30a",
         "lmr33640",
         "l_bourns_srn6045ta_6r8m",
-        "jst_b2b_xh_a_4pin",
+        "jst_b4b_xh_a_4pin",
         "ltst_c190kgkt"
       ],
       "detail": "8 part(s) have no reviewer"
@@ -42,7 +42,7 @@
       "reviewed": false
     },
     {
-      "part_id": "jst_b2b_xh_a_4pin",
+      "part_id": "jst_b4b_xh_a_4pin",
       "reviewed": false
     },
     {

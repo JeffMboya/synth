@@ -16,7 +16,7 @@ H1,M2.5,mounting_hole,M2.5 non-plated mounting hole (NPTH) for a board corner,Me
 H2,M2.5,mounting_hole,M2.5 non-plated mounting hole (NPTH) for a board corner,Mechanical:MountingHole,MountingHole:MountingHole_2.5mm,,
 J1,24V_IN,connector,"JST XH 2.5 mm pitch 2-pin vertical header B2B-XH-A, 250 V / 3 A per JST XH sheet",Connector_Generic:Conn_01x02,Connector_JST:JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,,B2B-XH-A
 J2,3V3_OUT,connector,"JST XH 2.5 mm pitch 4-pin vertical header B4B-XH-A, 250 V / 3 A per JST XH sheet",Connector_Generic:Conn_01x04,Connector_JST:JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,,B4B-XH-A
-L1,6.8uH,inductor,"Bourns SRN6045TA-6R8M 6.8 uH semi-shielded power inductor, 6.0 x 6.0 mm. Datasheet typ: Isat 5.7 A (L drops 30%), Irms 3.6 A (max_current_ma is Irms), DCR 30 mOhm +-20%",Device:L,Inductor_SMD:L_Bourns_SRN6045TA,,SRN6045TA-6R8M
+L1,6.8uH,inductor,"Bourns SRN6045TA-6R8M 6.8 uH semi-shielded power inductor, 6.0 x 6.0 mm. Datasheet typ: Isat 5.7 A (L drops 30%), Irms 3.6 A (max_current_ma is Irms), DCR 34 mOhm +-20%",Device:L,Inductor_SMD:L_Bourns_SRN6045TA,,SRN6045TA-6R8M
 R_FB_B,43.2k,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,
 R_FB_T,100k,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,
 R_LED,470,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,

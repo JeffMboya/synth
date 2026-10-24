@@ -89,7 +89,7 @@ board "buck" {
   }
 
   group "OUTPUT" color "#be123c" {
-    component J2: connector "jst_b2b_xh_a_4pin" value "3V3_OUT"
+    component J2: connector "jst_b4b_xh_a_4pin" value "3V3_OUT"
     component D3: led "ltst_c190kgkt" value "PWR"
     component R_LED: resistor "r_generic_0603" value "470"
     notes "" {

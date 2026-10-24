@@ -49,16 +49,16 @@ BOM, pick-and-place, pictures, routing, DRC and ERC reports). It leaves out `REA
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `buck.synth` | `c256fee13ee62ea106e090ef1c55e9fcdd9cc75e4b66b1a1a266ecf3eb767ad2` |
-| `buck.placement.layout.toml` | `0b9c07debeb858948210b6c986acd732a72301ad7fa621230ae64846bcdfb5ac` |
-| `buck_neg_fb_sw.synth` | `65215f7e36a061cf5b9ea2abdfa15951846128f2f21b81cd3a88183d1870161f` |
+| `buck.synth` | `b4ee63362959ac1e63225fca28d02ed49a94af07c89239544b59c590e79fbc06` |
+| `buck.placement.layout.toml` | `4670d461fcafff669019778ef2d3a3794f6209523f292f8486d53eb40ddf870f` |
+| `buck_neg_fb_sw.synth` | `0c9d7afe8475607bd124f96f010ec6a41a21460cff08812799748f352699db09` |
 | `kicad/buck.kicad_pcb` | `69da985df34eb6ab07848871eb4b83b11f635d3cd242961f57d63b9b6cf5261a` |
 | `kicad/buck.kicad_sch` | `be25f4577d716335a952ee5d587a641b04d482e59f6d6b815b42122cbf447825` |
-| `kicad/bom.csv` | `e36cbb8e9d357db3b0772fd8b71fc33368bd46830c90a6f6a30faa6b2d485777` |
-| `reports/release.json` | `466617632dc387e8b89f02b449562fccae4994651802e7a9b7bae051bd028c37` |
-| `reports/release-fab.json` | `a93a6198aece38dcd3bb0f94a1ee5c4927cde4ab7a129b0bd1ea14a8a1ea13ed` |
-| `reports/buck.kicad-drc.json` | `c5cc81841055290b769f325563cac2e83e838e2742a6f8a222e5b62440856a67` |
-| `reports/buck.kicad-erc.json` | `586c61f74da3c65471ffaea495701f649df769ed355eb99fdc19eed9a5409e0b` |
+| `kicad/bom.csv` | `864c880c95e3fa7bdf6c683c698599614e7d0e61e97286794f96348275eb3e28` |
+| `reports/release.json` | `5c9a36c501ed97efb68d0c66f3d2c86d819855decc9e1c34415dbce5de5ca49b` |
+| `reports/release-fab.json` | `3bb92e06c70eb1b5876ed0fd5efbbc2601504c260122b2b627085bc8f30493d3` |
+| `reports/buck.kicad-drc.json` | `3c0999f22f7fb4d43cf5651bc0675f26102df14c50d83b01b2c3670be679f4a9` |
+| `reports/buck.kicad-erc.json` | `8cf1da3ea528c7364ff077a59fd89d1b2a784f1fb42623e58ccd2ed95eb4c143` |
 
 Datasheet values used for the part values are in `README.md` ("Parts and datasheets"). The
 datasheets are not committed, so the figures taken from them cannot be checked from this
@@ -75,9 +75,9 @@ repository.
 | A5 | The route passes Synth's source/DRC gate | `reports/release.json` (`synth export-kicad`, no fab flags) | `release_ready` true, `production_status` production, state `routed`, 0 blocking signal-integrity findings |
 | A6 | The package is not a fabrication release | `reports/release-fab.json` (`--gerbers --drill`) | `release_ready` **false**, `production_status` `untrusted`, override `unverified_parts` naming 8 parts. This is the correct answer until #51 lands a part review |
 | A7 | Schematic electrical rules | `kicad-cli sch erc`, `reports/buck.kicad-erc.json` | 0 errors, 68 warnings: 43 `lib_symbol_issues`, 25 `footprint_link_issues` (the KiCad libraries are not in the config) |
-| A8 | The schematic netlist matches the source | `kicad-cli sch export netlist` | 12 nets, node for node the source's 8 `net` blocks plus the 4 names its 6 `connect` statements create: GND 16 nodes, `+3V3` 9, VIN 7, FB 4, PG 3, EN 3, SW 3, BOOT 2, U1_VCC 2, VIN_FUSED 2, VIN_RAW 2, LED_PWR 2 |
+| A8 | The schematic netlist matches the source | `kicad-cli sch export netlist` | 12 nets, node for node the source's 8 `net` blocks plus the 4 names its 8 `connect` statements create: GND 16 nodes, `+3V3` 9, VIN 7, FB 4, PG 3, EN 3, SW 3, BOOT 2, U1_VCC 2, VIN_FUSED 2, VIN_RAW 2, LED_PWR 2 |
 | A9 | A layer change without a nearby ground return via is reported | `W-SYNTH-DRC-016` in both release files | One advisory finding: net 3 changes layers at (51.67, 23.38) mm with no ground via within 0.64 mm. The via at that point is on `+3V3`; "net 3" is Synth's numbering, and in the `.kicad_pcb` net 3 is FB. Not blocking; whether it matters is for the reviewer. `synth capability list` still declares return-path analysis unsupported, so read this check as a proximity test |
-| A10 | Manufacturing exports exist and are complete | `kicad/gerbers/` (22 Gerbers plus the `.gbrjob`), `kicad/drill/` | 4 copper layers (F, In1, In2, B), mask, paste, silkscreen and Edge.Cuts present, Edge.Cuts traces the 71.9 x 31.1 mm outline; PTH drill 25 holes (18 x 0.3 mm vias, 6 connector pins at 0.95/1.0 mm), NPTH 2 x 2.5 mm mounting holes. Not fabricated |
+| A10 | Manufacturing exports exist and are complete | `kicad/gerbers/` (22 Gerbers plus the `.gbrjob`), `kicad/drill/` | 4 copper layers (F, In1, In2, B), mask, paste, silkscreen and Edge.Cuts present, Edge.Cuts traces the 71.9 x 31.1 mm outline; PTH drill 24 holes (18 x 0.3 mm vias, 6 connector pins at 0.95/1.0 mm), NPTH 2 x 2.5 mm mounting holes. Not fabricated |
 | A11 | The exported project is readable by KiCad | KiCad 10.0.7 headless | `pcb drc`, `sch erc`, `sch export netlist`, `sch export pdf`, `pcb render` and `pcb export pos` all load the committed files and succeed. Not opened in the KiCad GUI |
 | A12 | Ground pours are stored filled | `grep -c filled_polygon kicad/buck.kicad_pcb` | 7 filled polygons for the 6 zones (4 GND, one per layer, plus two split pieces), so KiCad opens showing the connectivity the gate validated |
 | A13 | The placement sidecar is what was placed | sidecar compared with `kicad/buck.kicad_pcb` | All 25 parts match within 0.01 mm, except J1 and J2, which differ by the documented JST pin-1 anchor offset (-1.25, -0.525) mm |
@@ -96,7 +96,7 @@ repository.
 | B5 | Switch-node loop area, return paths, EMI and ripple | Only pad-edge gaps were measured (README). No loop area, inductance, ripple or EMI result. The input cap C3 is 2.88 mm from the VIN pad and L1 3.80 mm from the SW pad; whether that loop is small enough is not analysed | Requires expert review |
 | B6 | Analog placement separation and grounding | `synth capability list` declares `split_ground_planes` unsupported: each ground net gets one unsplit zone. The FB divider is 3.55 mm from U1 pin 5, but R_FB_B's ground is 11.31 mm from U1 pin 1 and reaches it through a via to the plane. Whether that is acceptable is for a reviewer | Requires expert review |
 | B7 | Reverse-polarity block, PTC margin, UVLO thresholds, output voltage | All by hand calculation from datasheet numbers (README): PTC 0.162 A at 24 V and 0.248 A at the UVLO stop voltage against Ihold 0.63 A at 70 C; UVLO 18.09 / 16.62 V; Vout 3.315 V. No bench measurement | Requires expert review |
-| B8 | Part pins and footprints against the manufacturer drawings | `synth registry qualify --part <id>` (output in `reports/registry-qualify.txt`): all 8 new parts blocked by `E-SYNTH-QUAL-008` — 7 for having no reviewer, the electrolytic for carrying no provenance — and `mf_msmf110_33x` additionally reports `E-SYNTH-QUAL-016` (its footprint names a 3D model that is not installed). The stock KiCad HSOP-8 DDA footprint was not compared with TI's DDA drawing, nor the JST footprints with JST's. LED datasheet unreachable; the electrolytic and the generic passives have no MPN | Requires expert review |
+| B8 | Part pins and footprints against the manufacturer drawings | `synth registry qualify --part <id>` (output in `reports/registry-qualify.txt`): all 8 new parts blocked by `E-SYNTH-QUAL-008` — 7 for having no reviewer, the electrolytic for carrying no provenance — and `mf_msmf110_33x` additionally reports `E-SYNTH-QUAL-016` (its footprint names a 3D model that is not installed). No person sourced or compared the footprint: the stock KiCad HSOP-8 DDA footprint was not checked against TI's DDA drawing, nor the JST footprints against JST's. LED datasheet unreachable; the electrolytic and the generic passives have no MPN | Requires expert review |
 | B9 | Compactness | Outline 71.9 x 31.125 mm (2238 mm2), up from 58.0 x 32.6 mm (1891 mm2) for the SOT-23-6 version: 5 more parts, 2 mounting holes and the HSOP-8 package. No auto-placed run was compared against this sidecar | Not a defect; not compared |
 | B10 | Keepouts and shielding | The language has keepouts; none was declared under the switch node or the inductor in this design, and none was checked | Unsupported here |
 | B11 | Power sequencing, soft-start and inrush | The converter has reference-based internal soft start (no SS pin) and a 4 ms power-good delay. Inrush into C1 and the output capacitors, and the sequencing of the PG signal against the output, were not analysed or measured | Unverified |

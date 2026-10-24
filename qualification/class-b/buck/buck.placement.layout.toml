@@ -4,8 +4,8 @@ fit_sheet = false
 
 # Board millimetres (not sheet mm). Parts are centred on these points; the JST connectors
 # are anchored on pin 1, so their footprint origin sits (-1.25, -0.525) mm from the entry.
-# Positions are relative to U1's HSOP-8 pads: pin 2 VIN / 3 EN at x 30.35, pin 7 BOOT /
-# 8 SW at x 35.65, so the input caps and the boot cap sit beside the pins they serve.
+# Positions are board millimetres, placed around U1's HSOP-8 pads (pin 2 VIN / 3 EN at
+# x 30.35, pin 7 BOOT / 8 SW at x 35.65): the boot cap and the VCC cap sit beside their pins.
 
 [components.J1]
 x = 7.0
