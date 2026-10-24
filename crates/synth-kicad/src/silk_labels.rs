@@ -108,7 +108,9 @@ fn text_width_nm(refdes: &str) -> i64 {
 /// above, below, left and right of its courtyard, then the default. A
 /// candidate fits when it stays inside the board, clear of every other part's
 /// courtyard and clear of the labels already placed. A part with no fitting
-/// candidate keeps the default.
+/// candidate takes the first candidate that at least stays on the board, clear
+/// of the labels already placed; only when none does is the default pulled
+/// inside the board.
 pub(crate) fn place_labels(
     parts: &[LabelPart],
     outline: Rect,
@@ -153,16 +155,35 @@ pub(crate) fn place_labels(
         };
         let pos = match from_design {
             Some(forced) if hard => pulled_inside(part, outline, forced),
-            _ => from_design
-                .into_iter()
-                .chain(part.side.map(|s| side_candidate(part, s)))
-                .chain(
-                    [Side::Above, Side::Below, Side::Left, Side::Right]
-                        .map(|s| side_candidate(part, s)),
-                )
-                .chain(std::iter::once(default))
-                .find(|&p| fits(p))
-                .unwrap_or(default),
+            _ => {
+                let candidates: Vec<LabelPos> = from_design
+                    .into_iter()
+                    .chain(part.side.map(|s| side_candidate(part, s)))
+                    .chain(
+                        [Side::Above, Side::Below, Side::Left, Side::Right]
+                            .map(|s| side_candidate(part, s)),
+                    )
+                    .chain(std::iter::once(default))
+                    .collect();
+                candidates.iter().copied().find(|&p| fits(p)).unwrap_or_else(|| {
+                    // Every side is blocked by a courtyard or a label. A label
+                    // past Edge.Cuts is worse than a crowded one, so keep the
+                    // box on the board, preferring a spot clear of the labels
+                    // already placed, and only then pull the default inside.
+                    candidates
+                        .iter()
+                        .copied()
+                        .filter(|&p| inside(outline, label_box(part, p)))
+                        .find(|&p| !taken.iter().any(|t| t.intersects(&label_box(part, p))))
+                        .or_else(|| {
+                            candidates
+                                .iter()
+                                .copied()
+                                .find(|&p| inside(outline, label_box(part, p)))
+                        })
+                        .unwrap_or_else(|| pulled_inside(part, outline, default))
+                })
+            }
         };
         taken.push(label_box(part, pos));
         placed.insert(part.id, pos);
