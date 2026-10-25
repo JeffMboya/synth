@@ -8,9 +8,13 @@ use axum::{
     Json, Router,
 };
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crate::tools::{call_tool, list_tools};
 
@@ -164,13 +168,111 @@ pub fn handle_jsonrpc_request(req: Value, default_registry: Option<&Path>) -> Va
     }
 }
 
+/// Serialises everything written to stdout. A response can be larger than a pipe
+/// buffer and so go out in several writes; a heartbeat line landing between them
+/// would corrupt the message.
+static STDOUT_LOCK: Mutex<()> = Mutex::new(());
+
+fn write_message(message: &str) {
+    let _guard = STDOUT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(message.as_bytes());
+    let _ = out.write_all(b"\n");
+    let _ = out.flush();
+}
+
+/// How often a running tool tells the client it is still working.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Sends an MCP progress notification at a fixed interval until dropped.
+///
+/// A tool such as `synth_export` can run for many minutes inside the router and
+/// returns nothing until it is done. A client that times a call out after a
+/// period without a response or progress, as Claude Code does after 30 minutes,
+/// cannot tell that from a hang, and aborts a healthy export.
+struct Heartbeat {
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Heartbeat {
+    fn start<F>(token: Value, interval: Duration, send: F) -> Self
+    where
+        F: Fn(String) + Send + 'static,
+    {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let shared = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let (flag, wake) = &*shared;
+            let mut beats: u64 = 0;
+            loop {
+                let guard = flag
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (guard, _) = wake
+                    .wait_timeout_while(guard, interval, |stopped| !*stopped)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *guard {
+                    break;
+                }
+                drop(guard);
+                beats += 1;
+                send(
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {
+                            "progressToken": token,
+                            "progress": beats,
+                            "message": "synth is still working"
+                        }
+                    })
+                    .to_string(),
+                );
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        let (flag, wake) = &*self.stop;
+        *flag
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        wake.notify_all();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The token the client asked progress to be reported under, or the request id
+/// when it gave none: a client that never asked simply ignores the notification.
+fn progress_token(req: &Value) -> Value {
+    req["params"]["_meta"]["progressToken"]
+        .as_str()
+        .map(Value::from)
+        .or_else(|| {
+            req["params"]["_meta"]["progressToken"]
+                .as_i64()
+                .map(Value::from)
+        })
+        .unwrap_or_else(|| req["id"].clone())
+}
+
 /// Run MCP Server over standard I/O (stdin/stdout).
 ///
 /// Uses plain newline-delimited JSON (one message per line), which is what
 /// Antigravity, Claude Desktop, and Cursor all use for stdio MCP servers.
 pub async fn run_stdio_server(default_registry: Option<PathBuf>) -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin).lines();
 
     while let Ok(Some(line)) = reader.next_line().await {
@@ -188,33 +290,23 @@ pub async fn run_stdio_server(default_registry: Option<PathBuf>) -> anyhow::Resu
                     "id": Value::Null,
                     "error": { "code": -32700, "message": format!("Parse error: {e}") }
                 });
-                let _ = stdout
-                    .write_all(
-                        serde_json::to_string(&err_resp)
-                            .unwrap_or_default()
-                            .as_bytes(),
-                    )
-                    .await;
-                let _ = stdout.write_all(b"\n").await;
-                let _ = stdout.flush().await;
+                write_message(&serde_json::to_string(&err_resp).unwrap_or_default());
                 continue;
             }
         };
 
+        let heartbeat = (req_val["method"] == "tools/call").then(|| {
+            Heartbeat::start(progress_token(&req_val), HEARTBEAT_INTERVAL, |message| {
+                write_message(&message);
+            })
+        });
         let resp_val = handle_jsonrpc_request(req_val, default_registry.as_deref());
+        drop(heartbeat);
         // Null = notification, no response.
         if resp_val.is_null() {
             continue;
         }
-        let _ = stdout
-            .write_all(
-                serde_json::to_string(&resp_val)
-                    .unwrap_or_default()
-                    .as_bytes(),
-            )
-            .await;
-        let _ = stdout.write_all(b"\n").await;
-        let _ = stdout.flush().await;
+        write_message(&serde_json::to_string(&resp_val).unwrap_or_default());
     }
     Ok(())
 }
@@ -241,4 +333,42 @@ pub async fn run_sse_server(port: u16, default_registry: Option<PathBuf>) -> any
     eprintln!("Synth MCP Server listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    #[test]
+    fn a_running_call_sends_progress_until_it_returns() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        let beat = Heartbeat::start(Value::from("t1"), Duration::from_millis(10), move |m| {
+            sink.lock().unwrap().push(m);
+        });
+        std::thread::sleep(Duration::from_millis(80));
+        drop(beat);
+        let count = seen.lock().unwrap().len();
+        assert!(count >= 2, "expected several beats, got {count}");
+        let first: Value = serde_json::from_str(&seen.lock().unwrap()[0]).unwrap();
+        assert_eq!(first["method"], "notifications/progress");
+        assert_eq!(first["params"]["progressToken"], "t1");
+        assert_eq!(first["params"]["progress"], 1);
+        std::thread::sleep(Duration::from_millis(40));
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            count,
+            "no beat after the call returned"
+        );
+    }
+
+    #[test]
+    fn the_token_is_the_one_the_client_gave_or_else_the_request_id() {
+        let with = serde_json::json!({"id": 7, "params": {"_meta": {"progressToken": "abc"}}});
+        assert_eq!(progress_token(&with), "abc");
+        let numeric = serde_json::json!({"id": 7, "params": {"_meta": {"progressToken": 3}}});
+        assert_eq!(progress_token(&numeric), 3);
+        let without = serde_json::json!({"id": 7, "params": {}});
+        assert_eq!(progress_token(&without), 7);
+    }
 }
