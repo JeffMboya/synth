@@ -213,6 +213,12 @@ enum Command {
         /// and falls back to the normal choice when routing is unavailable.
         #[arg(long)]
         place_route_iterate: bool,
+        /// Wall-clock budget in seconds for `--place-route-iterate`; 0 is the
+        /// default of 900. Every routing run is capped at what is left, a share
+        /// for the final route is kept back, and the search keeps the best
+        /// placement found so far when the budget is spent.
+        #[arg(long, default_value_t = 0)]
+        place_route_budget_secs: u64,
     },
 
     /// Apply the highest-confidence `suggested_fix` from every
@@ -963,6 +969,7 @@ fn main() -> ExitCode {
             best_of,
             allow_incomplete,
             place_route_iterate,
+            place_route_budget_secs,
         } => export_kicad(
             &input,
             registry.as_deref(),
@@ -996,6 +1003,7 @@ fn main() -> ExitCode {
             best_of,
             allow_incomplete,
             place_route_iterate,
+            place_route_budget_secs,
         ),
         Command::Fix {
             input,
@@ -3986,6 +3994,7 @@ fn export_kicad(
     best_of: bool,
     allow_incomplete: bool,
     place_route_iterate: bool,
+    place_route_budget_secs: u64,
 ) -> anyhow::Result<u8> {
     if autoroute {
         // Still parsed, so an existing script fails with something
@@ -4178,13 +4187,30 @@ fn export_kicad(
     // the one that routes best, rather than trusting the export path's
     // route-free estimate. Falls back to the normal choice when there is
     // nothing to gain or the engine is unavailable.
+    let mut search_budget =
+        synth_router::search_budget::SearchBudget::start(place_route_budget_secs);
     let (chosen_placement, chosen_order) = if place_route_iterate {
-        select_placement_for_routing(board, &sidecars, router, &options, best_of)?
-            .map_or((None, Vec::new()), |(placement, order)| {
-                (Some(placement), order)
-            })
+        select_placement_for_routing(
+            board,
+            &sidecars,
+            router,
+            &options,
+            best_of,
+            &mut search_budget,
+        )?
+        .map_or((None, Vec::new()), |(placement, order)| {
+            (Some(placement), order)
+        })
     } else {
         (None, Vec::new())
+    };
+    // The final route counts against the same budget, and is never given less
+    // than it needs to deliver the board.
+    let options = if place_route_iterate {
+        let limit = search_budget.final_limit(std::time::Duration::from_secs(options.timeout_secs));
+        options.with_timeout(Some(limit.as_secs()))
+    } else {
+        options
     };
 
     let result = match &chosen_placement {
@@ -4890,6 +4916,7 @@ fn select_placement_for_routing(
     engine: ExternalRouter,
     options: &RouterOptions,
     best_of: bool,
+    budget: &mut synth_router::search_budget::SearchBudget,
 ) -> anyhow::Result<Option<(synth_place::Placement, Vec<String>)>> {
     let candidates = synth_kicad::placement_candidates(board, sidecars)
         .map_err(|e| anyhow::anyhow!("could not enumerate placement candidates: {e}"))?;
@@ -4897,53 +4924,77 @@ fn select_placement_for_routing(
         return Ok(None);
     }
     eprintln!(
-        "placement feedback: routing {} candidate placements to choose between them",
-        candidates.len()
+        "placement feedback: routing {} candidate placements to choose between them, within {} s",
+        candidates.len(),
+        budget.total().as_secs()
     );
 
-    let mut best: Option<(CandidateCost, synth_place::Placement, Vec<String>)> = None;
-    for (index, candidate) in candidates.iter().enumerate() {
-        let Some((cost, report)) =
-            evaluate_candidate(board, sidecars, engine, options, best_of, candidate, index)?
-        else {
+    // A run is never given longer than the router's own timeout.
+    let requested = std::time::Duration::from_secs(options.timeout_secs);
+    let Some(search) = synth_router::search_budget::route_candidates(
+        &candidates,
+        budget,
+        requested,
+        |candidate, index, limit| {
+            let Some((cost, report)) = evaluate_candidate(
+                board, sidecars, engine, options, best_of, candidate, index, limit,
+            )?
+            else {
+                eprintln!(
+                    "placement feedback: {} is unavailable; keeping the export's own placement",
+                    engine.as_str()
+                );
+                return Ok::<_, anyhow::Error>(None);
+            };
             eprintln!(
-                "placement feedback: {} is unavailable; keeping the export's own placement",
-                engine.as_str()
+                "placement feedback: candidate {index} -> {} (open nets {}, blocking {}, vias {}, \
+                 segments {})",
+                report.state.as_str(),
+                report.statistics.open_nets,
+                cost.2,
+                report.statistics.vias,
+                report.statistics.segments,
             );
-            return Ok(None);
-        };
-        eprintln!(
-            "placement feedback: candidate {index} -> {} (open nets {}, blocking {}, vias {}, \
-             segments {})",
-            report.state.as_str(),
-            report.statistics.open_nets,
-            cost.2,
-            report.statistics.vias,
-            report.statistics.segments,
-        );
-        if best
-            .as_ref()
-            .is_none_or(|(previous, _, _)| cost < *previous)
-        {
-            best = Some((
+            Ok(Some(synth_router::search_budget::Evaluated {
                 cost,
-                candidate.clone(),
-                report.recommended_routing_order.clone(),
-            ));
-        }
+                order: report.recommended_routing_order.clone(),
+            }))
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    if search.cut_short {
+        eprintln!(
+            "placement feedback: the {} s budget ended the search after {} of {} candidates; \
+             keeping the best found",
+            budget.total().as_secs(),
+            search.routed,
+            search.total
+        );
     }
+    let mut best = search.best;
 
     // Hardest-net grouping: the winner named the nets the router struggled
     // with. Ask for one more placement that pulls each such net's parts toward
     // the component carrying most of its pins, and keep it if it routes better.
+    // It is one more routing run, so it gets what is left of the budget, or is
+    // skipped.
     if let Some((best_cost, _, order)) = best.clone() {
         if !order.is_empty() {
             let hints = synth_place::hard_net_proximity_hints(board, &order);
             if !hints.is_empty() {
+                let Some(limit) = budget.candidate_limit(requested) else {
+                    eprintln!(
+                        "placement feedback: no budget left for the hardest-net grouping run"
+                    );
+                    return Ok(best.map(|(_, placement, order)| (placement, order)));
+                };
                 let hinted = synth_place::with_hard_net_hints(board, &hints);
                 if let Ok(grouped) = synth_kicad::placement_candidates(&hinted, sidecars) {
                     if let Some(candidate) = grouped.into_iter().next() {
-                        if let Some((cost, report)) = evaluate_candidate(
+                        let began = std::time::Instant::now();
+                        let evaluated = evaluate_candidate(
                             board,
                             sidecars,
                             engine,
@@ -4951,7 +5002,10 @@ fn select_placement_for_routing(
                             best_of,
                             &candidate,
                             usize::MAX,
-                        )? {
+                            limit,
+                        )?;
+                        budget.note_run(began.elapsed());
+                        if let Some((cost, report)) = evaluated {
                             eprintln!(
                                 "placement feedback: hardest-net grouping -> {cost:?} \
                                  (was {best_cost:?})"
@@ -4995,13 +5049,17 @@ fn evaluate_candidate(
     best_of: bool,
     candidate: &synth_place::Placement,
     index: usize,
+    limit: std::time::Duration,
 ) -> anyhow::Result<Option<(CandidateCost, synth_router::RouteReport)>> {
     let scratch =
         std::env::temp_dir().join(format!("synth-place-route-{}-{index}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     let result = synth_kicad::export_with_placement(board, &scratch, sidecars, candidate)
         .map_err(|e| anyhow::anyhow!("candidate export failed: {e}"))?;
-    let request = build_route_request(board, &result, engine.into(), options, &[])?;
+    // Capped at what is left of the search budget, so a run that starts late
+    // cannot take the router's whole timeout.
+    let capped = options.clone().with_timeout(Some(limit.as_secs().max(1)));
+    let request = build_route_request(board, &result, engine.into(), &capped, &[])?;
     // Best-of-N per candidate when asked: the winner is the best engine's
     // attempt, judged by the same independent checks.
     let report = if best_of {
