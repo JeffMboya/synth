@@ -221,6 +221,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "layout_file_path": { "type": "string", "description": "Optional agent or human PCB placement sidecar (<design>.placement.layout.toml; board millimetres); exact component positions and rotations are applied to placement and routing. Omit for auto-placement." },
                     "schematic_layout_file_path": { "type": "string", "description": "Optional schematic layout sidecar (<design>.schematic.layout.toml; sheet millimetres); component positions on the exported sheet. Omit for auto-layout. Distinct from layout_file_path: the two files hold the same schema but different coordinate spaces, so passing one where the other is expected silently misplaces parts." },
                     "allow_incomplete": { "type": "boolean", "description": "Export a clearly labelled draft even when routing is incomplete or DRC has violations. Defaults to false; never use this output for fabrication." },
+                    "place_route_budget_secs": { "type": "integer", "description": "Wall-clock budget in seconds for place_route_iterate before it keeps the best placement found so far (default 900). A routing run already started is not interrupted." },
                     "place_route_iterate": { "type": "boolean", "description": "Choose the placement by routing each candidate and keeping the one that routes best, instead of the export path's route-free estimate. Opt-in: costs one extra route per candidate, and falls back to the normal choice when there is one candidate or the engine is unavailable." },
                     "router": { "type": "string", "description": "External engine: \"kicad-routing-tools\" (default, external checkout) or \"freerouting\" (managed)" },
                     "freerouting_jar": { "type": "string", "description": "Path to the FreeRouting JAR" },
@@ -2784,6 +2785,25 @@ fn execute_review_schematic(
 /// Lower-is-better route-quality key (`RouteReport::layout_cost`).
 type RouteCost = (u8, usize, usize, usize, u64);
 
+/// Seconds `place_route_iterate` may spend routing candidate placements before
+/// it keeps the best one so far.
+const PLACE_ROUTE_BUDGET_SECS: u64 = 900;
+
+/// The wall-clock budget for the placement search, from the call or the default.
+fn place_route_budget(args: &Value) -> std::time::Duration {
+    std::time::Duration::from_secs(
+        args["place_route_budget_secs"]
+            .as_u64()
+            .unwrap_or(PLACE_ROUTE_BUDGET_SECS),
+    )
+}
+
+/// Whether a search that began at `started` still has budget to start another
+/// routing run. A run already under way is not interrupted.
+fn within_budget(started: std::time::Instant, budget: std::time::Duration) -> bool {
+    started.elapsed() < budget
+}
+
 fn select_placement_by_route(
     board: &synth_ir::Board,
     sidecars: &synth_kicad::Sidecars,
@@ -2795,8 +2815,16 @@ fn select_placement_by_route(
     if candidates.len() < 2 {
         return Ok(None);
     }
+    let started = std::time::Instant::now();
+    let budget = place_route_budget(args);
     let mut best: Option<(RouteCost, synth_place::Placement, Vec<String>)> = None;
     for (index, candidate) in candidates.iter().enumerate() {
+        // Each candidate is a full routing run, so an unbounded loop can hold
+        // one tool call for an hour. Keep the best placement found so far once
+        // the budget is spent.
+        if best.is_some() && !within_budget(started, budget) {
+            break;
+        }
         let Some((cost, order)) =
             evaluate_candidate_mcp(board, sidecars, args, engine, candidate, index)?
         else {
@@ -2813,7 +2841,7 @@ fn select_placement_by_route(
     // Hardest-net grouping, as the CLI loop does: pull each hard net's parts
     // toward the component carrying most of its pins and keep it if better.
     if let Some((best_cost, _, order)) = best.clone() {
-        if !order.is_empty() {
+        if !order.is_empty() && within_budget(started, budget) {
             let hints = synth_place::hard_net_proximity_hints(board, &order);
             if !hints.is_empty() {
                 let hinted = synth_place::with_hard_net_hints(board, &hints);
@@ -5150,6 +5178,28 @@ mod tests {
             Some(std::path::PathBuf::from(
                 "/nowhere/board.schematic.layout.toml"
             ))
+        );
+    }
+
+    #[test]
+    fn the_placement_search_stops_starting_runs_once_its_budget_is_spent() {
+        let started = std::time::Instant::now();
+        assert!(super::within_budget(
+            started,
+            std::time::Duration::from_secs(60)
+        ));
+        assert!(!super::within_budget(started, std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn the_budget_defaults_and_can_be_set() {
+        assert_eq!(
+            super::place_route_budget(&serde_json::json!({})),
+            std::time::Duration::from_secs(900)
+        );
+        assert_eq!(
+            super::place_route_budget(&serde_json::json!({ "place_route_budget_secs": 120 })),
+            std::time::Duration::from_secs(120)
         );
     }
 
