@@ -4364,6 +4364,27 @@ fn execute_author_part(args: &Value, _default_registry: Option<&Path>) -> Result
         });
     }
 
+    // The registry requires every part to declare its footprint's size, and an
+    // author who names a stock footprint has no reason to measure it. Take it
+    // from the footprint's courtyard when the library has one; an author's own
+    // table is kept.
+    if part.footprint_dimensions.is_none() {
+        part.footprint_dimensions = part
+            .kicad_footprint
+            .as_deref()
+            .and_then(synth_layout::kicad_footprint_loader::courtyard_bbox)
+            .map(
+                |(width_mm, height_mm)| synth_registry::FootprintDimensions {
+                    width_mm,
+                    height_mm,
+                    courtyard_margin_mm: Some(0.25),
+                    mating_face: None,
+                    label_side: None,
+                    label_hidden: None,
+                },
+            );
+    }
+
     let user_dir = resolve_user_registry(args)?;
     std::fs::create_dir_all(&user_dir).map_err(|e| format!("cannot create user registry: {e}"))?;
 
@@ -4604,6 +4625,40 @@ electrical_type = "passive"
         assert!(dir.join("test_res_1k.synth.toml").exists());
         let written = std::fs::read_to_string(dir.join("test_res_1k.synth.toml")).unwrap();
         assert!(written.contains("source = \"authored\""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A part that names a stock footprint gets its size from the courtyard, so
+    /// the registry's requirement is met without the author measuring anything.
+    #[test]
+    fn author_part_takes_footprint_dimensions_from_the_courtyard() {
+        let Some((width, height)) =
+            synth_layout::kicad_footprint_loader::courtyard_bbox("Package_TO_SOT_SMD:SOT-23")
+        else {
+            eprintln!("skipped: the KiCad footprint library is not installed");
+            return;
+        };
+        let dir = scratch("author_dims");
+        let toml_src = r#"
+id = "test_sot23_dims"
+kind = "transistor"
+kicad_footprint = "Package_TO_SOT_SMD:SOT-23"
+[[pins]]
+name = "g"
+number = "1"
+electrical_type = "input"
+"#;
+        let res = call_tool(
+            "synth_author_part",
+            &json!({ "part_toml": toml_src, "user_registry": dir.to_str().unwrap() }),
+            None,
+        )
+        .expect("author_part should succeed");
+        assert_eq!(res["status"], "authored");
+        let written = std::fs::read_to_string(dir.join("test_sot23_dims.synth.toml")).unwrap();
+        let part: synth_registry::Part = toml::from_str(&written).unwrap();
+        let dims = part.footprint_dimensions.expect("dimensions are written");
+        assert!((dims.width_mm - width).abs() < 1e-9 && (dims.height_mm - height).abs() < 1e-9);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
