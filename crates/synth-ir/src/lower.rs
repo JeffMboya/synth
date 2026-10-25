@@ -223,7 +223,13 @@ pub fn lower(ast: &ProgramAst, registry: &Registry, file: &str) -> LowerResult {
             StatementAst::Component(c) => {
                 let comp = ctx.lower_component(c, registry, components.len(), group, sheet);
                 if refdes_index.contains_key(&comp.refdes) {
-                    ctx.emit_duplicate_refdes(&comp.refdes, comp.source_span);
+                    // Name both declarations: the validator's own finding sits
+                    // on this second one, so this one sits on the first.
+                    let first = components
+                        .iter()
+                        .find(|c| c.refdes == comp.refdes)
+                        .map_or(comp.source_span, |c| c.source_span);
+                    ctx.emit_duplicate_refdes(&comp.refdes, first, comp.source_span);
                 } else {
                     refdes_index.insert(comp.refdes.clone(), comp.id);
                 }
@@ -1422,16 +1428,24 @@ impl<'a> LowerCtx<'a> {
         })
     }
 
-    fn emit_duplicate_refdes(&mut self, refdes: &str, span: synth_diagnostics::Span) {
+    fn emit_duplicate_refdes(
+        &mut self,
+        refdes: &str,
+        first: synth_diagnostics::Span,
+        again: synth_diagnostics::Span,
+    ) {
         self.diagnostics.push(
             DiagnosticBuilder::new(
                 "E-SYNTH-NAME-001",
                 Severity::Error,
                 "duplicate component refdes",
             )
-            .location(Location::from_span(self.file.to_string(), span))
+            .location(Location::from_span(self.file.to_string(), first))
             .expected("each refdes used at most once in a board")
-            .found(format!("`{refdes}` declared more than once"))
+            .found(format!(
+                "`{refdes}` declared more than once; declared again at bytes {}..{}",
+                again.byte_start, again.byte_end
+            ))
             .explanation_url("synth.docs/diagnostics/E-SYNTH-NAME-001")
             .build(),
         );
