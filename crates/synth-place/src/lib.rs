@@ -1945,7 +1945,7 @@ fn place_board_features(
             if occupied.iter().any(|rect| candidate.intersects(rect)) {
                 return None;
             }
-            if intersects_keepout(candidate, id, board, envelope, |pid| {
+            if overlaps_keepout(candidate, id, board, envelope, |pid| {
                 placements
                     .iter()
                     .find(|placement| placement.id == pid)
@@ -2870,7 +2870,7 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                 pad_extra_nm,
             );
             if placed.iter().all(|(_, _, r)| !candidate.intersects(r))
-                && !intersects_keepout(candidate, id, board, board_outline, |pid| {
+                && !overlaps_keepout(candidate, id, board, board_outline, |pid| {
                     placed
                         .iter()
                         .find(|(placed_id, _, _)| *placed_id == pid)
@@ -5571,12 +5571,12 @@ fn refine_placement<S: ::std::hash::BuildHasher>(
         }
         let before = current.clone();
         for action in &review.recommended_actions {
-            let hits = keepout_hits(board, &current);
+            let hits = keepout_overlaps(board, &current);
             let undo = current.clone();
             apply_recommendation(board, &mut current, action, rotation_overrides);
             // The validator rejects a part inside a keepout, so a move that
             // would put one there is dropped.
-            if keepout_hits(board, &current) > hits {
+            if keepout_overlaps(board, &current) > hits {
                 current = undo;
             }
         }
@@ -6285,7 +6285,7 @@ fn compact_placement(board: &Board, placement: Placement) -> Placement {
             (envelope.min.y_nm + envelope.max.y_nm) / 2,
         );
         let hpwl = total_hpwl_nm(board, &current);
-        let hits = keepout_hits(board, &current);
+        let hits = keepout_overlaps(board, &current);
         let labels = labels_without_room(board, &current, &sizes);
         // Separate what overlaps, then keep the candidate only if the box
         // around the courtyards is smaller and nothing got worse.
@@ -6298,7 +6298,7 @@ fn compact_placement(board: &Board, placement: Placement) -> Placement {
             }
             tighten_outline_to_hints(board, &mut candidate);
             let better = total_hpwl_nm(board, &candidate) <= hpwl
-                && keepout_hits(board, &candidate) <= hits
+                && keepout_overlaps(board, &candidate) <= hits
                 && edge_overhang(board, &candidate, &sizes, &flush_edge) == 0
                 && labels_without_room(board, &candidate, &sizes) <= labels;
             (better && keep_unless_worse(board, current.clone(), candidate.clone()) == candidate)
@@ -6431,7 +6431,7 @@ fn centre_outside_rings(
 fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
     let pitch_nm = mm_to_nm(0.5);
     let mut hpwl = total_hpwl_nm(board, &placement);
-    let mut hits = keepout_hits(board, &placement);
+    let mut hits = keepout_overlaps(board, &placement);
     let sizes = courtyard_sizes(board, &placement);
     let mut labels = labels_without_room(board, &placement, &sizes);
     // The router needs room to leave a many-pin part's pins, so a passive may
@@ -6539,7 +6539,7 @@ fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
                 *placed = slot;
             }
             let (trial_hpwl, trial_hits) =
-                (total_hpwl_nm(board, &trial), keepout_hits(board, &trial));
+                (total_hpwl_nm(board, &trial), keepout_overlaps(board, &trial));
             let trial_labels = labels_without_room(board, &trial, &sizes);
             if trial_hpwl < hpwl && trial_hits <= hits && trial_labels <= labels {
                 hpwl = trial_hpwl;
@@ -6585,6 +6585,7 @@ fn clamp_to_edge_clearance(board: &Board, placement: &mut Placement, pinned: &Pi
 
 /// Parts whose centre lies inside a keepout circle, the rule the independent
 /// validator enforces (E-SYNTH-PLACE-004).
+#[cfg(test)]
 fn keepout_hits(board: &Board, placement: &Placement) -> usize {
     let centre_rect = |id: ComponentId| {
         placement
@@ -7781,6 +7782,35 @@ board "features_only" {
             keepout_overlaps(&board, &placement) > 0,
             "the courtyard overlaps the keepout"
         );
+    }
+
+    /// The automatic placer must keep a courtyard out of a keepout circle, not
+    /// only its centre: parts wired to the keepout's anchor are pulled right up
+    /// to the circle, where a centre-only test leaves their pads inside it.
+    #[test]
+    fn the_automatic_placer_keeps_courtyards_out_of_a_keepout() {
+        let source = r#"board "keepout" { layers 2
+            keepout ANT1 { radius 6mm }
+            component ANT1: antenna "ant_chip_2g4"
+            component R1: resistor "r_generic_0603" value "10k"
+            component R2: resistor "r_generic_0603" value "10k"
+            component R3: resistor "r_generic_0603" value "10k"
+            component R4: resistor "r_generic_0603" value "10k"
+            connect ANT1.feed -> R1.p1
+            connect R1.p2 -> R2.p1
+            connect R2.p2 -> R3.p1
+            connect R3.p2 -> R4.p1
+        }"#;
+        let file = "keepout.synth".to_string();
+        let parse = synth_parser::parse(source, file.clone());
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        let board = synth_ir::lower(parse.ast.as_ref().expect("parses"), &registry, &file)
+            .board
+            .expect("lowers");
+        let placement = place(&board).expect("place");
+        assert_eq!(keepout_overlaps(&board, &placement), 0);
     }
 
     /// A row of connectors along an edge is packed together, in the same
