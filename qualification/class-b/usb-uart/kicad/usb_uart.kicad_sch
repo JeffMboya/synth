@@ -11232,6 +11232,36 @@
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
+		(at 309.88 175.26 0)
+		(unit 1)
+		(in_bom no)
+		(on_board no)
+		(uuid "9319e48b-64b3-51b0-9d96-edfd6b59f8f6")
+		(property
+			"Reference"
+			"#FLG3022"
+			(at 309.88 175.26 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property
+			"Value"
+			"PWR_FLAG"
+			(at 309.88 175.26 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:PWR_FLAG")
 		(at 27.94 99.06 0)
 		(unit 1)
 		(in_bom no)

@@ -11,14 +11,13 @@
       "evidence": "Every ERC finding is dispositioned below by the author. passed stays false until a human reviewer confirms the dispositions.",
       "findings": [
         {
-          "count": 1,
+          "count": 0,
           "severity": "error",
           "type": "power_pin_not_driven",
-          "item": "#PWR2211 (VIO symbol)",
-          "disposition": "Expected. VIO is fed by the J_VIO jumper from +3V3 or VBUS, and jumper pins are passive, so no power output drives the rail and there is no PWR_FLAG. With no jumper fitted VIO is unpowered by design. Open: confirm with a reviewer whether to add a PWR_FLAG."
+          "disposition": "Fixed. VIO is fed by the J_VIO jumper from +3V3 or VBUS, and jumper pins are passive, so no pin on the rail is a power output. The exporter now places a PWR_FLAG on VIO (it used to anchor it on U1, which has no stock symbol, and drop it). With no jumper fitted VIO is unpowered by design."
         },
         {
-          "count": 79,
+          "count": 80,
           "severity": "warning",
           "type": "lib_symbol_issues",
           "disposition": "Not a design fault. The exported schematic uses the embedded symbols and the KiCad run had no 'power' library configured."

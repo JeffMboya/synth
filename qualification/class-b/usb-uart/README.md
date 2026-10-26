@@ -133,7 +133,7 @@ Current Synth main defaults the MCP export to KiCadRoutingTools; this board was 
 
 - Schematic: an earlier exporter bug drew the CH342F wires 1.27 mm short of its pins. With commit 9592ad5 (PR #104) applied, the netlist shows U1 connected (only RST and RTS0 left open). Without that fix, KiCad sees every U1 pin as unconnected.
 - Schematic look: the compiler's own layout, not tuned by hand. See `images/schematic.png`.
-- KiCad schematic ERC: 1 error, `power_pin_not_driven` on the VIO symbol (VIO arrives only through J_VIO), plus 116 warnings (79 lib_symbol_issues, 36 footprint_link_issues, 1 label_multiple_wires).
+- KiCad schematic ERC: 0 errors and 117 warnings (80 lib_symbol_issues, 36 footprint_link_issues, 1 label_multiple_wires). VIO arrives only through J_VIO, so the exporter puts a PWR_FLAG on it.
 - Validate still warns: E-SYNTH-POWER-004 x2 (VBUS and GND load-to-capacitor ratio, a count heuristic), E-SYNTH-SCHEM-005 x2 (CH342F bridge junction fan-out), W-SYNTH-ANOMALY-001, W-SYNTH-SUPPLY-002 x8, W-SYNTH-PART-UNVERIFIED x9.
 - No VBUS bulk capacitor, no fuse, no reverse or inrush protection.
 - R_TERM (120 ohm across A/B) is always connected. The registry has no 2-pin header (`header_1x2`) for a jumper.
