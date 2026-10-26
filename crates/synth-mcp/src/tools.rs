@@ -971,7 +971,7 @@ fn execute_language_reference(_args: &Value) -> Value {
                 },
                 {
                     "form": "requires <process>",
-                    "description": "Declares a fabrication process the board cannot be built without. `via_in_pad` is the only one today: the process must fill and cap a via drilled inside an SMD pad, which at fine pitch is the only escape the geometry leaves. A requirement is not a permission — it is matched against the `manufacturer` profile's capability, and a tier that does not offer the process is an error rather than a silent downgrade. Repeat the statement for several processes; declaring one twice is one requirement.",
+                    "description": "Declares a fabrication process the board cannot be built without. `via_in_pad` is the only one today: the process must fill and cap a via drilled inside an SMD pad, which at fine pitch is the only escape the geometry leaves. A requirement is not a permission — it is matched against the `manufacturer` profile's capability, and a tier that does not offer the process is an error rather than a silent downgrade. `jlcpcb`, `pcbway` and `oshpark` do not offer `via_in_pad`; `manufacturer \"jlc-filled-via\"` (JLCPCB with the resin-filled via option) does. Repeat the statement for several processes; declaring one twice is one requirement.",
                     "example": "requires via_in_pad"
                 },
                 {
@@ -1430,8 +1430,9 @@ fn grant_processes(
         .map(|requirement| {
             format!(
                 "board requires `{}`, which profile `{profile}` does not offer \
-                 [E-SYNTH-PROCESS-002]",
-                requirement.as_source()
+                 [E-SYNTH-PROCESS-002]; declare `manufacturer \"{}\"` to use it",
+                requirement.as_source(),
+                synth_drc::ManufacturerProfile::OFFERING_VIA_IN_PAD.join("\"` or `manufacturer \"")
             )
         })
         .collect()
