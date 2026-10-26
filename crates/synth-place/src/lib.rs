@@ -817,24 +817,37 @@ fn outline_with_flush_connectors(
                 flush.max.x_nm,
                 flush.max.y_nm,
             ];
-            let side = match body.filter(|_| !side_from_hint) {
-                Some(body) => [
-                    body.min.x_nm - real.min.x_nm,
-                    body.min.y_nm - real.min.y_nm,
-                    real.max.x_nm - body.max.x_nm,
-                    real.max.y_nm - body.max.y_nm,
-                ]
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, p)| **p)
-                .map(|(side, _)| side),
-                None => component
-                    .placement_hint
-                    .as_ref()
-                    .and_then(|hint| hint.edge.as_ref())
-                    .map(edge_index),
+            // A connector sits where the solver or a sidecar put it, which need
+            // not be the edge its hint names. Trust the hint unless the
+            // connector is clearly nowhere near that edge; then use the side
+            // it sticks out of most. Taking the hinted side blindly let a
+            // connector hinted "bottom" but sitting on the left keep its
+            // margin on the left and push the whole left edge out, undoing
+            // its neighbours' flush edge.
+            let hinted = component
+                .placement_hint
+                .as_ref()
+                .and_then(|hint| hint.edge.as_ref())
+                .map(edge_index);
+            let sides: Vec<usize> = match body {
+                Some(body) => {
+                    let reaches = [
+                        body.min.x_nm - real.min.x_nm,
+                        body.min.y_nm - real.min.y_nm,
+                        real.max.x_nm - body.max.x_nm,
+                        real.max.y_nm - body.max.y_nm,
+                    ];
+                    let geometric = (0..4).max_by_key(|&side| reaches[side]);
+                    match hinted {
+                        Some(side) if side_from_hint && reaches[side] >= -margin_nm => {
+                            vec![side]
+                        }
+                        _ => geometric.into_iter().collect(),
+                    }
+                }
+                None => hinted.into_iter().collect(),
             };
-            if let Some(side) = side {
+            for side in sides {
                 reach[side] = flush[side];
             }
         } else if let Some(copper) = copper {
@@ -8813,6 +8826,56 @@ board "features_only" {
                 assert_flush_with_copper_clear(&board, &placement, "J2", edge);
             }
         }
+    }
+
+    /// A connector hinted to one edge but pinned on another must not undo its
+    /// neighbour's flush edge: its own side is judged by where it sits.
+    #[test]
+    fn a_connector_pinned_off_its_hinted_edge_does_not_push_a_neighbours_flush_edge_out() {
+        // J3 is hinted bottom but a sidecar pins it on the left, beside J2.
+        let board = with_hint(
+            &feather_with_j2_hint("left", "hard"),
+            "J3",
+            "bottom",
+            "hard",
+        );
+        let mut placement = place(&load_board(FEATHER)).expect("place");
+        let others_min_x = placement
+            .components
+            .iter()
+            .filter(|placed| {
+                let refdes = &board.component(placed.id).expect("component").refdes;
+                refdes != "J2" && refdes != "J3"
+            })
+            .map(|placed| {
+                let component = board.component(placed.id).expect("component");
+                sidecar_courtyard_rect(&board, component, placed).min.x_nm
+            })
+            .min()
+            .expect("others");
+        for refdes in ["J2", "J3"] {
+            let component = board
+                .components
+                .iter()
+                .find(|c| c.refdes == refdes)
+                .expect(refdes);
+            let placed = placement
+                .components
+                .iter_mut()
+                .find(|placed| placed.id == component.id)
+                .expect("placement");
+            let half_w = sidecar_courtyard_rect(&board, component, placed).width_nm() / 2;
+            placed.center.x_nm = others_min_x - mm_to_nm(12.0) + half_w;
+        }
+        tighten_outline_after_sidecar(&board, &mut placement);
+        assert_connector_flush(&board, &placement, "J2", "left");
+        assert_connector_flush(&board, &placement, "J3", "left");
+
+        // The export fits the outline from the hints; it must agree.
+        let mut fitted = placement.clone();
+        fit_outline(&board, &mut fitted, fitted_edge_margin_nm(&board));
+        assert_connector_flush(&board, &fitted, "J2", "left");
+        assert_connector_flush(&board, &fitted, "J3", "left");
     }
 
     #[test]
