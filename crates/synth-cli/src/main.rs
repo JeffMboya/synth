@@ -2300,32 +2300,6 @@ fn registry_manifest(
     }
 }
 
-/// R15.9: collect the deduplicated ids of every board part that would
-/// export with a synthesized bounding-box footprint fallback — i.e.
-/// parts with no `kicad_footprint` at all, or whose referenced
-/// footprint cannot be resolved to real pad geometry on disk.
-fn parts_without_real_footprint(board: &synth_ir::Board) -> Vec<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut missing = Vec::new();
-    for component in &board.components {
-        let Some(part) = component.part.as_ref() else {
-            continue;
-        };
-        if !seen.insert(part.id.as_str().to_string()) {
-            continue;
-        }
-        let resolves = part
-            .kicad_footprint
-            .as_deref()
-            .and_then(synth_layout::kicad_footprint_loader::pads)
-            .is_some();
-        if !resolves {
-            missing.push(part.id.as_str().to_string());
-        }
-    }
-    missing
-}
-
 /// R15.3 trust boundary: part ids on `board` that carry `[provenance]`
 /// but have no `reviewed_by` reviewer (`W-SYNTH-PART-UNVERIFIED`). Legacy
 /// seed parts without a `[provenance]` section are trusted and excluded.
@@ -4133,7 +4107,7 @@ fn export_kicad(
     // stock KiCad, or shipped in the registry). Parts without one export with
     // a synthesized bounding-box fallback whose pad geometry is a guess —
     // not fabricable. Reject unless `--force`.
-    let unfootprinted = parts_without_real_footprint(board);
+    let unfootprinted = synth_layout::kicad_footprint_loader::parts_without_real_footprint(board);
     if !unfootprinted.is_empty() {
         let list = unfootprinted.join(", ");
         if force {
