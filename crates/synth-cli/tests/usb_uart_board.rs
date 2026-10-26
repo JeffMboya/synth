@@ -119,8 +119,10 @@ fn net_of(ir: &serde_json::Value, refdes: &str, pin_name: &str) -> String {
                 .iter()
                 .any(|e| e["component"] == component["id"] && e["pin"].as_u64() == Some(pin as u64))
         })
-        .map(|n| n["name"].as_str().expect("net name").to_string())
-        .unwrap_or_else(|| panic!("{refdes}.{pin_name} is on a net"))
+        .map_or_else(
+            || panic!("{refdes}.{pin_name} is on a net"),
+            |n| n["name"].as_str().expect("net name").to_string(),
+        )
 }
 
 /// A TX LED that sources from the line is lit while the line idles high and
