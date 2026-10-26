@@ -105,7 +105,8 @@ Routing (FreeRouting 2.4.1, `router: "freerouting"`, `allow_via_in_pad: true`), 
 ## Committed artifacts
 
 - `kicad/`: the routed PCB, schematic, symbol library, project, DRC rules and BOM.
-- `reports/`: `release.json`, the delivered DRC, ERC and the routing record.
+- `reports/`: `release.json`, the delivered DRC, ERC and the routing record. Its `release_ready` and `fabrication_ready` flags only mean the route passed Synth's router and DRC gates.
+- `qualification.json`: the qualification gate. `qualified` stays false until every review gate in it is true.
 - `images/`: 3D top and angled, top and bottom copper, and the schematic.
 - `SHA256SUMS`: hashes of the artifacts above.
 
