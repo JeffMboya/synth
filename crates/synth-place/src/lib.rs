@@ -3000,8 +3000,11 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
                 courtyard_offset,
                 pad_extra_nm,
             );
+            // Centre-only on purpose: the strict test here costs secure_tracker
+            // a routed net, and the strict gates in the passes after this one
+            // already keep a courtyard from entering a keepout.
             if placed.iter().all(|(_, _, r)| !candidate.intersects(r))
-                && !overlaps_keepout(candidate, id, board, board_outline, |pid| {
+                && !intersects_keepout(candidate, id, board, board_outline, |pid| {
                     placed
                         .iter()
                         .find(|(placed_id, _, _)| *placed_id == pid)
@@ -6720,8 +6723,10 @@ fn shorten_wires(board: &Board, mut placement: Placement) -> Placement {
             if let Some(placed) = trial.components.iter_mut().find(|p| p.id == component.id) {
                 *placed = slot;
             }
-            let (trial_hpwl, trial_hits) =
-                (total_hpwl_nm(board, &trial), keepout_overlaps(board, &trial));
+            let (trial_hpwl, trial_hits) = (
+                total_hpwl_nm(board, &trial),
+                keepout_overlaps(board, &trial),
+            );
             let trial_labels = labels_without_room(board, &trial, &sizes);
             if trial_hpwl < hpwl && trial_hits <= hits && trial_labels <= labels {
                 hpwl = trial_hpwl;

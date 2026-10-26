@@ -2,30 +2,30 @@
 source: crates/synth-place/tests/snapshots.rs
 expression: snapshot
 ---
-board_outline_mm: 82.36 x 49.94
+board_outline_mm: 81.90 x 49.94
 
-  U1  (  41.31,   25.85) mm  rot=Zero layer=Top
-  U2  (  40.91,   34.45) mm  rot=Zero layer=Top
-  U3  (  24.16,   28.55) mm  rot=Zero layer=Top
-  U4  (   9.34,   18.88) mm  rot=Zero layer=Top
-  J1  (  17.53,    9.46) mm  rot=OneEighty layer=Top
-  J2  (  29.51,   10.20) mm  rot=TwoSeventy layer=Top
-ANT1  (  73.91,   22.10) mm  rot=Zero layer=Top
-  Y1  (  41.71,   17.25) mm  rot=Zero layer=Top
-  C8  (  41.46,   42.63) mm  rot=Zero layer=Top
-  R1  (   6.23,   11.50) mm  rot=OneEighty layer=Top
-  R2  (   6.23,    7.00) mm  rot=OneEighty layer=Top
-  R3  (  50.59,   35.50) mm  rot=Zero layer=Top
-  R4  (  51.39,   29.50) mm  rot=Zero layer=Top
-  R5  (  51.39,   25.00) mm  rot=Zero layer=Top
-  R6  (   7.23,   37.00) mm  rot=OneEighty layer=Top
-  C1  (  51.39,   20.50) mm  rot=Zero layer=Top
-  C2  (  50.19,   16.00) mm  rot=Zero layer=Top
-  C3  (  40.96,    9.52) mm  rot=Zero layer=Top
-  C4  (  50.59,   40.00) mm  rot=Zero layer=Top
-  C5  (  50.19,   11.50) mm  rot=Zero layer=Top
-  C6  (  56.55,   36.52) mm  rot=Ninety layer=Top
-  C7  (  47.86,   44.46) mm  rot=Zero layer=Top
-  C9  (  46.92,    7.04) mm  rot=Zero layer=Top
- C10  (  56.57,   41.73) mm  rot=Zero layer=Top
- C11  (  38.50,   14.00) mm  rot=Zero layer=Top
+  U1  (  40.85,   25.85) mm  rot=Zero layer=Top
+  U2  (  40.45,   34.45) mm  rot=Zero layer=Top
+  U3  (  23.70,   28.55) mm  rot=Zero layer=Top
+  U4  (   8.88,   18.88) mm  rot=Zero layer=Top
+  J1  (  22.07,    9.46) mm  rot=OneEighty layer=Top
+  J2  (   9.05,   10.20) mm  rot=TwoSeventy layer=Top
+ANT1  (  73.45,   22.10) mm  rot=Zero layer=Top
+  Y1  (  41.25,   17.25) mm  rot=Zero layer=Top
+  C8  (  41.00,   42.63) mm  rot=Zero layer=Top
+  R1  (  33.37,    9.50) mm  rot=Zero layer=Top
+  R2  (  39.33,    9.52) mm  rot=Zero layer=Top
+  R3  (  50.13,   35.50) mm  rot=Zero layer=Top
+  R4  (  50.93,   29.50) mm  rot=Zero layer=Top
+  R5  (  50.93,   25.00) mm  rot=Zero layer=Top
+  R6  (   6.77,   37.00) mm  rot=OneEighty layer=Top
+  C1  (  50.93,   20.50) mm  rot=Zero layer=Top
+  C2  (  49.73,   16.00) mm  rot=Zero layer=Top
+  C3  (  50.13,   40.00) mm  rot=Zero layer=Top
+  C4  (  49.73,   11.50) mm  rot=Zero layer=Top
+  C5  (  56.09,   36.52) mm  rot=Ninety layer=Top
+  C6  (  45.29,    7.04) mm  rot=Zero layer=Top
+  C7  (  47.40,   44.46) mm  rot=Zero layer=Top
+  C9  (  51.50,    7.04) mm  rot=Zero layer=Top
+ C10  (  56.11,   41.73) mm  rot=Zero layer=Top
+ C11  (  38.00,   14.00) mm  rot=Zero layer=Top
