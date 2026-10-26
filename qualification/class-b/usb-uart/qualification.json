@@ -18,7 +18,7 @@
           "disposition": "Expected. VIO is fed by the J_VIO jumper from +3V3 or VBUS, and jumper pins are passive, so no power output drives the rail and there is no PWR_FLAG. With no jumper fitted VIO is unpowered by design. Open: confirm with a reviewer whether to add a PWR_FLAG."
         },
         {
-          "count": 81,
+          "count": 79,
           "severity": "warning",
           "type": "lib_symbol_issues",
           "disposition": "Not a design fault. The exported schematic uses the embedded symbols and the KiCad run had no 'power' library configured."
@@ -66,37 +66,21 @@
       "evidence": "reviewer_state is false for every part in reports/release.json"
     },
     "reproducible_from_clean_checkout": {
-      "passed": false,
-      "evidence": "A clean export on 2026-10-26 (synth commit 22a9d23, FreeRouting 2.4.1, KiCad 10.0.5, empty XDG_DATA_HOME) did not reproduce the committed board: 1 DRC clearance error (VBUS via 0.178 mm from D1 pad 2, rule 0.2 mm), 41 warnings, routing state validation_failed. FreeRouting output is not bit-for-bit repeatable, so the committed PCB is a recorded result, not a regenerable one.",
+      "passed": true,
+      "evidence": "Two clean exports on 2026-10-26 of the committed inputs (FreeRouting 2.4.1, KiCad 10.0.5, empty XDG_DATA_HOME, `--router free-routing --krt-allow-via-in-pad`, Synth with #306 and #319) gave a byte-identical kicad_pcb and kicad_sch, and both match the committed files. DRC: 0 errors, 0 unconnected, 37 warnings. Not tested on another machine or another FreeRouting version, so the result may differ there.",
       "inputs_sha256": {
-        "usb_uart.synth": "4872d7cdbfc0f8e401a251a0c6fc0168c30353d014cb4218925bad60191c9c16",
-        "usb_uart.placement.layout.toml": "2da76977947d68423f8c0f8eaf33158e1d4f1492cf19feb5458ea32c1e6d12f6"
+        "usb_uart.synth": "e814e04cbe0e8262da7efc62f0edbd28b3656e76046f1ea1b31f05ef5aa0afde",
+        "usb_uart.placement.layout.toml": "f06e54a12b9e707935471c8fc910b731bd24cbcf3a0247cc862331f205fcfc39"
       },
-      "clean_run_output_sha256": {
-        "usb_uart.kicad_pcb": "6858c04e9079fc04f11b539982e4a0eec897e12d8c0e4e0131998418e3d0bfb2",
-        "usb_uart.freerouting.kicad_pcb": "121947c16c1262eff5dc076f8e326543e513315bb6f605bb19800648b8813830",
-        "usb_uart.kicad_sch": "9a7a04d2618c3d05bbaf3ec1f291ffb55b817f717025b323ef4c177d9de91354"
+      "outputs_sha256": {
+        "kicad/usb_uart.kicad_pcb": "d599184e8c856165ac86ce6487a0ef4589d39e793647aafdee93fa52af0243d5",
+        "kicad/usb_uart.kicad_sch": "169b87b72a566aad010b3e6876d32c1a35afce6970c9ad1a12f131acd1de2f72"
       }
     },
     "layout_clearances": {
       "passed": false,
-      "evidence": "Open, not fixed in this PR.",
+      "evidence": "The silkscreen warnings are fixed: the D7, J4, J_VIO and U1 reference labels are placed in the sidecar and kicad-cli DRC reports none. One item stays open.",
       "findings": [
-        {
-          "item": "U1 reference vs D6 silkscreen segment",
-          "kind": "silk_overlap",
-          "disposition": "Open. No free side for the label between U1, U3, C5 and C6."
-        },
-        {
-          "item": "U1 reference over D1 pad 1",
-          "kind": "silk_over_copper",
-          "disposition": "Open. Same cause."
-        },
-        {
-          "item": "D7 reference over R7 pad 1",
-          "kind": "silk_over_copper",
-          "disposition": "Open. The label is about 6 mm from the pad; the warning looks like a false positive but is not confirmed."
-        },
         {
           "item": "J1 courtyard to top board edge",
           "kind": "edge_clearance",

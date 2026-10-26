@@ -67,7 +67,7 @@ The Nexperia and LP5907 electrical numbers were not re-read.
 Status: compact placement done and routed with FreeRouting. The route passes Synth's release gate; it is not reviewed or fabricated.
 
 - Two copper layers: signals on F.Cu and B.Cu, a GND pour on both. The route uses no inner layer because the board has none; the previous revision was four layers with two inner GND planes that carried no routing.
-- Outline: 41.5 x 32.23 mm as routed. The four M2.5 holes are at x 5.5 and 39.6 mm, y 3.0 and 21.0 mm, with a 2.2 mm board-feature rim. The header courtyards at y 29.9 mm set the 32.23 mm height. This is 3.5 mm shorter than the previous 35.73 mm compact layout and 7.5 mm shorter than the 39.73 mm committed board.
+- Outline: 40.99 x 32.23 mm as routed. The four M2.5 holes are at x 5.5 and 39.6 mm, y 3.0 and 21.0 mm, with a 2.2 mm board-feature rim. The header courtyards at y 29.9 mm set the 32.23 mm height. This is 3.5 mm shorter than the previous 35.73 mm compact layout and 7.5 mm shorter than the 39.73 mm committed board.
 - Board-feature rim: Synth gives a mounting hole, test point or fiducial a fixed 2.2 mm rim in the fitted outline. With this sidecar the rim does not decide the outline: the holes are not the outermost parts, and the export gives the same outline with the rim set to 0. It matters if a hole is moved to the edge, where the tight 1.5 mm fit would otherwise cut it and split the F.Cu GND pour. `tests/usb_uart_board.rs` checks that every hole keeps at least 1.5 mm of room to Edge.Cuts on the exported board. The exporter sets `island_removal_mode 0`, dropping copper islands that touch no pad. The one GND zone item that KiCad lists against itself, at (2.05, -0.06) mm just outside the edge, is kept as a warning only when both entries share a UUID and a position; I have not proven that the pour is connected.
 - Every part has a position in `usb_uart.placement.layout.toml`. J1 sits flush on the top edge. J_VIO, J2, J3 and J4 sit at y 29.9 mm at x 7.36, 16.46, 27.0 and 36.1 mm. J3 moved 1.44 mm right of its previous 25.56 mm: at 25.56 FreeRouting left DTR1 (U1 pin 15 to J3 pin 1) unrouted, and the move opens that corridor. J4 moved the same 1.44 mm to keep the 8.62 mm header courtyards apart. The bottom parts sit at y 23.6 and 25.8 mm. R1 and R2 use the top corners; R3 moved to x 14.5 mm to clear H3.
 - No courtyard overlaps. J1 courtyard to top edge: 0.01 mm (flush).
@@ -89,18 +89,18 @@ Status: compact placement done and routed with FreeRouting. The route passes Syn
 - D2 is over 2 mm: four protection parts do not fit side by side under the 7 mm of J1 pads any closer.
 - R1 and R2 are in the top corners; the remaining passives are placed by hand. The DRC checks their courtyards, not placement quality.
 
-Routing (FreeRouting 2.4.1, `router: "freerouting"`, `allow_via_in_pad: true`), with the Synth sources at `4ab0eb9` (`source_revision` in `reports/release.json`):
-- Result: routed. `release.json` has `release_ready` true, `route_complete` true and no open net. `kicad-cli pcb drc --severity-all --refill-zones`: 0 errors, 39 warnings, plus one self-referential GND-zone item in `unconnected_items`; Synth's gate keeps that fill artifact as a warning because no two objects are missing a connection.
-- 271 track segments, 38 vias, 507.7 mm of copper.
-- The routed board is 41.5 x 32.23 mm.
+Routing (FreeRouting 2.4.1, `router: "freerouting"`, `allow_via_in_pad: true`), with the Synth sources at `08b917b` (`source_revision` in `reports/release.json`):
+- Result: routed. `release.json` has `release_ready` true and `routing.state` "routed", with no open net. `kicad-cli pcb drc --severity-all --refill-zones`: 0 errors and 36 warnings, all footprint library links, plus one self-referential GND-zone item in `unconnected_items` that Synth's gate counts as a 37th warning, because both entries share a UUID and a position (the pour's connectivity is not proven).
+- 261 track segments, 38 vias, 515.7 mm of copper.
+- The routed board is 40.99 x 32.23 mm.
 - FreeRouting's escape analysis flags J1 and U1 (0.5 mm pitch) as the packages where neither a fabrication-floor via nor a minimum track fits between adjacent pads, and suggests 4 layers. The route still completes, with its only via-in-pad at U1 pin 25.
-- J3 is at x 27.0 mm and J4 at x 36.1 mm in the sidecar. Small placement changes can change FreeRouting's result; it is not bit-for-bit repeatable.
-- Via-in-pad at the U1 exposed pad (pin 25), at (23.800, 17.200) mm. The fab must fill and cap it. JLCPCB has not been asked.
-- Signal-integrity pass: 15 warnings, none blocking. All 15 are layer changes with no ground return via within 1.53 mm, so the return current has to jump between the F.Cu and B.Cu pours.
+- J3 is at x 27.0 mm and J4 at x 36.1 mm in the sidecar. Small placement changes can change FreeRouting's result; the same inputs gave the same board on two runs.
+- Via-in-pad at the U1 exposed pad (pin 25), at (23.900, 17.300) mm. The fab must fill and cap it. JLCPCB has not been asked.
+- Signal-integrity pass: 18 warnings, none blocking. All 18 are layer changes with no ground return via within 1.53 mm, so the return current has to jump between the F.Cu and B.Cu pours.
 - The USB pair is not coupled and its length and skew were not measured for this route. FreeRouting does not couple the pair. On two layers at 1.6 mm, a 90 ohm differential pair needs about 1.18 mm traces, so the pair has no impedance target and no controlled-impedance geometry (the previous four-layer revision declared 90 ohm but never verified it).
 - No part has been reviewed (`reviewer_state` is false for every part in `release.json`).
-- The D7 reference is rotated into the right margin and R_TERM is vertical; the old D4/D7 overlap is gone. KiCad still reports a silk-over-copper warning for the D7 reference at R7 pad 1, six millimetres away, which reads as a false positive.
-- U1's reference label still sits in the D1/D6 row and triggers one silk-overlap and one silk-over-copper warning; there is no free side between U1, U3, C5 and C6.
+- Silkscreen: the D7, J4, J_VIO and U1 reference labels are placed by hand in the sidecar. `kicad-cli pcb drc` reports no silkscreen warning.
+- TX LEDs: D4 and D7 take their current from VIO through R4 and R7 and sink it into TXD0 and TXD1, so they are dark while a line idles and lit on the low bits. Each draws about 3 mA at 3.3 V and 6.6 mA at 5 V from the CH342 TXD pin (an estimate from a 1.9 V forward drop; the CH342 output drive was not checked at 5 V).
 
 ## Committed artifacts
 
@@ -110,9 +110,9 @@ Routing (FreeRouting 2.4.1, `router: "freerouting"`, `allow_via_in_pad: true`), 
 - `images/`: 3D top and angled, top and bottom copper, and the schematic.
 - `SHA256SUMS`: hashes of the artifacts above.
 
-The reports are as captured, except that the absolute paths of the machine that produced them were cut down to repo-relative ones and `source_revision` was filled in by hand. The other paths in them (`target/pr103-2layer/...`) are scratch paths on that machine.
+The reports are as the commands produce them, except that the absolute paths of the machine that produced them were cut to repo-relative ones (`out/...` is the export directory) and `source_revision` in `reports/release.json` was added by hand. The release report is the CLI's own format (`synth.release.v1`), which differs from the MCP report in the earlier revision.
 
-The committed board came from the MCP `synth_export` tool with `router: "freerouting"` and `allow_via_in_pad: true`. The CLI equivalent (same binary, same engine defaults) is below.
+The committed board came from the CLI commands below (FreeRouting engine, via-in-pad allowed).
 
 ## Commands (use an empty `XDG_DATA_HOME` so a user registry cannot shadow parts)
 
@@ -133,7 +133,7 @@ Current Synth main defaults the MCP export to KiCadRoutingTools; this board was 
 
 - Schematic: an earlier exporter bug drew the CH342F wires 1.27 mm short of its pins. With commit 9592ad5 (PR #104) applied, the netlist shows U1 connected (only RST and RTS0 left open). Without that fix, KiCad sees every U1 pin as unconnected.
 - Schematic look: the compiler's own layout, not tuned by hand. See `images/schematic.png`.
-- KiCad schematic ERC: 1 error, `power_pin_not_driven` on the VIO symbol (VIO arrives only through J_VIO), plus 118 warnings (81 lib_symbol_issues, 36 footprint_link_issues, 1 label_multiple_wires).
+- KiCad schematic ERC: 1 error, `power_pin_not_driven` on the VIO symbol (VIO arrives only through J_VIO), plus 116 warnings (79 lib_symbol_issues, 36 footprint_link_issues, 1 label_multiple_wires).
 - Validate still warns: E-SYNTH-POWER-004 x2 (VBUS and GND load-to-capacitor ratio, a count heuristic), E-SYNTH-SCHEM-005 x2 (CH342F bridge junction fan-out), W-SYNTH-ANOMALY-001, W-SYNTH-SUPPLY-002 x8, W-SYNTH-PART-UNVERIFIED x9.
 - No VBUS bulk capacitor, no fuse, no reverse or inrush protection.
 - R_TERM (120 ohm across A/B) is always connected. The registry has no 2-pin header (`header_1x2`) for a jumper.
@@ -150,6 +150,6 @@ Current Synth main defaults the MCP export to KiCadRoutingTools; this board was 
 - Parts availability, JLCPCB assembly, and the registry LCSC numbers were not checked.
 - Nothing was powered or tested.
 
-Reproducibility: a clean run of the commands above on 2026-10-26 (synth `22a9d23`, FreeRouting 2.4.1, KiCad 10.0.5) did not reproduce the committed board. It routed but failed validation with one clearance error (a VBUS via 0.178 mm from D1 pad 2) and 41 warnings. The committed PCB is a recorded result, not one the commands regenerate. `qualification.json` keeps `reproducible_from_clean_checkout` false and lists the input and output hashes of that run.
+Reproducibility: on 2026-10-26 two clean runs of the commands above (FreeRouting 2.4.1, KiCad 10.0.5, Synth with #306 and #319) gave a byte-identical `kicad_pcb` and `kicad_sch`, and both match the committed files. I did not try another machine or FreeRouting version. `qualification.json` lists the input and output hashes.
 
-The ERC findings and the silkscreen and edge-clearance items are dispositioned one by one in `qualification.json`. The silkscreen overlaps and the 0.01 mm J1 edge clearance are still open and are not fixed in this PR. The exported schematic used to tie RXD1_MCU to MODEM_IDLE through a name label that sat on a crossing wire; the exporter now keeps that label off other nets' wires, and the schematic and ERC report were regenerated.
+The ERC findings and the silkscreen and edge-clearance items are dispositioned one by one in `qualification.json`. The 0.01 mm J1 edge clearance is still open; the silkscreen warnings are fixed with label overrides in the sidecar. The exported schematic used to tie RXD1_MCU to MODEM_IDLE through a name label that sat on a crossing wire; the exporter now keeps that label off other nets' wires, and the schematic and ERC report were regenerated.
