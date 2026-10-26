@@ -2965,6 +2965,17 @@ fn routed_signal_integrity(board: &synth_ir::Board, pcb_path: &Path) -> Vec<synt
     synth_drc::check_signal_integrity(board, &routing, &profile, Some(&stackup))
 }
 
+/// Whether an export is a release: routed, no blocking signal-integrity
+/// finding, and no part exported with a synthesized footprint. A draft
+/// export (`allow_incomplete`) may carry any of these, and says so.
+fn export_release_ready(
+    route_complete: bool,
+    si_blocking: usize,
+    unfootprinted: &[String],
+) -> bool {
+    route_complete && si_blocking == 0 && unfootprinted.is_empty()
+}
+
 fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
     // Long by design: one linear arg-parse + compile + export
     // pipeline per tool keeps the MCP surface reviewable in one
@@ -3125,12 +3136,13 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
 
     let mut result = serde_json::json!({
         "status": if route_complete { "success" } else { "draft_incomplete" },
-        "release_ready": route_complete && si_blocking == 0,
+        "release_ready": export_release_ready(route_complete, si_blocking, &unfootprinted),
+        "parts_without_real_footprint": unfootprinted,
         "route_complete": route_complete,
         "signal_integrity": signal_integrity,
         "signal_integrity_blocking": si_blocking,
         "routing": routing,
-        "warning": if route_complete { serde_json::Value::Null } else { serde_json::json!("DRAFT ONLY: the board is not fabrication-ready. Review the routing run record and manually complete the PCB before any fabrication use.") },
+        "warning": if route_complete && unfootprinted.is_empty() { serde_json::Value::Null } else if unfootprinted.is_empty() { serde_json::json!("DRAFT ONLY: the board is not fabrication-ready. Review the routing run record and manually complete the PCB before any fabrication use.") } else { serde_json::json!(format!("DRAFT ONLY: these parts have no real KiCad footprint, so their pads are a guess: {}. A release export would have been refused (E-SYNTH-EXPORT-001).", unfootprinted.join(", "))) },
         "capability_tier": "engineer-review-required",
         "compiler_version": "0.0.1",
         "registry_version": "0.0.1",
@@ -4644,6 +4656,17 @@ electrical_type = "passive"
         assert!(!dir.join("nofp_export.kicad_pcb").exists());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&reg);
+    }
+
+    #[test]
+    fn a_draft_export_is_never_release_ready_with_a_guessed_footprint() {
+        assert!(export_release_ready(true, 0, &[]));
+        assert!(!export_release_ready(false, 0, &[]));
+        assert!(!export_release_ready(true, 1, &[]));
+        assert!(
+            !export_release_ready(true, 0, &["hdc1080_rh_t".to_string()]),
+            "a routed, clean board with a synthesized footprint is not a release"
+        );
     }
 
     #[test]
