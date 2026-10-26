@@ -1,0 +1,76 @@
+id = "bme680_lga8"
+kind = "sensor"
+description = "Bosch BME680 T/RH/P/gas sensor, 3.0x3.0 mm 8-pin LGA, I2C/SPI. Pins checked against KiCad Sensor:BME680; footprint is the 3x3 mm 0.8 mm pitch one whose KiCad description cites the BME680 datasheet"
+version = 0
+lifecycle = "active"
+signed_by = []
+substitutes = []
+mpn = "BME680"
+required_decoupling = []
+kicad_symbol = "Sensor:BME680"
+kicad_footprint = "Package_LGA:Bosch_LGA-8_3x3mm_P0.8mm_ClockwisePinNumbering"
+
+[[pins]]
+name = "gnd"
+number = "1"
+electrical_type = "power_input"
+capabilities = []
+required = false
+
+[[pins]]
+name = "csb"
+number = "2"
+electrical_type = "input"
+capabilities = []
+required = false
+
+[[pins]]
+name = "sda"
+number = "3"
+electrical_type = "bidirectional"
+capabilities = []
+required = false
+
+[[pins]]
+name = "scl"
+number = "4"
+electrical_type = "input"
+capabilities = []
+required = false
+
+[[pins]]
+name = "sdo"
+number = "5"
+electrical_type = "bidirectional"
+capabilities = []
+required = false
+
+[[pins]]
+name = "vddio"
+number = "6"
+electrical_type = "power_input"
+capabilities = []
+required = false
+
+[[pins]]
+name = "gnd2"
+number = "7"
+electrical_type = "power_input"
+capabilities = []
+required = false
+
+[[pins]]
+name = "vdd"
+number = "8"
+electrical_type = "power_input"
+capabilities = []
+required = false
+
+[footprint_dimensions]
+width_mm = 3.5
+height_mm = 3.5
+courtyard_margin_mm = 0.25
+
+[provenance]
+source = "authored"
+reviewed_by = ""
