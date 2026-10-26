@@ -6769,8 +6769,9 @@ fn clamp_to_edge_clearance(board: &Board, placement: &mut Placement, pinned: &Pi
     }
 }
 
-/// Parts whose centre lies inside a keepout circle, the rule the independent
-/// validator enforces (E-SYNTH-PLACE-004).
+/// Parts whose centre lies inside a keepout circle. Tests use it to tell a
+/// centre hit from a courtyard overlap ([`keepout_overlaps`]), which is what
+/// the independent validator reports (E-SYNTH-PLACE-004).
 #[cfg(test)]
 fn keepout_hits(board: &Board, placement: &Placement) -> usize {
     let centre_rect = |id: ComponentId| {
