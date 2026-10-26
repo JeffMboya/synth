@@ -79,6 +79,7 @@ pub mod cem;
 pub mod floorplan;
 pub mod modules;
 pub mod outline_packer;
+mod repeats;
 pub mod score;
 
 use serde::{Deserialize, Serialize};
@@ -5069,6 +5070,92 @@ fn distant_support_parts(board: &Board, placement: &Placement) -> Vec<DistantSup
 /// nearest legal spot beside a crowded pad is not always inside it.
 const LEGAL_SPOT_SLACK_MM: f64 = 0.5;
 
+/// A part of a repeated circuit that sits where its counterpart in the first
+/// copy would not put it.
+struct MismatchedCopy {
+    refdes: String,
+    reference_refdes: String,
+    reference_anchor: String,
+    anchor: String,
+    mm: f64,
+    rotation_differs: bool,
+    suggested: (f64, f64),
+    suggested_rotation: Rotation,
+}
+
+/// How far a part may sit from where the first copy's layout would put it
+/// before two copies of one circuit no longer read as copies.
+const REPEAT_TOLERANCE_MM: f64 = 1.0;
+
+/// Parts of repeated circuits whose position, relative to their copy's anchor,
+/// differs from the first copy's. Copies whose anchors face different ways are
+/// not compared: the offsets would have to be turned, and a wrong turn would be
+/// worse advice than none.
+fn mismatched_repeats(board: &Board, placement: &Placement) -> Vec<MismatchedCopy> {
+    let by_id: std::collections::HashMap<ComponentId, &ComponentPlacement> =
+        placement.components.iter().map(|p| (p.id, p)).collect();
+    let mut found = Vec::new();
+    for group in repeats::find_repeated_circuits(board) {
+        let reference = &group[0];
+        let Some(ref_anchor) = by_id.get(&reference.anchor) else {
+            continue;
+        };
+        for copy in &group[1..] {
+            let Some(anchor) = by_id.get(&copy.anchor) else {
+                continue;
+            };
+            if anchor.rotation != ref_anchor.rotation {
+                continue;
+            }
+            for (id, label) in &copy.parts {
+                if *id == copy.anchor {
+                    continue;
+                }
+                let Some(ref_part) = reference.part_with_label(*label) else {
+                    continue;
+                };
+                if copy.part_with_label(*label) != Some(*id) {
+                    continue;
+                }
+                let (Some(here), Some(there)) = (by_id.get(id), by_id.get(&ref_part)) else {
+                    continue;
+                };
+                let want = Point::new(
+                    anchor.center.x_nm + (there.center.x_nm - ref_anchor.center.x_nm),
+                    anchor.center.y_nm + (there.center.y_nm - ref_anchor.center.y_nm),
+                );
+                let mm = synth_geometry::nm_to_mm(want.x_nm - here.center.x_nm)
+                    .hypot(synth_geometry::nm_to_mm(want.y_nm - here.center.y_nm));
+                let rotation_differs = here.rotation != there.rotation;
+                if mm > REPEAT_TOLERANCE_MM || rotation_differs {
+                    let name = |c: ComponentId| {
+                        board
+                            .component(c)
+                            .map_or_else(|| format!("#{}", c.0), |c| c.refdes.clone())
+                    };
+                    found.push(MismatchedCopy {
+                        refdes: name(*id),
+                        reference_refdes: name(ref_part),
+                        reference_anchor: name(reference.anchor),
+                        anchor: name(copy.anchor),
+                        mm,
+                        rotation_differs,
+                        suggested: (
+                            synth_geometry::nm_to_mm(want.x_nm),
+                            synth_geometry::nm_to_mm(want.y_nm),
+                        ),
+                        suggested_rotation: there.rotation,
+                    });
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The most mismatched-copy warnings one review lists; the rest are counted.
+const MAX_REPEAT_WARNINGS: usize = 6;
+
 /// The most far-support-part warnings one review lists; the rest are counted.
 const MAX_SUPPORT_PART_WARNINGS: usize = 8;
 
@@ -5693,6 +5780,51 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
     if omitted > 0 {
         functional_warnings.push(format!(
             "{omitted} more support part(s) are also farther from the pad they serve than their role allows; fix the ones above first"
+        ));
+    }
+
+    // Copies of one circuit read as copies only when laid out alike. Compared
+    // by structure, not by name; the first copy is the reference. The advice
+    // carries the coordinates that would make a part match, so the agent can
+    // pin them in its placement sidecar.
+    let mut mismatched = mismatched_repeats(board, placement);
+    mismatched.sort_by(|a, b| b.mm.total_cmp(&a.mm));
+    let omitted_copies = mismatched.len().saturating_sub(MAX_REPEAT_WARNINGS);
+    mismatched.truncate(MAX_REPEAT_WARNINGS);
+    for m in mismatched {
+        functional_warnings.push(format!(
+            "{} is laid out differently from {} in the identical circuit round {}: {:.1} mm{} from where {} puts it relative to {}; place it at ({:.1}, {:.1}) mm",
+            m.refdes,
+            m.reference_refdes,
+            m.reference_anchor,
+            m.mm,
+            if m.rotation_differs { " and turned differently" } else { "" },
+            m.reference_refdes,
+            m.anchor,
+            m.suggested.0,
+            m.suggested.1
+        ));
+        recommended_actions.push(PlacementRecommendation {
+            action: "match_repeated_circuit".into(),
+            refdes: m.refdes.clone(),
+            relative_to: Some(m.anchor.clone()),
+            suggested_x_mm: Some(m.suggested.0),
+            suggested_y_mm: Some(m.suggested.1),
+            suggested_rotation_deg: Some(match m.suggested_rotation {
+                Rotation::Zero => 0,
+                Rotation::Ninety => 90,
+                Rotation::OneEighty => 180,
+                Rotation::TwoSeventy => 270,
+            }),
+            rationale: format!(
+                "pin {} at the same offset from {} as {} is from {}",
+                m.refdes, m.anchor, m.reference_refdes, m.reference_anchor
+            ),
+        });
+    }
+    if omitted_copies > 0 {
+        functional_warnings.push(format!(
+            "{omitted_copies} more part(s) of repeated circuits are also laid out differently from the first copy"
         ));
     }
 
@@ -9631,6 +9763,106 @@ board "features_only" {
             still.as_ref().map(|f| f.mm),
             still.as_ref().map(|f| f.limit_mm)
         );
+    }
+
+    /// Two copies of one circuit and one that only looks similar: a connector,
+    /// a series resistor and a filter capacitor to ground, twice, and a third
+    /// whose resistor and capacitor are wired the other way round.
+    fn repeated_circuits_board() -> Board {
+        board_from_source(
+            r#"board "rep" { layers 2
+                power "GND" 0v
+                component JA: connector "jst_ph_2pin"
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component JB: connector "jst_ph_2pin"
+                component RB: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                component JC: connector "jst_ph_2pin"
+                component RC: resistor "r_generic_0603" value "1k"
+                component CC: capacitor "c_generic_0603" value "10nF"
+                net "SIG_A" { JA.p1 RA.p1 }
+                net "MID_A" { RA.p2 CA.p1 }
+                net "SIG_B" { JB.p1 RB.p1 }
+                net "MID_B" { RB.p2 CB.p1 }
+                net "SIG_C" { JC.p1 CC.p1 }
+                net "MID_C" { CC.p2 RC.p1 }
+                net "GND" { CA.p2 CB.p2 RC.p2 JA.p2 JB.p2 JC.p2 }
+            }"#,
+            "rep.synth",
+        )
+    }
+
+    #[test]
+    fn identical_circuits_are_found_by_structure_and_a_lookalike_is_not_grouped() {
+        let board = repeated_circuits_board();
+        let groups = repeats::find_repeated_circuits(&board);
+        assert_eq!(groups.len(), 1, "one group of copies");
+        let names: Vec<std::collections::BTreeSet<String>> = groups[0]
+            .iter()
+            .map(|island| {
+                island
+                    .parts
+                    .iter()
+                    .map(|(id, _)| board.component(*id).expect("part").refdes.clone())
+                    .collect()
+            })
+            .collect();
+        let set = |a: &str, b: &str, c: &str| -> std::collections::BTreeSet<String> {
+            [a, b, c].iter().map(|s| (*s).to_string()).collect()
+        };
+        assert!(names.contains(&set("JA", "RA", "CA")), "{names:?}");
+        assert!(names.contains(&set("JB", "RB", "CB")), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("JC")), "{names:?}");
+    }
+
+    #[test]
+    fn copies_laid_out_alike_are_not_reported_and_a_moved_part_is_with_its_coordinates() {
+        let board = repeated_circuits_board();
+        let mut placement = place(&board).expect("place");
+        for (refdes, x, y) in [
+            ("JA", 10.0, 10.0),
+            ("RA", 16.0, 10.0),
+            ("CA", 16.0, 16.0),
+            ("JB", 10.0, 40.0),
+            ("RB", 16.0, 40.0),
+            ("CB", 16.0, 46.0),
+        ] {
+            move_part(&mut placement, &board, refdes, x, y);
+        }
+        // Make the two anchors face the same way so the copies are compared.
+        let rotation = placement
+            .component_by_refdes(&board, "JA")
+            .expect("JA")
+            .rotation;
+        for p in &mut placement.components {
+            if board.component(p.id).is_some_and(|c| c.refdes == "JB") {
+                p.rotation = rotation;
+            }
+        }
+        assert!(
+            mismatched_repeats(&board, &placement).is_empty(),
+            "alike copies must not be reported"
+        );
+
+        // Move one part of the second copy 6 mm.
+        move_part(&mut placement, &board, "RB", 22.0, 40.0);
+        let off = mismatched_repeats(&board, &placement);
+        let rb = off.iter().find(|m| m.refdes == "RB").expect("RB reported");
+        assert_eq!(rb.reference_refdes, "RA");
+        assert!((rb.mm - 6.0).abs() < 0.2, "{}", rb.mm);
+        assert!((rb.suggested.0 - 16.0).abs() < 0.2 && (rb.suggested.1 - 40.0).abs() < 0.2);
+
+        let desc = describe_placement(&board, &placement);
+        assert!(desc
+            .functional_warnings
+            .iter()
+            .any(|w| w.starts_with("RB is laid out differently from RA")));
+        assert!(desc.visual_review.recommended_actions.iter().any(|a| {
+            a.action == "match_repeated_circuit"
+                && a.refdes == "RB"
+                && a.suggested_x_mm.is_some_and(|x| (x - 16.0).abs() < 0.2)
+        }));
     }
 
     #[test]
