@@ -67,7 +67,7 @@
     },
     "reproducible_from_clean_checkout": {
       "passed": true,
-      "evidence": "Two clean exports on 2026-10-26 of the committed inputs (FreeRouting 2.4.1, KiCad 10.0.5, empty XDG_DATA_HOME, `--router free-routing --krt-allow-via-in-pad`, Synth with #306 and #319) gave a byte-identical kicad_pcb and kicad_sch, and both match the committed files. DRC: 0 errors, 0 unconnected, 37 warnings. Not tested on another machine or another FreeRouting version, so the result may differ there.",
+      "evidence": "Three exports on 2026-10-26 of the committed inputs gave a byte-identical kicad_pcb and kicad_sch (FreeRouting 2.4.1, KiCad 10.0.5, empty XDG_DATA_HOME, `--router free-routing --krt-allow-via-in-pad`, Synth with #306 and #319). The third ran from a fresh `git worktree` checkout of the committing commit, with the untracked FreeRouting jar and JRE linked in from `tools/`. All match the committed files. DRC: 0 errors, 0 unconnected, 37 warnings. Not tested on another machine or another FreeRouting version, so the result may differ there.",
       "inputs_sha256": {
         "usb_uart.synth": "e814e04cbe0e8262da7efc62f0edbd28b3656e76046f1ea1b31f05ef5aa0afde",
         "usb_uart.placement.layout.toml": "f06e54a12b9e707935471c8fc910b731bd24cbcf3a0247cc862331f205fcfc39"

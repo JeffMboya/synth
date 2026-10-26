@@ -150,6 +150,6 @@ Current Synth main defaults the MCP export to KiCadRoutingTools; this board was 
 - Parts availability, JLCPCB assembly, and the registry LCSC numbers were not checked.
 - Nothing was powered or tested.
 
-Reproducibility: on 2026-10-26 two clean runs of the commands above (FreeRouting 2.4.1, KiCad 10.0.5, Synth with #306 and #319) gave a byte-identical `kicad_pcb` and `kicad_sch`, and both match the committed files. I did not try another machine or FreeRouting version. `qualification.json` lists the input and output hashes.
+Reproducibility: on 2026-10-26 three runs of the commands above (FreeRouting 2.4.1, KiCad 10.0.5, Synth with #306 and #319) gave a byte-identical `kicad_pcb` and `kicad_sch`, and all match the committed files. The third ran from a fresh checkout of the committing commit; the FreeRouting jar and JRE are untracked, so they came from `tools/` after `scripts/setup-routing-engines.sh --freerouting-only`. I did not try another machine or FreeRouting version. `qualification.json` lists the input and output hashes.
 
 The ERC findings and the silkscreen and edge-clearance items are dispositioned one by one in `qualification.json`. The 0.01 mm J1 edge clearance is still open; the silkscreen warnings are fixed with label overrides in the sidecar. The exported schematic used to tie RXD1_MCU to MODEM_IDLE through a name label that sat on a crossing wire; the exporter now keeps that label off other nets' wires, and the schematic and ERC report were regenerated.
