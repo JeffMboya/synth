@@ -8,7 +8,42 @@
     },
     "erc_dispositioned": {
       "passed": false,
-      "evidence": "reports/usb_uart.erc.json: findings not yet dispositioned one by one"
+      "evidence": "Every ERC finding is dispositioned below by the author. passed stays false until a human reviewer confirms the dispositions.",
+      "findings": [
+        {
+          "count": 1,
+          "severity": "error",
+          "type": "power_pin_not_driven",
+          "item": "#PWR2211 (VIO symbol)",
+          "disposition": "Expected. VIO is fed by the J_VIO jumper from +3V3 or VBUS, and jumper pins are passive, so no power output drives the rail and there is no PWR_FLAG. With no jumper fitted VIO is unpowered by design. Open: confirm with a reviewer whether to add a PWR_FLAG."
+        },
+        {
+          "count": 81,
+          "severity": "warning",
+          "type": "lib_symbol_issues",
+          "disposition": "Not a design fault. The exported schematic uses the embedded symbols and the KiCad run had no 'power' library configured."
+        },
+        {
+          "count": 36,
+          "severity": "warning",
+          "type": "footprint_link_issues",
+          "disposition": "Not a design fault. The footprints are embedded in the PCB and the KiCad run had no global footprint libraries such as Connector_USB."
+        },
+        {
+          "count": 1,
+          "severity": "warning",
+          "type": "label_multiple_wires",
+          "item": "MODEM_IDLE",
+          "disposition": "Open. KiCad reports the MODEM_IDLE label touching more than one wire (a 25.4 mm vertical wire at 2425700, 495300). Needs a schematic layout fix."
+        },
+        {
+          "count": 1,
+          "severity": "warning",
+          "type": "multiple_net_names",
+          "item": "RXD1_MCU and MODEM_IDLE",
+          "disposition": "Open. Two names land on the same items in the schematic, so the netlist uses RXD1_MCU. The source declares them as separate nets (R5.p1 to U1.rxd1, R8.p2 to U1.ri0, ri1, dcd0, dcd1), so check the schematic wiring."
+        }
+      ]
     },
     "usb_si_pi_review": {
       "passed": false,
@@ -42,6 +77,33 @@
         "usb_uart.freerouting.kicad_pcb": "121947c16c1262eff5dc076f8e326543e513315bb6f605bb19800648b8813830",
         "usb_uart.kicad_sch": "9a7a04d2618c3d05bbaf3ec1f291ffb55b817f717025b323ef4c177d9de91354"
       }
+    },
+    "layout_clearances": {
+      "passed": false,
+      "evidence": "Open, not fixed in this PR.",
+      "findings": [
+        {
+          "item": "U1 reference vs D6 silkscreen segment",
+          "kind": "silk_overlap",
+          "disposition": "Open. No free side for the label between U1, U3, C5 and C6."
+        },
+        {
+          "item": "U1 reference over D1 pad 1",
+          "kind": "silk_over_copper",
+          "disposition": "Open. Same cause."
+        },
+        {
+          "item": "D7 reference over R7 pad 1",
+          "kind": "silk_over_copper",
+          "disposition": "Open. The label is about 6 mm from the pad; the warning looks like a false positive but is not confirmed."
+        },
+        {
+          "item": "J1 courtyard to top board edge",
+          "kind": "edge_clearance",
+          "value_mm": 0.01,
+          "disposition": "Open. J1 is placed flush on the edge on purpose, but the USB-C mechanical drawing has not been checked against the shell overhang."
+        }
+      ]
     }
   }
 }

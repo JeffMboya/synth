@@ -151,3 +151,5 @@ Current Synth main defaults the MCP export to KiCadRoutingTools; this board was 
 - Nothing was powered or tested.
 
 Reproducibility: a clean run of the commands above on 2026-10-26 (synth `22a9d23`, FreeRouting 2.4.1, KiCad 10.0.5) did not reproduce the committed board. It routed but failed validation with one clearance error (a VBUS via 0.178 mm from D1 pad 2) and 41 warnings. The committed PCB is a recorded result, not one the commands regenerate. `qualification.json` keeps `reproducible_from_clean_checkout` false and lists the input and output hashes of that run.
+
+The ERC findings and the silkscreen and edge-clearance items are dispositioned one by one in `qualification.json`. The silkscreen overlaps, the 0.01 mm J1 edge clearance and two schematic warnings (label on two wires, two net names on the RXD1_MCU items) are still open and are not fixed in this PR.
