@@ -21,7 +21,7 @@
   "kicad_drc": {
     "errors": 0,
     "unconnected": 0,
-    "warnings": 32
+    "warnings": 27
   },
   "blocking_reasons": [],
   "unavailable_checks": []

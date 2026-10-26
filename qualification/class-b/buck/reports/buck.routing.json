@@ -12,7 +12,7 @@
   },
   "provenance": {
     "engine": "freerouting",
-    "engine_version": "/home/steve/work/synth-buck-led/tools/freerouting/freerouting-2.4.1.jar",
+    "engine_version": "freerouting-2.4.1.jar",
     "runtime_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS",
     "profile": "jlcpcb",
     "command": [
@@ -40,22 +40,22 @@
       "threads": "4",
       "wall_clock_secs": "1200"
     },
-    "input_hash": "1a242b37e96c909c83da73695d6a226fa151ae49771f492a84247151e720b17f",
+    "input_hash": "4781508b2124d448adfc21c4067f681ab187e7c9a9d45cc5e8d5ef89f0de0f66",
     "output_hash": "",
     "source_revision": null,
-    "duration_ms": 38997
+    "duration_ms": 54851
   },
   "statistics": {
     "connected_nets": 13,
     "open_nets": 0,
     "open_net_names": [],
-    "segments": 75,
-    "vias": 16,
-    "wire_length_mm": 236.318209,
+    "segments": 119,
+    "vias": 27,
+    "wire_length_mm": 410.708097,
     "pad_escape_rejections": 0,
     "engine_findings": {
-      "claimed_imported_segments": "75",
-      "claimed_imported_vias": "16"
+      "claimed_imported_segments": "119",
+      "claimed_imported_vias": "27"
     }
   },
   "artifacts": {
@@ -91,7 +91,7 @@
     "kicad_drc": {
       "errors": 0,
       "unconnected": 0,
-      "warnings": 32
+      "warnings": 27
     },
     "blocking_reasons": [],
     "unavailable_checks": []

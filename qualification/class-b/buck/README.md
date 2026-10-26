@@ -15,7 +15,7 @@ feedback, power-good and thermal copper, plus a negative variant that the feedba
 
 ## What
 
-- `buck.synth`, board-mm sidecar `buck.placement.layout.toml`, negative `buck_neg_fb_sw.synth`, hashes in `SHA256SUMS`, matrix and `#38` traceability in `QUALIFICATION.md`, evidence in `kicad/`, `reports/`, `images/`.
+- `buck.synth`, sidecar `buck.placement.layout.toml` (pins only the two mounting holes), negative `buck_neg_fb_sw.synth`, hashes in `SHA256SUMS`, matrix and `#38` traceability in `QUALIFICATION.md`, evidence in `kicad/`, `reports/`, `images/`.
 - `kicad/`: the KiCad project, BOM, pick-and-place, `gerbers/` (22 Gerbers plus the job file, 4 copper layers) and `drill/` (PTH and NPTH). `reports/`: `release.json` (source/DRC gate) and `release-fab.json` (fab package, untrusted), DRC, ERC, routing and connectivity.
 - Chain: J1 (JST XH) -> F1 PTC -> D1 SS36 Schottky (reverse block) -> VIN node.
   VIN node: D2 SMBJ30A TVS, C1 47 uF bulk, C2 10 uF, C3 220 nF (on the U1 VIN pin), U1 LMR33640, UVLO divider.
@@ -25,9 +25,10 @@ feedback, power-good and thermal copper, plus a negative variant that the feedba
 - Power-good: U1 pin 4 is open drain, pulled up to +3V3 through R_PG 100k and brought out on J2 pin 3. D4 (green, "PG FAULT") and R_PGLED 470 R run from +3V3 to PG, so the LED lights while PG is low and stays dark while power is good.
 - Thermal: U1 pin 9 is a 2.41 x 3.1 mm exposed pad soldered to the F.Cu GND pour (see Thermal).
 - Negative file: identical except R_FB_T and C7 hang from SW. Besides E-SYNTH-POWER-011 it emits the same warnings as the good board except 1 fewer E-SYNTH-SCHEM-004 and 1 fewer E-SYNTH-SCHEM-005 (20 against 22).
-- Board: 71.9 x 31.125 mm (2238 mm2), 4 layers, GND pours on all layers. Power tracks 0.5 mm, signal
-  0.127 mm. The board grew from 1891 mm2 (SOT-23-6 converter, no PG, no mounting holes) because the
-  HSOP-8 package, the fourth output capacitor, the VCC capacitor and the two mounting holes need room.
+- Board: 67.6 x 48.09 mm (3250 mm2), 4 layers, GND pours on all layers. Power tracks 0.5 mm, signal
+  0.127 mm. Placement is Synth's own (`--place-route-iterate`, upstream `main` `2054046`); only H1 and H2 are
+  pinned. The previous revision was hand-placed at 71.9 x 31.125 mm (2238 mm2) with short decoupling loops;
+  this one is 45% larger and its loops are long (see Layout under "Not true yet", B5, B12).
 - Two M2.5 non-plated mounting holes (H1, H2) in opposite corners.
 
 ## UVLO (LMR33640 SNVSB99C section 9.2.2.9, Eq 10)
@@ -58,7 +59,7 @@ the behaviour on a fault: Synth has no power-good rule (`synth capability list` 
 ## Thermal
 
 - U1's exposed pad (pin 9, 2.41 x 3.1 mm) is soldered to the F.Cu GND pour. The pour is stitched to the
-  inner ground planes by 16 GND vias; 1 of them is within 4 mm of the pad edge.
+  inner ground planes by 17 GND vias; 3 of them are within 4 mm of the pad edge (0.55, 2.18 and 3.52 mm).
 - There are no vias **in** the pad. The board's fabrication floor is a 0.3 mm drill (the exported
   `.kicad_pro` says `min_through_hole_diameter 0.3`), and every KiCad HSOP-8 thermal-via footprint ships
   0.2 mm drills, so that footprint was not used.
@@ -142,38 +143,37 @@ The export routes with FreeRouting 2.4.1; the routed board is written as `out/bu
 | --- | --- | --- |
 | validate, good board | exit 0, 0 errors, 22 warnings (9 part-unverified, 3 E-SYNTH-SCHEM-003 (schematic-sheet distance of a cap to U1, not PCB distance), 2 E-SYNTH-SCHEM-004 long explicit net, 4 E-SYNTH-SCHEM-005 junction fan-out, 1 anomaly, 3 supply) | `synth validate $B/buck.synth 2>&1 \| grep -c '^warning'` and `grep -c '^error'` |
 | validate, negative | exit 1, 1 error (E-SYNTH-POWER-011), 20 warnings | same on `buck_neg_fb_sw.synth` |
-| routing | `routed`, 13 nets connected, 0 open, 75 segments, 16 vias, 236.32 mm | `synth route $B/buck.synth` (JSON `state`, `statistics`); cross-check `grep -c '^\t(segment' out/buck/buck.kicad_pcb`, `grep -c '^\t(via' ...` |
-| Synth routing check | kicad_drc 0 errors, 0 unconnected, 32 warnings; `fabrication_ready` true (routing check only) | `synth route` JSON `validation` |
+| routing | `routed`, 13 nets connected, 0 open, 119 segments, 27 vias, 410.71 mm | `synth route $B/buck.synth` (JSON `state`, `statistics`); cross-check `grep -c '^\t(segment' out/buck/buck.kicad_pcb`, `grep -c '^\t(via' ...` |
+| Synth routing check | kicad_drc 0 errors, 0 unconnected, 27 warnings; `fabrication_ready` true (routing check only) | `synth route` JSON `validation` |
 | Release gate | `release_ready` true, `production_status` production, 0 blocking signal-integrity findings; with `--gerbers --drill` the same board reports `release_ready` false and `untrusted` because 8 distinct parts have no reviewer (9 components use them: D3 and D4 share one part) | `reports/release.json`, `reports/release-fab.json` |
-| DRC | 0 errors, 0 unconnected, 32 warnings: 27 lib_footprint_issues, 3 silk_overlap, 2 silk_over_copper | `kicad-cli pcb drc ... -o reports/buck.kicad-drc.json`, then `python3 -I -c "import json,collections as c;d=json.load(open('$B/reports/buck.kicad-drc.json'));print(c.Counter((v['severity'],v['type']) for v in d['violations']),len(d['unconnected_items']))"` |
+| DRC | 0 errors, 0 unconnected, 27 warnings, all lib_footprint_issues | `kicad-cli pcb drc ... -o reports/buck.kicad-drc.json`, then `python3 -I -c "import json,collections as c;d=json.load(open('$B/reports/buck.kicad-drc.json'));print(c.Counter((v['severity'],v['type']) for v in d['violations']),len(d['unconnected_items']))"` |
 | ERC | 0 errors, 72 warnings: 45 lib_symbol_issues, 27 footprint_link_issues (libraries not in the KiCad config) | `kicad-cli sch erc ... -o reports/buck.kicad-erc.json`, same one-liner over `sheets[].violations` |
 | Schematic netlist | 13 nets: the source's 8 `net` blocks plus the 5 distinct names its 9 `connect` statements create, node for node | `kicad-cli sch export netlist --format kicadsexpr -o /tmp/buck.net $B/kicad/buck.kicad_sch` |
-| Outline | 71.9 x 31.125 mm (x 1.3 to 73.2, y 2.125 to 33.25) | `grep -A3 gr_line $B/kicad/buck.kicad_pcb \| grep start` |
-| Manufacturing exports | 22 Gerbers plus the job file (4 copper layers), PTH 22 holes (16 x 0.3 mm vias, 6 connector pins), NPTH 2 x 2.5 mm mounting holes | `ls $B/kicad/gerbers $B/kicad/drill`; `grep -c '^X' $B/kicad/drill/buck-PTH.drl` |
-| Hashes | pcb 8180abedcd92..., sch 4cfbaf5c6522..., two exports identical | `cd $B && sha256sum -c SHA256SUMS` (full values in `SHA256SUMS` and `QUALIFICATION.md`) |
+| Outline | 67.6 x 48.09 mm (x 2.7 to 70.3, y 2.7 to 50.79) | `grep -A3 gr_line $B/kicad/buck.kicad_pcb \| grep start` |
+| Manufacturing exports | 22 Gerbers plus the job file (4 copper layers), PTH 33 holes (27 x 0.3 mm vias, 6 connector pins), NPTH 2 x 2.5 mm mounting holes | `ls $B/kicad/gerbers $B/kicad/drill`; `grep -c '^X' $B/kicad/drill/buck-PTH.drl` |
+| Hashes | pcb 7c308e54f4f5..., sch 4cfbaf5c6522..., two exports identical | `cd $B && sha256sum -c SHA256SUMS` (full values in `SHA256SUMS` and `QUALIFICATION.md`) |
 
 Pad-edge gaps in the placed, routed board, from `pad_gaps.py` (pcbnew pad bounding boxes, edge to edge):
 
 | Pair | Gap mm |
 | --- | --- |
-| C3 (220 nF) to U1 VIN | 2.88 |
-| C2 (10 uF) to U1 VIN | 8.95 |
-| C3 / C2 ground pad to U1 GND | 1.43 / 6.00 |
-| C4 to U1 BOOT / SW | 0.62 / 2.18 |
-| C8 to U1 VCC | 0.56 |
-| L1 pad 1 to U1 SW | 3.80 |
-| C5, C6, C9 to L1 pad 2 | 1.20 / 1.20 / 1.73 |
-| D2 TVS to U1 VIN | 6.93 |
-| R_UV_T to U1 EN | 3.53 |
-| R_PG to U1 PG | 5.51 |
-| R_FB_T / R_FB_B to U1 FB | 3.55 / 3.79 |
-| C7 to R_FB_T (FB side) | 0.55 |
-| R_FB_B ground pad to U1 GND | 11.31 |
-| R_FB_T FB pad to L1 pad 1 (SW) | 2.58 |
+| C2 (10 uF) / C3 (220 nF) to U1 VIN | 19.41 / 27.31 |
+| C2 / C3 ground pad to U1 GND | 22.13 / 29.13 |
+| C4 to U1 BOOT / SW | 4.29 / 2.30 |
+| C8 to U1 VCC | 3.75 |
+| L1 pad 1 to U1 SW | 6.49 |
+| C5, C6, C9 to L1 pad 2 | 2.94 / 33.22 / 28.52 |
+| D2 TVS to U1 VIN | 27.21 |
+| R_UV_T to U1 EN | 26.96 |
+| R_PG to U1 PG | 21.18 |
+| R_FB_T / R_FB_B to U1 FB | 9.95 / 1.38 |
+| C7 to R_FB_T (FB side) | 7.76 |
+| R_FB_B ground pad to U1 GND | 9.25 |
+| R_FB_T FB pad to L1 pad 1 (SW) | 14.71 |
 
-The sidecar holds the placed positions. All 27 parts are in the routed file, D4 and R_PGLED at their sidecar coordinates; the
-JST connectors differ by their fixed anchor offset (QUALIFICATION.md A13).
-`pad_gaps.py` on the final routed file is the reference for gaps, not the sidecar coordinates.
+The sidecar pins only H1 (4.0, 32.0) and H2 (69.0, 4.0) mm; every other part was placed by Synth.
+D4 is at (29.5, 47.5) mm and R_PGLED at (41.0, 49.0) mm in the exported board. `pad_gaps.py` on the
+final routed file is the reference for gaps.
 
 ## Negative case: feedback from the switch node
 
@@ -196,14 +196,14 @@ together with the `#38` checklist traceability for this board and the row it dec
 
 - Not fabricable on this evidence: parts UNVERIFIED, no surge rating, nothing built. The fab package says
   so itself (`release_ready: false`, `production_status: untrusted`).
-- Layout: the board carries 236.32 mm of copper; `+3V3` is 78.47 mm of it and `PG` is 60.81 mm (U1 to J2 pin 3,
-  now also to D4). FB is 9.98 mm and the divider ground return (R_FB_B) is 11.31 mm from U1 pin 1,
-  reaching it through a via to the plane. The previous layout had one layer change with no ground return
-  via within 0.64 mm (`W-SYNTH-DRC-016`); this one has no such finding, because the re-route removed that
-  layer change.
+- Layout: the placement is Synth's own and the decoupling loops are long. C3 (the 220 nF high-frequency
+  cap) is 27.3 mm from U1's VIN pad, C6 and C9 are 33.2 and 28.5 mm from L1 pad 2, and the C2/C3 ground
+  returns are 22 to 29 mm from U1's GND pin. The previous hand-placed revision had these at 2.88 mm and
+  1.20 to 1.73 mm. A switching converter laid out like this is not a reviewable board; it is kept as the
+  honest output of Synth's placer. The board carries 410.71 mm of copper (`+3V3` 89.77 mm, `PG` 79.62 mm,
+  FB 18.5 mm) and `W-SYNTH-DRC-016` reports 10 layer changes with no ground return via within 0.64 mm.
 - Silkscreen: the "PG FAULT" and "PWR" LED values are on the F.Fab layer only, so the board prints just the references D4 and D3. Synth has no silk text for a value here; a printed label needs a Synth change, not done in this branch. Adding D4 re-ran the router over the whole board, so other copper moved too (see A9 and A16 in `QUALIFICATION.md`).
-- Silkscreen: 3 overlaps and 2 reference texts over copper, all around R_UV_B, C2, C4/C8 and C9. The
-  previous board had none; the denser placement brought them back.
+- Silkscreen: DRC reports no silkscreen warnings on this placement (the hand-placed revision had 5).
 - Schematic (rendered and read): readable, not tidy. `tools/schematic_quality.py` counts 1 overlapping
   text pair, 10 texts with a wire through them, 0 wire crossings and 1371.6 mm of wire; mean
   passive-to-pin distance is 62.6 mm (max 102.9). No schematic sidecar is used (default layout).
@@ -212,9 +212,7 @@ together with the `#38` checklist traceability for this board and the row it dec
 ## Not verified
 
 - Nothing powered, measured or thermally tested. Efficiency (85%) and the 0.58 W loss are assumptions.
-- The MCP placement review (`synth_describe_placement` with this sidecar) returns score 100,
-  `requires_revision` false and no findings, but it reports a 76.9 x 35.6 mm outline instead of the
-  71.9 x 31.1 mm board that was exported. The verdict is used, the outline figure is not.
+- The MCP placement review (`synth_describe_placement`) was not run on this revision: the Synth MCP server was unavailable.
 - No reviewer. Availability, LCSC numbers and assembly not checked.
 - LED datasheet unreachable. J1/J2, C1, and all generic passives have no MPN or manufacturer sheet.
 - PTC behaviour with the TVS in a surge, and inrush into C1 and the output caps, are not analysed.
