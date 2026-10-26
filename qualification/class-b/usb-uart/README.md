@@ -68,7 +68,7 @@ Status: compact placement done and routed with FreeRouting. The route passes Syn
 
 - Two copper layers: signals on F.Cu and B.Cu, a GND pour on both. The route uses no inner layer because the board has none; the previous revision was four layers with two inner GND planes that carried no routing.
 - Outline: 41.5 x 32.23 mm as routed. The four M2.5 holes are at x 5.5 and 39.6 mm, y 3.0 and 21.0 mm, with a 2.2 mm board-feature rim. The header courtyards at y 29.9 mm set the 32.23 mm height. This is 3.5 mm shorter than the previous 35.73 mm compact layout and 7.5 mm shorter than the 39.73 mm committed board.
-- The 2.2 mm rim keeps the F.Cu GND pour connected. PR 272's 1.5 mm tight rim would put the holes on the edge and split the pour. The exporter now sets `island_removal_mode 0`, dropping copper islands that touch no pad; the remaining split zone is covered by the gate note under Routing.
+- Board-feature rim: Synth gives a mounting hole, test point or fiducial a fixed 2.2 mm rim in the fitted outline. With this sidecar the rim does not decide the outline: the holes are not the outermost parts, and the export gives the same outline with the rim set to 0. It matters if a hole is moved to the edge, where the tight 1.5 mm fit would otherwise cut it and split the F.Cu GND pour. `tests/usb_uart_board.rs` checks that every hole keeps at least 1.5 mm of room to Edge.Cuts on the exported board. The exporter sets `island_removal_mode 0`, dropping copper islands that touch no pad. The one GND zone item that KiCad lists against itself, at (2.05, -0.06) mm just outside the edge, is kept as a warning only when both entries share a UUID and a position; I have not proven that the pour is connected.
 - Every part has a position in `usb_uart.placement.layout.toml`. J1 sits flush on the top edge. J_VIO, J2, J3 and J4 sit at y 29.9 mm at x 7.36, 16.46, 27.0 and 36.1 mm. J3 moved 1.44 mm right of its previous 25.56 mm: at 25.56 FreeRouting left DTR1 (U1 pin 15 to J3 pin 1) unrouted, and the move opens that corridor. J4 moved the same 1.44 mm to keep the 8.62 mm header courtyards apart. The bottom parts sit at y 23.6 and 25.8 mm. R1 and R2 use the top corners; R3 moved to x 14.5 mm to clear H3.
 - No courtyard overlaps. J1 courtyard to top edge: 0.01 mm (flush).
 - Pad-edge gap to the target pad on the same net:
@@ -89,7 +89,7 @@ Status: compact placement done and routed with FreeRouting. The route passes Syn
 - D2 is over 2 mm: four protection parts do not fit side by side under the 7 mm of J1 pads any closer.
 - R1 and R2 are in the top corners; the remaining passives are placed by hand. The DRC checks their courtyards, not placement quality.
 
-Routing (FreeRouting 2.4.1, `router: "freerouting"`, `allow_via_in_pad: true`), on Synth main `1eac8a1` plus the board-feature rim and zone/gate fixes in this branch:
+Routing (FreeRouting 2.4.1, `router: "freerouting"`, `allow_via_in_pad: true`), with the Synth sources at `4ab0eb9` (`source_revision` in `reports/release.json`):
 - Result: routed. `release.json` has `release_ready` true, `route_complete` true and no open net. `kicad-cli pcb drc --severity-all --refill-zones`: 0 errors, 39 warnings, plus one self-referential GND-zone item in `unconnected_items`; Synth's gate keeps that fill artifact as a warning because no two objects are missing a connection.
 - 271 track segments, 38 vias, 507.7 mm of copper.
 - The routed board is 41.5 x 32.23 mm.
@@ -110,7 +110,7 @@ Routing (FreeRouting 2.4.1, `router: "freerouting"`, `allow_via_in_pad: true`), 
 - `images/`: 3D top and angled, top and bottom copper, and the schematic.
 - `SHA256SUMS`: hashes of the artifacts above.
 
-The reports are as captured; artifact paths inside them are relative to the machine that produced them.
+The reports are as captured, except that the absolute paths of the machine that produced them were cut down to repo-relative ones and `source_revision` was filled in by hand. The other paths in them (`target/pr103-2layer/...`) are scratch paths on that machine.
 
 The committed board came from the MCP `synth_export` tool with `router: "freerouting"` and `allow_via_in_pad: true`. The CLI equivalent (same binary, same engine defaults) is below.
 
