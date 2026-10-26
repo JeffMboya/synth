@@ -194,6 +194,64 @@ fn nearest_edge(point: Point, usable: Rect) -> BoardEdge {
     .map_or(BoardEdge::Left, |(_, edge)| edge)
 }
 
+/// The slot of every connector that shares its requested edge with another:
+/// its index among them, in source order, and how many there are. Connectors
+/// alone on their edge are absent, so they keep their single-connector
+/// position. USB connectors place themselves and are not counted.
+fn edge_connector_slots(board: &Board) -> HashMap<ComponentId, (usize, usize)> {
+    let mut by_edge: HashMap<u8, Vec<ComponentId>> = HashMap::new();
+    for comp in &board.components {
+        let refdes = comp.refdes.to_lowercase();
+        let usb = refdes.starts_with('j')
+            && (refdes.contains("usb")
+                || comp
+                    .part
+                    .as_ref()
+                    .is_some_and(|p| p.id.as_str().contains("usb")))
+            || comp.kind.to_lowercase().contains("usb");
+        if usb {
+            continue;
+        }
+        let jst = refdes.contains("jst")
+            || comp
+                .part
+                .as_ref()
+                .is_some_and(|p| p.id.as_str().contains("jst"));
+        let edge = if jst {
+            hinted_edge(comp).unwrap_or(BoardEdge::Left)
+        } else if comp.kind.as_str() == "connector" {
+            match hinted_edge(comp) {
+                Some(edge)
+                    if comp
+                        .placement_hint
+                        .as_ref()
+                        .is_some_and(|h| h.edge.is_some()) =>
+                {
+                    edge
+                }
+                _ => continue,
+            }
+        } else {
+            continue;
+        };
+        let key = match edge {
+            BoardEdge::Left => 0,
+            BoardEdge::Top => 1,
+            BoardEdge::Right => 2,
+            BoardEdge::Bottom => 3,
+        };
+        by_edge.entry(key).or_default().push(comp.id);
+    }
+    let mut slots = HashMap::new();
+    for ids in by_edge.into_values().filter(|ids| ids.len() > 1) {
+        let count = ids.len();
+        for (index, id) in ids.into_iter().enumerate() {
+            slots.insert(id, (index, count));
+        }
+    }
+    slots
+}
+
 /// Compute target floorplan positions and rotations for connectors and macro ICs.
 #[allow(clippy::too_many_lines, clippy::implicit_hasher)]
 pub fn compute_floorplan_targets(
@@ -209,6 +267,13 @@ pub fn compute_floorplan_targets(
     let width_nm = usable.width_nm();
     let height_nm = usable.height_nm();
 
+    // Connectors hinted to the same edge each need their own slot along it.
+    // Without this every connector on an edge was given the same point (or a
+    // step counted across all edges), legalization then separated them by
+    // pushing one inward, and an edge connector ended up off the edge. With
+    // more than one on an edge they are spread evenly along it, in source
+    // order; a lone connector keeps the position it always had.
+    let slots = edge_connector_slots(board);
     let mut usb_count = 0_i64;
     let mut jst_count = 0_i64;
     let mut header_count = 0_i64;
@@ -284,12 +349,19 @@ pub fn compute_floorplan_targets(
             let edge = hinted_edge(comp).unwrap_or(BoardEdge::Left);
             let inset = half_h + synth_geometry::mm_to_nm(1.5);
             let step = jst_count * synth_geometry::mm_to_nm(12.0);
-            let (x, y) = match edge {
+            let (mut x, mut y) = match edge {
                 BoardEdge::Left => (min_x + inset, min_y + height_nm / 3 + step),
                 BoardEdge::Right => (max_x - inset, min_y + height_nm / 3 + step),
                 BoardEdge::Top => (min_x + width_nm / 3 + step, min_y + inset),
                 BoardEdge::Bottom => (min_x + width_nm / 3 + step, max_y - inset),
             };
+            if let Some(&(index, count)) = slots.get(&comp.id) {
+                let along = |len: i64, lo: i64| lo + len * (index as i64 + 1) / (count as i64 + 1);
+                match edge {
+                    BoardEdge::Left | BoardEdge::Right => y = along(height_nm, min_y),
+                    BoardEdge::Top | BoardEdge::Bottom => x = along(width_nm, min_x),
+                }
+            }
             targets.insert(
                 comp.id,
                 FloorplanTarget {
@@ -307,7 +379,7 @@ pub fn compute_floorplan_targets(
                 .placement_hint
                 .as_ref()
                 .and_then(|hint| hint.edge.clone());
-            let (x, y, rot) = match requested_edge {
+            let (mut x, mut y, rot) = match requested_edge {
                 Some(synth_ir::PlacementEdge::Left) => (
                     min_x + half_w + synth_geometry::mm_to_nm(1.0),
                     min_y + height_nm / 2,
@@ -342,6 +414,13 @@ pub fn compute_floorplan_targets(
                     Rotation::Zero,
                 ),
             };
+            if let (Some(&(index, count)), Some(edge)) = (slots.get(&comp.id), hinted_edge(comp)) {
+                let along = |len: i64, lo: i64| lo + len * (index as i64 + 1) / (count as i64 + 1);
+                match edge {
+                    BoardEdge::Left | BoardEdge::Right => y = along(height_nm, min_y),
+                    BoardEdge::Top | BoardEdge::Bottom => x = along(width_nm, min_x),
+                }
+            }
             targets.insert(
                 comp.id,
                 FloorplanTarget {
@@ -466,12 +545,128 @@ pub fn compute_floorplan_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     #[test]
     fn maps_usb_c_bottom_opening_to_top_edge() {
         assert_eq!(
             rotation_for_mating_edge(MatingFace::Bottom, BoardEdge::Top),
             Rotation::OneEighty
+        );
+    }
+
+    /// A board of connectors on one edge, lowered from source, with a
+    /// courtyard for each, so the floorplan is exercised as the placer calls it.
+    fn connector_targets(
+        parts: &[(&str, &str, &str)],
+        usable_mm: (f64, f64),
+    ) -> (Board, HashMap<ComponentId, FloorplanTarget>) {
+        let mut components = String::new();
+        for (refdes, part, edge) in parts {
+            writeln!(
+                components,
+                "component {refdes}: connector \"{part}\" {{ placement_hint {{ edge: {edge} priority: hard }} }}"
+            )
+            .expect("write to a String");
+        }
+        let source = format!("board \"fp\" {{ layers 2 {components} }}");
+        let parse = synth_parser::parse(&source, "fp.synth".to_string());
+        let ast = parse.ast.as_ref().expect("parses");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        let board = synth_ir::lower(ast, &registry, "fp.synth")
+            .board
+            .expect("lowers");
+        let lookup: HashMap<ComponentId, (f64, f64)> = board
+            .components
+            .iter()
+            .map(|c| (c.id, (8.0, 6.0)))
+            .collect();
+        let usable = Rect::new(
+            Point::new(0, 0),
+            Point::new(
+                synth_geometry::mm_to_nm(usable_mm.0),
+                synth_geometry::mm_to_nm(usable_mm.1),
+            ),
+        );
+        let targets = compute_floorplan_targets(&board, usable, &lookup);
+        (board, targets)
+    }
+
+    /// Connectors hinted to one edge used to share one point, or a step counted
+    /// across every edge, so legalization pushed one of them off the edge.
+    #[test]
+    fn connectors_hinted_to_one_edge_get_distinct_slots_along_it() {
+        for part in ["jst_ph_3pin", "header_1x4"] {
+            let (board, targets) = connector_targets(
+                &[
+                    ("J1", part, "right"),
+                    ("J2", part, "right"),
+                    ("J3", part, "right"),
+                ],
+                (80.0, 80.0),
+            );
+            let mut ys: Vec<i64> = board
+                .components
+                .iter()
+                .map(|c| targets[&c.id].point.y_nm)
+                .collect();
+            ys.sort_unstable();
+            for pair in ys.windows(2) {
+                assert!(
+                    pair[1] - pair[0] >= synth_geometry::mm_to_nm(10.0),
+                    "{part}: slots too close or equal along the edge: {ys:?}"
+                );
+            }
+            for c in &board.components {
+                let x = targets[&c.id].point.x_nm;
+                assert!(
+                    x > synth_geometry::mm_to_nm(70.0),
+                    "{part}: not on the right edge: {x}"
+                );
+            }
+        }
+    }
+
+    /// The step counter was shared by every edge, so connectors on a second
+    /// edge started where the first edge's count left off.
+    #[test]
+    fn connectors_on_different_edges_are_spread_independently() {
+        let (board, targets) = connector_targets(
+            &[
+                ("J1", "jst_ph_3pin", "left"),
+                ("J2", "jst_ph_3pin", "bottom"),
+                ("J3", "jst_ph_3pin", "bottom"),
+                ("J4", "jst_ph_3pin", "right"),
+                ("J5", "jst_ph_3pin", "right"),
+            ],
+            (80.0, 80.0),
+        );
+        let at = |r: &str| {
+            let id = board.components.iter().find(|c| c.refdes == r).expect(r).id;
+            targets[&id].point
+        };
+        let mm = synth_geometry::nm_to_mm;
+        assert!(
+            (mm(at("J2").x_nm) - 80.0 / 3.0).abs() < 0.5,
+            "J2 at {}",
+            mm(at("J2").x_nm)
+        );
+        assert!(
+            (mm(at("J3").x_nm) - 160.0 / 3.0).abs() < 0.5,
+            "J3 at {}",
+            mm(at("J3").x_nm)
+        );
+        assert!(
+            (mm(at("J4").y_nm) - 80.0 / 3.0).abs() < 0.5,
+            "J4 at {}",
+            mm(at("J4").y_nm)
+        );
+        assert!(
+            (mm(at("J5").y_nm) - 160.0 / 3.0).abs() < 0.5,
+            "J5 at {}",
+            mm(at("J5").y_nm)
         );
     }
 
