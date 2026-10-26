@@ -345,6 +345,10 @@ const BOARD_MARGIN_MM: f64 = 6.0;
 
 const COPPER_EDGE_CLEARANCE_MM: f64 = 0.5;
 
+/// How far inside the board edge an external connector's courtyard may sit and
+/// still count as flush with it.
+const FLUSH_CONNECTOR_TOLERANCE_MM: f64 = 0.1;
+
 const MAX_DOCKING_SLIDE_STEPS: i64 = 40;
 
 /// Margin the greedy packer starts its canvas with. The finished outline is
@@ -630,6 +634,80 @@ pub fn fit_outline_with_margin_mm(board: &Board, placement: &mut Placement, marg
     fit_outline(board, placement, mm_to_nm(margin_mm));
 }
 
+/// Channel kept between a trimmed edge and the furthest courtyard or pad it
+/// would otherwise squeeze.
+const OUTLINE_TRIM_RESERVE_NM: i64 = 500_000;
+
+/// Pitch of the cell grid the shape score counts dead space on.
+const DEAD_CELL_NM: i64 = 1_000_000;
+
+/// Pull one fitted edge in to just under the next whole millimetre, but only
+/// while [`OUTLINE_TRIM_RESERVE_NM`] still separates it from the furthest
+/// courtyard or pad.
+fn trim_trailing_edge(edge_nm: i64, origin_nm: i64, hard_nm: i64) -> i64 {
+    let slack = edge_nm - hard_nm - OUTLINE_TRIM_RESERVE_NM;
+    if slack <= 0 {
+        return edge_nm;
+    }
+    let remainder = (edge_nm - origin_nm).rem_euclid(DEAD_CELL_NM);
+    // The grid drops a column only once the span is strictly below a whole
+    // millimetre; the margin absorbs the export's coordinate rounding.
+    let needed = remainder + 10_000;
+    if needed <= slack {
+        edge_nm - needed
+    } else {
+        edge_nm
+    }
+}
+
+/// Trim the trailing x and y sides of a fitted outline onto the shape score's
+/// cell grid.
+///
+/// The score measures dead space over a one-millimetre grid anchored at the
+/// Edge.Cuts bbox minimum, so a box ending a fraction past a whole millimetre
+/// counts a strip narrower than one cell as if it were a full row or column of
+/// air. Removing that unused strip costs no courtyard: the trim stops at the
+/// last pad or courtyard plus the edge clearance placement already asks for,
+/// and it is applied to the same `board_outline` the exporter draws and the
+/// sidecar coordinates are judged against, so all three still agree.
+pub fn trim_outline_to_grid(board: &Board, placement: &mut Placement) {
+    let mut hard_max_x = i64::MIN;
+    let mut hard_max_y = i64::MIN;
+    for placed in &placement.components {
+        let Some(component) = board.component(placed.id) else {
+            continue;
+        };
+        let rect = sidecar_courtyard_rect(board, component, placed);
+        let copper = exported_pad_bounds(component, placed);
+        let mut hard = [rect.min.x_nm, rect.min.y_nm, rect.max.x_nm, rect.max.y_nm];
+        if let Some(copper) = copper {
+            hard[0] = hard[0].min(copper.min.x_nm);
+            hard[1] = hard[1].min(copper.min.y_nm);
+            hard[2] = hard[2].max(copper.max.x_nm);
+            hard[3] = hard[3].max(copper.max.y_nm);
+        }
+        if let Some(side) = flush_edge_index(board, placed.id) {
+            let reach = connector_reach(rect, copper.unwrap_or(rect));
+            let reach = [
+                reach.min.x_nm,
+                reach.min.y_nm,
+                reach.max.x_nm,
+                reach.max.y_nm,
+            ];
+            hard[side] = reach[side];
+        }
+        hard_max_x = hard_max_x.max(hard[2]);
+        hard_max_y = hard_max_y.max(hard[3]);
+    }
+    if hard_max_x == i64::MIN {
+        return;
+    }
+    let mut outline = placement.board_outline;
+    outline.max.x_nm = trim_trailing_edge(outline.max.x_nm, outline.min.x_nm, hard_max_x);
+    outline.max.y_nm = trim_trailing_edge(outline.max.y_nm, outline.min.y_nm, hard_max_y);
+    placement.board_outline = outline;
+}
+
 fn rotated_courtyard_rect(placed: &ComponentPlacement, (width, height): (f64, f64)) -> Rect {
     let (w, h) = if placed.rotation.swaps_extents() {
         (height, width)
@@ -743,24 +821,37 @@ fn outline_with_flush_connectors(
                 flush.max.x_nm,
                 flush.max.y_nm,
             ];
-            let side = match body.filter(|_| !side_from_hint) {
-                Some(body) => [
-                    body.min.x_nm - real.min.x_nm,
-                    body.min.y_nm - real.min.y_nm,
-                    real.max.x_nm - body.max.x_nm,
-                    real.max.y_nm - body.max.y_nm,
-                ]
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, p)| **p)
-                .map(|(side, _)| side),
-                None => component
-                    .placement_hint
-                    .as_ref()
-                    .and_then(|hint| hint.edge.as_ref())
-                    .map(edge_index),
+            // A connector sits where the solver or a sidecar put it, which need
+            // not be the edge its hint names. Trust the hint unless the
+            // connector is clearly nowhere near that edge; then use the side
+            // it sticks out of most. Taking the hinted side blindly let a
+            // connector hinted "bottom" but sitting on the left keep its
+            // margin on the left and push the whole left edge out, undoing
+            // its neighbours' flush edge.
+            let hinted = component
+                .placement_hint
+                .as_ref()
+                .and_then(|hint| hint.edge.as_ref())
+                .map(edge_index);
+            let sides: Vec<usize> = match body {
+                Some(body) => {
+                    let reaches = [
+                        body.min.x_nm - real.min.x_nm,
+                        body.min.y_nm - real.min.y_nm,
+                        real.max.x_nm - body.max.x_nm,
+                        real.max.y_nm - body.max.y_nm,
+                    ];
+                    let geometric = (0..4).max_by_key(|&side| reaches[side]);
+                    match hinted {
+                        Some(side) if side_from_hint && reaches[side] >= -margin_nm => {
+                            vec![side]
+                        }
+                        _ => geometric.into_iter().collect(),
+                    }
+                }
+                None => hinted.into_iter().collect(),
             };
-            if let Some(side) = side {
+            for side in sides {
                 reach[side] = flush[side];
             }
         } else if let Some(copper) = copper {
@@ -1829,6 +1920,63 @@ pub(crate) fn courtyard_rect_for_placement(
         offset_mm.unwrap_or((0.0, 0.0)),
         extra_nm,
     )
+}
+
+/// Distance from a courtyard within which a raster cell counts as occupied.
+const DEAD_REACH_MM: f64 = 3.0;
+
+/// Raster cells of [`Placement::board_outline`] whose centre is not within
+/// `DEAD_REACH_MM` of any component courtyard.
+///
+/// Two arrangements can fit the same box and still leave very different
+/// amounts of air between their parts; this is the shape term that tells them
+/// apart. The grid is anchored at the outline's minimum corner, so the count
+/// is deterministic for a given placement.
+#[must_use]
+pub fn dead_cells(board: &Board, placement: &Placement) -> u64 {
+    let outline = placement.board_outline;
+    let cell_nm = DEAD_CELL_NM;
+    let reach_nm = mm_to_nm(DEAD_REACH_MM);
+    let cols = outline.width_nm() / cell_nm;
+    let rows = outline.height_nm() / cell_nm;
+    if cols <= 0 || rows <= 0 {
+        return 0;
+    }
+    let courtyards: Vec<Rect> = placement
+        .components
+        .iter()
+        .filter_map(|placed| {
+            let component = board.component(placed.id)?;
+            let (offset_mm, (width_mm, height_mm)) = component.part.as_ref().map_or_else(
+                || ((0.0, 0.0), fallback_courtyard(&component.kind)),
+                synth_layout::pcb_courtyard_geometry_for_part,
+            );
+            Some(courtyard_rect_for_placement(
+                placed,
+                width_mm,
+                height_mm,
+                Some(offset_mm),
+                reach_nm,
+            ))
+        })
+        .collect();
+    let mut dead = 0;
+    for col in 0..cols {
+        let x_nm = outline.min.x_nm + col * cell_nm + cell_nm / 2;
+        for row in 0..rows {
+            let y_nm = outline.min.y_nm + row * cell_nm + cell_nm / 2;
+            let occupied = courtyards.iter().any(|courtyard| {
+                courtyard.min.x_nm <= x_nm
+                    && x_nm <= courtyard.max.x_nm
+                    && courtyard.min.y_nm <= y_nm
+                    && y_nm <= courtyard.max.y_nm
+            });
+            if !occupied {
+                dead += 1;
+            }
+        }
+    }
+    dead
 }
 
 /// Deterministic order key for a component under a placement `seed`.
@@ -4888,6 +5036,57 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         });
     }
 
+    // An external connector belongs flush with the board edge, so a cable or
+    // a case does not meet the rim of the board first. Pin headers are the
+    // exception. This is advice and not a visual-review failure, as for a far
+    // reset button: a hard `edge:` hint is what makes the solver put it there.
+    for connector in &board.components {
+        if !matches!(connector.kind.as_str(), "connector" | "jack")
+            || connector
+                .part
+                .as_ref()
+                .is_none_or(|part| part.id.0.to_ascii_lowercase().starts_with("header"))
+        {
+            continue;
+        }
+        let Some((_, rect)) = courtyard_rects
+            .iter()
+            .find(|(refdes, _)| *refdes == connector.refdes.as_str())
+        else {
+            continue;
+        };
+        let outline = placement.board_outline;
+        let Some((gap_nm, edge)) = [
+            (rect.min.x_nm - outline.min.x_nm, "left"),
+            (rect.min.y_nm - outline.min.y_nm, "top"),
+            (outline.max.x_nm - rect.max.x_nm, "right"),
+            (outline.max.y_nm - rect.max.y_nm, "bottom"),
+        ]
+        .into_iter()
+        .min_by_key(|(gap, _)| *gap) else {
+            continue;
+        };
+        if gap_nm > mm_to_nm(FLUSH_CONNECTOR_TOLERANCE_MM) {
+            functional_warnings.push(format!(
+                "{} sits {:.1} mm inside the {edge} edge; an external connector must be flush with the board edge",
+                connector.refdes,
+                synth_geometry::nm_to_mm(gap_nm)
+            ));
+            recommended_actions.push(PlacementRecommendation {
+                action: "place_connector_flush".into(),
+                refdes: connector.refdes.clone(),
+                relative_to: None,
+                suggested_x_mm: None,
+                suggested_y_mm: None,
+                suggested_rotation_deg: None,
+                rationale: format!(
+                    "add a hard `edge: {edge}` placement hint to {}",
+                    connector.refdes
+                ),
+            });
+        }
+    }
+
     // Human-style first-pass review of dense connector composition. A
     // high-pin connector should be edge-mounted, oriented so its long pin
     // row follows that edge, and have a clear first escape corridor to the
@@ -7872,6 +8071,62 @@ board "features_only" {
         );
     }
 
+    /// An external connector inside the board edge is advised to go flush; a
+    /// pin header at the same distance is not, and neither blocks routing.
+    #[test]
+    fn an_inboard_external_connector_is_advised_to_go_flush_but_a_header_is_not() {
+        let components = r#"component J1: connector "jst_xh_2pin"
+               component J2: connector "header_1x3"
+               component R1: resistor "r_generic_0603" value "10k"
+               component R2: resistor "r_generic_0603" value "10k""#;
+        let (board, mut placement) = row_board(components, &[0.0; 4]);
+        move_part(&mut placement, &board, "J1", 30.0, 20.0);
+        move_part(&mut placement, &board, "J2", 30.0, 32.0);
+        move_part(&mut placement, &board, "R1", 10.0, 10.0);
+        move_part(&mut placement, &board, "R2", 50.0, 12.0);
+        tighten_outline_after_sidecar(&board, &mut placement);
+        let desc = describe_placement(&board, &placement);
+        assert!(
+            desc.functional_warnings
+                .iter()
+                .any(|w| w.starts_with("J1 sits ") && w.contains("flush")),
+            "{:?}",
+            desc.functional_warnings
+        );
+        assert!(!desc
+            .functional_warnings
+            .iter()
+            .any(|w| w.starts_with("J2 sits ")));
+        assert!(desc.visual_review.recommended_actions.iter().any(|a| {
+            a.action == "place_connector_flush" && a.refdes == "J1" && a.rationale.contains("edge:")
+        }));
+        assert!(!desc.visual_review.requires_revision);
+    }
+
+    #[test]
+    fn a_flush_external_connector_gets_no_edge_advice() {
+        let edge = "{ placement_hint { edge: left priority: hard } }";
+        let components = format!(
+            r#"component J1: connector "jst_xh_2pin" {edge}
+               component R1: resistor "r_generic_0603" value "10k"
+               component R2: resistor "r_generic_0603" value "10k""#
+        );
+        let (board, mut placement) = row_board(&components, &[0.0; 3]);
+        move_part(&mut placement, &board, "J1", 8.0, 24.0);
+        move_part(&mut placement, &board, "R1", 40.0, 10.0);
+        move_part(&mut placement, &board, "R2", 46.0, 12.0);
+        tighten_outline_after_sidecar(&board, &mut placement);
+        let desc = describe_placement(&board, &placement);
+        assert!(
+            !desc
+                .functional_warnings
+                .iter()
+                .any(|w| w.starts_with("J1 sits ")),
+            "{:?}",
+            desc.functional_warnings
+        );
+    }
+
     /// An IC keeps its decoupling caps beside it: squeezing the board does not
     /// leave them further away than they started.
     #[test]
@@ -8823,6 +9078,56 @@ board "features_only" {
                 assert_flush_with_copper_clear(&board, &placement, "J2", edge);
             }
         }
+    }
+
+    /// A connector hinted to one edge but pinned on another must not undo its
+    /// neighbour's flush edge: its own side is judged by where it sits.
+    #[test]
+    fn a_connector_pinned_off_its_hinted_edge_does_not_push_a_neighbours_flush_edge_out() {
+        // J3 is hinted bottom but a sidecar pins it on the left, beside J2.
+        let board = with_hint(
+            &feather_with_j2_hint("left", "hard"),
+            "J3",
+            "bottom",
+            "hard",
+        );
+        let mut placement = place(&load_board(FEATHER)).expect("place");
+        let others_min_x = placement
+            .components
+            .iter()
+            .filter(|placed| {
+                let refdes = &board.component(placed.id).expect("component").refdes;
+                refdes != "J2" && refdes != "J3"
+            })
+            .map(|placed| {
+                let component = board.component(placed.id).expect("component");
+                sidecar_courtyard_rect(&board, component, placed).min.x_nm
+            })
+            .min()
+            .expect("others");
+        for refdes in ["J2", "J3"] {
+            let component = board
+                .components
+                .iter()
+                .find(|c| c.refdes == refdes)
+                .expect(refdes);
+            let placed = placement
+                .components
+                .iter_mut()
+                .find(|placed| placed.id == component.id)
+                .expect("placement");
+            let half_w = sidecar_courtyard_rect(&board, component, placed).width_nm() / 2;
+            placed.center.x_nm = others_min_x - mm_to_nm(12.0) + half_w;
+        }
+        tighten_outline_after_sidecar(&board, &mut placement);
+        assert_connector_flush(&board, &placement, "J2", "left");
+        assert_connector_flush(&board, &placement, "J3", "left");
+
+        // The export fits the outline from the hints; it must agree.
+        let mut fitted = placement.clone();
+        fit_outline(&board, &mut fitted, fitted_edge_margin_nm(&board));
+        assert_connector_flush(&board, &fitted, "J2", "left");
+        assert_connector_flush(&board, &fitted, "J3", "left");
     }
 
     #[test]
