@@ -5072,17 +5072,28 @@ const MAX_SUPPORT_PART_WARNINGS: usize = 8;
 /// to, centre to pad, by what it does. A decoupling capacitor loses its job
 /// as the loop to its pin grows, a load capacitor changes the oscillator, and
 /// a pull-up or a filter resistor only has to be near enough to route.
-fn support_part_limit_mm(role: synth_ir::MemberRole) -> f64 {
+///
+/// A dense anchor (see [`DENSE_PART_PINS`]) keeps a wider ring free for its pin
+/// escape, calibrated against routing on the reference boards
+/// ([`DENSE_PART_RING_MM`]), so a support part cannot sit as close to it. The
+/// limit allows for that ring, or the warning would ask for what the placer
+/// cannot give.
+fn support_part_limit_mm(role: synth_ir::MemberRole, anchor_is_dense: bool) -> f64 {
     use synth_ir::MemberRole::{
         DecouplingCap, DividerPartner, EsdDiode, I2cPullUp, LoadCap, OrphanRailCap, PullUp,
         RailCap, ResetNetwork, RfMatchElement, SeriesElement, SeriesLimit, SignalSeries,
     };
-    match role {
+    let base = match role {
         DecouplingCap => 4.0,
         LoadCap | EsdDiode | RfMatchElement | RailCap => 6.0,
         DividerPartner => 8.0,
         ResetNetwork | PullUp | I2cPullUp | SeriesElement | SeriesLimit | SignalSeries => 10.0,
         OrphanRailCap => 12.0,
+    };
+    if anchor_is_dense {
+        base + DENSE_PART_RING_MM / 2.0 + 0.5
+    } else {
+        base
     }
 }
 
@@ -5091,6 +5102,8 @@ struct FarSupportPart {
     refdes: String,
     anchor: String,
     pin: u32,
+    /// The anchor pin's name, as a `near: <part>.<pin>` hint spells it.
+    pin_name: String,
     role: synth_ir::MemberRole,
     mm: f64,
     limit_mm: f64,
@@ -5131,12 +5144,18 @@ fn far_support_parts(board: &Board, placement: &Placement) -> Vec<FarSupportPart
             let dx = synth_geometry::nm_to_mm(member_placed.center.x_nm - pad.x_nm);
             let dy = synth_geometry::nm_to_mm(member_placed.center.y_nm - pad.y_nm);
             let mm = dx.hypot(dy);
-            let limit_mm = support_part_limit_mm(member.role);
+            let limit_mm = support_part_limit_mm(member.role, is_dense_part(board, cluster.anchor));
             if mm > limit_mm {
+                let pin_name = anchor
+                    .part
+                    .as_ref()
+                    .and_then(|p| p.pins.get(pin as usize))
+                    .map_or_else(|| pin.to_string(), |p| p.name.clone());
                 found.push(FarSupportPart {
                     refdes: part.refdes.clone(),
                     anchor: anchor.refdes.clone(),
                     pin,
+                    pin_name,
                     role: member.role,
                     mm,
                     limit_mm,
@@ -5651,8 +5670,8 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
     far_parts.truncate(MAX_SUPPORT_PART_WARNINGS);
     for far in far_parts {
         functional_warnings.push(format!(
-            "{} ({:?}) is {:.0} mm from {} pin {}, which it serves; keep it within {:.0} mm",
-            far.refdes, far.role, far.mm, far.anchor, far.pin, far.limit_mm
+            "{} ({:?}) is {:.0} mm from {} pin {} ({}), which it serves; keep it within {:.0} mm",
+            far.refdes, far.role, far.mm, far.anchor, far.pin_name, far.pin, far.limit_mm
         ));
         recommended_actions.push(PlacementRecommendation {
             action: "place_support_part_near".into(),
@@ -5662,8 +5681,8 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
             suggested_y_mm: None,
             suggested_rotation_deg: None,
             rationale: format!(
-                "add a hard `near: {}` placement hint to {}",
-                far.anchor, far.refdes
+                "add a hard `near: {}.{}` placement hint to {}: it places the part at that pad",
+                far.anchor, far.pin_name, far.refdes
             ),
         });
     }
@@ -9322,7 +9341,7 @@ board "features_only" {
         assert!(desc.visual_review.recommended_actions.iter().any(|a| {
             a.action == "place_support_part_near"
                 && a.refdes == cap_refdes
-                && a.rationale.contains("near:")
+                && a.rationale.contains(&format!("near: {anchor}."))
         }));
         // It is advice: it is a functional warning and a recommended action,
         // never one of the visual-review findings that fail a placement.
@@ -9361,11 +9380,59 @@ board "features_only" {
         }
     }
 
+    /// The fix the advice names works: a hard `near: <part>.<pin>` hint on a
+    /// flagged support part puts it within its limit, so an agent that follows
+    /// the warning clears it.
+    #[test]
+    fn following_the_named_near_hint_clears_the_warning() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let far = far_support_parts(&board, &placement);
+        let target = far
+            .iter()
+            .find(|f| matches!(f.role, synth_ir::MemberRole::DecouplingCap))
+            .expect("sensor_logger has a decoupling capacitor that is too far");
+        let hinted = board_with_external_hints(
+            &board,
+            &[ExternalHint {
+                component: Some(target.refdes.clone()),
+                near: Some(format!("{}.{}", target.anchor, target.pin_name)),
+                priority: Some("hard".into()),
+                ..ExternalHint::default()
+            }],
+        );
+        let after = place(&hinted).expect("place with the hint");
+        let still = far_support_parts(&hinted, &after);
+        assert!(
+            !still
+                .iter()
+                .any(|f| f.refdes == target.refdes && f.mm > target.limit_mm),
+            "{} is still {:?} mm from {}.{} after the hint",
+            target.refdes,
+            still
+                .iter()
+                .find(|f| f.refdes == target.refdes)
+                .map(|f| f.mm),
+            target.anchor,
+            target.pin_name
+        );
+    }
+
     #[test]
     fn support_part_limits_are_tighter_for_decoupling_than_for_pull_ups() {
         use synth_ir::MemberRole::{DecouplingCap, LoadCap, PullUp};
-        assert!(support_part_limit_mm(DecouplingCap) < support_part_limit_mm(LoadCap));
-        assert!(support_part_limit_mm(LoadCap) < support_part_limit_mm(PullUp));
+        for dense in [false, true] {
+            assert!(
+                support_part_limit_mm(DecouplingCap, dense) < support_part_limit_mm(LoadCap, dense)
+            );
+            assert!(support_part_limit_mm(LoadCap, dense) < support_part_limit_mm(PullUp, dense));
+        }
+        // A dense anchor keeps its pin-escape ring, so its support parts get
+        // room for it.
+        assert!(
+            support_part_limit_mm(DecouplingCap, true)
+                > support_part_limit_mm(DecouplingCap, false)
+        );
     }
 
     /// An IC keeps its decoupling caps beside it: squeezing the board does not
