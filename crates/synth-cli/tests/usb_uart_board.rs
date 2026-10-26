@@ -81,7 +81,7 @@ fn mounting_holes_sit_one_per_corner_and_keep_a_rim_inside_edge_cuts() {
                 "the hole at ({x}, {y}) has a {rim:.2} mm {side} rim; Edge.Cuts must stay off it"
             );
         }
-        corners.push((x < (min_x + max_x) / 2.0, y < (min_y + max_y) / 2.0));
+        corners.push((x < min_x.midpoint(max_x), y < min_y.midpoint(max_y)));
     }
     assert_eq!(corners.len(), 4, "expected four mounting holes");
     corners.sort_unstable();
