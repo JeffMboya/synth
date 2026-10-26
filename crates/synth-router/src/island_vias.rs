@@ -152,6 +152,51 @@ impl Region {
     }
 }
 
+/// A pad's copper as a rotated rectangle, for keeping a via off it.
+struct PadBox {
+    at: (f64, f64),
+    half: (f64, f64),
+    cos: f64,
+    sin: f64,
+}
+
+impl PadBox {
+    fn new(pad: &crate::pcb_read::Pad) -> Self {
+        let angle = pad.angle_deg.to_radians();
+        Self {
+            at: (pad.at.x_mm(), pad.at.y_mm()),
+            half: (nm_to_mm(pad.size_nm.0) / 2.0, nm_to_mm(pad.size_nm.1) / 2.0),
+            cos: angle.cos(),
+            sin: angle.sin(),
+        }
+    }
+
+    /// Distance from `p` to the pad's rectangle, zero inside it.
+    fn distance(&self, p: (f64, f64)) -> f64 {
+        let (dx, dy) = (p.0 - self.at.0, p.1 - self.at.1);
+        // Into the pad's own axes.
+        let (x, y) = (
+            dx * self.cos + dy * self.sin,
+            -dx * self.sin + dy * self.cos,
+        );
+        (x.abs() - self.half.0)
+            .max(0.0)
+            .hypot((y.abs() - self.half.1).max(0.0))
+    }
+}
+
+/// Every pad on the board. A via must not overlap one: the router refuses a via
+/// inside a pad unless the board approves it, and the pour includes the copper of
+/// every pad on its net, so the middle of a ground pad is "inside the pour".
+fn pad_boxes(board: &PcbBoard) -> Vec<PadBox> {
+    board.pads().map(PadBox::new).collect()
+}
+
+/// Whether a via of `radius` centred at `p` overlaps no pad.
+fn clear_of_pads(pads: &[PadBox], p: (f64, f64), radius: f64) -> bool {
+    pads.iter().all(|pad| pad.distance(p) >= radius)
+}
+
 fn point_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len2 = dx * dx + dy * dy;
@@ -205,6 +250,7 @@ fn pours(board: &PcbBoard) -> BTreeMap<String, Vec<Region>> {
 #[must_use]
 pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
     let regions = pours(board);
+    let pads = pad_boxes(board);
 
     let copper = board.copper_layers();
     let mut out = Vec::new();
@@ -242,7 +288,7 @@ pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
             let mains: Vec<usize> = (0..regions.len())
                 .filter(|&i| groups.find(i) == main)
                 .collect();
-            if let Some(at) = best_spot(regions, &members, &mains, need) {
+            if let Some(at) = best_spot(regions, &pads, &members, &mains, need) {
                 out.push(TieVia { at, ..via.clone() });
             }
         }
@@ -342,7 +388,13 @@ fn join(groups: &mut Groups, attached: &mut [bool], hit: &[usize]) {
 /// The point inside an island and a region of the main pour on another layer
 /// that stands furthest from both of their edges, if any stands at least
 /// `need` from them.
-fn best_spot(regions: &[Region], island: &[usize], main: &[usize], need: f64) -> Option<Point> {
+fn best_spot(
+    regions: &[Region],
+    pads: &[PadBox],
+    island: &[usize],
+    main: &[usize],
+    need: f64,
+) -> Option<Point> {
     let mut best: Option<(f64, (f64, f64))> = None;
     for &a in island {
         let a = &regions[a];
@@ -356,7 +408,7 @@ fn best_spot(regions: &[Region], island: &[usize], main: &[usize], need: f64) ->
             let mut x = a.min.0 + need;
             while x <= a.max.0 - need {
                 let p = (x, y);
-                if a.contains(p) {
+                if a.contains(p) && clear_of_pads(pads, p, need - EDGE_SLACK_MM) {
                     let from_a = a.edge_distance(p);
                     if from_a >= need - EPS && best.is_none_or(|(margin, _)| from_a > margin) {
                         let from_main = main
@@ -445,6 +497,8 @@ pub fn stitch_vias(board: &PcbBoard) -> Vec<TieVia> {
     // Two ground vias share a pour, so nothing in the fill keeps them apart.
     let apart = nm_to_mm(size_nm) + VIA_GAP_MM;
 
+    let pads = pad_boxes(board);
+    let radius = nm_to_mm(size_nm) / 2.0;
     let copper = board.copper_layers();
     let (Some(first), Some(last)) = (copper.first(), copper.last()) else {
         return Vec::new();
@@ -487,6 +541,7 @@ pub fn stitch_vias(board: &PcbBoard) -> Vec<TieVia> {
                 );
                 let distance = (p.0 - vx).hypot(p.1 - vy);
                 if best.is_some_and(|(d, _)| distance >= d)
+                    || !clear_of_pads(&pads, p, radius)
                     || signals
                         .iter()
                         .any(|(at, gap)| (at.0 - p.0).hypot(at.1 - p.1) < *gap)
@@ -761,6 +816,65 @@ mod tests {
         assert_eq!(vias.len(), 1, "{vias:?}");
         let d = (vias[0].at.x_mm() - 11.5).hypot(vias[0].at.y_mm() - 10.0);
         assert!(d >= 0.8, "{d}");
+    }
+
+    #[test]
+    fn a_pad_is_measured_in_its_own_rotated_axes() {
+        let pad = PadBox {
+            at: (0.0, 0.0),
+            half: (1.0, 0.5),
+            cos: 0.0,
+            sin: 1.0,
+        };
+        // Turned a quarter, the 2 mm side runs along y.
+        assert!((pad.distance((0.0, 1.2)) - 0.2).abs() < 1e-9);
+        assert!(pad.distance((0.0, 0.9)).abs() < 1e-9, "inside is zero");
+        assert!((pad.distance((1.0, 0.0)) - 0.5).abs() < 1e-9);
+    }
+
+    /// The pour includes the copper of every pad on its net, so the middle of a
+    /// ground pad lies inside it. A via there is a via in a pad.
+    #[test]
+    fn a_return_via_stays_off_a_ground_pad() {
+        let pad = r#"(footprint "Capacitor_SMD:C_0603_1608Metric" (layer "F.Cu") (at 0 0)
+              (property "Reference" "C1" (at 0 0) (layer "F.SilkS"))
+              (pad "1" smd rect (at 10.9 10) (size 1.2 1.2) (layers "F.Cu") (net 1 "GND")))"#;
+        let vias = stitch_vias(&stitched_board(pad));
+        assert_eq!(vias.len(), 1, "{vias:?}");
+        let at = (vias[0].at.x_mm(), vias[0].at.y_mm());
+        let boxed = PadBox {
+            at: (10.9, 10.0),
+            half: (0.6, 0.6),
+            cos: 1.0,
+            sin: 0.0,
+        };
+        assert!(
+            boxed.distance(at) >= 0.3,
+            "the via overlaps the pad: {at:?}"
+        );
+    }
+
+    #[test]
+    fn an_island_that_is_all_pad_gets_no_via() {
+        let text = r#"(kicad_pcb
+          (layers (0 "F.Cu" signal) (2 "B.Cu" signal))
+          (net 0 "") (net 1 "GND")
+          (footprint "Capacitor_SMD:C_0603_1608Metric" (layer "F.Cu") (at 0 0)
+            (property "Reference" "C1" (at 0 0) (layer "F.SilkS"))
+            (pad "1" smd rect (at 26 7) (size 2 2) (layers "F.Cu") (net 1 "GND")))
+          (via (at 5 5) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))
+          (zone (net 1) (net_name "GND") (layer "F.Cu") (fill yes)
+            (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
+            (filled_polygon (layer "F.Cu") (pts (xy 0 0) (xy 20 0) (xy 20 20) (xy 0 20)))
+            (filled_polygon (layer "F.Cu") (pts (xy 25 6) (xy 27 6) (xy 27 8) (xy 25 8))))
+          (zone (net 1) (net_name "GND") (layer "B.Cu") (fill yes)
+            (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
+            (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))"#;
+        let board = PcbBoard::parse(text).expect("board must parse");
+        assert!(
+            islands_to_tie(&board).is_empty(),
+            "the only copper in the island is a pad, and a via cannot sit on it"
+        );
     }
 
     #[test]
