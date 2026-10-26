@@ -149,3 +149,5 @@ Current Synth main defaults the MCP export to KiCadRoutingTools; this board was 
 - Exposed pad: KiCad footprint 2.6 mm, supplier drawing 2.4 mm. Not reconciled.
 - Parts availability, JLCPCB assembly, and the registry LCSC numbers were not checked.
 - Nothing was powered or tested.
+
+Reproducibility: a clean run of the commands above on 2026-10-26 (synth `22a9d23`, FreeRouting 2.4.1, KiCad 10.0.5) did not reproduce the committed board. It routed but failed validation with one clearance error (a VBUS via 0.178 mm from D1 pad 2) and 41 warnings. The committed PCB is a recorded result, not one the commands regenerate. `qualification.json` keeps `reproducible_from_clean_checkout` false and lists the input and output hashes of that run.

@@ -2,13 +2,46 @@
   "qualified": false,
   "meaning": "reports/release.json release_ready and fabrication_ready only say the route passed Synth's router and DRC gates. They are not review sign-off. This file stays false until every gate below is true.",
   "gates": {
-    "routing_and_drc": { "passed": true, "evidence": "reports/release.json, reports/usb_uart.drc.json" },
-    "erc_dispositioned": { "passed": false, "evidence": "reports/usb_uart.erc.json: findings not yet dispositioned one by one" },
-    "usb_si_pi_review": { "passed": false, "evidence": "no independent review; USB pair is not coupled, skew unmeasured, layer changes lack nearby ground vias" },
-    "rf_review": { "passed": false, "evidence": "no independent review" },
-    "rs485_termination_and_protection": { "passed": false, "evidence": "R_TERM is permanently connected and there is no A/B surge network; no expert-approved operating envelope" },
-    "fabrication_review": { "passed": false, "evidence": "via-in-pad at U1.25 needs fill and cap; JLCPCB has not confirmed" },
-    "component_and_manufacturer_review": { "passed": false, "evidence": "reviewer_state is false for every part in reports/release.json" },
-    "reproducible_from_clean_checkout": { "passed": false, "evidence": "FreeRouting output is not bit-for-bit repeatable; no recorded source revision or output hash" }
+    "routing_and_drc": {
+      "passed": true,
+      "evidence": "reports/release.json, reports/usb_uart.drc.json"
+    },
+    "erc_dispositioned": {
+      "passed": false,
+      "evidence": "reports/usb_uart.erc.json: findings not yet dispositioned one by one"
+    },
+    "usb_si_pi_review": {
+      "passed": false,
+      "evidence": "no independent review; USB pair is not coupled, skew unmeasured, layer changes lack nearby ground vias"
+    },
+    "rf_review": {
+      "passed": false,
+      "evidence": "no independent review"
+    },
+    "rs485_termination_and_protection": {
+      "passed": false,
+      "evidence": "R_TERM is permanently connected and there is no A/B surge network; no expert-approved operating envelope"
+    },
+    "fabrication_review": {
+      "passed": false,
+      "evidence": "via-in-pad at U1.25 needs fill and cap; JLCPCB has not confirmed"
+    },
+    "component_and_manufacturer_review": {
+      "passed": false,
+      "evidence": "reviewer_state is false for every part in reports/release.json"
+    },
+    "reproducible_from_clean_checkout": {
+      "passed": false,
+      "evidence": "A clean export on 2026-10-26 (synth commit 22a9d23, FreeRouting 2.4.1, KiCad 10.0.5, empty XDG_DATA_HOME) did not reproduce the committed board: 1 DRC clearance error (VBUS via 0.178 mm from D1 pad 2, rule 0.2 mm), 41 warnings, routing state validation_failed. FreeRouting output is not bit-for-bit repeatable, so the committed PCB is a recorded result, not a regenerable one.",
+      "inputs_sha256": {
+        "usb_uart.synth": "4872d7cdbfc0f8e401a251a0c6fc0168c30353d014cb4218925bad60191c9c16",
+        "usb_uart.placement.layout.toml": "2da76977947d68423f8c0f8eaf33158e1d4f1492cf19feb5458ea32c1e6d12f6"
+      },
+      "clean_run_output_sha256": {
+        "usb_uart.kicad_pcb": "6858c04e9079fc04f11b539982e4a0eec897e12d8c0e4e0131998418e3d0bfb2",
+        "usb_uart.freerouting.kicad_pcb": "121947c16c1262eff5dc076f8e326543e513315bb6f605bb19800648b8813830",
+        "usb_uart.kicad_sch": "9a7a04d2618c3d05bbaf3ec1f291ffb55b817f717025b323ef4c177d9de91354"
+      }
+    }
   }
 }
