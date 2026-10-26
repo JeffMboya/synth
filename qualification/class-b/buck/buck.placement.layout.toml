@@ -145,6 +145,18 @@ y = 29.0
 rotation = 0
 priority = "hard"
 
+[components.R_PGLED]
+x = 54.0
+y = 25.5
+rotation = 0
+priority = "hard"
+
+[components.D4]
+x = 59.0
+y = 25.5
+rotation = 0
+priority = "hard"
+
 [components.H1]
 x = 4.0
 y = 32.0

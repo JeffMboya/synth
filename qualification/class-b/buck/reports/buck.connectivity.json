@@ -10,7 +10,7 @@
     "outline_present": true
   },
   "connectivity": {
-    "connected_nets": 12,
+    "connected_nets": 13,
     "open_nets": 0,
     "open": [],
     "unconnected_pads": [],
@@ -21,7 +21,7 @@
   "kicad_drc": {
     "errors": 0,
     "unconnected": 0,
-    "warnings": 30
+    "warnings": 32
   },
   "blocking_reasons": [],
   "unavailable_checks": []

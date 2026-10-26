@@ -6,24 +6,24 @@
     "engine": "freerouting",
     "available": true,
     "version": "freerouting-2.4.1",
-    "runtime_version": "openjdk version \"25.0.5\" 2026-10-20 LTS",
+    "runtime_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS",
     "detail": null,
     "failure": null
   },
   "provenance": {
     "engine": "freerouting",
-    "engine_version": "tools/freerouting/freerouting-2.4.1.jar",
-    "runtime_version": "openjdk version \"25.0.5\" 2026-10-20 LTS",
+    "engine_version": "/home/steve/work/synth-buck-led/tools/freerouting/freerouting-2.4.1.jar",
+    "runtime_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS",
     "profile": "jlcpcb",
     "command": [
       "/usr/bin/python3",
-      "/tmp/opencode/buck2/tools/freeroute_autoroute.py",
+      "/home/steve/work/synth-buck-led/tools/freeroute_autoroute.py",
       "out/buck/buck.synth.kicad_pcb",
       "out/buck/buck.freerouting.kicad_pcb",
       "--jar",
-      "tools/freerouting/freerouting-2.4.1.jar",
+      "/home/steve/work/synth-buck-led/tools/freerouting/freerouting-2.4.1.jar",
       "--java",
-      "/tmp/opencode/buck2/tools/jre25/bin/java",
+      "/home/steve/work/synth-buck-led/tools/jre25/bin/java",
       "--passes",
       "40",
       "--threads",
@@ -40,22 +40,22 @@
       "threads": "4",
       "wall_clock_secs": "1200"
     },
-    "input_hash": "1f13f5d349b44874688abeef59a75a9416d68816be6d2605da76be613fd25e89",
+    "input_hash": "1a242b37e96c909c83da73695d6a226fa151ae49771f492a84247151e720b17f",
     "output_hash": "",
     "source_revision": null,
-    "duration_ms": 182404
+    "duration_ms": 38997
   },
   "statistics": {
-    "connected_nets": 12,
+    "connected_nets": 13,
     "open_nets": 0,
     "open_net_names": [],
-    "segments": 81,
-    "vias": 18,
-    "wire_length_mm": 220.570681,
+    "segments": 75,
+    "vias": 16,
+    "wire_length_mm": 236.318209,
     "pad_escape_rejections": 0,
     "engine_findings": {
-      "claimed_imported_segments": "81",
-      "claimed_imported_vias": "18"
+      "claimed_imported_segments": "75",
+      "claimed_imported_vias": "16"
     }
   },
   "artifacts": {
@@ -80,7 +80,7 @@
       "outline_present": true
     },
     "connectivity": {
-      "connected_nets": 12,
+      "connected_nets": 13,
       "open_nets": 0,
       "open": [],
       "unconnected_pads": [],
@@ -91,7 +91,7 @@
     "kicad_drc": {
       "errors": 0,
       "unconnected": 0,
-      "warnings": 30
+      "warnings": 32
     },
     "blocking_reasons": [],
     "unavailable_checks": []

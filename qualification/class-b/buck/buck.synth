@@ -82,9 +82,13 @@ board "buck" {
 
   group "POWER GOOD" color "#4d7c0f" {
     component R_PG: resistor "r_generic_0603" value "100k"
+    component D4: led "ltst_c190kgkt" value "PG FAULT"
+    component R_PGLED: resistor "r_generic_0603" value "470"
     notes "" {
       "PG is open drain and pulled up to +3V3 through 100k (datasheet 8.3.1 suggests 100k to VCC or VOUT)."
       "PG goes low during start-up and on a fault, so J2 pin 3 reads valid only after the 4 ms start-up delay."
+      "D4 green fault LED from +3V3 through R_PGLED to PG: it is lit while PG is low, dark while power is good."
+      "About 2.5 mA when lit (470 R, Vf about 2.1 V); U1's PG pull-down is 76 to 150 ohm RDSON, so PG stays near 0.4 V."
     }
   }
 
@@ -134,11 +138,11 @@ board "buck" {
 
   net "+3V3" class "PWR" {
     L1.p2, C5.p1, C6.p1, C9.p1,
-    R_FB_T.p1, J2.p1, R_LED.p1, R_PG.p2
+    R_FB_T.p1, J2.p1, R_LED.p1, R_PG.p2, R_PGLED.p1
   }
 
   net "PG" {
-    U1.pg, R_PG.p1, J2.p3
+    U1.pg, R_PG.p1, J2.p3, D4.cathode
   }
 
   net "U1_VCC" {
@@ -153,4 +157,5 @@ board "buck" {
   connect U1.fb -> C7.p1 as "FB"
   connect C7.p2 -> R_FB_T.p1 as "+3V3"
   connect R_LED.p2 -> D3.anode as "LED_PWR"
+  connect R_PGLED.p2 -> D4.anode as "LED_PG"
 }

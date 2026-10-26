@@ -1,7 +1,7 @@
 {
   "schema_version": "synth.release.v1",
   "tool_version": "synth-cli 0.1.1",
-  "input": "qualification/class-b/buck/buck.synth",
+  "input": "/home/steve/work/synth-buck-led/qualification/class-b/buck/buck.synth",
   "fab_requested": false,
   "production_status": "production",
   "release_ready": true,
@@ -61,20 +61,14 @@
   ],
   "routing": {
     "engine": "freerouting",
-    "engine_version": "tools/freerouting/freerouting-2.4.1.jar",
+    "engine_version": "/home/steve/work/synth-buck-led/tools/freerouting/freerouting-2.4.1.jar",
     "state": "routed",
-    "input_hash": "1f13f5d349b44874688abeef59a75a9416d68816be6d2605da76be613fd25e89",
+    "input_hash": "1a242b37e96c909c83da73695d6a226fa151ae49771f492a84247151e720b17f",
     "run_record": "out/buck-nofab/buck.routing.json"
   },
   "signal_integrity": {
     "blocking": 0,
-    "warnings": 1,
-    "findings": [
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 3 changes layers at (51.67, 23.38) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      }
-    ]
+    "warnings": 0,
+    "findings": []
   }
 }
