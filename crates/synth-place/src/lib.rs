@@ -5065,6 +5065,88 @@ fn distant_support_parts(board: &Board, placement: &Placement) -> Vec<DistantSup
     found
 }
 
+/// The most far-support-part warnings one review lists; the rest are counted.
+const MAX_SUPPORT_PART_WARNINGS: usize = 8;
+
+/// Farthest a recognized support part may sit from the anchor pad it is bound
+/// to, centre to pad, by what it does. A decoupling capacitor loses its job
+/// as the loop to its pin grows, a load capacitor changes the oscillator, and
+/// a pull-up or a filter resistor only has to be near enough to route.
+fn support_part_limit_mm(role: synth_ir::MemberRole) -> f64 {
+    use synth_ir::MemberRole::{
+        DecouplingCap, DividerPartner, EsdDiode, I2cPullUp, LoadCap, OrphanRailCap, PullUp,
+        RailCap, ResetNetwork, RfMatchElement, SeriesElement, SeriesLimit, SignalSeries,
+    };
+    match role {
+        DecouplingCap => 4.0,
+        LoadCap | EsdDiode | RfMatchElement | RailCap => 6.0,
+        DividerPartner => 8.0,
+        ResetNetwork | PullUp | I2cPullUp | SeriesElement | SeriesLimit | SignalSeries => 10.0,
+        OrphanRailCap => 12.0,
+    }
+}
+
+/// A support part that is farther from the pad it serves than its role allows.
+struct FarSupportPart {
+    refdes: String,
+    anchor: String,
+    pin: u32,
+    role: synth_ir::MemberRole,
+    mm: f64,
+    limit_mm: f64,
+}
+
+/// Every member of a recognized functional cluster that sits farther from its
+/// anchor pad than [`support_part_limit_mm`] allows. The cluster pass names
+/// the member's role and the anchor pin it is bound to, so the rule is stated
+/// by role and holds for any board; it names no part. A crystal or a reset
+/// button is advised separately and is not repeated here.
+fn far_support_parts(board: &Board, placement: &Placement) -> Vec<FarSupportPart> {
+    let pad_offsets = build_pad_offset_lookup(board);
+    let by_id: std::collections::HashMap<ComponentId, &ComponentPlacement> =
+        placement.components.iter().map(|p| (p.id, p)).collect();
+    let mut found = Vec::new();
+    for cluster in synth_ir::recognize_clusters(board) {
+        let Some(anchor) = board.component(cluster.anchor) else {
+            continue;
+        };
+        let Some(anchor_placed) = by_id.get(&cluster.anchor) else {
+            continue;
+        };
+        for member in &cluster.members {
+            let Some(part) = board.component(member.component) else {
+                continue;
+            };
+            if matches!(part.kind.as_str(), "switch" | "crystal") {
+                continue;
+            }
+            let Some(member_placed) = by_id.get(&member.component) else {
+                continue;
+            };
+            let pin = member.binding.anchor_pin.0;
+            let offset = pad_offsets
+                .lookup(cluster.anchor, pin as usize)
+                .unwrap_or((0, 0));
+            let pad = apply_rotation(**anchor_placed, offset);
+            let dx = synth_geometry::nm_to_mm(member_placed.center.x_nm - pad.x_nm);
+            let dy = synth_geometry::nm_to_mm(member_placed.center.y_nm - pad.y_nm);
+            let mm = dx.hypot(dy);
+            let limit_mm = support_part_limit_mm(member.role);
+            if mm > limit_mm {
+                found.push(FarSupportPart {
+                    refdes: part.refdes.clone(),
+                    anchor: anchor.refdes.clone(),
+                    pin,
+                    role: member.role,
+                    mm,
+                    limit_mm,
+                });
+            }
+        }
+    }
+    found
+}
+
 // Area-ratio math in the body casts nanometer integers to f64.
 // Board envelopes stay far below 2^53 nm, so the cast is exact for
 // every representable board; the allow documents that bound.
@@ -5556,6 +5638,39 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
                 ),
             });
         }
+    }
+
+    // A support part belongs beside the pad it serves. Advice, not a visual
+    // review failure, as for a far reset button: the named `near:` hint is
+    // what makes the placer put it there.
+    // The worst few only: on a board the placer has not tuned, most support
+    // parts can be flagged, and a list that long hides the one to fix first.
+    let mut far_parts = far_support_parts(board, placement);
+    far_parts.sort_by(|a, b| (b.mm - b.limit_mm).total_cmp(&(a.mm - a.limit_mm)));
+    let omitted = far_parts.len().saturating_sub(MAX_SUPPORT_PART_WARNINGS);
+    far_parts.truncate(MAX_SUPPORT_PART_WARNINGS);
+    for far in far_parts {
+        functional_warnings.push(format!(
+            "{} ({:?}) is {:.0} mm from {} pin {}, which it serves; keep it within {:.0} mm",
+            far.refdes, far.role, far.mm, far.anchor, far.pin, far.limit_mm
+        ));
+        recommended_actions.push(PlacementRecommendation {
+            action: "place_support_part_near".into(),
+            refdes: far.refdes.clone(),
+            relative_to: Some(far.anchor.clone()),
+            suggested_x_mm: None,
+            suggested_y_mm: None,
+            suggested_rotation_deg: None,
+            rationale: format!(
+                "add a hard `near: {}` placement hint to {}",
+                far.anchor, far.refdes
+            ),
+        });
+    }
+    if omitted > 0 {
+        functional_warnings.push(format!(
+            "{omitted} more support part(s) are also farther from the pad they serve than their role allows; fix the ones above first"
+        ));
     }
 
     // Human-style first-pass review of dense connector composition. A
@@ -9125,6 +9240,132 @@ board "features_only" {
             "{:?}",
             desc.functional_warnings
         );
+    }
+
+    /// A support part is judged by the role the cluster pass gives it and the
+    /// pad it is bound to, so a decoupling capacitor moved far from its IC is
+    /// advised against, and one beside it is not. The rule names no part.
+    #[test]
+    fn a_support_part_far_from_the_pad_it_serves_is_advised_against() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut placement = place(&board).expect("place");
+        let cluster = synth_ir::recognize_clusters(&board)
+            .into_iter()
+            .find(|c| {
+                c.members
+                    .iter()
+                    .any(|m| m.role == synth_ir::MemberRole::DecouplingCap)
+            })
+            .expect("sensor_logger has an IC with decoupling");
+        let cap = cluster
+            .members
+            .iter()
+            .find(|m| m.role == synth_ir::MemberRole::DecouplingCap)
+            .expect("a decoupling capacitor");
+        let cap_refdes = board
+            .component(cap.component)
+            .expect("component")
+            .refdes
+            .clone();
+        let anchor = board
+            .component(cluster.anchor)
+            .expect("anchor")
+            .refdes
+            .clone();
+
+        // Beside the pad it serves it is not reported.
+        let anchor_placed = *placement
+            .components
+            .iter()
+            .find(|p| p.id == cluster.anchor)
+            .expect("anchor placed");
+        let pad = apply_rotation(
+            anchor_placed,
+            build_pad_offset_lookup(&board)
+                .lookup(cluster.anchor, cap.binding.anchor_pin.0 as usize)
+                .unwrap_or((0, 0)),
+        );
+        let anchor_center = anchor_placed.center;
+        move_part(
+            &mut placement,
+            &board,
+            &cap_refdes,
+            synth_geometry::nm_to_mm(pad.x_nm) + 2.0,
+            synth_geometry::nm_to_mm(pad.y_nm),
+        );
+        assert!(
+            !far_support_parts(&board, &placement)
+                .iter()
+                .any(|f| f.refdes == cap_refdes),
+            "{cap_refdes} is 2 mm from {anchor} pin {} and must not be reported",
+            cap.binding.anchor_pin.0
+        );
+
+        // Moved 40 mm away it is, with a named fix.
+        move_part(
+            &mut placement,
+            &board,
+            &cap_refdes,
+            synth_geometry::nm_to_mm(anchor_center.x_nm) + 40.0,
+            synth_geometry::nm_to_mm(anchor_center.y_nm),
+        );
+        let far = far_support_parts(&board, &placement);
+        assert!(
+            far.iter().any(|f| f.refdes == cap_refdes && f.mm > 30.0),
+            "{cap_refdes} is 40 mm from {anchor} and must be reported"
+        );
+        let desc = describe_placement(&board, &placement);
+        assert!(desc
+            .functional_warnings
+            .iter()
+            .any(|w| w.starts_with(&format!("{cap_refdes} ("))));
+        assert!(desc.visual_review.recommended_actions.iter().any(|a| {
+            a.action == "place_support_part_near"
+                && a.refdes == cap_refdes
+                && a.rationale.contains("near:")
+        }));
+        // It is advice: it is a functional warning and a recommended action,
+        // never one of the visual-review findings that fail a placement.
+        assert!(
+            !desc
+                .visual_review
+                .findings
+                .iter()
+                .any(|f| f.starts_with(&format!("{cap_refdes} ("))),
+            "{:?}",
+            desc.visual_review.findings
+        );
+    }
+
+    /// A board the placer has not tuned can flag most of its support parts; the
+    /// review lists the worst few and counts the rest.
+    #[test]
+    fn the_support_part_warnings_are_capped_and_the_rest_counted() {
+        let board = load_board("../../fixtures/designs/feather_m4_express.synth");
+        let placement = place(&board).expect("place");
+        let total = far_support_parts(&board, &placement).len();
+        let desc = describe_placement(&board, &placement);
+        let listed = desc
+            .functional_warnings
+            .iter()
+            .filter(|w| w.contains("which it serves"))
+            .count();
+        assert!(listed <= MAX_SUPPORT_PART_WARNINGS, "{listed} listed");
+        if total > MAX_SUPPORT_PART_WARNINGS {
+            assert!(desc.functional_warnings.iter().any(|w| {
+                w.starts_with(&format!(
+                    "{} more support part",
+                    total - MAX_SUPPORT_PART_WARNINGS
+                ))
+            }));
+        }
+    }
+
+    #[test]
+    fn support_part_limits_are_tighter_for_decoupling_than_for_pull_ups() {
+        use synth_ir::MemberRole::{DecouplingCap, LoadCap, PullUp};
+        assert!(support_part_limit_mm(DecouplingCap) < support_part_limit_mm(LoadCap));
+        assert!(support_part_limit_mm(LoadCap) < support_part_limit_mm(PullUp));
     }
 
     /// An IC keeps its decoupling caps beside it: squeezing the board does not
