@@ -1074,10 +1074,11 @@ fn outline_with_flush_connectors(
         // fit. At 1.5 mm the hole's copper clearance cuts the perimeter pour
         // in two and there is no room left for a stitching via; 2.2 mm keeps
         // the pour connected, which is the rim these boards were routed with.
+        // A feature keeps this rim whatever the margin round the other parts.
         // A passive may keep a smaller rim than a connector or IC: its pads
         // are close to its courtyard, so the fab edge rule still holds.
         let margin_nm = if synth_layout::is_board_feature_kind(&component.kind) {
-            margin_nm.max(mm_to_nm(BOARD_FEATURE_EDGE_MARGIN_MM))
+            mm_to_nm(BOARD_FEATURE_EDGE_MARGIN_MM)
         } else if is_passive(component) {
             margin_nm.min(passive_margin_nm)
         } else {
@@ -9462,9 +9463,10 @@ board "features_only" {
     }
 
     /// Mounting holes, test points and fiducials are board features that sit
-    /// in a corner, so the outline ends at their courtyard.
+    /// in a corner. They keep the board-feature rim, not the margin round
+    /// the other parts, so the outline cannot end on a hole.
     #[test]
-    fn a_board_feature_reaches_the_outline_without_the_four_millimetre_margin() {
+    fn a_board_feature_keeps_only_the_board_feature_rim() {
         for (refdes, kind, part) in [
             ("H1", "mounting_hole", "mounting_hole_m2_5"),
             ("TP1", "testpoint", "testpoint_pad_1_5"),
@@ -9503,8 +9505,8 @@ board "features_only" {
             tighten_outline_after_sidecar(&board, &mut placement);
             assert_eq!(
                 courtyard_gaps(&board, &placement, refdes)[0],
-                0,
-                "{kind}: the outline ends at its courtyard"
+                mm_to_nm(BOARD_FEATURE_EDGE_MARGIN_MM),
+                "{kind}: the outline keeps the board-feature rim"
             );
         }
     }
