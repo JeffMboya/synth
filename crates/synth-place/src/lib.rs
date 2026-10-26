@@ -345,6 +345,10 @@ const BOARD_MARGIN_MM: f64 = 6.0;
 
 const COPPER_EDGE_CLEARANCE_MM: f64 = 0.5;
 
+/// How far inside the board edge an external connector's courtyard may sit and
+/// still count as flush with it.
+const FLUSH_CONNECTOR_TOLERANCE_MM: f64 = 0.1;
+
 const MAX_DOCKING_SLIDE_STEPS: i64 = 40;
 
 /// Margin the greedy packer starts its canvas with. The finished outline is
@@ -4957,6 +4961,57 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         });
     }
 
+    // An external connector belongs flush with the board edge, so a cable or
+    // a case does not meet the rim of the board first. Pin headers are the
+    // exception. This is advice and not a visual-review failure, as for a far
+    // reset button: a hard `edge:` hint is what makes the solver put it there.
+    for connector in &board.components {
+        if !matches!(connector.kind.as_str(), "connector" | "jack")
+            || connector
+                .part
+                .as_ref()
+                .is_none_or(|part| part.id.0.to_ascii_lowercase().starts_with("header"))
+        {
+            continue;
+        }
+        let Some((_, rect)) = courtyard_rects
+            .iter()
+            .find(|(refdes, _)| *refdes == connector.refdes.as_str())
+        else {
+            continue;
+        };
+        let outline = placement.board_outline;
+        let Some((gap_nm, edge)) = [
+            (rect.min.x_nm - outline.min.x_nm, "left"),
+            (rect.min.y_nm - outline.min.y_nm, "top"),
+            (outline.max.x_nm - rect.max.x_nm, "right"),
+            (outline.max.y_nm - rect.max.y_nm, "bottom"),
+        ]
+        .into_iter()
+        .min_by_key(|(gap, _)| *gap) else {
+            continue;
+        };
+        if gap_nm > mm_to_nm(FLUSH_CONNECTOR_TOLERANCE_MM) {
+            functional_warnings.push(format!(
+                "{} sits {:.1} mm inside the {edge} edge; an external connector must be flush with the board edge",
+                connector.refdes,
+                synth_geometry::nm_to_mm(gap_nm)
+            ));
+            recommended_actions.push(PlacementRecommendation {
+                action: "place_connector_flush".into(),
+                refdes: connector.refdes.clone(),
+                relative_to: None,
+                suggested_x_mm: None,
+                suggested_y_mm: None,
+                suggested_rotation_deg: None,
+                rationale: format!(
+                    "add a hard `edge: {edge}` placement hint to {}",
+                    connector.refdes
+                ),
+            });
+        }
+    }
+
     // Human-style first-pass review of dense connector composition. A
     // high-pin connector should be edge-mounted, oriented so its long pin
     // row follows that edge, and have a clear first escape corridor to the
@@ -7872,6 +7927,62 @@ board "features_only" {
         assert!(
             bottom_gap(&by_geometry) >= fitted_edge_margin_nm(&board),
             "setup: geometry picks another side"
+        );
+    }
+
+    /// An external connector inside the board edge is advised to go flush; a
+    /// pin header at the same distance is not, and neither blocks routing.
+    #[test]
+    fn an_inboard_external_connector_is_advised_to_go_flush_but_a_header_is_not() {
+        let components = r#"component J1: connector "jst_xh_2pin"
+               component J2: connector "header_1x3"
+               component R1: resistor "r_generic_0603" value "10k"
+               component R2: resistor "r_generic_0603" value "10k""#;
+        let (board, mut placement) = row_board(components, &[0.0; 4]);
+        move_part(&mut placement, &board, "J1", 30.0, 20.0);
+        move_part(&mut placement, &board, "J2", 30.0, 32.0);
+        move_part(&mut placement, &board, "R1", 10.0, 10.0);
+        move_part(&mut placement, &board, "R2", 50.0, 12.0);
+        tighten_outline_after_sidecar(&board, &mut placement);
+        let desc = describe_placement(&board, &placement);
+        assert!(
+            desc.functional_warnings
+                .iter()
+                .any(|w| w.starts_with("J1 sits ") && w.contains("flush")),
+            "{:?}",
+            desc.functional_warnings
+        );
+        assert!(!desc
+            .functional_warnings
+            .iter()
+            .any(|w| w.starts_with("J2 sits ")));
+        assert!(desc.visual_review.recommended_actions.iter().any(|a| {
+            a.action == "place_connector_flush" && a.refdes == "J1" && a.rationale.contains("edge:")
+        }));
+        assert!(!desc.visual_review.requires_revision);
+    }
+
+    #[test]
+    fn a_flush_external_connector_gets_no_edge_advice() {
+        let edge = "{ placement_hint { edge: left priority: hard } }";
+        let components = format!(
+            r#"component J1: connector "jst_xh_2pin" {edge}
+               component R1: resistor "r_generic_0603" value "10k"
+               component R2: resistor "r_generic_0603" value "10k""#
+        );
+        let (board, mut placement) = row_board(&components, &[0.0; 3]);
+        move_part(&mut placement, &board, "J1", 8.0, 24.0);
+        move_part(&mut placement, &board, "R1", 40.0, 10.0);
+        move_part(&mut placement, &board, "R2", 46.0, 12.0);
+        tighten_outline_after_sidecar(&board, &mut placement);
+        let desc = describe_placement(&board, &placement);
+        assert!(
+            !desc
+                .functional_warnings
+                .iter()
+                .any(|w| w.starts_with("J1 sits ")),
+            "{:?}",
+            desc.functional_warnings
         );
     }
 
