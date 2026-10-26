@@ -88,3 +88,59 @@ fn mounting_holes_sit_one_per_corner_and_keep_a_rim_inside_edge_cuts() {
     corners.dedup();
     assert_eq!(corners.len(), 4, "holes must cover all four quadrants");
 }
+
+const SOURCE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../qualification/class-b/usb-uart/usb_uart.synth"
+);
+
+/// The name of the net that `pin_name` of `refdes` sits on.
+fn net_of(ir: &serde_json::Value, refdes: &str, pin_name: &str) -> String {
+    let component = ir["components"]
+        .as_array()
+        .expect("components")
+        .iter()
+        .find(|c| c["refdes"] == refdes)
+        .unwrap_or_else(|| panic!("{refdes} exists"));
+    let pin = component["part"]["pins"]
+        .as_array()
+        .expect("pins")
+        .iter()
+        .position(|p| p["name"] == pin_name)
+        .unwrap_or_else(|| panic!("{refdes} has a {pin_name} pin"));
+    ir["nets"]
+        .as_array()
+        .expect("nets")
+        .iter()
+        .find(|n| {
+            n["endpoints"]
+                .as_array()
+                .expect("endpoints")
+                .iter()
+                .any(|e| e["component"] == component["id"] && e["pin"].as_u64() == Some(pin as u64))
+        })
+        .map(|n| n["name"].as_str().expect("net name").to_string())
+        .unwrap_or_else(|| panic!("{refdes}.{pin_name} is on a net"))
+}
+
+/// A TX LED that sources from the line is lit while the line idles high and
+/// goes dark during traffic. Sinking it into the line, anode to VIO through the
+/// resistor, lights it on the low bits instead.
+#[test]
+fn the_tx_leds_sink_into_the_txd_lines() {
+    let output = Command::new(env!("CARGO_BIN_EXE_synth"))
+        .args(["dump-ir", SOURCE])
+        .output()
+        .expect("run synth dump-ir");
+    assert!(output.status.success(), "dump-ir failed: {output:?}");
+    let ir: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON output");
+
+    for (led, resistor, line) in [("D4", "R4", "TXD0"), ("D7", "R7", "TXD1")] {
+        assert_eq!(net_of(&ir, led, "cathode"), line, "{led} sinks into {line}");
+        assert_eq!(
+            net_of(&ir, resistor, "p1"),
+            "VIO",
+            "{resistor} feeds {led} from VIO"
+        );
+    }
+}
