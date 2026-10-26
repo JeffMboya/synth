@@ -1,0 +1,33 @@
+id = "l_power_10uh_6045"
+kind = "inductor"
+description = "Bourns SRN6045TA-100M 10 uH shielded power inductor, 6.0x6.0x4.5 mm. Rated currents quoted from memory, to be confirmed against the datasheet: Isat about 3.5 A, Irms about 3 A."
+version = 0
+lifecycle = "active"
+signed_by = []
+substitutes = []
+mpn = "SRN6045TA-100M"
+required_decoupling = []
+kicad_footprint = "Inductor_SMD:L_Bourns_SRN6045TA"
+
+[[pins]]
+name = "p1"
+number = "1"
+electrical_type = "passive"
+capabilities = []
+required = false
+
+[[pins]]
+name = "p2"
+number = "2"
+electrical_type = "passive"
+capabilities = []
+required = false
+
+[footprint_dimensions]
+width_mm = 7.0
+height_mm = 6.5
+courtyard_margin_mm = 0.25
+
+[provenance]
+source = "authored"
+generator = "synth_author_part"

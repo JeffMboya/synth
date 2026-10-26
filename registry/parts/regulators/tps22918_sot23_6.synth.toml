@@ -1,0 +1,62 @@
+id = "tps22918_sot23_6"
+kind = "regulator"
+description = "TI TPS22918 5.5 V 2 A load switch with controlled slew rate and quick output discharge, SOT-23-6 (DBV). Pinout from memory of the datasheet, NOT verified in-session: 1 VIN, 2 GND, 3 ON, 4 CT, 5 QOD, 6 VOUT. The shipped registry entry tps22918_loadswitch puts VOUT on pad 5 and omits pad 6."
+version = 0
+lifecycle = "active"
+signed_by = []
+substitutes = []
+mpn = "TPS22918DBVR"
+lcsc_pn = "C131941"
+required_decoupling = []
+kicad_footprint = "Package_TO_SOT_SMD:SOT-23-6"
+
+[[pins]]
+name = "vin"
+number = "1"
+electrical_type = "power_input"
+capabilities = []
+required = true
+
+[[pins]]
+name = "gnd"
+number = "2"
+electrical_type = "power_input"
+capabilities = []
+required = true
+
+[[pins]]
+name = "on"
+number = "3"
+electrical_type = "input"
+capabilities = []
+required = true
+
+[[pins]]
+name = "ct"
+number = "4"
+electrical_type = "passive"
+capabilities = []
+required = true
+
+[[pins]]
+name = "qod"
+number = "5"
+electrical_type = "passive"
+capabilities = []
+required = true
+
+[[pins]]
+name = "vout"
+number = "6"
+electrical_type = "power_output"
+capabilities = []
+required = true
+
+[footprint_dimensions]
+width_mm = 4.1
+height_mm = 3.4
+courtyard_margin_mm = 0.25
+
+[provenance]
+source = "authored"
+generator = "synth_author_part"
