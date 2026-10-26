@@ -808,12 +808,11 @@ fn close_pinned_bands(
 /// The outline origin is allowed to be non-zero so absolute sidecar coordinates
 /// remain authoritative; only unused perimeter area is removed.
 fn tighten_outline_after_sidecar(board: &Board, placement: &mut Placement) {
-    let margin_nm = fitted_edge_margin_nm(board);
     if let Some(outline) = outline_with_flush_connectors(
         board,
         &placement.components,
-        margin_nm,
-        margin_nm,
+        fitted_edge_margin_nm(board),
+        mm_to_nm(passive_edge_margin_mm(board)),
         sidecar_courtyard_rect,
         false,
     ) {
@@ -8133,6 +8132,51 @@ board "features_only" {
         assert!(after < before, "band closed: {after} < {before}");
     }
 
+    /// A sidecar export fits its outline at the scheduled rim, not the wider
+    /// placement margin: an edge passive on a two-part board keeps 0.65 mm
+    /// between its courtyard and the outline, the same as an export without a
+    /// sidecar.
+    #[test]
+    fn a_sidecar_placement_keeps_the_passive_rim() {
+        let components = r#"
+            component R1: resistor "r_generic_0603" value "10k"
+            component R2: resistor "r_generic_0603" value "10k"
+        "#;
+        let (board, _) = row_board(components, &[10.0, 40.0]);
+        let sidecar_path = std::env::temp_dir().join(format!(
+            "synth-place-passive-rim-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &sidecar_path,
+            "schema_version = 2\n\n[components.R1]\nx = 10.0\ny = 15.0\nrotation = 0\n\
+             source = \"human_drag\"\npriority = \"hard\"\n\n[components.R2]\nx = 40.0\n\
+             y = 15.0\nrotation = 0\nsource = \"human_drag\"\npriority = \"hard\"\n",
+        )
+        .expect("sidecar TOML written");
+        let placed = place_with_sidecar(&board, Some(&sidecar_path)).expect("place");
+        std::fs::remove_file(&sidecar_path).ok();
+
+        let left = board
+            .components
+            .iter()
+            .filter_map(|component| {
+                let placement = placed.components.iter().find(|p| p.id == component.id)?;
+                Some(
+                    sidecar_courtyard_rect(&board, component, placement)
+                        .min
+                        .x_nm,
+                )
+            })
+            .min()
+            .expect("two parts placed");
+        assert_eq!(
+            left - placed.board_outline.min.x_nm,
+            mm_to_nm(0.65),
+            "the left passive sits at the scheduled passive rim"
+        );
+    }
+
     /// The combined outline on a small board must come in under the best
     /// single arm fit for the same board.
     ///
@@ -9371,7 +9415,7 @@ board "features_only" {
     }
 
     #[test]
-    fn sidecar_outline_pass_goes_flush_only_past_the_four_millimetre_margin() {
+    fn sidecar_outline_pass_goes_flush_only_past_the_neighbours_rim() {
         let soft = feather_with_j2_hint("left", "soft");
         let mut placement = j2_protruding(&soft, "left", 12.0);
         tighten_outline_after_sidecar(&soft, &mut placement);
@@ -9381,14 +9425,29 @@ board "features_only" {
         );
 
         let hard = feather_with_j2_hint("left", "hard");
-        let mut short = j2_protruding(&hard, "left", 3.9);
+        // The margin the neighbours keep on the left, read off the same board
+        // with J2 well inside it so J2's own margin does not set the edge.
+        let mut inside = j2_protruding(&hard, "left", -6.0);
+        tighten_outline_after_sidecar(&hard, &mut inside);
+        let leftmost = inside
+            .components
+            .iter()
+            .filter_map(|placed| {
+                let component = hard.component(placed.id)?;
+                (component.refdes != "J2")
+                    .then(|| sidecar_courtyard_rect(&hard, component, placed).min.x_nm)
+            })
+            .min()
+            .expect("neighbours");
+        let rim_mm = synth_geometry::nm_to_mm(leftmost - inside.board_outline.min.x_nm);
+        let mut short = j2_protruding(&hard, "left", rim_mm - 0.1);
         tighten_outline_after_sidecar(&hard, &mut short);
         let j2_gap = courtyard_gaps(&hard, &short, "J2")[0];
         assert!(
             (mm_to_nm(0.1) - 1_000..=mm_to_nm(0.1) + 1_000).contains(&j2_gap),
-            "3.9 mm protrusion keeps the neighbours' 4 mm margin, J2 gap {j2_gap} nm"
+            "a protrusion short of the {rim_mm} mm rim keeps it, J2 gap {j2_gap} nm"
         );
-        let mut past = j2_protruding(&hard, "left", 4.1);
+        let mut past = j2_protruding(&hard, "left", rim_mm + 0.1);
         tighten_outline_after_sidecar(&hard, &mut past);
         assert_flush_with_copper_clear(&hard, &past, "J2", "left");
     }
