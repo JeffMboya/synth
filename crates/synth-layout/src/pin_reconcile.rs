@@ -295,6 +295,12 @@ pub fn undriven_power_nets<S: ::std::hash::BuildHasher>(
                 {
                     continue;
                 }
+                // The flag's stub starts at the pin's terminal, which is
+                // read from the stock KiCad symbol. A part drawn from a
+                // generated symbol has none to read, so it cannot anchor.
+                if part.kicad_symbol.is_none() {
+                    continue;
+                }
                 let Some(placement) = placements.get(&endpoint.component) else {
                     continue;
                 };
