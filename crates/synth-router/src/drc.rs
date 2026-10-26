@@ -329,14 +329,12 @@ pub(crate) fn first_line(text: &str) -> String {
     line.trim().to_string()
 }
 
-/// KiCad 10 reports a zone that its fill split into islands in
-/// `unconnected_items` with the same zone on both sides. A zone cannot be
-/// unconnected from itself, and the islands are still joined through the
-/// other copper layers and vias, so the pair is a fill artifact rather than an
-/// open net. A genuine missing connection names two different objects. The
-/// pair must also sit at one point: two islands of one zone that each reach
-/// pads but are not joined report the same UUID at different points, and that
-/// is a split net. An entry with no position is never treated as the artifact.
+/// KiCad 10 can list a zone against itself in `unconnected_items`. When both
+/// entries share a UUID and sit at one point, there is nothing to connect, so
+/// the pair is treated as a fill artifact. A pair at two points is two islands
+/// of one zone that are not joined, which is a split net and stays an open
+/// net. A genuine missing connection names two different objects. An entry
+/// with no position is never treated as the artifact.
 fn names_same_zone_twice(item: &serde_json::Value) -> bool {
     let Some(items) = item.get("items").and_then(serde_json::Value::as_array) else {
         return false;
