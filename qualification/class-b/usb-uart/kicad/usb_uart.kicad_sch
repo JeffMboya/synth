@@ -10445,7 +10445,7 @@
 	)
 	(label
 		"MODEM_IDLE"
-		(at 242.57 49.53 0)
+		(at 242.57 48.26 0)
 		(effects
 			(font
 				(size 1.27 1.27)

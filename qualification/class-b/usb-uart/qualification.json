@@ -34,14 +34,14 @@
           "severity": "warning",
           "type": "label_multiple_wires",
           "item": "MODEM_IDLE",
-          "disposition": "Open. KiCad reports the MODEM_IDLE label touching more than one wire (a 25.4 mm vertical wire at 2425700, 495300). Needs a schematic layout fix."
+          "disposition": "Benign. The MODEM_IDLE bus is drawn as several overlapping segments of the same net, so its label touches more than one wire. All of them are MODEM_IDLE."
         },
         {
-          "count": 1,
+          "count": 0,
           "severity": "warning",
           "type": "multiple_net_names",
           "item": "RXD1_MCU and MODEM_IDLE",
-          "disposition": "Open. Two names land on the same items in the schematic, so the netlist uses RXD1_MCU. The source declares them as separate nets (R5.p1 to U1.rxd1, R8.p2 to U1.ri0, ri1, dcd0, dcd1), so check the schematic wiring."
+          "disposition": "Fixed. The MODEM_IDLE name label sat where the RXD1_MCU flag stub crosses the MODEM_IDLE bus, so KiCad joined the two nets. The exporter now moves a name label off other nets' wires (one label moved from y 49.53 to 48.26 mm), and the ERC finding is gone. The routed PCB already had them as separate nets."
         }
       ]
     },

@@ -1,7 +1,7 @@
 {
     "$schema": "https://schemas.kicad.org/erc.v1.json",
     "coordinate_units": "mm",
-    "date": "2026-10-24T05:26:57",
+    "date": "2026-10-26T15:13:53",
     "ignored_checks": [
         {
             "description": "Global label only appears once in the schematic",
@@ -40,7 +40,7 @@
                                 "x": 252.73,
                                 "y": 24.13
                             },
-                            "uuid": "1729bb83-eac4-4573-8610-1fbf6d9a659a"
+                            "uuid": "340fcf82-c7ba-4010-958f-0f3e5a9b1313"
                         }
                     ],
                     "severity": "error",
@@ -1172,13 +1172,13 @@
                     "type": "lib_symbol_issues"
                 },
                 {
-                    "description": "Label connects more than one wire at 2425700, 495300",
+                    "description": "Label connects more than one wire at 2425700, 482600",
                     "items": [
                         {
                             "description": "Label 'MODEM_IDLE'",
                             "pos": {
                                 "x": 242.57,
-                                "y": 49.53
+                                "y": 48.26
                             },
                             "uuid": "332afedb-eae9-5caf-adce-cf8c81f90d4e"
                         },
@@ -1193,29 +1193,6 @@
                     ],
                     "severity": "warning",
                     "type": "label_multiple_wires"
-                },
-                {
-                    "description": "Both RXD1_MCU and MODEM_IDLE are attached to the same items; RXD1_MCU will be used in the netlist",
-                    "items": [
-                        {
-                            "description": "Global Label 'RXD1_MCU'",
-                            "pos": {
-                                "x": 140.97,
-                                "y": 182.88
-                            },
-                            "uuid": "b03ddde6-df56-5da4-bde1-01b04b23ee6b"
-                        },
-                        {
-                            "description": "Label 'MODEM_IDLE'",
-                            "pos": {
-                                "x": 242.57,
-                                "y": 49.53
-                            },
-                            "uuid": "332afedb-eae9-5caf-adce-cf8c81f90d4e"
-                        }
-                    ],
-                    "severity": "warning",
-                    "type": "multiple_net_names"
                 },
                 {
                     "description": "The current configuration does not include the symbol library 'power'",
