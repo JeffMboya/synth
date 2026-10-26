@@ -333,16 +333,19 @@ pub(crate) fn first_line(text: &str) -> String {
 /// `unconnected_items` with the same zone on both sides. A zone cannot be
 /// unconnected from itself, and the islands are still joined through the
 /// other copper layers and vias, so the pair is a fill artifact rather than an
-/// open net. A genuine missing connection names two different objects.
+/// open net. A genuine missing connection names two different objects. The
+/// pair must also sit at one point: two islands of one zone that each reach
+/// pads but are not joined report the same UUID at different points, and that
+/// is a split net. An entry with no position is never treated as the artifact.
 fn names_same_zone_twice(item: &serde_json::Value) -> bool {
     let Some(items) = item.get("items").and_then(serde_json::Value::as_array) else {
         return false;
     };
-    let uuids: Vec<&str> = items
+    let keys: Vec<(&str, &serde_json::Value)> = items
         .iter()
-        .filter_map(|v| v.get("uuid").and_then(serde_json::Value::as_str))
+        .filter_map(|v| Some((v.get("uuid")?.as_str()?, v.get("pos")?)))
         .collect();
-    uuids.len() >= 2 && uuids.iter().all(|uuid| *uuid == uuids[0])
+    keys.len() >= 2 && keys.len() == items.len() && keys.iter().all(|key| *key == keys[0])
 }
 
 /// Parse KiCad's DRC JSON.
@@ -703,8 +706,10 @@ mod tests {
                  {"type": "unconnected_items", "severity": "error",
                   "description": "Missing connection between items",
                   "items": [
-                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1"},
-                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1"}
+                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1",
+                     "pos": {"x": 2.05, "y": -0.06}},
+                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1",
+                     "pos": {"x": 2.05, "y": -0.06}}
                   ]}
                ]}"#,
         )
@@ -714,6 +719,29 @@ mod tests {
         assert_eq!(report.counts().warnings, 1);
         assert_eq!(report.counts().blocking_count(), 0);
         assert!(report.is_clean());
+    }
+
+    #[test]
+    fn a_zone_pair_at_two_positions_is_still_an_open_net() {
+        // Two fill islands of one zone that each reach pads but are not joined
+        // report the same UUID at different points. That is a split net.
+        let report = parse_report_text(
+            r#"{"violations": [],
+               "unconnected_items": [
+                 {"type": "unconnected_items", "severity": "error",
+                  "description": "Missing connection between items",
+                  "items": [
+                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1",
+                     "pos": {"x": 2.05, "y": -0.06}},
+                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1",
+                     "pos": {"x": 30.0, "y": 12.0}}
+                  ]}
+               ]}"#,
+        )
+        .expect("parses");
+        assert_eq!(report.unconnected_items, 1);
+        assert_eq!(report.counts().unconnected, 1);
+        assert!(!report.is_clean());
     }
 
     #[test]
