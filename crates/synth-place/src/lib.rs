@@ -1909,7 +1909,7 @@ pub(crate) fn courtyard_rect_for_placement(
 const DEAD_REACH_MM: f64 = 3.0;
 
 /// Raster cells of [`Placement::board_outline`] whose centre is not within
-/// [`DEAD_REACH_MM`] of any component courtyard.
+/// `DEAD_REACH_MM` of any component courtyard.
 ///
 /// Two arrangements can fit the same box and still leave very different
 /// amounts of air between their parts; this is the shape term that tells them
