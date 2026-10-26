@@ -5,6 +5,7 @@
   "fab_requested": false,
   "production_status": "production",
   "release_ready": true,
+  "gate_scope": "production_status and release_ready cover only Synth's routing and export gates: override flags, route validation and signal integrity. They are not a fabrication approval, a qualification result or a component review.",
   "reviewer_state": [
     {
       "part_id": "c_generic_0603",
