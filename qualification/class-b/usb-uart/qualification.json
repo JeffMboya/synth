@@ -81,7 +81,7 @@
         "On the first upload JLCPCB matched 21 of 28 lines. The BOM has no LCSC numbers, so it matched by value and footprint, and the other 7 were chosen by hand: D1 PRTR5V0U2X,215 (C12333), D2 D5 D6 PTVS6V0S1UR,115 (C294622), U2 LP5907MFX-3.3/NOPB (C80670), R_TERM 0603WAF1200T5E (C22787), R_TNOW 0603WAF4701T5E (C23162). After that all 28 lines show as matched and confirmed.",
         "The automatic match for D4 and D7 was TZ-P2-0603YGTCS1-0.6T (C916074), a yellow-green LED, but these are the red TX LEDs. They were changed by hand to KT-0603R (C2286, red 615 to 630 nm). The D3 match VLMTG1401-GS08 (C511604) was not checked for colour.",
         "Warnings still shown: the resistor comments (for example 5.1k) differ from the matched part number (0603WAF5101T5E), and the matched LED line is used for more than one designator. Resistor values were compared by hand and agree.",
-        "LED polarity and rotation in JLCPCB's placement preview were not checked.",
+        "LED polarity: in KiCad, D4 pad 1 (the left pad, the cathode of the LED footprint) is on net TXD0, as the design intends. JLCPCB's placement preview shows the cathode tick on the left end of D4 and D7, which is consistent, but this was read from a zoomed screenshot, D7 was not opened in KiCad, and JLCPCB has not confirmed the polarity of KT-0603R. Rotation of the other polarised parts (D1, D2, D5, D6, U1, U2, U3) was not checked.",
         "None of these matches is a component review. They were picked from JLCPCB's search for DFM purposes."
       ],
       "screenshots": [
