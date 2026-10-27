@@ -3360,7 +3360,14 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     .map_err(|e| format!("Could not place the start layout: {e}"))?;
     #[allow(clippy::cast_precision_loss)]
     let factor = permille as f64 / 1000.0;
-    let candidate = synth_place::scale_layout_inward(&board, &start, factor);
+    // Scale 1.0 is the layout as the agent pinned it: no scaling, so no
+    // snapping to the placement grid, and its sidecar goes to the export as is.
+    let identity = permille == 1000;
+    let candidate = if identity {
+        Some(start.clone())
+    } else {
+        synth_place::scale_layout_inward(&board, &start, factor)
+    };
     let step_dir = out_dir.join(format!("step_{permille}"));
     let mut attempt = CompactAttempt {
         permille,
@@ -3376,7 +3383,7 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
         attempt.fill_percent = synth_place::courtyard_fill_percent(&board, &placed);
         let mut layout =
             synth_layout::sidecar::SidecarLayout::load_from_file(&original).unwrap_or_default();
-        for comp in &board.components {
+        for comp in board.components.iter().filter(|_| !identity) {
             let Some(p) = placed.components.iter().find(|p| p.id == comp.id) else {
                 continue;
             };
