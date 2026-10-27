@@ -51,34 +51,70 @@ pub struct TieVia {
     pub drill_nm: i64,
 }
 
+/// What the pass did to a candidate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TieOutcome {
+    /// How many vias were added.
+    pub added: usize,
+    /// Islands that hold copper of their own and are still tied to nothing: no
+    /// spot holds a via, or the rounds ran out. Each is a reason the board must
+    /// not be delivered, because KiCad refuses a zone against itself.
+    pub unresolved: Vec<String>,
+}
+
 /// Fill the candidate's zones, tie every island, and write the vias into the
-/// candidate. Returns how many vias were added.
+/// candidate.
 ///
 /// The candidate is left unfilled: the delivery step fills it again once it has
 /// been validated. On any failure it is left as it was.
 ///
 /// # Errors
-/// Returns why the board could not be filled, read or written.
-pub fn tie_islands(candidate: &Path) -> Result<usize, String> {
+/// Returns why the board could not be filled, read or written. A caller must
+/// treat that as the repair not having run, never as nothing to repair.
+pub fn tie_islands(candidate: &Path) -> Result<TieOutcome, String> {
     let mut added = 0;
     for _ in 0..MAX_ROUNDS {
         let Some(filled) = crate::zone_fill::filled_text(candidate)? else {
-            return Ok(added);
+            return Ok(TieOutcome {
+                added,
+                unresolved: Vec::new(),
+            });
         };
         let board = PcbBoard::parse(&filled).map_err(|e| e.to_string())?;
-        let vias = islands_to_tie(&board);
-        if vias.is_empty() {
-            return Ok(added);
+        let plan = plan_ties(&board);
+        if plan.vias.is_empty() {
+            return Ok(TieOutcome {
+                added,
+                unresolved: plan.unresolved,
+            });
         }
         let text = std::fs::read_to_string(candidate)
             .map_err(|e| format!("could not read {}: {e}", candidate.display()))?;
-        let tied = with_vias(&text, &board, &vias)?;
+        let tied = with_vias(&text, &board, &plan.vias)?;
         PcbBoard::parse(&tied).map_err(|e| format!("the tied board does not parse: {e}"))?;
         std::fs::write(candidate, tied)
             .map_err(|e| format!("could not write {}: {e}", candidate.display()))?;
-        added += vias.len();
+        added += plan.vias.len();
     }
-    Ok(added)
+    // The rounds are spent: whatever the last fill still wants tied stays untied.
+    let Some(filled) = crate::zone_fill::filled_text(candidate)? else {
+        return Ok(TieOutcome {
+            added,
+            unresolved: Vec::new(),
+        });
+    };
+    let board = PcbBoard::parse(&filled).map_err(|e| e.to_string())?;
+    let plan = plan_ties(&board);
+    let mut unresolved = plan.unresolved;
+    unresolved.extend(plan.vias.iter().map(|via| {
+        format!(
+            "a ground island on net {} near ({:.2}, {:.2}) mm is still untied after {MAX_ROUNDS} rounds",
+            via.net,
+            via.at.x_mm(),
+            via.at.y_mm()
+        )
+    }));
+    Ok(TieOutcome { added, unresolved })
 }
 
 /// A poured polygon on one layer.
@@ -177,10 +213,25 @@ impl Groups {
     }
 }
 
+/// What the pass would do to a filled board.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TiePlan {
+    /// The vias that tie an island to its net's main pour.
+    pub vias: Vec<TieVia>,
+    /// Copper-bearing islands no via fits in: a finding, not a success.
+    pub unresolved: Vec<String>,
+}
+
 /// The vias that would tie each unjoined, copper-bearing island of every
 /// poured net to that net's main pour. `board` must carry fills.
 #[must_use]
 pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
+    plan_ties(board).vias
+}
+
+/// The vias that tie the islands of `board`, and the islands that cannot be tied.
+#[must_use]
+pub fn plan_ties(board: &PcbBoard) -> TiePlan {
     let mut regions: BTreeMap<String, Vec<Region>> = BTreeMap::new();
     for zone in &board.zones {
         let Some(net) = net_of(board, zone.net, zone.net_name.as_ref()) else {
@@ -196,7 +247,7 @@ pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
     }
 
     let copper = board.copper_layers();
-    let mut out = Vec::new();
+    let mut plan = TiePlan::default();
     for (net, regions) in &regions {
         let (mut groups, attached, via_sizes) = join_copper(board, net, regions, &copper);
 
@@ -232,11 +283,20 @@ pub fn islands_to_tie(board: &PcbBoard) -> Vec<TieVia> {
                 .filter(|&i| groups.find(i) == main)
                 .collect();
             if let Some(at) = best_spot(regions, &members, &mains, need) {
-                out.push(TieVia { at, ..via.clone() });
+                plan.vias.push(TieVia { at, ..via.clone() });
+            } else {
+                let first = &regions[members[0]];
+                plan.unresolved.push(format!(
+                    "an island of net {net} on {} near ({:.2}, {:.2}) mm holds copper but is tied to nothing, and no spot in it and the main pour holds a {} mm via",
+                    first.layer,
+                    f64::midpoint(first.min.0, first.max.0),
+                    f64::midpoint(first.min.1, first.max.1),
+                    nm_to_mm(size_nm),
+                ));
             }
         }
     }
-    out
+    plan
 }
 
 /// The table names a coded net; a name alone is what a board written without a
@@ -374,7 +434,9 @@ fn with_vias(text: &str, board: &PcbBoard, vias: &[TieVia]) -> Result<String, St
     let (Some(first), Some(last)) = (copper.first(), copper.last()) else {
         return Err("the board declares no copper layers".to_string());
     };
-    let numbered = text.contains("\n\t(net 0 ") || text.contains("\n  (net 0 ");
+    // A board with a net table spells a net by its code; one without carries
+    // names. The parsed table says which, whatever the file's whitespace.
+    let numbered = !board.nets.is_empty();
     let close = text
         .rfind(')')
         .ok_or_else(|| "the board has no closing parenthesis".to_string())?;
@@ -508,11 +570,15 @@ mod tests {
             (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
             (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))"#;
         let board = PcbBoard::parse(text).expect("board must parse");
-        assert!(islands_to_tie(&board).is_empty());
+        let plan = plan_ties(&board);
+        assert!(
+            plan.vias.is_empty() && plan.unresolved.is_empty(),
+            "{plan:?}"
+        );
     }
 
     #[test]
-    fn an_island_too_small_for_the_via_is_left_alone() {
+    fn an_island_too_small_for_the_via_is_reported_not_accepted() {
         let text = r#"(kicad_pcb
           (layers (0 "F.Cu" signal) (2 "B.Cu" signal))
           (net 0 "") (net 1 "GND")
@@ -526,7 +592,14 @@ mod tests {
             (polygon (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))
             (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))"#;
         let board = PcbBoard::parse(text).expect("board must parse");
-        assert!(islands_to_tie(&board).is_empty());
+        let plan = plan_ties(&board);
+        assert!(plan.vias.is_empty());
+        assert_eq!(
+            plan.unresolved.len(),
+            1,
+            "a live island with no room for a via must be a finding: {plan:?}"
+        );
+        assert!(plan.unresolved[0].contains("GND"), "{plan:?}");
     }
 
     #[test]
@@ -547,6 +620,41 @@ mod tests {
             (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))"#;
         let board = PcbBoard::parse(text).expect("board must parse");
         assert_eq!(islands_to_tie(&board).len(), 1);
+    }
+
+    /// The net spelling comes from the parsed net table, not from matching two
+    /// indentations: a valid board with its table on one line, or indented some
+    /// other way, still takes a numeric net code.
+    #[test]
+    fn a_net_table_in_any_whitespace_gets_a_numeric_via() {
+        let board = board("");
+        let vias = islands_to_tie(&board);
+        for text in [
+            "(kicad_pcb (layers (0 \"F.Cu\" signal) (2 \"B.Cu\" signal)) (net 0 \"\") (net 1 \"GND\"))",
+            "(kicad_pcb\n    (layers (0 \"F.Cu\" signal) (2 \"B.Cu\" signal))\n    (net 0 \"\")\n    (net 1 \"GND\")\n)",
+            "(kicad_pcb\r\n\t\t(layers (0 \"F.Cu\" signal) (2 \"B.Cu\" signal))\r\n\t\t(net  0  \"\")\r\n\t\t(net  1  \"GND\")\r\n)",
+        ] {
+            let tied = with_vias(text, &board, &vias).expect("tied");
+            let back = PcbBoard::parse(&tied).expect("parses");
+            assert_eq!(back.vias.len(), 1, "{text}");
+            assert_eq!(back.vias[0].net, Some(1), "numeric code for {text}");
+        }
+    }
+
+    #[test]
+    fn a_board_without_a_net_table_takes_the_net_by_name() {
+        let board = PcbBoard::parse(r#"(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)))"#)
+            .expect("parses");
+        assert!(board.nets.is_empty());
+        let via = TieVia {
+            net: "GND".to_string(),
+            at: Point::new(mm_to_nm(1.0), mm_to_nm(2.0)),
+            size_nm: 600_000,
+            drill_nm: 300_000,
+        };
+        let text = r#"(kicad_pcb (layers (0 "F.Cu" signal) (2 "B.Cu" signal)))"#;
+        let tied = with_vias(text, &board, &[via]).expect("tied");
+        assert!(tied.contains("(net \"GND\")"), "{tied}");
     }
 
     #[test]

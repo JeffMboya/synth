@@ -249,6 +249,24 @@ fn write_report(report: &RouteReport, request: &RouteRequest) {
     }
 }
 
+/// The verdict with the findings of the mandatory island repair added. A
+/// repair that did not run is a required check that could not be performed,
+/// which is review-required; an island it left untied is a blocking finding.
+/// Either way the candidate is not fabrication-ready, whatever the other checks
+/// said.
+fn with_repair_findings(
+    mut verdict: validate::FabricationVerdict,
+    blocking: Vec<String>,
+    unavailable: Vec<String>,
+) -> validate::FabricationVerdict {
+    if !blocking.is_empty() || !unavailable.is_empty() {
+        verdict.fabrication_ready = false;
+        verdict.blocking_reasons.extend(blocking);
+        verdict.unavailable_checks.extend(unavailable);
+    }
+    verdict
+}
+
 /// Promote a router-produced candidate into a report, installing it only if
 /// it survives independent validation.
 ///
@@ -264,14 +282,26 @@ fn finalize(
 ) -> RouteReport {
     // A pour that tracks cut into regions leaves some of them tied to nothing
     // else. Tie each back before the candidate is judged, so the verdict is on
-    // the board that would be delivered.
-    if let Err(detail) = island_vias::tie_islands(&candidate.candidate_path) {
-        eprintln!(
-            "warning: pour islands were not checked in {}: {detail}",
-            candidate.candidate_path.display()
-        );
+    // the board that would be delivered. The repair is mandatory: when it did
+    // not run, or an island is left that it cannot tie, the candidate is not
+    // promoted, because the island is a zone against itself and KiCad refuses it.
+    let mut repair_blocking: Vec<String> = Vec::new();
+    let mut repair_unavailable: Vec<String> = Vec::new();
+    match island_vias::tie_islands(&candidate.candidate_path) {
+        Ok(outcome) => repair_blocking = outcome.unresolved,
+        Err(detail) => {
+            eprintln!(
+                "warning: pour islands were not checked in {}: {detail}",
+                candidate.candidate_path.display()
+            );
+            repair_unavailable.push(format!("pour island repair did not run: {detail}"));
+        }
     }
-    let verdict = validate_candidate(request, &candidate);
+    let verdict = with_repair_findings(
+        validate_candidate(request, &candidate),
+        repair_blocking,
+        repair_unavailable,
+    );
 
     let state = RouteReport::state_for_verdict(&verdict);
 
@@ -463,6 +493,50 @@ mod checkout_tests {
         assert_ne!(checkout_above(&root).as_deref(), Some(root.as_path()));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+    use crate::validate::FabricationVerdict;
+
+    #[test]
+    fn a_repair_that_did_not_run_keeps_a_clean_candidate_from_being_promoted() {
+        let verdict = with_repair_findings(
+            FabricationVerdict::ready(),
+            Vec::new(),
+            vec!["pour island repair did not run: kicad-cli missing".to_string()],
+        );
+        assert!(!verdict.fabrication_ready);
+        assert_eq!(verdict.unavailable_checks.len(), 1);
+        assert_eq!(
+            RouteReport::state_for_verdict(&verdict),
+            RouteState::ReviewRequired,
+            "a required check that could not run is review-required"
+        );
+    }
+
+    #[test]
+    fn an_island_the_repair_could_not_tie_blocks_the_candidate() {
+        let verdict = with_repair_findings(
+            FabricationVerdict::ready(),
+            vec!["an island of net GND holds copper but is tied to nothing".to_string()],
+            Vec::new(),
+        );
+        assert!(!verdict.fabrication_ready);
+        assert_eq!(verdict.blocking_reasons.len(), 1);
+        assert_eq!(
+            RouteReport::state_for_verdict(&verdict),
+            RouteState::ValidationFailed
+        );
+    }
+
+    #[test]
+    fn a_clean_repair_leaves_the_verdict_as_it_was() {
+        let verdict = with_repair_findings(FabricationVerdict::ready(), Vec::new(), Vec::new());
+        assert!(verdict.fabrication_ready);
+        assert_eq!(RouteReport::state_for_verdict(&verdict), RouteState::Routed);
     }
 }
 
