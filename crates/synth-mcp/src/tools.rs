@@ -3321,8 +3321,16 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     let lowered = synth_ir::lower(&resolved.program, &registry, file_name);
     let board = lowered.board.ok_or("Lowering failed")?;
 
-    let start = synth_place::place_with_sidecar(&board, Some(&original))
-        .map_err(|e| format!("Could not place the start layout: {e}"))?;
+    // The placement the export itself writes for this sidecar, so a step is
+    // scaled from the same layout the release gates would see.
+    let start = synth_kicad::placement_for_export(
+        &board,
+        &synth_kicad::Sidecars {
+            schematic: None,
+            placement: Some(original.clone()),
+        },
+    )
+    .map_err(|e| format!("Could not place the start layout: {e}"))?;
     #[allow(clippy::cast_precision_loss)]
     let factor = permille as f64 / 1000.0;
     let candidate = synth_place::scale_layout_inward(&board, &start, factor);
