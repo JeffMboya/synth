@@ -373,7 +373,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "mode": { "type": "string", "description": "scale (default): pull every distance in alike, in steps, then bisect. blocks: as scale, but each block of touching parts (see block_gap_mm) moves as one rigid body, so the spacing inside a circuit is kept and only the gaps between circuits close; prefer it when scale stops at a routing hotspot. slide: slide parts toward `toward` into the free space beside them until each meets its neighbour, bring the connector rows and mounting holes in after them, and try gaps_mm in turn, stopping at the first that fails; keeps the smallest board that released. Use slide when the empty space is in patches, not in one slab against a side." },
                     "block_gap_mm": { "type": "number", "description": "slide and blocks modes: parts whose courtyards are this close count as one block that moves together (default 1.5)" },
                     "gaps_mm": { "type": "array", "items": { "type": "number" }, "description": "slide mode: the least spacing between courtyards to try, in order (default 1.6, 1.3, 1.0, 0.8)" },
-                    "toward": { "type": "string", "description": "Where the layout is pulled to: center (default), a side (left, right, top, bottom) or a corner (bottom_right, top_left, ...). The side or corner named stays put and the opposite side comes in, so empty space against one side is taken from that side. Use a fresh out_dir when you change it." },
+                    "toward": { "type": "string", "description": "Where the layout is pulled to: center (default), a side (left, right, top, bottom), a corner (bottom_right, top_left, ...) or exact fractions of its width and height from the top-left, such as 0.62,0.53 (scale about the MCU when routing stops at a hotspot beside it). The side or corner named stays put and the opposite side comes in, so empty space against one side is taken from that side. Use a fresh out_dir when you change it." },
                     "router": { "type": "string", "description": "External engine, as synth_export" }
                 },
                 "required": ["file_path", "layout_file_path", "out_dir"]
@@ -3298,10 +3298,26 @@ fn compact_failure_reason(result: &Value) -> String {
 }
 
 /// The point of the layout the compaction scales toward, as fractions of its
-/// width and height from the top-left: `toward` names a side or a corner, and
-/// absent or `center` is the middle.
+/// width and height from the top-left: `toward` names a side or a corner, two
+/// numbers such as `0.62,0.53`, and absent or `center` is the middle.
 fn compact_direction(toward: Option<&str>) -> Result<(f64, f64), String> {
     let toward = toward.unwrap_or("center");
+    // Exact fractions of the layout's width and height, from the top-left:
+    // "0.62,0.53" scales about a point near the middle, a little right of it.
+    if let Some((x, y)) = toward.split_once(',') {
+        let fraction = |text: &str| {
+            text.trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| (0.0..=1.0).contains(v))
+        };
+        return match (fraction(x), fraction(y)) {
+            (Some(x), Some(y)) => Ok((x, y)),
+            _ => Err(format!(
+                "toward as two numbers must each be between 0 and 1, not '{toward}'"
+            )),
+        };
+    }
     let (mut x, mut y) = (0.5, 0.5);
     for word in toward.split('_') {
         match word {
@@ -5698,6 +5714,13 @@ mod tests {
         assert_eq!(dir(Some("bottom_right")), Ok((1.0, 1.0)));
         assert_eq!(dir(Some("left")), Ok((0.0, 0.5)));
         assert_eq!(dir(Some("top_left")), Ok((0.0, 0.0)));
+        assert_eq!(dir(Some("0.62,0.53")), Ok((0.62, 0.53)));
+        assert_eq!(dir(Some(" 0 , 1 ")), Ok((0.0, 1.0)));
+        assert!(
+            dir(Some("1.5,0.5")).is_err(),
+            "a fraction is between 0 and 1"
+        );
+        assert!(dir(Some("a,b")).is_err());
         assert!(dir(Some("sideways")).is_err());
     }
 
