@@ -3,6 +3,8 @@
 Status: design, placement and a FreeRouting route that passes Synth's release gate. The routed PCB, KiCad project and reports are in this PR. Not fabricated, not tested on hardware.
 Do not call it proven or clean. The list of what is unchecked is at the bottom.
 
+Intended use: bench or lab adapter, short cables, point-to-point or last node on an RS-485 bus. Not for industrial installs, long cable runs or a node in the middle of a multidrop bus: A and B have no surge protection beyond the transceiver's built-in ESD, and the 120 ohm termination is always connected. The surge parts and a selectable termination are a later revision; the registry parts for them are in #356.
+
 ## What it is
 
 - One USB-C port, one WCH CH342F (two UARTs).
