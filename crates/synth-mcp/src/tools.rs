@@ -3428,6 +3428,23 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
         fill_percent: 0.0,
         reason: "the layout has no courtyards to scale".into(),
     };
+    // A scale that puts more courtyards into a keepout than the start layout has
+    // fails the export's strict check before the router runs, so it is recorded
+    // as a failed attempt without paying for the export.
+    let start_hits = synth_place::keepout_overlap_count(&board, &start);
+    let candidate = candidate.filter(|placed| {
+        let hits = synth_place::keepout_overlap_count(&board, placed);
+        if !identity && hits > start_hits {
+            attempt.width_mm = synth_geometry::nm_to_mm(placed.board_outline.width_nm());
+            attempt.height_mm = synth_geometry::nm_to_mm(placed.board_outline.height_nm());
+            attempt.fill_percent = synth_place::courtyard_fill_percent(&board, placed);
+            attempt.reason = format!(
+                "scaling puts {hits} courtyard(s) into a keepout, the start layout has {start_hits}; not exported"
+            );
+            return false;
+        }
+        true
+    });
     if let Some(placed) = candidate {
         attempt.width_mm = synth_geometry::nm_to_mm(placed.board_outline.width_nm());
         attempt.height_mm = synth_geometry::nm_to_mm(placed.board_outline.height_nm());
