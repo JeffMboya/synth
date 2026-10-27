@@ -9618,14 +9618,18 @@ board "features_only" {
         ] {
             move_part(&mut placement, &board, refdes, x, y);
         }
-        // Make the two anchors face the same way so the copies are compared.
-        let rotation = placement
-            .component_by_refdes(&board, "JA")
-            .expect("JA")
-            .rotation;
-        for p in &mut placement.components {
-            if board.component(p.id).is_some_and(|c| c.refdes == "JB") {
-                p.rotation = rotation;
+        // Turn every part of the second copy as its counterpart in the first, so
+        // the copies are compared on position, not on how the placer happened to
+        // turn each part.
+        for (copy, first) in [("JB", "JA"), ("RB", "RA"), ("CB", "CA")] {
+            let rotation = placement
+                .component_by_refdes(&board, first)
+                .expect(first)
+                .rotation;
+            for p in &mut placement.components {
+                if board.component(p.id).is_some_and(|c| c.refdes == copy) {
+                    p.rotation = rotation;
+                }
             }
         }
         assert!(
