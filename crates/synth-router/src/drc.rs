@@ -329,23 +329,6 @@ pub(crate) fn first_line(text: &str) -> String {
     line.trim().to_string()
 }
 
-/// KiCad 10 can list a zone against itself in `unconnected_items`. When both
-/// entries share a UUID and sit at one point, there is nothing to connect, so
-/// the pair is treated as a fill artifact. A pair at two points is two islands
-/// of one zone that are not joined, which is a split net and stays an open
-/// net. A genuine missing connection names two different objects. An entry
-/// with no position is never treated as the artifact.
-fn names_same_zone_twice(item: &serde_json::Value) -> bool {
-    let Some(items) = item.get("items").and_then(serde_json::Value::as_array) else {
-        return false;
-    };
-    let keys: Vec<(&str, &serde_json::Value)> = items
-        .iter()
-        .filter_map(|v| Some((v.get("uuid")?.as_str()?, v.get("pos")?)))
-        .collect();
-    keys.len() >= 2 && keys.len() == items.len() && keys.iter().all(|key| *key == keys[0])
-}
-
 /// Parse KiCad's DRC JSON.
 ///
 /// Deliberately tolerant of a missing or unexpected shape: a report that
@@ -384,10 +367,7 @@ pub fn parse_report_text(text: &str) -> Option<DrcReport> {
             continue;
         };
         if is_unconnected_section {
-            unconnected_items = items
-                .iter()
-                .filter(|item| !names_same_zone_twice(item))
-                .count();
+            unconnected_items = items.len();
         }
         for item in items {
             let violation_type = item
@@ -433,9 +413,7 @@ pub fn parse_report_text(text: &str) -> Option<DrcReport> {
             // Mark it by section, not by the severity KiCad happened to
             // write, so `is_blocking` and the counts agree with each other
             // and with what the section actually holds.
-            let severity = if is_unconnected_section && names_same_zone_twice(item) {
-                "warning".to_string()
-            } else if is_unconnected_section {
+            let severity = if is_unconnected_section {
                 "unconnected".to_string()
             } else {
                 if severity == "unconnected" {
@@ -694,10 +672,11 @@ mod tests {
     }
 
     #[test]
-    fn a_zone_pair_with_the_same_uuid_is_a_fill_warning_not_an_open_net() {
-        // KiCad 10 lists a fill-split zone against itself. The same UUID on
-        // both sides is not a missing connection, so it must not fail the
-        // board; it stays visible as a warning.
+    fn a_zone_listed_against_itself_at_one_point_is_still_an_open_net() {
+        // KiCad lists a zone against itself when two of its fill islands that
+        // both reach pads are not joined. The UUID and the position being the
+        // same says nothing about the other layers: the usb-uart board had a
+        // real GND split that reported exactly this pair. It must block.
         let report = parse_report_text(
             r#"{"violations": [],
                "unconnected_items": [
@@ -712,33 +691,9 @@ mod tests {
                ]}"#,
         )
         .expect("parses");
-        assert_eq!(report.unconnected_items, 0);
-        assert_eq!(report.counts().unconnected, 0);
-        assert_eq!(report.counts().warnings, 1);
-        assert_eq!(report.counts().blocking_count(), 0);
-        assert!(report.is_clean());
-    }
-
-    #[test]
-    fn a_zone_pair_at_two_positions_is_still_an_open_net() {
-        // Two fill islands of one zone that each reach pads but are not joined
-        // report the same UUID at different points. That is a split net.
-        let report = parse_report_text(
-            r#"{"violations": [],
-               "unconnected_items": [
-                 {"type": "unconnected_items", "severity": "error",
-                  "description": "Missing connection between items",
-                  "items": [
-                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1",
-                     "pos": {"x": 2.05, "y": -0.06}},
-                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1",
-                     "pos": {"x": 30.0, "y": 12.0}}
-                  ]}
-               ]}"#,
-        )
-        .expect("parses");
         assert_eq!(report.unconnected_items, 1);
         assert_eq!(report.counts().unconnected, 1);
+        assert_eq!(report.counts().blocking_count(), 1);
         assert!(!report.is_clean());
     }
 
