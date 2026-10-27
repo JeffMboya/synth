@@ -3156,10 +3156,19 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
 
     let mut request = routing_request(args, engine);
     request.ground_nets = synth_drc::ground_net_names(&board);
-    // The final route counts against the search budget, and is never given less
-    // than it needs to deliver the board.
+    // The final route counts against the search budget: it gets what is left, or
+    // is not started when nothing is.
     if let Some(budget) = &search_budget {
-        let limit = budget.final_limit(request.limits.wall_clock);
+        let Some(limit) = budget.final_limit(request.limits.wall_clock) else {
+            return Err(serde_json::json!({
+                "status": "placement_search_out_of_budget",
+                "routing_status": "not_run",
+                "reason": "The placement search used the whole place_route_budget_secs, so the final route was not started",
+                "placement_search": placement_search,
+                "hint": "Raise place_route_budget_secs or use fewer candidates, then retry."
+            })
+            .to_string());
+        };
         request.limits = request.limits.with_wall_clock(limit.as_secs());
     }
     request.board_path.clone_from(&res.pcb_path);

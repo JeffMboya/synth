@@ -18,8 +18,9 @@ pub const DEFAULT_BUDGET_SECS: u64 = 900;
 /// this cannot finish, so it is not started.
 pub const MIN_RUN_SECS: u64 = 30;
 
-/// The least the final route is given, in seconds, however much is left: the
-/// board must still be delivered.
+/// The time held back for the final route before any candidate run starts, in
+/// seconds, so the board can still be delivered inside the budget. A budget
+/// shorter than this is all final route: no candidate is run.
 pub const MIN_FINAL_SECS: u64 = 60;
 
 /// The wall-clock budget of one placement search.
@@ -80,21 +81,32 @@ impl SearchBudget {
         self.longest_run = self.longest_run.max(took);
     }
 
+    /// What the final route is kept: the longest run seen, or
+    /// [`MIN_FINAL_SECS`], but never more than the whole budget.
+    fn reserve(&self) -> Duration {
+        self.longest_run
+            .max(Duration::from_secs(MIN_FINAL_SECS))
+            .min(self.total)
+    }
+
     /// The wall-clock limit for the next candidate run: `requested`, or what is
     /// left after the final route's share, whichever is less. `None` when what
     /// is left is too short for a run to finish.
     #[must_use]
     pub fn candidate_limit(&self, requested: Duration) -> Option<Duration> {
-        let available = self.remaining().saturating_sub(self.longest_run);
+        let available = self.remaining().saturating_sub(self.reserve());
         (available >= self.min_run).then(|| requested.min(available))
     }
 
     /// The wall-clock limit for the final route: `requested`, or what is left,
-    /// but never less than [`MIN_FINAL_SECS`]. The final route counts against
-    /// the budget, and it must still be able to deliver the board.
+    /// whichever is less, so the whole call stays inside the budget. The share
+    /// held back from the candidates is what makes that enough to deliver the
+    /// board. `None` when less than a second is left: the route is not started
+    /// and the caller reports the search as out of budget.
     #[must_use]
-    pub fn final_limit(&self, requested: Duration) -> Duration {
-        requested.min(self.remaining().max(Duration::from_secs(MIN_FINAL_SECS)))
+    pub fn final_limit(&self, requested: Duration) -> Option<Duration> {
+        let left = self.remaining();
+        (left >= Duration::from_secs(1)).then(|| requested.min(left))
     }
 }
 
@@ -215,15 +227,39 @@ mod tests {
     }
 
     #[test]
-    fn the_final_route_counts_against_the_budget_but_is_never_starved() {
+    fn the_final_route_gets_only_what_is_left_and_is_skipped_when_nothing_is() {
         let budget = SearchBudget::with_limits(Duration::from_secs(900), MS(10));
-        assert!(budget.final_limit(Duration::from_secs(1200)) <= Duration::from_secs(900));
+        let limit = budget.final_limit(Duration::from_secs(1200)).expect("room");
+        assert!(limit <= Duration::from_secs(900), "{limit:?}");
         let spent = SearchBudget::with_limits(Duration::ZERO, MS(10));
         assert_eq!(
             spent.final_limit(Duration::from_secs(1200)),
-            Duration::from_secs(MIN_FINAL_SECS),
-            "with the budget gone the board still gets a run"
+            None,
+            "with the budget gone the route is not started"
         );
+    }
+
+    /// The configured budget bounds the whole call: the candidate runs leave the
+    /// final route's share, and a budget shorter than that runs no candidate.
+    #[test]
+    fn candidate_runs_and_the_final_route_together_fit_the_budget() {
+        let short = SearchBudget::with_limits(Duration::from_secs(30), Duration::from_secs(1));
+        assert_eq!(
+            short.candidate_limit(Duration::from_secs(1200)),
+            None,
+            "a 30 s budget is all final route"
+        );
+        let final_only = short.final_limit(Duration::from_secs(1200)).expect("room");
+        assert!(final_only <= Duration::from_secs(30), "{final_only:?}");
+
+        let long = SearchBudget::with_limits(Duration::from_secs(900), Duration::from_secs(1));
+        let run = long
+            .candidate_limit(Duration::from_secs(1200))
+            .expect("room");
+        let fin = long.final_limit(Duration::from_secs(1200)).expect("room");
+        // The longest a run can last, then what the final route is then left.
+        assert!(run + Duration::from_secs(MIN_FINAL_SECS) <= Duration::from_secs(900));
+        assert!(fin <= Duration::from_secs(900));
     }
 
     /// Runs that each take 80 ms against a 200 ms budget: the search stops

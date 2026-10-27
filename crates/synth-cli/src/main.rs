@@ -4207,7 +4207,13 @@ fn export_kicad(
     // The final route counts against the same budget, and is never given less
     // than it needs to deliver the board.
     let options = if place_route_iterate {
-        let limit = search_budget.final_limit(std::time::Duration::from_secs(options.timeout_secs));
+        let limit = search_budget
+            .final_limit(std::time::Duration::from_secs(options.timeout_secs))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "the placement search used the whole --place-route-budget-secs, so the final route was not started"
+                )
+            })?;
         options.with_timeout(Some(limit.as_secs()))
     } else {
         options
