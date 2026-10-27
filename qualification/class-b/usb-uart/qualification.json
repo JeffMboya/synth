@@ -50,7 +50,22 @@
     },
     "usb_si_pi_review": {
       "passed": false,
-      "evidence": "no independent review; USB pair is not coupled, skew unmeasured, layer changes lack nearby ground vias"
+      "evidence": "Open: no independent review. Author measurements on the committed board (pcbnew, kicad/usb_uart.kicad_pcb) are recorded below so a reviewer can check them; they are not a sign-off.",
+      "measured": {
+        "speed_class": "Full speed, 12 Mbit/s. The CH342 datasheet (V1E, section 5.3) describes full-speed USB; the V1E sheet is the newest found, so a newer sheet may differ.",
+        "layer_transitions_on_pair": "0. USB_DP and USB_DN are routed only on F.Cu with no via. The 23 W-SYNTH-DRC-016 warnings in reports/release.json are on other nets (the V3 rail, MODEM_IDLE, CTS0_LOW, TXD1, RXD1, RXD1_MCU, DTR1, RTS1, CTS1), so they say nothing about the pair's return path.",
+        "length_mm": {
+          "USB_DP": 38.63,
+          "USB_DN": 13.52
+        },
+        "skew_mm": 25.11,
+        "skew_note": "At about 6.7 ps/mm on FR-4 that is about 0.17 ns against an 83 ns full-speed bit, roughly 0.2 percent. It would matter at high speed (2.08 ns bit), which this part does not use. The imbalance is a routing artefact of the FreeRouting result, not a design choice.",
+        "trace_width_mm": 0.242,
+        "coupling": "The pair is not routed as a coupled differential pair. The closest edge-to-edge gap between the two nets is 0.13 mm, and 24 segment pairs lie within 0.5 mm of each other. There is no controlled-impedance geometry: on two layers at 1.6 mm a 90 ohm pair needs about 1.18 mm traces, which does not fit.",
+        "return_path": "91.4 percent of the pair's length sits over solid B.Cu GND fill (492 of 538 samples at 0.1 mm), so the return current has a plane under most of the route. Where the other 8.6 percent runs was not located.",
+        "electrical_length": "The longer trace is 38.6 mm, well under the 100 mm or so (4 ns minimum full-speed rise time) at which a trace stops being electrically short, so reflections are not a concern at full speed.",
+        "what_is_left": "An independent reviewer should accept or reject these figures and the conclusion that a full-speed pair of this length needs no impedance control, or ask for a redesign with matched lengths. Matching the lengths needs a different route or placement, which FreeRouting does not do for pairs."
+      }
     },
     "rf_review": {
       "passed": false,
