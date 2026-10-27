@@ -358,6 +358,39 @@ pub fn plan_all(board: &PcbBoard, reach_mm: f64) -> TiePlan {
     plan
 }
 
+/// A pad's copper as a rectangle turned to the pad's own angle.
+struct PadBox {
+    at: (f64, f64),
+    half: (f64, f64),
+    cos: f64,
+    sin: f64,
+}
+
+impl PadBox {
+    fn new(pad: &crate::pcb_read::Pad) -> Self {
+        let angle = pad.angle_deg.to_radians();
+        Self {
+            at: (pad.at.x_mm(), pad.at.y_mm()),
+            half: (nm_to_mm(pad.size_nm.0) / 2.0, nm_to_mm(pad.size_nm.1) / 2.0),
+            cos: angle.cos(),
+            sin: angle.sin(),
+        }
+    }
+
+    /// Distance from `p` to the pad's rectangle, zero inside it.
+    fn distance(&self, p: (f64, f64)) -> f64 {
+        let (dx, dy) = (p.0 - self.at.0, p.1 - self.at.1);
+        // Into the pad's own axes.
+        let (x, y) = (
+            dx * self.cos + dy * self.sin,
+            -dx * self.sin + dy * self.cos,
+        );
+        (x.abs() - self.half.0)
+            .max(0.0)
+            .hypot((y.abs() - self.half.1).max(0.0))
+    }
+}
+
 /// `(start, end, half width)` of one track.
 type Segment = ((f64, f64), (f64, f64), f64);
 
@@ -367,7 +400,7 @@ type Segment = ((f64, f64), (f64, f64), f64);
 /// round the via when it is refilled.
 struct Keepout {
     /// `(min, max)` of each pad's copper.
-    pads: Vec<((f64, f64), (f64, f64))>,
+    pads: Vec<PadBox>,
     /// `(start, end, half width)` of each track of another net.
     tracks: Vec<Segment>,
     /// `(centre, radius)` of each via.
@@ -381,12 +414,7 @@ impl Keepout {
         let mut pads = Vec::new();
         for footprint in &board.footprints {
             for pad in &footprint.pads {
-                let (mut w, mut h) = (nm_to_mm(pad.size_nm.0), nm_to_mm(pad.size_nm.1));
-                if (pad.angle_deg.rem_euclid(180.0) - 90.0).abs() < 1.0 {
-                    std::mem::swap(&mut w, &mut h);
-                }
-                let (x, y) = (pad.at.x_mm(), pad.at.y_mm());
-                pads.push(((x - w / 2.0, y - h / 2.0), (x + w / 2.0, y + h / 2.0)));
+                pads.push(PadBox::new(pad));
             }
         }
         let tracks = board
@@ -415,14 +443,11 @@ impl Keepout {
     /// every obstacle.
     fn clear(&self, p: (f64, f64), radius: f64) -> bool {
         let need = radius + VIA_GAP_MM;
-        self.pads.iter().all(|(low, high)| {
-            let dx = (low.0 - p.0).max(p.0 - high.0).max(0.0);
-            let dy = (low.1 - p.1).max(p.1 - high.1).max(0.0);
-            dx.hypot(dy) >= need - EPS
-        }) && self
-            .tracks
-            .iter()
-            .all(|(a, b, half)| point_segment(p, *a, *b) >= need + half - EPS)
+        self.pads.iter().all(|pad| pad.distance(p) >= need - EPS)
+            && self
+                .tracks
+                .iter()
+                .all(|(a, b, half)| point_segment(p, *a, *b) >= need + half - EPS)
             && self
                 .vias
                 .iter()
@@ -877,6 +902,33 @@ mod tests {
                 (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 40 0) (xy 40 20) (xy 0 20)))))
             "#
         )
+    }
+
+    #[test]
+    fn a_pad_is_measured_in_its_own_rotated_axes() {
+        let pad = PadBox {
+            at: (0.0, 0.0),
+            half: (1.0, 0.5),
+            cos: 0.0,
+            sin: 1.0,
+        };
+        // Turned a quarter, the 2 mm side runs along y.
+        assert!((pad.distance((0.0, 1.2)) - 0.2).abs() < 1e-9);
+        assert!(pad.distance((0.0, 0.9)).abs() < 1e-9, "inside is zero");
+        assert!((pad.distance((1.0, 0.0)) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_pad_turned_forty_five_degrees_is_not_its_axis_aligned_box() {
+        let pad = PadBox {
+            at: (0.0, 0.0),
+            half: (2.0, 0.25),
+            cos: std::f64::consts::FRAC_1_SQRT_2,
+            sin: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        // The corner of the unturned box is empty; a point on the diagonal is on copper.
+        assert!(pad.distance((1.0, 1.0)).abs() < 1e-9);
+        assert!(pad.distance((1.0, -1.0)) > 1.0);
     }
 
     #[test]
