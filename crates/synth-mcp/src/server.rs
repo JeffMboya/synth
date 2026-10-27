@@ -10,8 +10,10 @@ use axum::{
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -168,18 +170,11 @@ pub fn handle_jsonrpc_request(req: Value, default_registry: Option<&Path>) -> Va
     }
 }
 
-/// Serialises everything written to stdout. A response can be larger than a pipe
-/// buffer and so go out in several writes; a heartbeat line landing between them
-/// would corrupt the message.
-static STDOUT_LOCK: Mutex<()> = Mutex::new(());
-
+/// Writes one message as a single locked write, so a response larger than a pipe
+/// buffer cannot be split by a heartbeat line from another thread.
 fn write_message(message: &str) {
-    let _guard = STDOUT_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(message.as_bytes());
-    let _ = out.write_all(b"\n");
+    let _ = out.write_all(format!("{message}\n").as_bytes());
     let _ = out.flush();
 }
 
@@ -253,27 +248,32 @@ impl Drop for Heartbeat {
     }
 }
 
-/// The token the client asked progress to be reported under, or the request id
-/// when it gave none: a client that never asked simply ignores the notification.
-fn progress_token(req: &Value) -> Value {
-    req["params"]["_meta"]["progressToken"]
-        .as_str()
-        .map(Value::from)
-        .or_else(|| {
-            req["params"]["_meta"]["progressToken"]
-                .as_i64()
-                .map(Value::from)
-        })
-        .unwrap_or_else(|| req["id"].clone())
+/// The token the client supplied in `params._meta.progressToken`, exactly as
+/// given. MCP only allows progress notifications under a client token, so a
+/// request without one gets no heartbeat.
+fn progress_token(req: &Value) -> Option<Value> {
+    let token = &req["params"]["_meta"]["progressToken"];
+    (token.is_string() || token.is_i64() || token.is_u64()).then(|| token.clone())
 }
 
-/// Run MCP Server over standard I/O (stdin/stdout).
-///
-/// Uses plain newline-delimited JSON (one message per line), which is what
-/// Antigravity, Claude Desktop, and Cursor all use for stdio MCP servers.
-pub async fn run_stdio_server(default_registry: Option<PathBuf>) -> anyhow::Result<()> {
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin).lines();
+/// Calls in flight, by request id, each with the flag `notifications/cancelled` sets.
+type InFlight = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
+
+/// Answers one request line stream. `handle` runs each `tools/call` on its own thread, so the
+/// read loop keeps reading and a `notifications/cancelled` for a running call is seen at once;
+/// a cancelled call sends neither further progress nor a response.
+async fn serve<R, W, H>(
+    mut reader: tokio::io::Lines<R>,
+    handle: Arc<H>,
+    interval: Duration,
+    write: Arc<W>,
+) where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: Fn(&str) + Send + Sync + 'static,
+    H: Fn(Value) -> Value + Send + Sync + 'static,
+{
+    let in_flight: InFlight = Arc::new(Mutex::new(HashMap::new()));
+    let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
     while let Ok(Some(line)) = reader.next_line().await {
         let trimmed = line.trim();
@@ -290,24 +290,79 @@ pub async fn run_stdio_server(default_registry: Option<PathBuf>) -> anyhow::Resu
                     "id": Value::Null,
                     "error": { "code": -32700, "message": format!("Parse error: {e}") }
                 });
-                write_message(&serde_json::to_string(&err_resp).unwrap_or_default());
+                write(&serde_json::to_string(&err_resp).unwrap_or_default());
                 continue;
             }
         };
 
-        let heartbeat = (req_val["method"] == "tools/call").then(|| {
-            Heartbeat::start(progress_token(&req_val), HEARTBEAT_INTERVAL, |message| {
-                write_message(&message);
-            })
-        });
-        let resp_val = handle_jsonrpc_request(req_val, default_registry.as_deref());
-        drop(heartbeat);
-        // Null = notification, no response.
-        if resp_val.is_null() {
+        if req_val["method"] == "notifications/cancelled" {
+            let target = req_val["params"]["requestId"].to_string();
+            if let Some(flag) = in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&target)
+            {
+                flag.store(true, Ordering::SeqCst);
+            }
             continue;
         }
-        write_message(&serde_json::to_string(&resp_val).unwrap_or_default());
+
+        if req_val["method"] != "tools/call" || req_val["id"].is_null() {
+            let resp_val = handle(req_val);
+            // Null = notification, no response.
+            if !resp_val.is_null() {
+                write(&serde_json::to_string(&resp_val).unwrap_or_default());
+            }
+            continue;
+        }
+
+        let key = req_val["id"].to_string();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.clone(), Arc::clone(&cancelled));
+        let (handle, write, in_flight) =
+            (Arc::clone(&handle), Arc::clone(&write), Arc::clone(&in_flight));
+        workers.push(std::thread::spawn(move || {
+            let heartbeat = progress_token(&req_val).map(|token| {
+                let (write, cancelled) = (Arc::clone(&write), Arc::clone(&cancelled));
+                Heartbeat::start(token, interval, move |message| {
+                    if !cancelled.load(Ordering::SeqCst) {
+                        write(&message);
+                    }
+                })
+            });
+            let resp_val = handle(req_val);
+            drop(heartbeat);
+            in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&key);
+            if !cancelled.load(Ordering::SeqCst) && !resp_val.is_null() {
+                write(&serde_json::to_string(&resp_val).unwrap_or_default());
+            }
+        }));
+        workers.retain(|w| !w.is_finished());
     }
+    for worker in workers {
+        let _ = worker.join();
+    }
+}
+
+/// Run MCP Server over standard I/O (stdin/stdout).
+///
+/// Uses plain newline-delimited JSON (one message per line), which is what
+/// Antigravity, Claude Desktop, and Cursor all use for stdio MCP servers.
+pub async fn run_stdio_server(default_registry: Option<PathBuf>) -> anyhow::Result<()> {
+    let reader = BufReader::new(tokio::io::stdin()).lines();
+    serve(
+        reader,
+        Arc::new(move |req| handle_jsonrpc_request(req, default_registry.as_deref())),
+        HEARTBEAT_INTERVAL,
+        Arc::new(|message: &str| write_message(message)),
+    )
+    .await;
     Ok(())
 }
 
@@ -363,12 +418,76 @@ mod heartbeat_tests {
     }
 
     #[test]
-    fn the_token_is_the_one_the_client_gave_or_else_the_request_id() {
+    fn the_token_is_the_one_the_client_gave_and_nothing_else() {
         let with = serde_json::json!({"id": 7, "params": {"_meta": {"progressToken": "abc"}}});
-        assert_eq!(progress_token(&with), "abc");
+        assert_eq!(progress_token(&with), Some(Value::from("abc")));
         let numeric = serde_json::json!({"id": 7, "params": {"_meta": {"progressToken": 3}}});
-        assert_eq!(progress_token(&numeric), 3);
+        assert_eq!(progress_token(&numeric), Some(Value::from(3)));
         let without = serde_json::json!({"id": 7, "params": {}});
-        assert_eq!(progress_token(&without), 7);
+        assert_eq!(progress_token(&without), None);
+        let bogus = serde_json::json!({"id": 7, "params": {"_meta": {"progressToken": 1.5}}});
+        assert_eq!(progress_token(&bogus), None);
+    }
+
+    fn run(input: &str, slow_ms: u64, interval_ms: u64) -> Vec<Value> {
+        let out = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&out);
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(serve(
+            BufReader::new(std::io::Cursor::new(input.as_bytes().to_vec())).lines(),
+            Arc::new(move |req: Value| {
+                if req["method"] == "tools/call" {
+                    std::thread::sleep(Duration::from_millis(slow_ms));
+                }
+                serde_json::json!({"jsonrpc": "2.0", "id": req["id"], "result": {}})
+            }),
+            Duration::from_millis(interval_ms),
+            Arc::new(move |m: &str| sink.lock().unwrap().push(m.to_string())),
+        ));
+        let lines = out.lock().unwrap().clone();
+        lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    #[test]
+    fn a_call_with_a_token_gets_progress_and_a_response() {
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"progressToken":"t"}}}"#;
+        let msgs = run(input, 120, 20);
+        let beats = msgs.iter().filter(|m| m["method"] == "notifications/progress").count();
+        assert!(beats >= 2, "expected heartbeats, got {beats}");
+        assert!(msgs.iter().all(|m| m["method"] != "notifications/progress" || m["params"]["progressToken"] == "t"));
+        assert_eq!(msgs.last().unwrap()["id"], 1);
+    }
+
+    #[test]
+    fn a_call_without_a_token_sends_no_progress() {
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#;
+        let msgs = run(input, 80, 10);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["id"], 1);
+    }
+
+    #[test]
+    fn a_cancelled_call_sends_no_response() {
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"progressToken":"t"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#,
+            "\n"
+        );
+        let msgs = run(input, 150, 10);
+        assert!(msgs.iter().all(|m| m["id"] != 1), "got {msgs:?}");
+    }
+
+    #[test]
+    fn a_second_request_is_answered_while_a_call_runs() {
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            "\n"
+        );
+        let msgs = run(input, 150, 1000);
+        assert_eq!(msgs[0]["id"], 2, "the quick request answers first");
+        assert_eq!(msgs[1]["id"], 1);
     }
 }
