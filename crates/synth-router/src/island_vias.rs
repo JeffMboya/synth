@@ -358,6 +358,9 @@ pub fn plan_all(board: &PcbBoard, reach_mm: f64) -> TiePlan {
     plan
 }
 
+/// `(start, end, half width)` of one track.
+type Segment = ((f64, f64), (f64, f64), f64);
+
 /// What a new via has to keep clear of, on every layer it crosses: a through
 /// via drills the whole stack, so a pad, a via or a foreign track on any layer
 /// counts. Another net's pour is not an obstacle: the fill cuts an antipad
@@ -366,7 +369,7 @@ struct Keepout {
     /// `(min, max)` of each pad's copper.
     pads: Vec<((f64, f64), (f64, f64))>,
     /// `(start, end, half width)` of each track of another net.
-    tracks: Vec<((f64, f64), (f64, f64), f64)>,
+    tracks: Vec<Segment>,
     /// `(centre, radius)` of each via.
     vias: Vec<((f64, f64), f64)>,
 }
@@ -1277,7 +1280,8 @@ mod tests {
         let ring = |cx: f64, cy: f64, r: f64, n: usize| {
             (0..n)
                 .map(|i| {
-                    let t = std::f64::consts::TAU * i as f64 / n as f64;
+                    let t = std::f64::consts::TAU * f64::from(u32::try_from(i).unwrap())
+                        / f64::from(u32::try_from(n).unwrap());
                     format!("(xy {:.3} {:.3})", cx + r * t.cos(), cy + r * t.sin())
                 })
                 .collect::<Vec<_>>()
