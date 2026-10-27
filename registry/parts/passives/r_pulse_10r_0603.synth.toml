@@ -29,3 +29,4 @@ electrical_type = "passive"
 [provenance]
 datasheet_url = "https://www.vishay.com/docs/20043/crcwhpe3.pdf"
 reviewed_by = "Steve Munene"
+reviewed_at = "2026-10-27"
