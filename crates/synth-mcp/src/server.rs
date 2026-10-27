@@ -322,8 +322,11 @@ async fn serve<R, W, H>(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key.clone(), Arc::clone(&cancelled));
-        let (handle, write, in_flight) =
-            (Arc::clone(&handle), Arc::clone(&write), Arc::clone(&in_flight));
+        let (handle, write, in_flight) = (
+            Arc::clone(&handle),
+            Arc::clone(&write),
+            Arc::clone(&in_flight),
+        );
         workers.push(std::thread::spawn(move || {
             let heartbeat = progress_token(&req_val).map(|token| {
                 let (write, cancelled) = (Arc::clone(&write), Arc::clone(&cancelled));
@@ -432,7 +435,9 @@ mod heartbeat_tests {
     fn run(input: &str, slow_ms: u64, interval_ms: u64) -> Vec<Value> {
         let out = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = Arc::clone(&out);
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         rt.block_on(serve(
             BufReader::new(std::io::Cursor::new(input.as_bytes().to_vec())).lines(),
             Arc::new(move |req: Value| {
@@ -445,16 +450,24 @@ mod heartbeat_tests {
             Arc::new(move |m: &str| sink.lock().unwrap().push(m.to_string())),
         ));
         let lines = out.lock().unwrap().clone();
-        lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect()
+        lines
+            .iter()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
     }
 
     #[test]
     fn a_call_with_a_token_gets_progress_and_a_response() {
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"progressToken":"t"}}}"#;
         let msgs = run(input, 120, 20);
-        let beats = msgs.iter().filter(|m| m["method"] == "notifications/progress").count();
+        let beats = msgs
+            .iter()
+            .filter(|m| m["method"] == "notifications/progress")
+            .count();
         assert!(beats >= 2, "expected heartbeats, got {beats}");
-        assert!(msgs.iter().all(|m| m["method"] != "notifications/progress" || m["params"]["progressToken"] == "t"));
+        assert!(msgs.iter().all(
+            |m| m["method"] != "notifications/progress" || m["params"]["progressToken"] == "t"
+        ));
         assert_eq!(msgs.last().unwrap()["id"], 1);
     }
 
