@@ -367,7 +367,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "file_path": { "type": "string", "description": "Path to the .synth source file" },
                     "layout_file_path": { "type": "string", "description": "The PCB placement sidecar to compact (<design>.placement.layout.toml; board millimetres)" },
                     "out_dir": { "type": "string", "description": "Working directory; holds compact.json and one export per attempt" },
-                    "step_percent": { "type": "number", "description": "Scale step before the first failure (default 3)" },
+                    "step_percent": { "type": "number", "description": "Scale step in percent before the first failure, 0.1 to 50 (default 3)" },
                     "min_scale_percent": { "type": "number", "description": "Never scale below this (default 60)" },
                     "toward": { "type": "string", "description": "Where the layout is pulled to: center (default), a side (left, right, top, bottom) or a corner (bottom_right, top_left, ...). The side or corner named stays put and the opposite side comes in, so empty space against one side is taken from that side. Use a fresh out_dir when you change it." },
                     "router": { "type": "string", "description": "External engine, as synth_export" }
@@ -3297,6 +3297,33 @@ fn compact_sidecar_changed(
     started_from.is_some_and(|started| started != current) && installed != Some(current)
 }
 
+/// The step and the floor of a compaction, in thousandths of the start scale.
+///
+/// A step that rounds to zero would offer the same scale on every call and the
+/// loop would never reach `done`; a negative or oversized one, or a floor
+/// outside 0-100 %, makes the search meaningless. Each is refused with the
+/// reason, before anything is exported.
+fn compact_scales(args: &Value) -> Result<(i64, i64), String> {
+    let percent = |key: &str, default: f64, min: f64, max: f64| -> Result<i64, String> {
+        let value = match &args[key] {
+            Value::Null => default,
+            other => other
+                .as_f64()
+                .ok_or_else(|| format!("'{key}' must be a number of percent"))?,
+        };
+        if !value.is_finite() || value < min || value > max {
+            return Err(format!(
+                "'{key}' must be between {min} and {max} percent, got {value}"
+            ));
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        Ok((value * 10.0).round() as i64)
+    };
+    let step = percent("step_percent", 3.0, 0.1, 50.0)?;
+    let floor = percent("min_scale_percent", 60.0, 1.0, 100.0)?;
+    Ok((step, floor))
+}
+
 /// `synth_compact_layout`: one attempt of the compaction loop. See the tool
 /// description; state lives in `<out_dir>/compact.json` so each call is short
 /// enough for an agent's tool timeout.
@@ -3315,10 +3342,7 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
             .as_str()
             .ok_or("Missing required parameter 'out_dir'")?,
     );
-    #[allow(clippy::cast_possible_truncation)]
-    let step = (args["step_percent"].as_f64().unwrap_or(3.0) * 10.0).round() as i64;
-    #[allow(clippy::cast_possible_truncation)]
-    let floor = (args["min_scale_percent"].as_f64().unwrap_or(60.0) * 10.0).round() as i64;
+    let (step, floor) = compact_scales(args)?;
     let resolution = 5;
     let toward = compact_direction(args["toward"].as_str())?;
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("Cannot create out_dir: {e}"))?;
@@ -5529,6 +5553,42 @@ mod tests {
             changed(Some("a"), Some("b"), "c"),
             "edited after the install"
         );
+    }
+
+    #[test]
+    fn a_step_that_would_never_advance_is_refused_with_a_reason() {
+        use super::compact_scales;
+        for bad in [
+            serde_json::json!({ "step_percent": 0 }),
+            serde_json::json!({ "step_percent": 0.04 }),
+            serde_json::json!({ "step_percent": -3 }),
+            serde_json::json!({ "step_percent": 75 }),
+            serde_json::json!({ "step_percent": "3" }),
+            serde_json::json!({ "min_scale_percent": 0 }),
+            serde_json::json!({ "min_scale_percent": 150 }),
+            serde_json::json!({ "min_scale_percent": -1 }),
+        ] {
+            let err = compact_scales(&bad).expect_err("must be refused");
+            assert!(err.contains("percent"), "{bad}: {err}");
+        }
+        assert_eq!(compact_scales(&serde_json::json!({})), Ok((30, 600)));
+        assert_eq!(
+            compact_scales(&serde_json::json!({ "step_percent": 0.5, "min_scale_percent": 80 })),
+            Ok((5, 800))
+        );
+    }
+
+    #[test]
+    fn the_tool_returns_a_structured_error_for_a_zero_step_before_exporting_anything() {
+        let args = serde_json::json!({
+            "file_path": "/nowhere/board.synth",
+            "layout_file_path": "/nowhere/board.placement.layout.toml",
+            "out_dir": "/nowhere/compact",
+            "step_percent": 0,
+        });
+        let err = super::execute_compact_layout(&args, None).expect_err("refused");
+        assert!(err.contains("step_percent"), "{err}");
+        assert!(!std::path::Path::new("/nowhere/compact").exists());
     }
 
     #[test]
