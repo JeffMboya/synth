@@ -7,65 +7,74 @@ signed_by = []
 substitutes = []
 mpn = "24LC256-I/SN"
 lcsc_pn = "C7611"
-required_decoupling = []
 kicad_symbol = "Memory_EEPROM:24LC256"
 kicad_footprint = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+
+[operating_conditions]
+min_voltage_v = 2.5
+max_voltage_v = 5.5
+max_current_ma = 5.0
 
 [[pins]]
 name = "a0"
 number = "1"
 electrical_type = "input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "a1"
 number = "2"
 electrical_type = "input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "a2"
 number = "3"
 electrical_type = "input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "vss"
 number = "4"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "sda"
 number = "5"
 electrical_type = "bidirectional"
-capabilities = []
-required = false
+capabilities = ["i2c_sda"]
+required = true
 
 [[pins]]
 name = "scl"
 number = "6"
-electrical_type = "input"
-capabilities = []
-required = false
+electrical_type = "bidirectional"
+capabilities = ["i2c_scl"]
+required = true
 
 [[pins]]
 name = "wp"
 number = "7"
 electrical_type = "input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "vcc"
 number = "8"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
+
+[[required_decoupling]]
+net = "vcc"
+value = "100nf"
+count = 1
 
 [footprint_dimensions]
 width_mm = 7.4

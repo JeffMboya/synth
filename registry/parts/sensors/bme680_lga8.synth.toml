@@ -6,65 +6,79 @@ lifecycle = "active"
 signed_by = []
 substitutes = []
 mpn = "BME680"
-required_decoupling = []
 kicad_symbol = "Sensor:BME680"
 kicad_footprint = "Package_LGA:Bosch_LGA-8_3x3mm_P0.8mm_ClockwisePinNumbering"
+
+[operating_conditions]
+min_voltage_v = 1.71
+max_voltage_v = 3.6
+max_current_ma = 15.0
 
 [[pins]]
 name = "gnd"
 number = "1"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "csb"
 number = "2"
 electrical_type = "input"
-capabilities = []
-required = false
+capabilities = ["spi_cs"]
+required = true
 
 [[pins]]
 name = "sda"
 number = "3"
 electrical_type = "bidirectional"
-capabilities = []
-required = false
+capabilities = ["i2c_sda", "spi_mosi"]
+required = true
 
 [[pins]]
 name = "scl"
 number = "4"
-electrical_type = "input"
-capabilities = []
-required = false
+electrical_type = "bidirectional"
+capabilities = ["i2c_scl", "spi_sck"]
+required = true
 
 [[pins]]
 name = "sdo"
 number = "5"
 electrical_type = "bidirectional"
-capabilities = []
-required = false
+capabilities = ["spi_miso"]
+required = true
 
 [[pins]]
 name = "vddio"
 number = "6"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "gnd2"
 number = "7"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "vdd"
 number = "8"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
+
+[[required_decoupling]]
+net = "vdd"
+value = "100nf"
+count = 1
+
+[[required_decoupling]]
+net = "vddio"
+value = "100nf"
+count = 1
 
 [footprint_dimensions]
 width_mm = 3.5

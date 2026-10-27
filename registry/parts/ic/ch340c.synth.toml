@@ -6,29 +6,33 @@ lifecycle = "active"
 signed_by = []
 substitutes = []
 mpn = "CH340C"
-required_decoupling = []
 kicad_symbol = "Interface_USB:CH340C"
 kicad_footprint = "Package_SO:SOIC-16_3.9x9.9mm_P1.27mm"
+
+[operating_conditions]
+min_voltage_v = 3.0
+max_voltage_v = 5.3
+max_current_ma = 30.0
 
 [[pins]]
 name = "gnd"
 number = "1"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "txd"
 number = "2"
 electrical_type = "output"
-capabilities = []
+capabilities = ["uart_tx"]
 required = false
 
 [[pins]]
 name = "rxd"
 number = "3"
 electrical_type = "input"
-capabilities = []
+capabilities = ["uart_rx"]
 required = false
 
 [[pins]]
@@ -36,21 +40,21 @@ name = "v3"
 number = "4"
 electrical_type = "passive"
 capabilities = []
-required = false
+required = true
 
 [[pins]]
 name = "ud_plus"
 number = "5"
 electrical_type = "differential_positive"
 capabilities = ["usb_dp"]
-required = false
+required = true
 
 [[pins]]
 name = "ud_minus"
 number = "6"
 electrical_type = "differential_negative"
 capabilities = ["usb_dn"]
-required = false
+required = true
 
 [[pins]]
 name = "nc7"
@@ -120,7 +124,12 @@ name = "vcc"
 number = "16"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
+
+[[required_decoupling]]
+net = "vcc"
+value = "100nf"
+count = 1
 
 [footprint_dimensions]
 width_mm = 7.4
