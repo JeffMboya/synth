@@ -6737,7 +6737,7 @@ pub fn courtyard_fill_percent(board: &Board, placement: &Placement) -> f64 {
 
 /// Scales a finished placement toward its middle by `factor` (1.0 leaves it,
 /// 0.97 pulls every distance in by 3 %), pushes apart whatever then overlaps
-/// and fits the outline round the result. Unlike [`compact_placement`] it does
+/// and fits the outline round the result. Unlike the placer's own `compact_placement` it does
 /// not judge the step and keeps no ring round a dense part: an agent's pinned
 /// layout is often tighter than that ring, and the caller decides by routing
 /// the result, which is the only test that knows how tight the layout can go. Each edge's connector row
