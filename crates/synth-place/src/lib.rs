@@ -6612,8 +6612,9 @@ pub fn courtyard_fill_percent(board: &Board, placement: &Placement) -> f64 {
 /// Scales a finished placement toward its middle by `factor` (1.0 leaves it,
 /// 0.97 pulls every distance in by 3 %), pushes apart whatever then overlaps
 /// and fits the outline round the result. Unlike [`compact_placement`] it does
-/// not judge the step: the caller decides by routing the result, which is the
-/// only test that knows how tight the layout can go. Each edge's connector row
+/// not judge the step and keeps no ring round a dense part: an agent's pinned
+/// layout is often tighter than that ring, and the caller decides by routing
+/// the result, which is the only test that knows how tight the layout can go. Each edge's connector row
 /// moves inward as one body, so connectors stay flush with the fitted outline.
 /// `None` when the parts cannot be separated at that scale.
 #[must_use]
@@ -6631,26 +6632,12 @@ pub fn scale_layout_inward(board: &Board, placement: &Placement, factor: f64) ->
     #[allow(clippy::cast_possible_truncation)]
     let permille = (factor.clamp(0.0, 1.0) * 1000.0).round() as i64;
     squeeze(&mut candidate, permille, middle, &frozen, &flush_edge);
-    // A dense part keeps the ring its pin escape needs, as in compaction.
-    let spaced: Vec<(f64, f64)> = candidate
-        .components
-        .iter()
-        .zip(&sizes)
-        .map(|(placed, (w, h))| {
-            let ring = if is_dense_part(board, placed.id) {
-                DENSE_PART_RING_MM
-            } else {
-                0.0
-            };
-            (w + ring, h + ring)
-        })
-        .collect();
     let pinned: Vec<bool> = candidate
         .components
         .iter()
         .map(|p| flush_edge(p.id).is_some())
         .collect();
-    if !separate_overlaps(&mut candidate, &spaced, &pinned) {
+    if !separate_overlaps(&mut candidate, &sizes, &pinned) {
         return None;
     }
     tighten_outline_after_sidecar(board, &mut candidate);
