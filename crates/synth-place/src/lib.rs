@@ -7066,10 +7066,24 @@ pub fn slide_layout_toward(
     for _ in 0..20 {
         let before = candidate.components.clone();
         if let Some(toward_low) = slide_x {
-            slide_parts(&mut candidate, &sizes, &movable, false, toward_low);
+            slide_parts(
+                &mut candidate,
+                &sizes,
+                &movable,
+                false,
+                toward_low,
+                SLIDE_PITCH_MM,
+            );
         }
         if let Some(toward_low) = slide_y {
-            slide_parts(&mut candidate, &sizes, &movable, true, toward_low);
+            slide_parts(
+                &mut candidate,
+                &sizes,
+                &movable,
+                true,
+                toward_low,
+                SLIDE_PITCH_MM,
+            );
         }
         shift_rows_inward(&mut candidate, &sizes, &flush_edge);
         if candidate.components == before {
