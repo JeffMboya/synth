@@ -2963,6 +2963,17 @@ fn routed_signal_integrity(board: &synth_ir::Board, pcb_path: &Path) -> Vec<synt
     synth_drc::check_signal_integrity(board, &routing, &profile, Some(&stackup))
 }
 
+/// Whether an export is a release: routed, no blocking signal-integrity
+/// finding, and no part exported with a synthesized footprint. A draft
+/// export (`allow_incomplete`) may carry any of these, and says so.
+fn export_release_ready(
+    route_complete: bool,
+    si_blocking: usize,
+    unfootprinted: &[String],
+) -> bool {
+    route_complete && si_blocking == 0 && unfootprinted.is_empty()
+}
+
 fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
     // Long by design: one linear arg-parse + compile + export
     // pipeline per tool keeps the MCP surface reviewable in one
@@ -3002,6 +3013,23 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
     // is emitted only as an explicitly requested draft; the default is a
     // release gate.
     let allow_incomplete = args["allow_incomplete"].as_bool().unwrap_or(false);
+    // R15.9, as in the CLI: a part whose footprint is not in the KiCad library
+    // would export with a bounding-box guess for its pads, which is not
+    // fabricable. Only an explicit draft may carry one.
+    let unfootprinted = synth_layout::kicad_footprint_loader::parts_without_real_footprint(&board);
+    if !unfootprinted.is_empty() && !allow_incomplete {
+        return Ok(serde_json::json!({
+            "error_code": "E-SYNTH-EXPORT-001",
+            "parts_without_real_footprint": unfootprinted,
+            "hint": format!(
+                "These parts have no real .kicad_mod footprint and would export with a synthesized \
+                 bounding-box footprint: {}. Run synth_resolve_footprints and name a footprint the \
+                 KiCad library ships, import a real one, or set allow_incomplete=true for an \
+                 explicitly labelled draft.",
+                unfootprinted.join(", ")
+            ),
+        }));
+    }
     // Two sidecars, two coordinate spaces: board millimetres drive the PCB
     // placer, sheet millimetres drive the schematic. Resolving one file for
     // both is what made an exported PDF disagree with the rendered preview,
@@ -3123,12 +3151,13 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
 
     let mut result = serde_json::json!({
         "status": if route_complete { "success" } else { "draft_incomplete" },
-        "release_ready": route_complete && si_blocking == 0,
+        "release_ready": export_release_ready(route_complete, si_blocking, &unfootprinted),
+        "parts_without_real_footprint": unfootprinted,
         "route_complete": route_complete,
         "signal_integrity": signal_integrity,
         "signal_integrity_blocking": si_blocking,
         "routing": routing,
-        "warning": if route_complete { serde_json::Value::Null } else { serde_json::json!("DRAFT ONLY: the board is not fabrication-ready. Review the routing run record and manually complete the PCB before any fabrication use.") },
+        "warning": if route_complete && unfootprinted.is_empty() { serde_json::Value::Null } else if unfootprinted.is_empty() { serde_json::json!("DRAFT ONLY: the board is not fabrication-ready. Review the routing run record and manually complete the PCB before any fabrication use.") } else { serde_json::json!(format!("DRAFT ONLY: these parts have no real KiCad footprint, so their pads are a guess: {}. A release export would have been refused (E-SYNTH-EXPORT-001).", unfootprinted.join(", "))) },
         "capability_tier": "engineer-review-required",
         "compiler_version": "0.0.1",
         "registry_version": "0.0.1",
@@ -4594,6 +4623,69 @@ mod import_tool_tests {
         assert!(result.is_err(), "export must reject unresolved parts");
         assert!(!dir.join("unresolved_export.kicad_pcb").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The MCP export holds the same R15.9 footprint guarantee as the CLI: a
+    /// part whose footprint is not in the KiCad library blocks a release
+    /// export instead of reporting the board fabrication-ready.
+    #[test]
+    fn export_refuses_a_part_whose_footprint_is_not_in_the_library() {
+        let reg = scratch("export_nofp_reg");
+        let dir = scratch("export_nofp");
+        let toml_src = r#"
+id = "no_such_footprint_res"
+kind = "resistor"
+description = "resistor naming a footprint KiCad does not ship"
+kicad_footprint = "Resistor_SMD:R_0603_1608Metric_DOES_NOT_EXIST"
+[[pins]]
+name = "1"
+number = "1"
+electrical_type = "passive"
+[[pins]]
+name = "2"
+number = "2"
+electrical_type = "passive"
+"#;
+        call_tool(
+            "synth_author_part",
+            &json!({ "part_toml": toml_src, "user_registry": reg.to_str().unwrap() }),
+            None,
+        )
+        .expect("author_part");
+        let source = r#"board "nofp_export" {
+  layers 2
+  component R1: resistor "no_such_footprint_res" value "10k"
+}
+"#;
+        let args = |allow: bool| {
+            json!({
+                "source": source,
+                "out_dir": dir.to_str().unwrap(),
+                "user_registry": reg.to_str().unwrap(),
+                "allow_incomplete": allow,
+            })
+        };
+        let refused =
+            call_tool("synth_export", &args(false), None).expect("a refusal, not an error");
+        assert_eq!(refused["error_code"], "E-SYNTH-EXPORT-001", "{refused}");
+        assert_eq!(
+            refused["parts_without_real_footprint"],
+            json!(["no_such_footprint_res"])
+        );
+        assert!(!dir.join("nofp_export.kicad_pcb").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&reg);
+    }
+
+    #[test]
+    fn a_draft_export_is_never_release_ready_with_a_guessed_footprint() {
+        assert!(export_release_ready(true, 0, &[]));
+        assert!(!export_release_ready(false, 0, &[]));
+        assert!(!export_release_ready(true, 1, &[]));
+        assert!(
+            !export_release_ready(true, 0, &["hdc1080_rh_t".to_string()]),
+            "a routed, clean board with a synthesized footprint is not a release"
+        );
     }
 
     #[test]

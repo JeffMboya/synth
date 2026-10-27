@@ -422,6 +422,30 @@ pub fn pads(lib_id: &str) -> Option<Vec<Pad>> {
     Some(out)
 }
 
+/// R15.9: the deduplicated ids of every board part that would export with a
+/// synthesized bounding-box footprint, whose pad geometry is a guess: parts
+/// with no `kicad_footprint` at all, or whose referenced footprint cannot be
+/// resolved to real pad geometry on disk. Both the CLI export and the MCP
+/// `synth_export` gate on this, so they cannot disagree about a board.
+#[must_use]
+pub fn parts_without_real_footprint(board: &synth_ir::Board) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut missing = Vec::new();
+    for component in &board.components {
+        let Some(part) = component.part.as_ref() else {
+            continue;
+        };
+        if !seen.insert(part.id.as_str().to_string()) {
+            continue;
+        }
+        let resolves = part.kicad_footprint.as_deref().and_then(pads).is_some();
+        if !resolves {
+            missing.push(part.id.as_str().to_string());
+        }
+    }
+    missing
+}
+
 fn parse_pad(block: &str) -> Option<Pad> {
     // Pad header: `(pad "<number>" <type> <shape>`. Pull the
     // quoted number first.
