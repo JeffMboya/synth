@@ -13,7 +13,6 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -257,13 +256,13 @@ fn progress_token(req: &Value) -> Option<Value> {
 }
 
 /// Calls in flight, by request id, each with the flag `notifications/cancelled` sets.
-type InFlight = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
+type InFlight = Arc<Mutex<HashMap<String, synth_router::process::CancelToken>>>;
 
 /// A `tools/call` waiting for, or holding, the tool worker.
 struct Job {
     req: Value,
     key: String,
-    cancelled: Arc<AtomicBool>,
+    cancelled: synth_router::process::CancelToken,
     /// Alive from the moment the call arrives, so a call queued behind a long
     /// export still tells its own client it is waiting.
     heartbeat: Option<Heartbeat>,
@@ -297,17 +296,21 @@ async fn serve<R, W, H>(
         );
         std::thread::spawn(move || {
             for job in jobs {
-                let resp_val = if job.cancelled.load(Ordering::SeqCst) {
+                // The call's token is the one every external router and KiCad run
+                // inside it watches, so a cancellation ends them, not only the reply.
+                synth_router::process::set_ambient_cancel(Some(job.cancelled.clone()));
+                let resp_val = if job.cancelled.is_cancelled() {
                     Value::Null
                 } else {
                     handle(job.req)
                 };
+                synth_router::process::set_ambient_cancel(None);
                 drop(job.heartbeat);
                 in_flight
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&job.key);
-                if !job.cancelled.load(Ordering::SeqCst) && !resp_val.is_null() {
+                if !job.cancelled.is_cancelled() && !resp_val.is_null() {
                     write(&serde_json::to_string(&resp_val).unwrap_or_default());
                 }
             }
@@ -341,7 +344,7 @@ async fn serve<R, W, H>(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&target)
             {
-                flag.store(true, Ordering::SeqCst);
+                flag.cancel();
             }
             continue;
         }
@@ -356,15 +359,15 @@ async fn serve<R, W, H>(
         }
 
         let key = req_val["id"].to_string();
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = synth_router::process::CancelToken::new();
         in_flight
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key.clone(), Arc::clone(&cancelled));
+            .insert(key.clone(), cancelled.clone());
         let heartbeat = progress_token(&req_val).map(|token| {
-            let (write, cancelled) = (Arc::clone(&write), Arc::clone(&cancelled));
+            let (write, cancelled) = (Arc::clone(&write), cancelled.clone());
             Heartbeat::start(token, interval, move |message| {
-                if !cancelled.load(Ordering::SeqCst) {
+                if !cancelled.is_cancelled() {
                     write(&message);
                 }
             })
@@ -426,7 +429,7 @@ pub async fn run_sse_server(port: u16, default_registry: Option<PathBuf>) -> any
 #[cfg(test)]
 mod heartbeat_tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
     fn a_running_call_sends_progress_until_it_returns() {
@@ -575,6 +578,63 @@ mod heartbeat_tests {
             .map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].clone())
             .collect();
         assert_eq!(ids, vec![Value::from(1), Value::from(2)]);
+    }
+
+    /// Cancelling a call that is already running ends the external process it is
+    /// waiting on; it is not merely left to finish with its reply dropped.
+    #[test]
+    fn cancelling_a_running_call_stops_its_external_work() {
+        use tokio::io::AsyncWriteExt;
+        let sink = Arc::new(Mutex::new(Vec::<String>::new()));
+        let out = Arc::clone(&sink);
+        let started = std::time::Instant::now();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (mut tx, rx) = tokio::io::duplex(4096);
+            let writer = tokio::spawn(async move {
+                tx.write_all(
+                    b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{}}\n",
+                )
+                .await
+                .unwrap();
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                tx.write_all(
+                    b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1}}\n",
+                )
+                .await
+                .unwrap();
+            });
+            serve(
+                BufReader::new(rx).lines(),
+                Arc::new(|req: Value| {
+                    // A tool that waits on an external process for a minute.
+                    let run = synth_router::process::run(
+                        std::path::Path::new("/bin/sh"),
+                        &["-c".to_string(), "sleep 60".to_string()],
+                        Duration::from_secs(60),
+                        4096,
+                    );
+                    let cancelled = run.is_ok_and(|r| r.cancelled);
+                    serde_json::json!({"jsonrpc": "2.0", "id": req["id"], "result": {"cancelled": cancelled}})
+                }),
+                Duration::from_secs(60),
+                Arc::new(move |m: &str| out.lock().unwrap().push(m.to_string())),
+            )
+            .await;
+            writer.await.unwrap();
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the sleep was waited out: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "no reply for a cancelled call"
+        );
     }
 
     #[test]
