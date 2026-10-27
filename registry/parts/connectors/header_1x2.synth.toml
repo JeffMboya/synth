@@ -23,3 +23,4 @@ electrical_type = "passive"
 
 [provenance]
 datasheet_url = "https://www.lcsc.com/datasheet/lcsc_datasheet_2407231541_hanxia-HX-PZ2-54-1x2P-ZZ_C32713268.pdf"
+reviewed_by = "Steve Munene"

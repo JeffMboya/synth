@@ -33,3 +33,4 @@ electrical_type = "passive"
 
 [provenance]
 datasheet_url = "https://www.lcsc.com/datasheet/lcsc_datasheet_1912111437_BOURNS-CDSOT23-SM712_C404012.pdf"
+reviewed_by = "Steve Munene"
