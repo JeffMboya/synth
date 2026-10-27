@@ -66,6 +66,7 @@ pub mod kicad_cli;
 mod profile;
 mod rules;
 mod signal_integrity;
+pub use signal_integrity::is_ground_name;
 /// The IPC-2221 width a `current` needs. Re-exported so the exporter can size
 /// a high-current net's trace for the router.
 pub use signal_integrity::required_width_nm;
