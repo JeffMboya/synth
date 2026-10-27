@@ -326,6 +326,139 @@ pub fn courtyard_rect(lib_id: &str) -> Option<(f64, f64, f64, f64)> {
     Some((cx, cy, w, h))
 }
 
+/// Every `(xy x y)` point in `block`.
+fn all_xy(block: &str) -> Vec<(f64, f64)> {
+    let mut points = Vec::new();
+    let mut rest = block;
+    while let Some(index) = rest.find("(xy ") {
+        if let Some(point) = xy_after(&rest[index..], "(xy ") {
+            points.push(point);
+        }
+        rest = &rest[index + "(xy ".len()..];
+    }
+    points
+}
+
+/// The bounding box of everything drawn on `F.CrtYd` in a footprint file's text:
+/// lines, rectangles, arcs (start, middle and end), circles and polygons. A
+/// courtyard drawn with arcs or a circle is measured whole, where reading only
+/// its lines can give a height of zero. `(min_x, min_y, max_x, max_y)`, or `None`
+/// when nothing is drawn there.
+#[must_use]
+pub fn courtyard_extent_from_text(text: &str) -> Option<(f64, f64, f64, f64)> {
+    let mut extent: Option<(f64, f64, f64, f64)> = None;
+    let mut include = |x: f64, y: f64| {
+        extent = Some(match extent {
+            None => (x, y, x, y),
+            Some((a, b, c, d)) => (a.min(x), b.min(y), c.max(x), d.max(y)),
+        });
+    };
+    let mut pos = 0;
+    while let Some(start) = find_next_block(
+        text,
+        pos,
+        &["(fp_rect", "(fp_line", "(fp_arc", "(fp_circle", "(fp_poly"],
+    ) {
+        let Some(end) = balanced_paren_end(text, start) else {
+            break;
+        };
+        let block = &text[start..end];
+        pos = end;
+        if !block_contains_layer(block, "F.CrtYd") {
+            continue;
+        }
+        if block.starts_with("(fp_circle") {
+            if let (Some((cx, cy)), Some((ex, ey))) =
+                (xy_after(block, "(center "), xy_after(block, "(end "))
+            {
+                let radius = (ex - cx).hypot(ey - cy);
+                include(cx - radius, cy - radius);
+                include(cx + radius, cy + radius);
+            }
+        } else if block.starts_with("(fp_poly") {
+            for (x, y) in all_xy(block) {
+                include(x, y);
+            }
+        } else {
+            for key in ["(start ", "(mid ", "(end "] {
+                if let Some((x, y)) = xy_after(block, key) {
+                    include(x, y);
+                }
+            }
+        }
+    }
+    extent
+}
+
+/// The size of the box that holds every pad of a footprint file's text, pad
+/// copper included. Pad rotation is ignored, so a rotated pad's extent is its
+/// unrotated one. `None` when there is no pad.
+#[must_use]
+pub fn pads_extent_from_text(text: &str) -> Option<(f64, f64)> {
+    let mut min = (f64::INFINITY, f64::INFINITY);
+    let mut max = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut pos = 0;
+    let mut any = false;
+    while let Some(start) = find_next_block(text, pos, &["(pad "]) {
+        let Some(end) = balanced_paren_end(text, start) else {
+            break;
+        };
+        if let Some(pad) = parse_pad(&text[start..end]) {
+            min.0 = min.0.min(pad.center_mm.0 - pad.size_mm.0 / 2.0);
+            min.1 = min.1.min(pad.center_mm.1 - pad.size_mm.1 / 2.0);
+            max.0 = max.0.max(pad.center_mm.0 + pad.size_mm.0 / 2.0);
+            max.1 = max.1.max(pad.center_mm.1 + pad.size_mm.1 / 2.0);
+            any = true;
+        }
+        pos = end;
+    }
+    any.then_some((max.0 - min.0, max.1 - min.1))
+}
+
+/// The `footprint_dimensions` (body width and height) of a footprint file's
+/// text, in millimetres.
+///
+/// A registry part declares its body, and the courtyard margin on top of it, so
+/// the courtyard is the body plus the margin on each side and the margin is taken
+/// off here, not added twice. When the courtyard is missing, or measures to
+/// nothing, the pads' extent stands in for the body.
+///
+/// # Errors
+/// Returns why nothing usable could be measured: no courtyard that is larger
+/// than its margins and no pad.
+pub fn derive_footprint_dimensions_from_text(
+    text: &str,
+    margin_mm: f64,
+) -> Result<(f64, f64), String> {
+    let round = |v: f64| (v * 1000.0).round() / 1000.0;
+    if let Some((x0, y0, x1, y1)) = courtyard_extent_from_text(text) {
+        let (width, height) = (x1 - x0 - 2.0 * margin_mm, y1 - y0 - 2.0 * margin_mm);
+        if width > 0.0 && height > 0.0 {
+            return Ok((round(width), round(height)));
+        }
+    }
+    match pads_extent_from_text(text) {
+        Some((width, height)) if width > 0.0 && height > 0.0 => Ok((round(width), round(height))),
+        _ => Err("it has no courtyard larger than its margins and no pads to measure".to_string()),
+    }
+}
+
+/// As [`derive_footprint_dimensions_from_text`], for a footprint in the KiCad
+/// library, named `Library:Name`.
+///
+/// # Errors
+/// Returns why the footprint could not be read or measured, in words an author
+/// can act on.
+pub fn derive_footprint_dimensions(lib_id: &str, margin_mm: f64) -> Result<(f64, f64), String> {
+    let text = read_footprint(lib_id).ok_or_else(|| {
+        format!(
+            "footprint `{lib_id}` could not be read: KiCad's footprint library is not installed here, or it has no footprint of that name (check the spelling)"
+        )
+    })?;
+    derive_footprint_dimensions_from_text(&text, margin_mm)
+        .map_err(|why| format!("footprint `{lib_id}`: {why}"))
+}
+
 /// Return `(width_mm, height_mm)` of the footprint's courtyard.
 pub fn courtyard_bbox(lib_id: &str) -> Option<(f64, f64)> {
     courtyard_rect(lib_id).map(|(_, _, w, h)| (w, h))
