@@ -6619,12 +6619,32 @@ pub fn courtyard_fill_percent(board: &Board, placement: &Placement) -> f64 {
 /// `None` when the parts cannot be separated at that scale.
 #[must_use]
 pub fn scale_layout_inward(board: &Board, placement: &Placement, factor: f64) -> Option<Placement> {
+    scale_layout_toward(board, placement, factor, (0.5, 0.5))
+}
+
+/// As [`scale_layout_inward`], scaling about the point `toward` names instead
+/// of the middle: `(0.0, 0.0)` is the top-left corner of the layout, `(1.0, 1.0)`
+/// the bottom-right, `(0.5, 0.5)` the middle. The side of the layout at that
+/// point stays where it is and the opposite side comes in, so empty space
+/// that sits against one side is taken from that side.
+#[must_use]
+pub fn scale_layout_toward(
+    board: &Board,
+    placement: &Placement,
+    factor: f64,
+    toward: (f64, f64),
+) -> Option<Placement> {
     let mut candidate = placement.clone();
     let sizes = courtyard_sizes(board, &candidate);
     let envelope = courtyard_envelope(&candidate, &sizes)?;
+    let at = |low: i64, high: i64, fraction: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let offset = ((high - low) as f64 * fraction.clamp(0.0, 1.0)) as i64;
+        low + offset
+    };
     let middle = Point::new(
-        (envelope.min.x_nm + envelope.max.x_nm) / 2,
-        (envelope.min.y_nm + envelope.max.y_nm) / 2,
+        at(envelope.min.x_nm, envelope.max.x_nm, toward.0),
+        at(envelope.min.y_nm, envelope.max.y_nm, toward.1),
     );
     let flush_edge = |id: ComponentId| flush_edge_index(board, id);
     let frozen = vec![false; candidate.components.len()];
@@ -8150,6 +8170,31 @@ board "features_only" {
                 "1.0 moves a part more than the pitch"
             );
         }
+    }
+
+    #[test]
+    fn scaling_toward_a_corner_takes_the_slack_from_the_opposite_sides() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut placement = place(&board).expect("place");
+        for placed in &mut placement.components {
+            placed.center = Point::new(placed.center.x_nm * 13 / 10, placed.center.y_nm * 13 / 10);
+        }
+        let sizes = courtyard_sizes(&board, &placement);
+        let before = courtyard_envelope(&placement, &sizes).expect("envelope");
+        let scaled = scale_layout_toward(&board, &placement, 0.9, (1.0, 1.0)).expect("scales");
+        let after =
+            courtyard_envelope(&scaled, &courtyard_sizes(&board, &scaled)).expect("envelope");
+        let pitch = mm_to_nm(0.5) * 2;
+        assert!(
+            (after.max.x_nm - before.max.x_nm).abs() <= pitch
+                && (after.max.y_nm - before.max.y_nm).abs() <= pitch,
+            "the bottom-right corner stays: {before:?} -> {after:?}"
+        );
+        assert!(
+            after.min.x_nm > before.min.x_nm + mm_to_nm(2.0)
+                && after.min.y_nm > before.min.y_nm + mm_to_nm(2.0),
+            "the top-left side comes in: {before:?} -> {after:?}"
+        );
     }
 
     #[test]
