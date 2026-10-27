@@ -3214,6 +3214,17 @@ fn compact_failure_reason(result: &Value) -> String {
     text.chars().take(240).collect()
 }
 
+/// Whether the sidecar is a different layout from the one a compaction began
+/// with. `installed` is the layout the tool itself wrote over it afterwards,
+/// which is not a change. No record yet means compaction has not begun.
+fn compact_sidecar_changed(
+    started_from: Option<&str>,
+    installed: Option<&str>,
+    current: &str,
+) -> bool {
+    started_from.is_some_and(|started| started != current) && installed != Some(current)
+}
+
 /// `synth_compact_layout`: one attempt of the compaction loop. See the tool
 /// description; state lives in `<out_dir>/compact.json` so each call is short
 /// enough for an agent's tool timeout.
@@ -3240,6 +3251,22 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("Cannot create out_dir: {e}"))?;
     let state_path = out_dir.join("compact.json");
     let original = out_dir.join("original.placement.layout.toml");
+    let sidecar_sha_path = out_dir.join("sidecar.sha");
+    // A sidecar changed since compaction began (the agent moved a part) is a
+    // new start layout: the attempts and the saved start copy describe the old
+    // one, so they are dropped. The layout this tool installed is not a change.
+    let current_sha = sha256_of(&sidecar);
+    let known = std::fs::read_to_string(&sidecar_sha_path).unwrap_or_default();
+    let mut known_shas = known.lines();
+    let started_from = known_shas.next();
+    let installed = known_shas.next();
+    if compact_sidecar_changed(started_from, installed, &current_sha) {
+        let _ = std::fs::remove_file(&state_path);
+        let _ = std::fs::remove_file(&original);
+        let _ = std::fs::remove_file(&sidecar_sha_path);
+        let backup = PathBuf::from(format!("{}.pre-compact", sidecar.display()));
+        let _ = std::fs::remove_file(backup);
+    }
     // The start layout is the sidecar as it was when compaction began, kept
     // aside so a later call never compacts an already compacted layout.
     if !original.exists() {
@@ -3248,6 +3275,8 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
         if !backup.exists() {
             let _ = std::fs::copy(&sidecar, &backup);
         }
+        std::fs::write(&sidecar_sha_path, format!("{current_sha}\n"))
+            .map_err(|e| format!("Cannot record the sidecar: {e}"))?;
     }
     let mut attempts: Vec<CompactAttempt> = std::fs::read_to_string(&state_path)
         .ok()
@@ -3389,6 +3418,17 @@ fn finish_compaction(
         .join("layout.placement.layout.toml");
     if best.permille != 1000 {
         std::fs::copy(&chosen, sidecar).map_err(|e| format!("Cannot install the layout: {e}"))?;
+        // Remember which layout this tool installed, so a later call does not
+        // mistake it for an edit by the author.
+        let sha_path = out_dir.join("sidecar.sha");
+        let started_from = std::fs::read_to_string(&sha_path)
+            .ok()
+            .and_then(|text| text.lines().next().map(str::to_string))
+            .unwrap_or_default();
+        let _ = std::fs::write(
+            &sha_path,
+            format!("{started_from}\n{}\n", sha256_of(sidecar)),
+        );
     }
     #[allow(clippy::cast_precision_loss)]
     let best_scale_percent = best.permille as f64 / 10.0;
@@ -5308,6 +5348,19 @@ mod tests {
             fill_percent: 0.0,
             reason: String::new(),
         }
+    }
+
+    #[test]
+    fn an_edited_sidecar_restarts_compaction_but_the_installed_layout_does_not() {
+        use super::compact_sidecar_changed as changed;
+        assert!(!changed(None, None, "a"), "nothing recorded yet");
+        assert!(!changed(Some("a"), None, "a"), "unchanged since the start");
+        assert!(changed(Some("a"), None, "b"), "the author edited it");
+        assert!(!changed(Some("a"), Some("b"), "b"), "the tool installed it");
+        assert!(
+            changed(Some("a"), Some("b"), "c"),
+            "edited after the install"
+        );
     }
 
     #[test]
