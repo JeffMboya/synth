@@ -4873,6 +4873,7 @@ fn build_route_request(
         std::env::set_var("SYNTH_KRT_PYTHON", python);
     }
     request.routing_order = routing_order.to_vec();
+    request.ground_nets = synth_drc::ground_net_names(board);
     request.preserve_baseline()?;
     Ok(request)
 }
