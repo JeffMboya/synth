@@ -3402,7 +3402,7 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
         width_mm: 0.0,
         height_mm: 0.0,
         fill_percent: 0.0,
-        reason: "the parts could not be separated at this scale".into(),
+        reason: "the layout has no courtyards to scale".into(),
     };
     if let Some(placed) = candidate {
         attempt.width_mm = synth_geometry::nm_to_mm(placed.board_outline.width_nm());
