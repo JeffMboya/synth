@@ -1477,8 +1477,12 @@ fn derived_controlled_geometry(board: &Board) -> Vec<(synth_ir::NetId, DerivedGe
         .collect()
 }
 
-/// The clearance a net class takes when the author declared none.
-const DEFAULT_CLASS_CLEARANCE_MM: f64 = 0.127;
+/// The clearance a net class takes when the author declared none: the board's
+/// manufacturer minimum, from the profile the project file and the router
+/// resolve, so the classes written here say what the project file says.
+fn default_class_clearance_mm(board: &Board) -> f64 {
+    synth_geometry::nm_to_mm(crate::export::manufacturer_profile(board).min_copper_clearance_nm)
+}
 
 fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
     // Topological power-domain map: classifies every net by connected pin types,
@@ -1592,7 +1596,7 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
         let mut default_args = vec![
             Sexp::str("Default"),
             Sexp::str("Default net class"),
-            Sexp::list("clearance", vec![num(DEFAULT_CLASS_CLEARANCE_MM)]),
+            Sexp::list("clearance", vec![num(default_class_clearance_mm(board))]),
             Sexp::list("trace_width", vec![num(0.127)]),
             Sexp::list("via_dia", vec![num(0.60)]),
             Sexp::list("via_drill", vec![num(0.30)]),
@@ -1631,7 +1635,7 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
         // The project file writes this class at the manufacturer minimum, which
         // is what the router honours. A larger value here is the one KiCad's
         // DRC enforces, so copper the router placed legally is reported.
-        let power_clearance = DEFAULT_CLASS_CLEARANCE_MM;
+        let power_clearance = default_class_clearance_mm(board);
         let mut power_args = vec![
             Sexp::str("Power"),
             Sexp::str("Power delivery network"),
@@ -3320,6 +3324,51 @@ mod tests {
         // manufacturer minimum. The board's own classes must say the same.
         assert_eq!(nc_str.matches("(clearance 0.127)").count(), 2, "{nc_str}");
         assert!(!nc_str.contains("(clearance 0.2)"), "{nc_str}");
+    }
+
+    /// The Default and Power classes take the clearance of the board's
+    /// manufacturer, the figure the project file and the router work to, not a
+    /// fixed 0.127 mm: PCBWay's minimum is 0.15 mm and OSH Park's 0.125 mm.
+    #[test]
+    fn inferred_classes_take_the_manufacturers_clearance() {
+        let net = |id: u32, name: &str| synth_ir::Net {
+            id: synth_ir::NetId(id),
+            name: name.to_string(),
+            auto_named: false,
+            endpoints: vec![],
+            netclass: None,
+            voltage: None,
+        };
+        let net_table = vec![
+            (1_u32, "VCC".to_string()),
+            (2_u32, "GND".to_string()),
+            (3_u32, "SIG1".to_string()),
+        ];
+        for (manufacturer, expected) in [
+            (None, "(clearance 0.127)"),
+            (Some("jlcpcb"), "(clearance 0.127)"),
+            (Some("pcbway"), "(clearance 0.15)"),
+            (Some("oshpark"), "(clearance 0.125)"),
+        ] {
+            let mut board = plain_test_board();
+            board.manufacturer = manufacturer.map(str::to_string);
+            board.nets = vec![net(0, "VCC"), net(1, "GND"), net(2, "SIG1")];
+            let classes = build_netclasses(&net_table, &board)
+                .iter()
+                .map(crate::sexp::Sexp::to_string_pretty)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(classes.contains("\"Power\""), "{manufacturer:?}: {classes}");
+            assert_eq!(
+                classes.matches(expected).count(),
+                2,
+                "{manufacturer:?}: Default and Power both take {expected}\n{classes}"
+            );
+            assert!(
+                !classes.contains("(clearance 0.2)"),
+                "{manufacturer:?}: no class falls back to 0.2 mm\n{classes}"
+            );
+        }
     }
 
     #[test]
