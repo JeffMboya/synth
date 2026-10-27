@@ -223,6 +223,10 @@ pub struct ReleaseManifest {
     pub fab_requested: bool,
     pub production_status: ProductionStatus,
     pub release_ready: bool,
+    /// What `production_status` and `release_ready` cover, so a reader of the
+    /// file alone does not take them for sign-off.
+    #[serde(default = "gate_scope")]
+    pub gate_scope: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overrides: Vec<OverrideRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -253,6 +257,13 @@ pub struct SignalIntegrityState {
     pub findings: Vec<SignalFinding>,
 }
 
+fn gate_scope() -> String {
+    "production_status and release_ready cover only Synth's routing and export gates: \
+     override flags, route validation and signal integrity. They are not a fabrication \
+     approval, a qualification result or a component review."
+        .to_string()
+}
+
 impl ReleaseManifest {
     pub fn new(
         tool_version: &str,
@@ -274,6 +285,7 @@ impl ReleaseManifest {
                 ProductionStatus::Untrusted
             },
             release_ready: clean,
+            gate_scope: gate_scope(),
             overrides,
             exception: None,
             reviewer_state,
@@ -536,6 +548,14 @@ mod tests {
         })
         .unwrap();
         assert_eq!(some["fabrication_notes"][0], "n");
+    }
+
+    #[test]
+    fn the_manifest_says_its_status_fields_are_not_an_approval() {
+        let m = manifest(Vec::new());
+        let json = serde_json::to_value(&m).unwrap();
+        let scope = json["gate_scope"].as_str().unwrap();
+        assert!(scope.contains("not a fabrication approval"), "{scope}");
     }
 
     #[test]

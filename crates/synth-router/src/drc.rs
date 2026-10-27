@@ -692,6 +692,32 @@ mod tests {
     }
 
     #[test]
+    fn a_zone_listed_against_itself_at_one_point_is_still_an_open_net() {
+        // KiCad lists a zone against itself when two of its fill islands that
+        // both reach pads are not joined. The UUID and the position being the
+        // same says nothing about the other layers: the usb-uart board had a
+        // real GND split that reported exactly this pair. It must block.
+        let report = parse_report_text(
+            r#"{"violations": [],
+               "unconnected_items": [
+                 {"type": "unconnected_items", "severity": "error",
+                  "description": "Missing connection between items",
+                  "items": [
+                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1",
+                     "pos": {"x": 2.05, "y": -0.06}},
+                    {"description": "Zone [GND] on F.Cu, priority 1", "uuid": "z-1",
+                     "pos": {"x": 2.05, "y": -0.06}}
+                  ]}
+               ]}"#,
+        )
+        .expect("parses");
+        assert_eq!(report.unconnected_items, 1);
+        assert_eq!(report.counts().unconnected, 1);
+        assert_eq!(report.counts().blocking_count(), 1);
+        assert!(!report.is_clean());
+    }
+
+    #[test]
     fn an_unconnected_item_is_not_also_counted_as_a_warning() {
         // It is reported once, in the unconnected column. Counting it in the
         // warning column too makes one pad appear in the same summary line
