@@ -3643,8 +3643,10 @@ fn place_with_outline<S: ::std::hash::BuildHasher>(
 ///
 /// A pinned connector is left alone: a sidecar is a constraint, and the DRC
 /// reports it if it is wrong. So is a turn that would put the courtyard on top
-/// of another part — a quarter turn changes its extents — since an overlap is
-/// worse than a connector that faces sideways, and the DRC reports that too.
+/// of another part, or take the courtyard or a copper pad outside the outline
+/// or inside the copper-to-edge clearance — a quarter turn changes its
+/// extents — since either is worse than a connector that faces sideways, and
+/// the DRC reports that too.
 fn face_edge_connectors_outward<S: ::std::hash::BuildHasher>(
     board: &Board,
     outline: Rect,
@@ -3670,10 +3672,33 @@ fn face_edge_connectors_outward<S: ::std::hash::BuildHasher>(
                 || !padded_courtyard_rect(courtyard_lookup, &turned)
                     .intersects(&padded_courtyard_rect(courtyard_lookup, other))
         });
-        if clear {
+        if clear && turn_stays_inside(board, outline, &turned) {
             placements[index] = turned;
         }
     }
+}
+
+/// Whether a connector, as placed, keeps its courtyard inside `outline` and
+/// every copper pad at least [`COPPER_EDGE_CLEARANCE_MM`] inside it. A quarter
+/// turn swaps a connector's extents, so a placement that was legal can leave
+/// the board once it is turned.
+fn turn_stays_inside(board: &Board, outline: Rect, turned: &ComponentPlacement) -> bool {
+    let Some(component) = board.component(turned.id) else {
+        return true;
+    };
+    let within = |inner: Rect, outer: Rect| {
+        inner.min.x_nm >= outer.min.x_nm
+            && inner.min.y_nm >= outer.min.y_nm
+            && inner.max.x_nm <= outer.max.x_nm
+            && inner.max.y_nm <= outer.max.y_nm
+    };
+    let clearance = mm_to_nm(COPPER_EDGE_CLEARANCE_MM);
+    let copper_area = Rect::new(
+        Point::new(outline.min.x_nm + clearance, outline.min.y_nm + clearance),
+        Point::new(outline.max.x_nm - clearance, outline.max.y_nm - clearance),
+    );
+    within(sidecar_courtyard_rect(board, component, turned), outline)
+        && exported_pad_bounds(component, turned).is_none_or(|pads| within(pads, copper_area))
 }
 
 fn exported_pad_bounds(
@@ -7860,6 +7885,96 @@ board "features_only" {
 
     /// A loose layout is squeezed toward its centre: the envelope around the
     /// courtyards shrinks, wiring gets no longer, and nothing overlaps.
+    /// A quarter turn swaps a connector's extents, so a placement that was legal
+    /// can leave the board once it is turned. The turn is declined then, and
+    /// taken when there is room.
+    #[test]
+    fn a_connector_turn_that_would_leave_the_outline_is_declined() {
+        use synth_geometry::Rotation;
+        use synth_registry::MatingFace;
+
+        let board = load_board("../../fixtures/designs/edge_jst_connectors.synth");
+        let placement = place(&board).expect("place");
+        let j1 = board
+            .components
+            .iter()
+            .find(|c| c.refdes == "J1")
+            .expect("J1")
+            .clone();
+        let size = |c: &synth_ir::Component| {
+            c.part.as_ref().map_or_else(
+                || fallback_courtyard(&c.kind),
+                |part| synth_layout::pcb_courtyard_geometry_for_part(part).1,
+            )
+        };
+        let lookup: std::collections::HashMap<ComponentId, (f64, f64)> =
+            board.components.iter().map(|c| (c.id, size(c))).collect();
+        let (w, h) = size(&j1);
+        assert!(
+            (w - h).abs() > 1.0,
+            "the connector must change shape when turned: {w} x {h}"
+        );
+
+        // J1 asked for the left edge; turn it a quarter away from the rotation
+        // that opens out of that edge, so the pass wants to turn it back.
+        let wanted =
+            floorplan::rotation_for_mating_edge(MatingFace::Bottom, floorplan::BoardEdge::Left);
+        let wrong = if wanted.swaps_extents() {
+            Rotation::Zero
+        } else {
+            Rotation::Ninety
+        };
+        // J1 sits against the left edge of a board 100 mm long, so the pass
+        // reads it as a left-edge connector; how far it sits from that edge
+        // and how tall the board is are all that differ between the two cases.
+        let (placed_w, placed_h) = if wrong.swaps_extents() {
+            (h, w)
+        } else {
+            (w, h)
+        };
+        let run = |left_mm: f64, board_height_mm: f64| {
+            let outline = Rect::new(
+                Point::new(mm_to_nm(20.0), mm_to_nm(20.0)),
+                Point::new(mm_to_nm(120.0), mm_to_nm(20.0 + board_height_mm)),
+            );
+            let mut placements = placement.components.clone();
+            for placed in &mut placements {
+                if placed.id == j1.id {
+                    placed.rotation = wrong;
+                    placed.center = Point::new(
+                        outline.min.x_nm + mm_to_nm(placed_w / 2.0 + left_mm),
+                        (outline.min.y_nm + outline.max.y_nm) / 2,
+                    );
+                } else {
+                    // Far from the connector, so only the outline can stop the turn.
+                    placed.center = Point::new(mm_to_nm(500.0), mm_to_nm(500.0));
+                }
+            }
+            face_edge_connectors_outward(
+                &board,
+                outline,
+                &mut placements,
+                &lookup,
+                &std::collections::HashMap::new(),
+            );
+            placements
+                .iter()
+                .find(|placed| placed.id == j1.id)
+                .map(|placed| placed.rotation)
+                .expect("J1 placed")
+        };
+
+        // A board only as tall as the connector as it sits: turned a quarter,
+        // it would be taller than the board.
+        assert_eq!(
+            run(0.1, placed_h + 0.8),
+            wrong,
+            "a turn that leaves the board is declined"
+        );
+        // The same connector with room to turn is turned.
+        assert_eq!(run(5.0, 40.0), wanted, "with room the connector is turned");
+    }
+
     #[test]
     fn compaction_squeezes_a_loose_layout() {
         let (board, loose) = row_board(FOUR_IN_A_CHAIN, &[8.0, 24.0, 40.0, 56.0]);
