@@ -275,7 +275,8 @@ pub fn compute_floorplan_targets(
     // order; a lone connector keeps the position it always had.
     let slots = edge_connector_slots(board);
     let mut usb_count = 0_i64;
-    let mut jst_count = 0_i64;
+    // JST connectors already placed on each edge: left, right, top, bottom.
+    let mut jst_per_edge = [0_i64; 4];
     let mut header_count = 0_i64;
     let mut sensor_count = 0_i64;
     for comp in &board.components {
@@ -348,7 +349,13 @@ pub fn compute_floorplan_targets(
             // no face.
             let edge = hinted_edge(comp).unwrap_or(BoardEdge::Left);
             let inset = half_h + synth_geometry::mm_to_nm(1.5);
-            let step = jst_count * synth_geometry::mm_to_nm(12.0);
+            let edge_index = match edge {
+                BoardEdge::Left => 0,
+                BoardEdge::Right => 1,
+                BoardEdge::Top => 2,
+                BoardEdge::Bottom => 3,
+            };
+            let step = jst_per_edge[edge_index] * synth_geometry::mm_to_nm(12.0);
             let (mut x, mut y) = match edge {
                 BoardEdge::Left => (min_x + inset, min_y + height_nm / 3 + step),
                 BoardEdge::Right => (max_x - inset, min_y + height_nm / 3 + step),
@@ -369,7 +376,7 @@ pub fn compute_floorplan_targets(
                     rotation: Rotation::Ninety,
                 },
             );
-            jst_count += 1;
+            jst_per_edge[edge_index] += 1;
         } else if comp.kind.as_str() == "connector" {
             // Honor an explicitly requested edge. The previous alternating
             // fallback ignored `edge: left/right`, so the order of components
@@ -667,6 +674,46 @@ mod tests {
             (mm(at("J5").y_nm) - 160.0 / 3.0).abs() < 0.5,
             "J5 at {}",
             mm(at("J5").y_nm)
+        );
+    }
+
+    /// A lone connector on an edge keeps the position it has with nothing else
+    /// on that edge, whatever sits on the edges before it in the source.
+    #[test]
+    fn a_lone_connector_on_each_edge_keeps_its_base_position() {
+        let (board, targets) = connector_targets(
+            &[
+                ("J1", "jst_ph_3pin", "left"),
+                ("J2", "jst_ph_3pin", "top"),
+                ("J3", "jst_ph_3pin", "right"),
+                ("J4", "jst_ph_3pin", "bottom"),
+            ],
+            (90.0, 60.0),
+        );
+        let at = |r: &str| {
+            let id = board.components.iter().find(|c| c.refdes == r).expect(r).id;
+            targets[&id].point
+        };
+        let mm = synth_geometry::nm_to_mm;
+        assert!(
+            (mm(at("J1").y_nm) - 20.0).abs() < 0.5,
+            "left {}",
+            mm(at("J1").y_nm)
+        );
+        assert!(
+            (mm(at("J2").x_nm) - 30.0).abs() < 0.5,
+            "top {}",
+            mm(at("J2").x_nm)
+        );
+        assert!(
+            (mm(at("J3").y_nm) - 20.0).abs() < 0.5,
+            "right {}",
+            mm(at("J3").y_nm)
+        );
+        assert!(
+            (mm(at("J4").x_nm) - 30.0).abs() < 0.5,
+            "bottom {}",
+            mm(at("J4").x_nm)
         );
     }
 
