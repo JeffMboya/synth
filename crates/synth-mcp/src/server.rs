@@ -259,9 +259,24 @@ fn progress_token(req: &Value) -> Option<Value> {
 /// Calls in flight, by request id, each with the flag `notifications/cancelled` sets.
 type InFlight = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
 
-/// Answers one request line stream. `handle` runs each `tools/call` on its own thread, so the
-/// read loop keeps reading and a `notifications/cancelled` for a running call is seen at once;
-/// a cancelled call sends neither further progress nor a response.
+/// A `tools/call` waiting for, or holding, the tool worker.
+struct Job {
+    req: Value,
+    key: String,
+    cancelled: Arc<AtomicBool>,
+    /// Alive from the moment the call arrives, so a call queued behind a long
+    /// export still tells its own client it is waiting.
+    heartbeat: Option<Heartbeat>,
+}
+
+/// Answers a stream of request lines.
+///
+/// Tool calls run one at a time, in arrival order, on a single worker thread:
+/// they write the same source files, sidecars and output directories and read
+/// process-wide settings, so two at once could overwrite each other. Everything
+/// else, and the read loop itself, stays free, so `notifications/cancelled` and
+/// `ping` are seen while an export runs. A cancelled call sends neither further
+/// progress nor a response, and one cancelled before it starts never runs.
 async fn serve<R, W, H>(
     mut reader: tokio::io::Lines<R>,
     handle: Arc<H>,
@@ -273,7 +288,31 @@ async fn serve<R, W, H>(
     H: Fn(Value) -> Value + Send + Sync + 'static,
 {
     let in_flight: InFlight = Arc::new(Mutex::new(HashMap::new()));
-    let mut workers: Vec<JoinHandle<()>> = Vec::new();
+    let (queue, jobs) = std::sync::mpsc::channel::<Job>();
+    let worker = {
+        let (handle, write, in_flight) = (
+            Arc::clone(&handle),
+            Arc::clone(&write),
+            Arc::clone(&in_flight),
+        );
+        std::thread::spawn(move || {
+            for job in jobs {
+                let resp_val = if job.cancelled.load(Ordering::SeqCst) {
+                    Value::Null
+                } else {
+                    handle(job.req)
+                };
+                drop(job.heartbeat);
+                in_flight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&job.key);
+                if !job.cancelled.load(Ordering::SeqCst) && !resp_val.is_null() {
+                    write(&serde_json::to_string(&resp_val).unwrap_or_default());
+                }
+            }
+        })
+    };
 
     while let Ok(Some(line)) = reader.next_line().await {
         let trimmed = line.trim();
@@ -322,35 +361,23 @@ async fn serve<R, W, H>(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key.clone(), Arc::clone(&cancelled));
-        let (handle, write, in_flight) = (
-            Arc::clone(&handle),
-            Arc::clone(&write),
-            Arc::clone(&in_flight),
-        );
-        workers.push(std::thread::spawn(move || {
-            let heartbeat = progress_token(&req_val).map(|token| {
-                let (write, cancelled) = (Arc::clone(&write), Arc::clone(&cancelled));
-                Heartbeat::start(token, interval, move |message| {
-                    if !cancelled.load(Ordering::SeqCst) {
-                        write(&message);
-                    }
-                })
-            });
-            let resp_val = handle(req_val);
-            drop(heartbeat);
-            in_flight
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&key);
-            if !cancelled.load(Ordering::SeqCst) && !resp_val.is_null() {
-                write(&serde_json::to_string(&resp_val).unwrap_or_default());
-            }
-        }));
-        workers.retain(|w| !w.is_finished());
+        let heartbeat = progress_token(&req_val).map(|token| {
+            let (write, cancelled) = (Arc::clone(&write), Arc::clone(&cancelled));
+            Heartbeat::start(token, interval, move |message| {
+                if !cancelled.load(Ordering::SeqCst) {
+                    write(&message);
+                }
+            })
+        });
+        let _ = queue.send(Job {
+            req: req_val,
+            key,
+            cancelled,
+            heartbeat,
+        });
     }
-    for worker in workers {
-        let _ = worker.join();
-    }
+    drop(queue);
+    let _ = worker.join();
 }
 
 /// Run MCP Server over standard I/O (stdin/stdout).
@@ -370,6 +397,9 @@ pub async fn run_stdio_server(default_registry: Option<PathBuf>) -> anyhow::Resu
 }
 
 /// Handle HTTP JSON-RPC requests for SSE/HTTP endpoint.
+///
+/// Runs each call synchronously and sends no progress or cancellation: only the
+/// stdio transport does, until the HTTP/SSE case (#359) is done.
 pub async fn handle_http_rpc(
     axum::extract::State(default_registry): axum::extract::State<Option<PathBuf>>,
     Json(payload): Json<Value>,
@@ -396,6 +426,7 @@ pub async fn run_sse_server(port: u16, default_registry: Option<PathBuf>) -> any
 #[cfg(test)]
 mod heartbeat_tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn a_running_call_sends_progress_until_it_returns() {
@@ -502,5 +533,75 @@ mod heartbeat_tests {
         let msgs = run(input, 150, 1000);
         assert_eq!(msgs[0]["id"], 2, "the quick request answers first");
         assert_eq!(msgs[1]["id"], 1);
+    }
+
+    #[test]
+    fn overlapping_tool_calls_run_one_at_a_time_in_arrival_order() {
+        let running = Arc::new(AtomicUsize::new(0));
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let out = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (r, o, sink) = (
+            Arc::clone(&running),
+            Arc::clone(&overlapped),
+            Arc::clone(&out),
+        );
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"synth_mutate_layout"}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"synth_export"}}"#,
+            "\n"
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(serve(
+            BufReader::new(std::io::Cursor::new(input.as_bytes().to_vec())).lines(),
+            Arc::new(move |req: Value| {
+                if r.fetch_add(1, Ordering::SeqCst) != 0 {
+                    o.store(true, Ordering::SeqCst);
+                }
+                std::thread::sleep(Duration::from_millis(80));
+                r.fetch_sub(1, Ordering::SeqCst);
+                serde_json::json!({"jsonrpc": "2.0", "id": req["id"], "result": {}})
+            }),
+            Duration::from_secs(60),
+            Arc::new(move |m: &str| sink.lock().unwrap().push(m.to_string())),
+        ));
+        assert!(!overlapped.load(Ordering::SeqCst), "two calls ran at once");
+        let ids: Vec<Value> = out
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].clone())
+            .collect();
+        assert_eq!(ids, vec![Value::from(1), Value::from(2)]);
+    }
+
+    #[test]
+    fn a_call_cancelled_while_queued_never_runs() {
+        let ran = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let seen = Arc::clone(&ran);
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}"#,
+            "\n"
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(serve(
+            BufReader::new(std::io::Cursor::new(input.as_bytes().to_vec())).lines(),
+            Arc::new(move |req: Value| {
+                seen.lock().unwrap().push(req["id"].clone());
+                std::thread::sleep(Duration::from_millis(100));
+                serde_json::json!({"jsonrpc": "2.0", "id": req["id"], "result": {}})
+            }),
+            Duration::from_secs(60),
+            Arc::new(|_: &str| {}),
+        ));
+        assert_eq!(*ran.lock().unwrap(), vec![Value::from(1)]);
     }
 }
