@@ -6,7 +6,7 @@
     "engine": "freerouting",
     "available": true,
     "version": "freerouting-2.4.1",
-    "runtime_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS",
+    "runtime_version": "openjdk version \"21.0.12.1\" 2026-08-18",
     "detail": null,
     "failure": null
   },
@@ -41,22 +41,22 @@
       "threads": "4",
       "wall_clock_secs": "1200"
     },
-    "input_hash": "1c551b5b1464ee9a399f2632564af941d7bd79cf47bf45f8b83b92ac735b08e4",
+    "input_hash": "26d21c2814533986c19ed730c3c63b3f775ca0ba5221886e655ded0dbea7d026",
     "output_hash": "",
     "source_revision": null,
-    "duration_ms": 301025
+    "duration_ms": 210916
   },
   "statistics": {
     "connected_nets": 26,
     "open_nets": 0,
     "open_net_names": [],
-    "segments": 261,
-    "vias": 38,
-    "wire_length_mm": 515.71468,
+    "segments": 273,
+    "vias": 43,
+    "wire_length_mm": 515.429141,
     "pad_escape_rejections": 0,
     "engine_findings": {
-      "claimed_imported_segments": "261",
-      "claimed_imported_vias": "38"
+      "claimed_imported_segments": "273",
+      "claimed_imported_vias": "43"
     }
   },
   "artifacts": {
@@ -86,7 +86,7 @@
       "open": [],
       "unconnected_pads": [],
       "via_in_pad": [
-        "via at (23.900, 17.300) mm U1.25"
+        "via at (23.800, 17.300) mm U1.25"
       ],
       "undersized_vias": [],
       "undersized_tracks": []
@@ -94,7 +94,7 @@
     "kicad_drc": {
       "errors": 0,
       "unconnected": 0,
-      "warnings": 37
+      "warnings": 0
     },
     "blocking_reasons": [],
     "unavailable_checks": []
@@ -113,7 +113,7 @@
       "suggested_layers": 4,
       "limit": "track",
       "detail": "adjacent pins are 0.500 mm apart and the pads leave 0.200 mm between them; a fabrication-floor via needs 0.687 mm between centres, so the drill that would fit is 0.113 mm; even a minimum track needs 0.254 mm of gap",
-      "remediation": "use via-in-pad if the process allows, or choose a coarser-pitch part; this board has 2 copper layers \u2014 an inner plane at 4 layers gives these pins somewhere to change layers"
+      "remediation": "use via-in-pad if the process allows, or choose a coarser-pitch part; this board has 2 copper layers — an inner plane at 4 layers gives these pins somewhere to change layers"
     },
     {
       "refdes": "U1",
@@ -127,7 +127,7 @@
       "suggested_layers": 4,
       "limit": "track",
       "detail": "adjacent pins are 0.500 mm apart and the pads leave 0.212 mm between them; a fabrication-floor via needs 0.687 mm between centres, so the drill that would fit is 0.113 mm; even a minimum track needs 0.254 mm of gap",
-      "remediation": "use via-in-pad if the process allows, or choose a coarser-pitch part; this board has 2 copper layers \u2014 an inner plane at 4 layers gives these pins somewhere to change layers"
+      "remediation": "use via-in-pad if the process allows, or choose a coarser-pitch part; this board has 2 copper layers — an inner plane at 4 layers gives these pins somewhere to change layers"
     }
   ]
 }

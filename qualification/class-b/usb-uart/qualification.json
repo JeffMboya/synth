@@ -4,7 +4,11 @@
   "gates": {
     "routing_and_drc": {
       "passed": true,
-      "evidence": "reports/release.json, reports/usb_uart.drc.json"
+      "evidence": "reports/release.json, reports/usb_uart.drc.json: 0 errors, 0 unconnected items, 0 warnings from `kicad-cli pcb drc --refill-zones` on the delivered board."
+    },
+    "gnd_pour_connectivity": {
+      "passed": true,
+      "evidence": "The previous revision had a real GND split: C4 pin 2, J2 pin 1, D3 pin 1 and one via formed an island not joined to the other 41 GND pads and vias, and a gate rule that accepted a zone listed against itself at one point hid it. The rule is removed and the gate blocks on it. Moving J3 from x 27.0 to 26.0 mm and J4 from x 36.1 to 35.1 mm gives a route with no `unconnected_items`; pcbnew's connectivity on the delivered board puts every GND pad and via in one cluster."
     },
     "erc_dispositioned": {
       "passed": false,
@@ -17,16 +21,16 @@
           "disposition": "Fixed. VIO is fed by the J_VIO jumper from +3V3 or VBUS, and jumper pins are passive, so no pin on the rail is a power output. The exporter now places a PWR_FLAG on VIO (it used to anchor it on U1, which has no stock symbol, and drop it). With no jumper fitted VIO is unpowered by design."
         },
         {
-          "count": 80,
+          "count": 0,
           "severity": "warning",
           "type": "lib_symbol_issues",
-          "disposition": "Not a design fault. The exported schematic uses the embedded symbols and the KiCad run had no 'power' library configured."
+          "disposition": "None in this run, which had the KiCad libraries installed. An earlier run without a 'power' library reported 80; they were not design faults, since the exported schematic embeds its symbols."
         },
         {
-          "count": 36,
+          "count": 0,
           "severity": "warning",
           "type": "footprint_link_issues",
-          "disposition": "Not a design fault. The footprints are embedded in the PCB and the KiCad run had no global footprint libraries such as Connector_USB."
+          "disposition": "None in this run, which had the KiCad libraries installed. An earlier run without global footprint libraries reported 36; they were not design faults, since the footprints are embedded in the PCB."
         },
         {
           "count": 1,
@@ -66,14 +70,8 @@
     },
     "jlcpcb_dfm": {
       "passed": false,
-      "evidence": "Partial. The gerber, BOM and CPL were uploaded to JLCPCB's quote flow on 2026-10-27 without paying or ordering. JLCPCB accepted the board and the BOM and CPL were matched, but its trace and space, drill, edge-clearance and via-in-pad findings were not captured and nobody asked JLCPCB about the filled and capped via. passed stays false until those are recorded.",
+      "evidence": "Stale. Everything below describes the upload of the previous board revision (J3 at x 27.0 mm, J4 at x 36.1 mm). dfm/usb_uart_gerbers.zip and dfm/usb_uart_cpl.csv are regenerated for the current board and have not been uploaded, so the JLCPCB quote, BOM matching and screenshots must be redone. Partial. The gerber, BOM and CPL were uploaded to JLCPCB's quote flow on 2026-10-27 without paying or ordering. JLCPCB accepted the board and the BOM and CPL were matched, but its trace and space, drill, edge-clearance and via-in-pad findings were not captured and nobody asked JLCPCB about the filled and capped via. passed stays false until those are recorded.",
       "date": "2026-10-27",
-      "uploaded_sha256": {
-        "dfm/usb_uart_gerbers.zip": "2354c4e900600ba62d3a7e81f9cadfef893cf1da27d7f3f85dbbd042500778af",
-        "kicad/bom.csv": "a31eca59db4cebdace543fac91243b759232a423a18428d544bce109c23ec462",
-        "dfm/usb_uart_cpl.csv": "aa14cc68a7d6d09d6d7ddeee2d30aa11d5bd9943dae86a99738c7842d75b1632",
-        "kicad/usb_uart.kicad_pcb": "d599184e8c856165ac86ce6487a0ef4589d39e793647aafdee93fa52af0243d5"
-      },
       "selected": "2 layers, FR-4 TG135, 1.6 mm, 1 oz outer copper, HASL with lead, green mask, white silkscreen, 5 boards. Assembly: Economic, top side, 5 boards.",
       "findings": [
         "JLCPCB read the gerber zip as a 2-layer board of 32.23 x 40.99 mm, the same as the committed board.",
@@ -91,17 +89,29 @@
         "dfm/jlcpcb-bom-top.png",
         "dfm/jlcpcb-bom-middle.png",
         "dfm/jlcpcb-bom-bottom.png"
-      ]
+      ],
+      "previous_uploaded_sha256": {
+        "dfm/usb_uart_gerbers.zip": "2354c4e900600ba62d3a7e81f9cadfef893cf1da27d7f3f85dbbd042500778af",
+        "kicad/bom.csv": "a31eca59db4cebdace543fac91243b759232a423a18428d544bce109c23ec462",
+        "dfm/usb_uart_cpl.csv": "aa14cc68a7d6d09d6d7ddeee2d30aa11d5bd9943dae86a99738c7842d75b1632",
+        "kicad/usb_uart.kicad_pcb": "d599184e8c856165ac86ce6487a0ef4589d39e793647aafdee93fa52af0243d5"
+      },
+      "current_sha256": {
+        "dfm/usb_uart_gerbers.zip": "5d671f6064c728fa0e123feb717c003413c8321e0864addeae304da8184d39ae",
+        "dfm/usb_uart_cpl.csv": "ad3abee670c31098a46a5fb717007681c74351033dd7f51383d219e290cb44de",
+        "kicad/bom.csv": "a31eca59db4cebdace543fac91243b759232a423a18428d544bce109c23ec462",
+        "kicad/usb_uart.kicad_pcb": "881ae8349543e44cc1b4da7847152cb46610757ee40c5888e1ab259817d8652a"
+      }
     },
     "reproducible_from_clean_checkout": {
       "passed": true,
-      "evidence": "Three exports on 2026-10-26 of the committed inputs gave a byte-identical kicad_pcb and kicad_sch (FreeRouting 2.4.1, KiCad 10.0.5, empty XDG_DATA_HOME, `--router free-routing --krt-allow-via-in-pad`, Synth with #306 and #319). The third ran from a fresh `git worktree` checkout of the committing commit, with the untracked FreeRouting jar and JRE linked in from `tools/`. All match the committed files, except that the schematic was regenerated afterwards from an unrouted export with the VIO PWR_FLAG added (its hash above is the current one; the PCB was not re-exported). DRC: 0 errors, 0 unconnected, 37 warnings. Not tested on another machine or another FreeRouting version, so the result may differ there.",
+      "evidence": "On 2026-10-27 three exports of the committed inputs gave a byte-identical kicad_pcb (hash below): two from a copy of the inputs, one from the repository path, the last two with an empty XDG_DATA_HOME (FreeRouting 2.4.1 on Java 25, KiCad 10.0.7, `--router free-routing --krt-allow-via-in-pad`, Synth at the commit in reports/release.json source_revision). The router is sensitive to placement on this setup: with J3 at x 27.0 mm and J4 at x 36.1 mm the same toolchain left DTR1 unrouted, and other small placement shifts left +3V3, TNOW0 or USB_DN open, so the committed placement is one that routes, not a tolerance. Not tested on another machine or another FreeRouting or KiCad version. DRC: 0 errors, 0 unconnected, 0 warnings. The schematic hash is unchanged from the previous revision.",
       "inputs_sha256": {
         "usb_uart.synth": "e814e04cbe0e8262da7efc62f0edbd28b3656e76046f1ea1b31f05ef5aa0afde",
-        "usb_uart.placement.layout.toml": "f06e54a12b9e707935471c8fc910b731bd24cbcf3a0247cc862331f205fcfc39"
+        "usb_uart.placement.layout.toml": "8e18ab25c177f36d6fe2e38af55cf27bc293096fc212a90893d0cb15336a583d"
       },
       "outputs_sha256": {
-        "kicad/usb_uart.kicad_pcb": "d599184e8c856165ac86ce6487a0ef4589d39e793647aafdee93fa52af0243d5",
+        "kicad/usb_uart.kicad_pcb": "881ae8349543e44cc1b4da7847152cb46610757ee40c5888e1ab259817d8652a",
         "kicad/usb_uart.kicad_sch": "d92e6c11c94f279f0ceafbc81c848d775be112f618914af4caef9cf0b8f96a0f"
       }
     },
