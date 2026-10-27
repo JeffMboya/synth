@@ -4820,76 +4820,195 @@ pub fn classify_region_name(pt: Point, usable: Rect) -> String {
     }
 }
 
-/// Farthest a reset button or a crystal may sit from the MCU it serves, centre
-/// to centre. A crystal's load capacitors sit beside it, so its distance from
-/// the MCU is the length of the oscillator traces.
+/// Farthest a reset button or a crystal may sit from the MCU it serves, courtyard
+/// edge to courtyard edge. Edge to edge, not anchor to anchor, so a large package
+/// whose anchor sits far from its pads is not judged by where the anchor is. A
+/// crystal's load capacitors sit beside it, so its distance from the MCU is the
+/// length of the oscillator traces.
 const SUPPORT_PART_MAX_MM: f64 = 10.0;
+
+/// Whether a part is the board's MCU for the placement review. One predicate for
+/// every check that looks for it, so two checks cannot disagree about which part
+/// that is.
+fn is_mcu_like(component: &synth_ir::Component) -> bool {
+    matches!(component.kind.as_str(), "mcu" | "processor" | "ic")
+}
 
 /// A part that belongs beside its MCU and is farther from it than
 /// [`SUPPORT_PART_MAX_MM`].
 struct DistantSupportPart {
     refdes: String,
     mcu: String,
+    /// Courtyard edge to courtyard edge, in millimetres.
     mm: f64,
     /// `reset button` or `crystal`, as the warning names it.
     what: &'static str,
     action: &'static str,
 }
 
-/// Switches and crystals wired to an MCU, directly or (for a switch) through
-/// one two-pin part such as a debounce resistor, that sit farther from it than
-/// [`SUPPORT_PART_MAX_MM`].
+/// The gap between two courtyards, in millimetres: zero when they touch or
+/// overlap.
+fn courtyard_gap_mm(a: Rect, b: Rect) -> f64 {
+    let along = |a_low: i64, a_high: i64, b_low: i64, b_high: i64| {
+        synth_geometry::nm_to_mm((a_low - b_high).max(b_low - a_high).max(0))
+    };
+    along(a.min.x_nm, a.max.x_nm, b.min.x_nm, b.max.x_nm)
+        .hypot(along(a.min.y_nm, a.max.y_nm, b.min.y_nm, b.max.y_nm))
+}
+
+/// Whether a net carries supply or ground rather than a signal: the power-domain
+/// inference calls it a rail or ground, or any pin on it is typed as a ground
+/// reference or a power input or output. The pin types are what the inference
+/// misses on a net the author left unnamed.
+fn is_supply_net(board: &Board, domains: &synth_ir::PowerDomainMap, net: &synth_ir::Net) -> bool {
+    use synth_registry::ElectricalType;
+    domains
+        .get(net.id)
+        .is_some_and(|domain| domain.is_rail() || domain.is_ground())
+        || net.endpoints.iter().any(|endpoint| {
+            board
+                .component(endpoint.component)
+                .and_then(|component| component.part.as_ref())
+                .and_then(|part| part.pins.get(endpoint.pin.0 as usize))
+                .is_some_and(|pin| {
+                    matches!(
+                        pin.electrical_type,
+                        ElectricalType::GroundReference
+                            | ElectricalType::PowerInput
+                            | ElectricalType::PowerOutput
+                    )
+                })
+        })
+}
+
+/// Reset buttons and crystals wired to an MCU's reset or clock pin, directly or
+/// through one resistor or capacitor (a debounce, a series resistor), that sit
+/// farther from the nearest such MCU than [`SUPPORT_PART_MAX_MM`].
+///
+/// Only signal nets count as wiring (see [`is_supply_net`]). A shared ground or
+/// supply rail connects every part to every MCU, so it says nothing about which
+/// one a part serves. A
+/// switch is a reset button only if it reaches a pin the MCU declares as its
+/// reset; a boot or user button on a GPIO, and a power slide switch, are not
+/// flagged. A part that already carries a hard hint is not advised again.
 ///
 /// Reported as advice, not as a failure of the visual review. Pulling a button
 /// into the MCU's escape area was measured to break routability on the gate
 /// boards, so the placer is not steered; the agent is told, and a `near` hint it
 /// writes is then honoured as a hard one.
 fn distant_support_parts(board: &Board, placement: &Placement) -> Vec<DistantSupportPart> {
-    let center = |id: ComponentId| {
+    use synth_registry::PinCapability;
+
+    let domains = synth_ir::infer_power_domains(board);
+    // Each component's pins on signal nets, built once: the review runs inside
+    // `refine_placement`, so it must not walk every net for every pair.
+    let mut pins_on: std::collections::HashMap<ComponentId, Vec<(usize, synth_ir::PinId)>> =
+        std::collections::HashMap::new();
+    for (index, net) in board.nets.iter().enumerate() {
+        if is_supply_net(board, &domains, net) {
+            continue;
+        }
+        for endpoint in &net.endpoints {
+            pins_on
+                .entry(endpoint.component)
+                .or_default()
+                .push((index, endpoint.pin));
+        }
+    }
+    let courtyard = |component: &synth_ir::Component| {
         placement
             .components
             .iter()
-            .find(|placed| placed.id == id)
-            .map(|placed| placed.center)
+            .find(|placed| placed.id == component.id)
+            .map(|placed| sidecar_courtyard_rect(board, component, placed))
     };
-    let is_mcu = |c: &synth_ir::Component| matches!(c.kind.as_str(), "mcu" | "processor");
-    let on_net_with = |a: ComponentId, b: ComponentId| {
-        board.nets.iter().any(|net| {
-            net.endpoints.iter().any(|e| e.component == a)
-                && net.endpoints.iter().any(|e| e.component == b)
+    // Whether `part` reaches a pin of `mcu` that `wanted` accepts.
+    let reaches = |part: &synth_ir::Component,
+                   mcu: &synth_ir::Component,
+                   wanted: &dyn Fn(&[PinCapability]) -> bool| {
+        let mcu_pin_ok = |net: usize| {
+            pins_on.get(&mcu.id).is_some_and(|pins| {
+                pins.iter().any(|&(n, pin)| {
+                    n == net
+                        && mcu
+                            .part
+                            .as_ref()
+                            .and_then(|p| p.pins.get(pin.0 as usize))
+                            .is_some_and(|p| wanted(&p.capabilities))
+                })
+            })
+        };
+        let Some(part_pins) = pins_on.get(&part.id) else {
+            return false;
+        };
+        if part_pins.iter().any(|&(net, _)| mcu_pin_ok(net)) {
+            return true;
+        }
+        // One resistor or capacitor between them.
+        part_pins.iter().any(|&(net, _)| {
+            board.nets[net].endpoints.iter().any(|endpoint| {
+                let Some(via) = board.component(endpoint.component) else {
+                    return false;
+                };
+                via.id != part.id
+                    && matches!(via.kind.as_str(), "resistor" | "capacitor")
+                    && pins_on
+                        .get(&via.id)
+                        .is_some_and(|pins| pins.iter().any(|&(n, _)| n != net && mcu_pin_ok(n)))
+            })
         })
     };
+
+    let mcus: Vec<&synth_ir::Component> = board
+        .components
+        .iter()
+        .filter(|component| is_mcu_like(component))
+        .collect();
     let mut found = Vec::new();
     for part in &board.components {
-        let (what, action) = match part.kind.as_str() {
+        if is_hard_hinted(part) {
+            continue;
+        }
+        let (what, action): (&'static str, &'static str) = match part.kind.as_str() {
             "switch" => ("reset button", "place_reset_button_near_mcu"),
             "crystal" => ("crystal", "place_crystal_near_mcu"),
             _ => continue,
         };
-        for mcu in board.components.iter().filter(|c| is_mcu(c)) {
-            let wired = on_net_with(part.id, mcu.id)
-                || board.components.iter().any(|via| {
-                    matches!(via.kind.as_str(), "resistor" | "capacitor")
-                        && on_net_with(part.id, via.id)
-                        && on_net_with(via.id, mcu.id)
-                });
-            let (Some(a), Some(b)) = (center(part.id), center(mcu.id)) else {
-                continue;
-            };
-            let mm = {
-                let dx = synth_geometry::nm_to_mm(a.x_nm - b.x_nm);
-                let dy = synth_geometry::nm_to_mm(a.y_nm - b.y_nm);
-                dx.hypot(dy)
-            };
-            if wired && mm > SUPPORT_PART_MAX_MM {
-                found.push(DistantSupportPart {
-                    refdes: part.refdes.clone(),
-                    mcu: mcu.refdes.clone(),
-                    mm,
-                    what,
-                    action,
-                });
+        let wanted = |capabilities: &[PinCapability]| {
+            if what == "crystal" {
+                capabilities
+                    .iter()
+                    .any(|c| matches!(c, PinCapability::ClockInput | PinCapability::ClockOutput))
+            } else {
+                capabilities.contains(&PinCapability::Reset)
             }
+        };
+        let Some(part_courtyard) = courtyard(part) else {
+            continue;
+        };
+        // The nearest MCU it is wired to: nearest first, so the wiring is only
+        // looked at for a candidate that could be the nearest.
+        let mut by_distance: Vec<(f64, &synth_ir::Component)> = mcus
+            .iter()
+            .filter_map(|&mcu| {
+                courtyard(mcu).map(|rect| (courtyard_gap_mm(part_courtyard, rect), mcu))
+            })
+            .collect();
+        by_distance.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let Some(&(mm, mcu)) = by_distance
+            .iter()
+            .find(|&&(_, mcu)| reaches(part, mcu, &wanted))
+        else {
+            continue;
+        };
+        if mm > SUPPORT_PART_MAX_MM {
+            found.push(DistantSupportPart {
+                refdes: part.refdes.clone(),
+                mcu: mcu.refdes.clone(),
+                mm,
+                what,
+                action,
+            });
         }
     }
     found
@@ -5526,7 +5645,7 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
         if let Some(mcu) = board
             .components
             .iter()
-            .find(|component| matches!(component.kind.as_str(), "mcu" | "processor" | "ic"))
+            .find(|component| is_mcu_like(component))
         {
             if let Some(mcu_center) = center_of(mcu.id) {
                 let connector_center = connector_placement.center;
@@ -5728,7 +5847,7 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
             action,
         } = part;
         functional_warnings.push(format!(
-            "{refdes} is {mm:.0} mm from {mcu}, which it is wired to; a {what} belongs within {SUPPORT_PART_MAX_MM:.0} mm of its MCU"
+            "{refdes} is {mm:.0} mm (courtyard to courtyard) from {mcu}, which it is wired to; a {what} belongs within {SUPPORT_PART_MAX_MM:.0} mm of its MCU"
         ));
         recommended_actions.push(PlacementRecommendation {
             action: action.into(),
@@ -5737,7 +5856,9 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
             suggested_x_mm: None,
             suggested_y_mm: None,
             suggested_rotation_deg: None,
-            rationale: format!("add a hard `near: {mcu}` placement hint to the {what}"),
+            rationale: format!(
+                "add `placement_hint {{ near: \"{mcu}\" priority: hard }}` to the {what} in the source"
+            ),
         });
     }
 
@@ -7590,33 +7711,203 @@ board "features_only" {
         );
     }
 
-    /// A reset button or crystal far from its MCU is advised against, and the
-    /// advice names the hint to write. It is not a visual-review failure: that
-    /// would block routing on designs whose routability depends on the part
-    /// staying put.
+    /// Moves `refdes` 60 mm to the right of the MCU `U2`, far beyond the limit
+    /// whatever the courtyards.
+    fn far_from_u2(board: &Board, placement: &mut Placement, refdes: &str) {
+        let u2 = centre_of(board, placement, "U2");
+        move_part(
+            placement,
+            board,
+            refdes,
+            synth_geometry::nm_to_mm(u2.x_nm) + 60.0,
+            synth_geometry::nm_to_mm(u2.y_nm),
+        );
+    }
+
+    fn distant(board: &Board, placement: &Placement, refdes: &str) -> Option<DistantSupportPart> {
+        distant_support_parts(board, placement)
+            .into_iter()
+            .find(|part| part.refdes == refdes)
+    }
+
+    /// A reset button far from its MCU is advised against, and the advice names
+    /// the hint to write in the syntax the source takes. It is not a
+    /// visual-review failure: that would block routing on designs whose
+    /// routability depends on the part staying put.
     #[test]
     fn a_distant_reset_button_is_advised_against_but_does_not_block() {
         let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
-        let placement = place(&board).expect("place");
-        let far = distant_support_parts(&board, &placement);
-        let desc = describe_placement(&board, &placement);
-        for part in &far {
-            assert!(part.mm > SUPPORT_PART_MAX_MM);
-            assert!(desc
-                .functional_warnings
-                .iter()
-                .any(|w| w.starts_with(&format!("{} is ", part.refdes))));
-            assert!(desc.visual_review.recommended_actions.iter().any(|a| {
-                a.action == part.action
-                    && a.refdes == part.refdes
-                    && a.relative_to.as_deref() == Some(part.mcu.as_str())
-            }));
-        }
-        assert!(
-            far.iter().any(|part| part.what == "reset button"),
-            "sensor_logger's SW1 sits well away from U1"
+        let mut placement = place(&board).expect("place");
+        far_from_u2(&board, &mut placement, "SW1");
+        let far = distant(&board, &placement, "SW1").expect("SW1 reaches U2's reset pin");
+        assert_eq!(
+            far.mcu, "U2",
+            "U2 is the MCU in sensor_logger, U1 the regulator"
         );
-        assert!(!desc.visual_review.requires_revision);
+        assert!(far.mm > SUPPORT_PART_MAX_MM);
+        let desc = describe_placement(&board, &placement);
+        assert!(desc
+            .functional_warnings
+            .iter()
+            .any(|w| w.starts_with("SW1 is ") && w.contains("U2")));
+        let action = desc
+            .visual_review
+            .recommended_actions
+            .iter()
+            .find(|a| a.action == far.action && a.refdes == "SW1")
+            .expect("the advice for SW1");
+        assert_eq!(action.relative_to.as_deref(), Some("U2"));
+        assert!(
+            action
+                .rationale
+                .contains(r#"placement_hint { near: "U2" priority: hard }"#),
+            "the advice must be the syntax the source takes: {}",
+            action.rationale
+        );
+        // The advice is a functional warning, never a visual finding: a visual
+        // finding would block routing on designs that depend on the part
+        // staying put.
+        assert!(
+            desc.visual_review
+                .findings
+                .iter()
+                .all(|finding| !finding.contains("belongs within")),
+            "{:?}",
+            desc.visual_review.findings
+        );
+    }
+
+    /// A button beside its MCU is not advised against; the limit is measured
+    /// between courtyards, not between anchors.
+    #[test]
+    fn a_reset_button_beside_its_mcu_is_left_alone() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut placement = place(&board).expect("place");
+        let u2 = centre_of(&board, &placement, "U2");
+        move_part(
+            &mut placement,
+            &board,
+            "SW1",
+            synth_geometry::nm_to_mm(u2.x_nm) + 12.0,
+            synth_geometry::nm_to_mm(u2.y_nm),
+        );
+        assert!(distant(&board, &placement, "SW1").is_none());
+    }
+
+    /// A switch whose only link to the MCU is the ground net is not a reset
+    /// button: every part on the board shares that net with every MCU. A GPIO
+    /// button is likewise not told to move into the MCU's escape area.
+    #[test]
+    fn a_switch_tied_to_the_mcu_only_through_ground_is_not_flagged() {
+        let board = load_board_replacing(
+            "../../examples/sensor_logger/sensor_logger.synth",
+            &[("connect U2.reset -> SW1.p1", "connect U2.pb0 -> SW1.p1")],
+        );
+        let mut placement = place(&board).expect("place");
+        far_from_u2(&board, &mut placement, "SW1");
+        assert!(
+            distant(&board, &placement, "SW1").is_none(),
+            "SW1 reaches U2 through a GPIO and GND only"
+        );
+        // And with nothing but ground between them.
+        let board = load_board_replacing(
+            "../../examples/sensor_logger/sensor_logger.synth",
+            &[("connect U2.reset -> SW1.p1", "")],
+        );
+        let mut placement = place(&board).expect("place");
+        far_from_u2(&board, &mut placement, "SW1");
+        assert!(distant(&board, &placement, "SW1").is_none());
+    }
+
+    /// Each part is judged against the nearest MCU it is wired to: a button
+    /// beside one of two MCUs is not reported as far from the other.
+    #[test]
+    fn a_two_mcu_board_judges_a_part_against_its_nearest_mcu() {
+        let board = load_board_replacing(
+            "../../examples/sensor_logger/sensor_logger.synth",
+            &[(
+                "connect SW1.p2  -> U2.gnd",
+                "connect SW1.p2  -> U2.gnd\n  component U9: mcu \"atmega328p\"\n  connect U9.reset -> SW1.p1",
+            )],
+        );
+        let mut placement = place(&board).expect("place");
+        let u2 = centre_of(&board, &placement, "U2");
+        let (x, y) = (
+            synth_geometry::nm_to_mm(u2.x_nm),
+            synth_geometry::nm_to_mm(u2.y_nm),
+        );
+        // SW1 and U9 together, 60 mm from U2.
+        move_part(&mut placement, &board, "SW1", x + 60.0, y);
+        move_part(&mut placement, &board, "U9", x + 66.0, y);
+        assert!(
+            distant(&board, &placement, "SW1").is_none(),
+            "SW1 sits beside U9, which its reset line also reaches"
+        );
+        // Both MCUs far: it is reported against the nearer.
+        move_part(&mut placement, &board, "U9", x - 60.0, y);
+        let far = distant(&board, &placement, "SW1").expect("far from both");
+        assert!(
+            far.mcu == "U2" || far.mcu == "U9",
+            "named against a real MCU: {}",
+            far.mcu
+        );
+        move_part(&mut placement, &board, "U9", x + 20.0, y);
+        let far = distant(&board, &placement, "SW1").expect("far from both");
+        assert_eq!(far.mcu, "U9", "U9 at 40 mm is nearer than U2 at 60 mm");
+    }
+
+    /// A crystal is judged by its clock pins: one wired to the MCU's clock input
+    /// is advised when far, and one that only shares the supply and ground with
+    /// it is not.
+    #[test]
+    fn a_crystal_is_judged_by_its_clock_pin_not_its_supply() {
+        let move_y1_away = |board: &Board| {
+            let mut placement = place(board).expect("place");
+            let u1 = centre_of(board, &placement, "U1");
+            move_part(
+                &mut placement,
+                board,
+                "Y1",
+                synth_geometry::nm_to_mm(u1.x_nm) + 60.0,
+                synth_geometry::nm_to_mm(u1.y_nm),
+            );
+            placement
+        };
+        let board = load_board("../../fixtures/designs/secure_tracker.synth");
+        let placement = move_y1_away(&board);
+        let far = distant(&board, &placement, "Y1").expect("Y1 reaches U1's clock input");
+        assert_eq!((far.mcu.as_str(), far.what), ("U1", "crystal"));
+
+        let board = load_board_replacing(
+            "../../fixtures/designs/secure_tracker.synth",
+            &[("connect Y1.out -> U1.xin", "")],
+        );
+        let placement = move_y1_away(&board);
+        assert!(
+            distant(&board, &placement, "Y1").is_none(),
+            "with its output unwired, Y1 shares only supply nets with U1"
+        );
+    }
+
+    /// A part that already carries a hard hint is not told to add one.
+    #[test]
+    fn a_hard_hinted_support_part_is_not_advised_again() {
+        let board = load_board_replacing(
+            "../../examples/sensor_logger/sensor_logger.synth",
+            &[(
+                r#"component SW1: switch    "spst_tactile""#,
+                r#"component SW1: switch    "spst_tactile" { placement_hint { near: "U2" priority: hard } }"#,
+            )],
+        );
+        let mut placement = place(&board).expect("place");
+        far_from_u2(&board, &mut placement, "SW1");
+        assert!(distant(&board, &placement, "SW1").is_none());
+        let desc = describe_placement(&board, &placement);
+        assert!(!desc
+            .visual_review
+            .recommended_actions
+            .iter()
+            .any(|a| a.refdes == "SW1" && a.action == "place_reset_button_near_mcu"));
     }
 
     /// A real placement of a real design should clear the gate. If this fails,
