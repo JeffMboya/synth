@@ -370,6 +370,8 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "out_dir": { "type": "string", "description": "Working directory; holds compact.json and one export per attempt" },
                     "step_percent": { "type": "number", "description": "Scale step before the first failure (default 3)" },
                     "min_scale_percent": { "type": "number", "description": "Never scale below this (default 60)" },
+                    "mode": { "type": "string", "description": "scale (default): pull every distance in alike, in steps, then bisect. slide: slide parts toward `toward` into the free space beside them until each meets its neighbour, bring the connector rows and mounting holes in after them, and try gaps_mm in turn, stopping at the first that fails; keeps the smallest board that released. Use slide when the empty space is in patches, not in one slab against a side." },
+                    "gaps_mm": { "type": "array", "items": { "type": "number" }, "description": "slide mode: the least spacing between courtyards to try, in order (default 1.6, 1.3, 1.0, 0.8)" },
                     "toward": { "type": "string", "description": "Where the layout is pulled to: center (default), a side (left, right, top, bottom) or a corner (bottom_right, top_left, ...). The side or corner named stays put and the opposite side comes in, so empty space against one side is taken from that side. Use a fresh out_dir when you change it." },
                     "router": { "type": "string", "description": "External engine, as synth_export" }
                 },
@@ -3228,7 +3230,11 @@ fn counts_by_code(diagnostics: &[synth_diagnostics::Diagnostic]) -> Value {
 /// One attempt of the compaction loop, in thousandths of the original scale.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CompactAttempt {
+    /// Thousandths of the original scale; in slide mode the gap in hundredths of a mm.
     permille: i64,
+    /// The spacing a slide attempt was asked to keep; unset for a scaling attempt.
+    #[serde(default)]
+    gap_mm: Option<f64>,
     passed: bool,
     width_mm: f64,
     height_mm: f64,
@@ -3313,6 +3319,24 @@ fn compact_direction(toward: Option<&str>) -> Result<(f64, f64), String> {
     Ok((x, y))
 }
 
+/// The next gap, in millimetres, a slide search tries: the list in order, each
+/// only if every one before it released, so it stops at the first that fails.
+fn next_slide_gap(attempts: &[CompactAttempt], gaps: &[f64]) -> Option<f64> {
+    if attempts.iter().any(|a| !a.passed) {
+        return None;
+    }
+    gaps.get(attempts.len()).copied()
+}
+
+/// The folder an attempt's sidecar and export go in.
+fn step_dir_name(permille: i64, slide: bool) -> String {
+    if slide {
+        format!("slide_{permille}")
+    } else {
+        format!("step_{permille}")
+    }
+}
+
 /// Whether the sidecar is a different layout from the one a compaction began
 /// with. `installed` is the layout the tool itself wrote over it afterwards,
 /// which is not a change. No record yet means compaction has not begun.
@@ -3383,7 +3407,23 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
 
-    let Some(permille) = next_compact_permille(&attempts, step, resolution, floor) else {
+    let slide = args["mode"].as_str() == Some("slide");
+    let gaps: Vec<f64> = args["gaps_mm"]
+        .as_array()
+        .map(|list| list.iter().filter_map(Value::as_f64).collect())
+        .filter(|list: &Vec<f64>| !list.is_empty())
+        .unwrap_or_else(|| vec![1.6, 1.3, 1.0, 0.8]);
+    let slide_gap = if slide {
+        next_slide_gap(&attempts, &gaps)
+    } else {
+        None
+    };
+    let next = if slide {
+        slide_gap.map(|gap| (gap * 100.0).round() as i64)
+    } else {
+        next_compact_permille(&attempts, step, resolution, floor)
+    };
+    let Some(permille) = next else {
         return finish_compaction(&attempts, &sidecar, &out_dir);
     };
 
@@ -3416,15 +3456,18 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     let factor = permille as f64 / 1000.0;
     // Scale 1.0 is the layout as the agent pinned it: no scaling, so no
     // snapping to the placement grid, and its sidecar goes to the export as is.
-    let identity = permille == 1000;
-    let candidate = if identity {
+    let identity = !slide && permille == 1000;
+    let candidate = if let Some(gap) = slide_gap {
+        synth_place::slide_layout_toward(&board, &start, toward, gap)
+    } else if identity {
         Some(start.clone())
     } else {
         synth_place::scale_layout_toward(&board, &start, factor, toward)
     };
-    let step_dir = out_dir.join(format!("step_{permille}"));
+    let step_dir = out_dir.join(step_dir_name(permille, slide_gap.is_some()));
     let mut attempt = CompactAttempt {
         permille,
+        gap_mm: slide_gap,
         passed: false,
         width_mm: 0.0,
         height_mm: 0.0,
@@ -3484,7 +3527,12 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
         serde_json::to_string_pretty(&attempts).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("Cannot write compact.json: {e}"))?;
-    if next_compact_permille(&attempts, step, resolution, floor).is_none() {
+    let more = if slide {
+        next_slide_gap(&attempts, &gaps).is_some()
+    } else {
+        next_compact_permille(&attempts, step, resolution, floor).is_some()
+    };
+    if !more {
         return finish_compaction(&attempts, &sidecar, &out_dir);
     }
     Ok(serde_json::json!({
@@ -3501,22 +3549,33 @@ fn finish_compaction(
     sidecar: &Path,
     out_dir: &Path,
 ) -> Result<Value, String> {
-    let best = attempts
-        .iter()
-        .filter(|a| a.passed)
-        .min_by_key(|a| a.permille);
+    let slid = attempts.iter().any(|a| a.gap_mm.is_some());
+    // The smallest board that released; in a slide search, by area, because the
+    // attempts are not ordered by size.
+    let best = attempts.iter().filter(|a| a.passed).min_by(|a, b| {
+        if slid {
+            (a.width_mm * a.height_mm).total_cmp(&(b.width_mm * b.height_mm))
+        } else {
+            a.permille.cmp(&b.permille)
+        }
+    });
     let Some(best) = best else {
+        let error = if slid {
+            "no slide attempt released, so the sidecar is unchanged"
+        } else {
+            "the starting layout does not release, so there is nothing to compact; fix the export first"
+        };
         return Ok(serde_json::json!({
             "status": "error",
             "done": true,
-            "error": "the starting layout does not release, so there is nothing to compact; fix the export first",
+            "error": error,
             "attempts": attempts
         }));
     };
     let chosen = out_dir
-        .join(format!("step_{}", best.permille))
+        .join(step_dir_name(best.permille, best.gap_mm.is_some()))
         .join("layout.placement.layout.toml");
-    if best.permille != 1000 {
+    if best.permille != 1000 || slid {
         std::fs::copy(&chosen, sidecar).map_err(|e| format!("Cannot install the layout: {e}"))?;
         // Remember which layout this tool installed, so a later call does not
         // mistake it for an edit by the author.
@@ -3538,8 +3597,10 @@ fn finish_compaction(
         "best_scale_percent": best_scale_percent,
         "best_outline_mm": [best.width_mm, best.height_mm],
         "best_fill_percent": best.fill_percent,
-        "best_export_dir": out_dir.join(format!("step_{}", best.permille)).join("export"),
-        "sidecar_installed": best.permille != 1000,
+        "best_export_dir": out_dir
+            .join(step_dir_name(best.permille, best.gap_mm.is_some()))
+            .join("export"),
+        "sidecar_installed": best.permille != 1000 || slid,
         "original_kept_as": format!("{}.pre-compact", sidecar.display()),
         "attempts": attempts
     }))
@@ -5616,6 +5677,7 @@ mod tests {
     fn attempt(permille: i64, passed: bool) -> CompactAttempt {
         CompactAttempt {
             permille,
+            gap_mm: None,
             passed,
             width_mm: 0.0,
             height_mm: 0.0,
@@ -5633,6 +5695,33 @@ mod tests {
         assert_eq!(dir(Some("left")), Ok((0.0, 0.5)));
         assert_eq!(dir(Some("top_left")), Ok((0.0, 0.0)));
         assert!(dir(Some("sideways")).is_err());
+    }
+
+    #[test]
+    fn a_slide_search_tries_each_gap_until_one_fails() {
+        use super::{next_slide_gap, CompactAttempt};
+        let gaps = [1.6, 1.3, 1.0];
+        let done = |passed: bool| CompactAttempt {
+            permille: 0,
+            gap_mm: Some(1.0),
+            passed,
+            width_mm: 0.0,
+            height_mm: 0.0,
+            fill_percent: 0.0,
+            reason: String::new(),
+        };
+        assert_eq!(next_slide_gap(&[], &gaps), Some(1.6));
+        assert_eq!(next_slide_gap(&[done(true)], &gaps), Some(1.3));
+        assert_eq!(next_slide_gap(&[done(true), done(true)], &gaps), Some(1.0));
+        assert_eq!(
+            next_slide_gap(&[done(true), done(true), done(true)], &gaps),
+            None
+        );
+        assert_eq!(
+            next_slide_gap(&[done(true), done(false)], &gaps),
+            None,
+            "stops at a failure"
+        );
     }
 
     #[test]

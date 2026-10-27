@@ -6670,6 +6670,133 @@ pub fn scale_layout_toward(
     Some(candidate)
 }
 
+/// Slides the parts of a finished placement toward a side or a corner of the
+/// layout, until each meets the part in its way, then brings the connector rows
+/// and the mounting holes in after them and fits the outline. Where
+/// [`scale_layout_toward`] pulls every distance in alike, this moves parts into
+/// the free space beside them, so empty space that is not a slab against one
+/// side is still taken. `toward` is as for [`scale_layout_toward`]; `gap_mm` is
+/// the least spacing between courtyards the slide leaves. Like the scaling it
+/// does not judge the result: the caller routes it.
+/// `None` only when the layout has no courtyards.
+#[must_use]
+pub fn slide_layout_toward(
+    board: &Board,
+    placement: &Placement,
+    toward: (f64, f64),
+    gap_mm: f64,
+) -> Option<Placement> {
+    let mut candidate = placement.clone();
+    let base = courtyard_sizes(board, &candidate);
+    courtyard_envelope(&candidate, &base)?;
+    // `slide_parts` already keeps one grid pitch beyond the sizes it is given.
+    let inflate = (gap_mm - 0.5).max(0.0);
+    let sizes: Vec<(f64, f64)> = base
+        .iter()
+        .map(|(w, h)| (w + inflate, h + inflate))
+        .collect();
+    let flush_edge = |id: ComponentId| flush_edge_index(board, id);
+    // Mounting holes and fiducials belong to the corners of the outline, so
+    // they are put back at the new corners, not slid.
+    let corner_feature: Vec<bool> = candidate
+        .components
+        .iter()
+        .map(|p| {
+            board
+                .component(p.id)
+                .is_some_and(|c| matches!(c.kind.as_str(), "mounting_hole" | "fiducial"))
+        })
+        .collect();
+    let pinned: Vec<bool> = candidate
+        .components
+        .iter()
+        .zip(&corner_feature)
+        .map(|(p, feature)| *feature || flush_edge(p.id).is_some())
+        .collect();
+    let movable: Vec<bool> = pinned.iter().map(|p| !p).collect();
+    let direction = |fraction: f64| {
+        if fraction >= 0.75 {
+            Some(false)
+        } else if fraction <= 0.25 {
+            Some(true)
+        } else {
+            None
+        }
+    };
+    let (slide_x, slide_y) = (direction(toward.0), direction(toward.1));
+    for _ in 0..20 {
+        let before = candidate.components.clone();
+        if let Some(toward_low) = slide_x {
+            slide_parts(&mut candidate, &sizes, &movable, false, toward_low);
+        }
+        if let Some(toward_low) = slide_y {
+            slide_parts(&mut candidate, &sizes, &movable, true, toward_low);
+        }
+        shift_rows_inward(&mut candidate, &sizes, &flush_edge);
+        if candidate.components == before {
+            break;
+        }
+    }
+    // The new outline, as the export will fit it, without the holes: they sit
+    // where the old corners were and would hold it out.
+    let old = placement.board_outline;
+    let margin = mm_to_nm(tight_edge_margin_mm(board));
+    let rects: Vec<Rect> = candidate
+        .components
+        .iter()
+        .zip(&base)
+        .zip(&corner_feature)
+        .filter(|(_, feature)| !**feature)
+        .map(|((placed, size), _)| rotated_courtyard_rect(placed, *size))
+        .collect();
+    let (min_x, min_y, max_x, max_y) = rects.iter().fold(
+        (i64::MAX, i64::MAX, i64::MIN, i64::MIN),
+        |(a, b, c, d), r| {
+            (
+                a.min(r.min.x_nm),
+                b.min(r.min.y_nm),
+                c.max(r.max.x_nm),
+                d.max(r.max.y_nm),
+            )
+        },
+    );
+    let new = Rect::new(
+        Point::new(min_x - margin, min_y - margin),
+        Point::new(max_x + margin, max_y + margin),
+    );
+    let pitch = mm_to_nm(0.5);
+    let old_middle = Point::new(
+        (old.min.x_nm + old.max.x_nm) / 2,
+        (old.min.y_nm + old.max.y_nm) / 2,
+    );
+    for (placed, feature) in candidate.components.iter_mut().zip(&corner_feature) {
+        if !*feature {
+            continue;
+        }
+        let right = placed.center.x_nm > old_middle.x_nm;
+        let bottom = placed.center.y_nm > old_middle.y_nm;
+        let (old_x, new_x) = if right {
+            (old.max.x_nm, new.max.x_nm)
+        } else {
+            (old.min.x_nm, new.min.x_nm)
+        };
+        let (old_y, new_y) = if bottom {
+            (old.max.y_nm, new.max.y_nm)
+        } else {
+            (old.min.y_nm, new.min.y_nm)
+        };
+        placed.center = Point::new(
+            (new_x + (placed.center.x_nm - old_x)) / pitch * pitch,
+            (new_y + (placed.center.y_nm - old_y)) / pitch * pitch,
+        );
+    }
+    // A part may now sit where a hole came in; best effort, as in the scaling.
+    let _ = separate_overlaps(&mut candidate, &base, &pinned);
+    fit_outline_with_margin_mm(board, &mut candidate, tight_edge_margin_mm(board));
+    trim_outline_to_grid(board, &mut candidate);
+    Some(candidate)
+}
+
 /// Global compaction: pull every free part toward the middle of the layout,
 /// push apart whatever then overlaps, and keep the step only when the box
 /// around the courtyards shrinks while wiring gets no longer, nothing enters a
@@ -8198,6 +8325,40 @@ board "features_only" {
                 && after.min.y_nm > before.min.y_nm + mm_to_nm(2.0),
             "the top-left side comes in: {before:?} -> {after:?}"
         );
+    }
+
+    #[test]
+    fn sliding_toward_a_corner_fills_free_space_and_shrinks_the_outline() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut placement = place(&board).expect("place");
+        for placed in &mut placement.components {
+            placed.center = Point::new(placed.center.x_nm * 13 / 10, placed.center.y_nm * 13 / 10);
+        }
+        tighten_outline_after_sidecar(&board, &mut placement);
+        let before = placement.board_outline;
+        let slid = slide_layout_toward(&board, &placement, (1.0, 1.0), 1.0).expect("slides");
+        assert!(
+            slid.board_outline.width_nm() * slid.board_outline.height_nm()
+                < before.width_nm() * before.height_nm(),
+            "the outline follows the slid layout: {before:?} -> {:?}",
+            slid.board_outline
+        );
+        let sizes = courtyard_sizes(&board, &slid);
+        let rects: Vec<Rect> = slid
+            .components
+            .iter()
+            .zip(&sizes)
+            .map(|(p, size)| rotated_courtyard_rect(p, *size))
+            .collect();
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                let overlap = a.min.x_nm < b.max.x_nm - 1_000
+                    && b.min.x_nm < a.max.x_nm - 1_000
+                    && a.min.y_nm < b.max.y_nm - 1_000
+                    && b.min.y_nm < a.max.y_nm - 1_000;
+                assert!(!overlap, "courtyards overlap after sliding");
+            }
+        }
     }
 
     #[test]
