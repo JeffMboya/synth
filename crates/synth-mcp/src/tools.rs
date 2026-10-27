@@ -369,6 +369,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "out_dir": { "type": "string", "description": "Working directory; holds compact.json and one export per attempt" },
                     "step_percent": { "type": "number", "description": "Scale step before the first failure (default 3)" },
                     "min_scale_percent": { "type": "number", "description": "Never scale below this (default 60)" },
+                    "toward": { "type": "string", "description": "Where the layout is pulled to: center (default), a side (left, right, top, bottom) or a corner (bottom_right, top_left, ...). The side or corner named stays put and the opposite side comes in, so empty space against one side is taken from that side. Use a fresh out_dir when you change it." },
                     "router": { "type": "string", "description": "External engine, as synth_export" }
                 },
                 "required": ["file_path", "layout_file_path", "out_dir"]
@@ -3214,6 +3215,29 @@ fn compact_failure_reason(result: &Value) -> String {
     text.chars().take(240).collect()
 }
 
+/// The point of the layout the compaction scales toward, as fractions of its
+/// width and height from the top-left: `toward` names a side or a corner, and
+/// absent or `center` is the middle.
+fn compact_direction(toward: Option<&str>) -> Result<(f64, f64), String> {
+    let toward = toward.unwrap_or("center");
+    let (mut x, mut y) = (0.5, 0.5);
+    for word in toward.split('_') {
+        match word {
+            "center" => {}
+            "left" => x = 0.0,
+            "right" => x = 1.0,
+            "top" => y = 0.0,
+            "bottom" => y = 1.0,
+            _ => {
+                return Err(format!(
+                    "toward must be center, a side (left, right, top, bottom) or a corner such as bottom_right, not '{toward}'"
+                ))
+            }
+        }
+    }
+    Ok((x, y))
+}
+
 /// Whether the sidecar is a different layout from the one a compaction began
 /// with. `installed` is the layout the tool itself wrote over it afterwards,
 /// which is not a change. No record yet means compaction has not begun.
@@ -3248,6 +3272,7 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     #[allow(clippy::cast_possible_truncation)]
     let floor = (args["min_scale_percent"].as_f64().unwrap_or(60.0) * 10.0).round() as i64;
     let resolution = 5;
+    let toward = compact_direction(args["toward"].as_str())?;
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("Cannot create out_dir: {e}"))?;
     let state_path = out_dir.join("compact.json");
     let original = out_dir.join("original.placement.layout.toml");
@@ -3320,7 +3345,7 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     let candidate = if identity {
         Some(start.clone())
     } else {
-        synth_place::scale_layout_inward(&board, &start, factor)
+        synth_place::scale_layout_toward(&board, &start, factor, toward)
     };
     let step_dir = out_dir.join(format!("step_{permille}"));
     let mut attempt = CompactAttempt {
@@ -5348,6 +5373,17 @@ mod tests {
             fill_percent: 0.0,
             reason: String::new(),
         }
+    }
+
+    #[test]
+    fn a_compaction_direction_names_a_side_or_a_corner() {
+        use super::compact_direction as dir;
+        assert_eq!(dir(None), Ok((0.5, 0.5)));
+        assert_eq!(dir(Some("center")), Ok((0.5, 0.5)));
+        assert_eq!(dir(Some("bottom_right")), Ok((1.0, 1.0)));
+        assert_eq!(dir(Some("left")), Ok((0.0, 0.5)));
+        assert_eq!(dir(Some("top_left")), Ok((0.0, 0.0)));
+        assert!(dir(Some("sideways")).is_err());
     }
 
     #[test]
