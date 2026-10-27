@@ -113,7 +113,7 @@
           "item": "J1 courtyard to top board edge",
           "kind": "edge_clearance",
           "value_mm": 0.01,
-          "disposition": "Open. J1 is placed flush on the edge on purpose, but the USB-C mechanical drawing has not been checked against the shell overhang."
+          "disposition": "Open for independent mechanical approval. Checked against the HRO TYPE-C-31-M-12 drawing (C165948): the footprint puts the shell front face 0.50 mm inside Edge.Cuts (y -0.06 against the edge at y -0.56), and the 0.01 mm is only the F.CrtYd margin of 0.5 mm reaching the edge, so nothing of the connector body crosses it. The drawing gives the front edge as the layout datum and states no overhang or recess limit. A 0.50 mm recess of the plug face needs an enclosure cutout check, which has not been done."
         }
       ]
     }
