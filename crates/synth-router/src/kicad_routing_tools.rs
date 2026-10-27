@@ -156,6 +156,18 @@ pub fn build_command(
     args
 }
 
+/// Removes the candidate a previous run left in the output directory, with the
+/// project, project-local and rules files the engine wrote beside it. The engine
+/// reads the project beside its output as its starting rules, so a leftover one
+/// from an earlier export of an earlier revision decides how this export routes:
+/// the same source gave 70 vias in a reused directory and 66, three of them in
+/// pads, in a fresh one.
+fn remove_previous_candidate(candidate: &Path) {
+    for extension in ["kicad_pcb", "kicad_pro", "kicad_prl", "kicad_dru"] {
+        let _ = std::fs::remove_file(candidate.with_extension(extension));
+    }
+}
+
 /// Run KiCadRoutingTools over the request's baseline.
 #[allow(clippy::too_many_lines)]
 pub fn route(request: &RouteRequest) -> Result<Candidate, RouterFailure> {
@@ -199,7 +211,7 @@ pub fn route(request: &RouteRequest) -> Result<Candidate, RouterFailure> {
     // The duplicate-run guard is held by `crate::route`, the single
     // supported entry point. Taking it again here would refuse every run.
 
-    let _ = std::fs::remove_file(request.candidate_path());
+    remove_previous_candidate(&request.candidate_path());
     if let Some(parent) = request.candidate_path().parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -522,6 +534,27 @@ mod tests {
             args[2].ends_with("demo.kicadroutingtools.kicad_pcb"),
             "{args:?}"
         );
+    }
+
+    #[test]
+    fn a_previous_runs_project_files_do_not_start_the_next_route() {
+        let dir = std::env::temp_dir().join(format!("synth-krt-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let candidate = dir.join("demo.kicadroutingtools.kicad_pcb");
+        let keep = dir.join("demo.kicad_pro");
+        for extension in ["kicad_pcb", "kicad_pro", "kicad_prl", "kicad_dru"] {
+            std::fs::write(candidate.with_extension(extension), "stale").expect("write");
+        }
+        std::fs::write(&keep, "the board's own project").expect("write");
+        remove_previous_candidate(&candidate);
+        for extension in ["kicad_pcb", "kicad_pro", "kicad_prl", "kicad_dru"] {
+            assert!(
+                !candidate.with_extension(extension).exists(),
+                "{extension} from an earlier run survived"
+            );
+        }
+        assert!(keep.exists(), "the board's own project is not the engine's");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
