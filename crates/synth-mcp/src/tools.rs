@@ -370,7 +370,8 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "out_dir": { "type": "string", "description": "Working directory; holds compact.json and one export per attempt" },
                     "step_percent": { "type": "number", "description": "Scale step before the first failure (default 3)" },
                     "min_scale_percent": { "type": "number", "description": "Never scale below this (default 60)" },
-                    "mode": { "type": "string", "description": "scale (default): pull every distance in alike, in steps, then bisect. slide: slide parts toward `toward` into the free space beside them until each meets its neighbour, bring the connector rows and mounting holes in after them, and try gaps_mm in turn, stopping at the first that fails; keeps the smallest board that released. Use slide when the empty space is in patches, not in one slab against a side." },
+                    "mode": { "type": "string", "description": "scale (default): pull every distance in alike, in steps, then bisect. blocks: as scale, but each block of touching parts (see block_gap_mm) moves as one rigid body, so the spacing inside a circuit is kept and only the gaps between circuits close; prefer it when scale stops at a routing hotspot. slide: slide parts toward `toward` into the free space beside them until each meets its neighbour, bring the connector rows and mounting holes in after them, and try gaps_mm in turn, stopping at the first that fails; keeps the smallest board that released. Use slide when the empty space is in patches, not in one slab against a side." },
+                    "block_gap_mm": { "type": "number", "description": "slide and blocks modes: parts whose courtyards are this close count as one block that moves together (default 1.5)" },
                     "gaps_mm": { "type": "array", "items": { "type": "number" }, "description": "slide mode: the least spacing between courtyards to try, in order (default 1.6, 1.3, 1.0, 0.8)" },
                     "toward": { "type": "string", "description": "Where the layout is pulled to: center (default), a side (left, right, top, bottom) or a corner (bottom_right, top_left, ...). The side or corner named stays put and the opposite side comes in, so empty space against one side is taken from that side. Use a fresh out_dir when you change it." },
                     "router": { "type": "string", "description": "External engine, as synth_export" }
@@ -3408,6 +3409,7 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
         .unwrap_or_default();
 
     let slide = args["mode"].as_str() == Some("slide");
+    let link_mm = args["block_gap_mm"].as_f64().unwrap_or(1.5);
     let gaps: Vec<f64> = args["gaps_mm"]
         .as_array()
         .map(|list| list.iter().filter_map(Value::as_f64).collect())
@@ -3458,9 +3460,11 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     // snapping to the placement grid, and its sidecar goes to the export as is.
     let identity = !slide && permille == 1000;
     let candidate = if let Some(gap) = slide_gap {
-        synth_place::slide_layout_toward(&board, &start, toward, gap)
+        synth_place::slide_layout_toward(&board, &start, toward, gap, link_mm)
     } else if identity {
         Some(start.clone())
+    } else if args["mode"].as_str() == Some("blocks") {
+        synth_place::scale_blocks_toward(&board, &start, factor, toward, link_mm)
     } else {
         synth_place::scale_layout_toward(&board, &start, factor, toward)
     };

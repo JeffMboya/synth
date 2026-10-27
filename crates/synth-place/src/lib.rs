@@ -7009,9 +7009,6 @@ pub fn scale_layout_toward(
     Some(candidate)
 }
 
-/// The courtyard gap, in millimetres, within which two parts are one block.
-const LINK_GAP_MM: f64 = 3.0;
-
 /// The root of `i` in a union-find forest, flattening the path as it goes.
 fn find_root(parent: &mut [usize], mut i: usize) -> usize {
     while parent[i] != i {
@@ -7165,21 +7162,192 @@ fn slide_groups(
     }
 }
 
+/// As [`scale_layout_toward`], but each block of touching parts moves as one
+/// rigid body: the blocks' centres are scaled and the parts inside a block keep
+/// their exact spacing, so a decoupling ring, a regulator's network or a
+/// connector's driver is as the author laid it out and only the gaps between
+/// circuits close. `link_mm` is how close parts are to count as one block.
+/// Blocks that then overlap are pushed apart as wholes. Connector rows move
+/// inward as in the plain scaling. Like it, this does not judge the result.
+#[must_use]
+pub fn scale_blocks_toward(
+    board: &Board,
+    placement: &Placement,
+    factor: f64,
+    toward: (f64, f64),
+    link_mm: f64,
+) -> Option<Placement> {
+    let mut candidate = placement.clone();
+    let sizes = courtyard_sizes(board, &candidate);
+    let envelope = courtyard_envelope(&candidate, &sizes)?;
+    let at = |low: i64, high: i64, fraction: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let offset = ((high - low) as f64 * fraction.clamp(0.0, 1.0)) as i64;
+        low + offset
+    };
+    let middle = Point::new(
+        at(envelope.min.x_nm, envelope.max.x_nm, toward.0),
+        at(envelope.min.y_nm, envelope.max.y_nm, toward.1),
+    );
+    let flush_edge = |id: ComponentId| flush_edge_index(board, id);
+    let factor = factor.clamp(0.0, 1.0);
+    // Edge connector rows move inward exactly as the plain scaling moves them;
+    // every other part is frozen here and moved by its block below.
+    #[allow(clippy::cast_possible_truncation)]
+    let permille = (factor * 1000.0).round() as i64;
+    let free: Vec<bool> = candidate
+        .components
+        .iter()
+        .map(|p| flush_edge(p.id).is_none())
+        .collect();
+    let frozen: Vec<bool> = free.clone();
+    squeeze(&mut candidate, permille, middle, &frozen, &flush_edge);
+    let groups = touching_groups(&placement.clone(), &sizes, &free, link_mm);
+    let pitch = mm_to_nm(0.5);
+    let rects: Vec<Rect> = placement
+        .components
+        .iter()
+        .zip(&sizes)
+        .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+        .collect();
+    let scale = |value: i64, centre: i64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let scaled = centre + ((value - centre) as f64 * factor) as i64;
+        scaled
+    };
+    for group in &groups {
+        let (min_x, min_y, max_x, max_y) = group.iter().fold(
+            (i64::MAX, i64::MAX, i64::MIN, i64::MIN),
+            |(a, b, c, d), &i| {
+                (
+                    a.min(rects[i].min.x_nm),
+                    b.min(rects[i].min.y_nm),
+                    c.max(rects[i].max.x_nm),
+                    d.max(rects[i].max.y_nm),
+                )
+            },
+        );
+        let centre = Point::new((min_x + max_x) / 2, (min_y + max_y) / 2);
+        let dx = (scale(centre.x_nm, middle.x_nm) - centre.x_nm) / pitch * pitch;
+        let dy = (scale(centre.y_nm, middle.y_nm) - centre.y_nm) / pitch * pitch;
+        for &i in group {
+            candidate.components[i].center.x_nm += dx;
+            candidate.components[i].center.y_nm += dy;
+        }
+    }
+    push_blocks_apart(&mut candidate, &sizes, &groups, &flush_edge);
+    fit_outline_with_margin_mm(board, &mut candidate, tight_edge_margin_mm(board));
+    trim_outline_to_grid(board, &mut candidate);
+    Some(candidate)
+}
+
+/// Pushes blocks apart, as wholes, until no courtyard of one overlaps a
+/// courtyard of another or the passes run out. A block moves along the axis it
+/// overlaps least, each by half the overlap; parts that are not in a block (the
+/// edge connectors) stay where they are.
+fn push_blocks_apart(
+    placement: &mut Placement,
+    sizes: &[(f64, f64)],
+    groups: &[Vec<usize>],
+    flush_edge: &dyn Fn(ComponentId) -> Option<usize>,
+) {
+    let pitch = mm_to_nm(0.5);
+    let mut group_of: Vec<Option<usize>> = vec![None; placement.components.len()];
+    for (g, group) in groups.iter().enumerate() {
+        for &i in group {
+            group_of[i] = Some(g);
+        }
+    }
+    for _ in 0..SEPARATION_SWEEPS {
+        let rects: Vec<Rect> = placement
+            .components
+            .iter()
+            .zip(sizes)
+            .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+            .collect();
+        let mut shift = vec![(0_i64, 0_i64); groups.len()];
+        let mut moved = false;
+        for i in 0..rects.len() {
+            for j in (i + 1)..rects.len() {
+                let (gi, gj) = (group_of[i], group_of[j]);
+                if gi == gj {
+                    continue;
+                }
+                let ox = rects[i].max.x_nm.min(rects[j].max.x_nm)
+                    - rects[i].min.x_nm.max(rects[j].min.x_nm);
+                let oy = rects[i].max.y_nm.min(rects[j].max.y_nm)
+                    - rects[i].min.y_nm.max(rects[j].min.y_nm);
+                if ox <= 0 || oy <= 0 {
+                    continue;
+                }
+                // The axis of least overlap, away from the other part.
+                let along_x = ox <= oy;
+                let (overlap, sign) = if along_x {
+                    let right = rects[i].min.x_nm + rects[i].max.x_nm
+                        <= rects[j].min.x_nm + rects[j].max.x_nm;
+                    (ox, if right { -1 } else { 1 })
+                } else {
+                    let below = rects[i].min.y_nm + rects[i].max.y_nm
+                        <= rects[j].min.y_nm + rects[j].max.y_nm;
+                    (oy, if below { -1 } else { 1 })
+                };
+                let step = ((overlap / 2 + pitch - 1) / pitch) * pitch;
+                // A part with no block (an edge connector) does not move.
+                let (mi, mj) = (gi.is_some(), gj.is_some());
+                let (wi, wj) = match (mi, mj) {
+                    (true, true) => (step, step),
+                    (true, false) => (step * 2, 0),
+                    (false, true) => (0, step * 2),
+                    (false, false) => continue,
+                };
+                if let Some(g) = gi {
+                    if along_x {
+                        shift[g].0 += sign * wi;
+                    } else {
+                        shift[g].1 += sign * wi;
+                    }
+                }
+                if let Some(g) = gj {
+                    if along_x {
+                        shift[g].0 -= sign * wj;
+                    } else {
+                        shift[g].1 -= sign * wj;
+                    }
+                }
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+        for (g, group) in groups.iter().enumerate() {
+            for &i in group {
+                if flush_edge(placement.components[i].id).is_none() {
+                    placement.components[i].center.x_nm += shift[g].0;
+                    placement.components[i].center.y_nm += shift[g].1;
+                }
+            }
+        }
+    }
+}
+
 /// Slides the parts of a finished placement toward a side or a corner of the
 /// layout, until each meets the part in its way, then brings the connector rows
 /// and the mounting holes in after them and fits the outline. Where
 /// [`scale_layout_toward`] pulls every distance in alike, this moves parts into
 /// the free space beside them, so empty space that is not a slab against one
 /// side is still taken. `toward` is as for [`scale_layout_toward`]; `gap_mm` is
-/// the least spacing between courtyards the slide leaves. Like the scaling it
-/// does not judge the result: the caller routes it.
-/// `None` only when the layout has no courtyards.
+/// the least spacing between courtyards the slide leaves, and `link_mm` how
+/// close parts are to count as one block that moves together. Like the scaling
+/// it does not judge the result: the caller routes it. `None` when the layout
+/// has no courtyards, or when the slide would not shrink the board.
 #[must_use]
 pub fn slide_layout_toward(
     board: &Board,
     placement: &Placement,
     toward: (f64, f64),
     gap_mm: f64,
+    link_mm: f64,
 ) -> Option<Placement> {
     let mut candidate = placement.clone();
     let base = courtyard_sizes(board, &candidate);
@@ -7221,7 +7389,7 @@ pub fn slide_layout_toward(
     let (slide_x, slide_y) = (direction(toward.0), direction(toward.1));
     // Parts that touch are one circuit; they move together, so a slide takes
     // whole blocks into free space and never pulls a driver from its connector.
-    let groups = touching_groups(&candidate, &base, &movable, LINK_GAP_MM);
+    let groups = touching_groups(&candidate, &base, &movable, link_mm);
     for _ in 0..20 {
         let before = candidate.components.clone();
         if let Some(toward_low) = slide_x {
@@ -7292,6 +7460,14 @@ pub fn slide_layout_toward(
     let _ = separate_overlaps(&mut candidate, &base, &pinned);
     fit_outline_with_margin_mm(board, &mut candidate, tight_edge_margin_mm(board));
     trim_outline_to_grid(board, &mut candidate);
+    // A slide that leaves the board no smaller has found nothing to take.
+    let area = |outline: Rect| i128::from(outline.width_nm()) * i128::from(outline.height_nm());
+    let mut before = placement.clone();
+    fit_outline_with_margin_mm(board, &mut before, tight_edge_margin_mm(board));
+    trim_outline_to_grid(board, &mut before);
+    if area(candidate.board_outline) >= area(before.board_outline) {
+        return None;
+    }
     Some(candidate)
 }
 
@@ -8875,7 +9051,7 @@ board "features_only" {
         }
         tighten_outline_after_sidecar(&board, &mut placement);
         let before = placement.board_outline;
-        let slid = slide_layout_toward(&board, &placement, (1.0, 1.0), 1.0).expect("slides");
+        let slid = slide_layout_toward(&board, &placement, (1.0, 1.0), 1.0, 1.5).expect("slides");
         assert!(
             slid.board_outline.width_nm() * slid.board_outline.height_nm()
                 < before.width_nm() * before.height_nm(),
@@ -8908,7 +9084,7 @@ board "features_only" {
         let placement = place(&board).expect("place");
         let sizes = courtyard_sizes(&board, &placement);
         let movable = vec![true; placement.components.len()];
-        let groups = touching_groups(&placement, &sizes, &movable, LINK_GAP_MM);
+        let groups = touching_groups(&placement, &sizes, &movable, 1.5);
         let in_groups: usize = groups.iter().map(Vec::len).sum();
         assert_eq!(
             in_groups,
@@ -8928,11 +9104,58 @@ board "features_only" {
         );
         let mut fixed = movable.clone();
         fixed[0] = false;
-        let without = touching_groups(&placement, &sizes, &fixed, LINK_GAP_MM);
+        let without = touching_groups(&placement, &sizes, &fixed, 1.5);
         assert!(
             without.iter().all(|group| !group.contains(&0)),
             "a part that is not movable belongs to no group"
         );
+    }
+
+    /// A block of touching parts keeps its internal spacing when the layout is
+    /// scaled, so only the gaps between circuits close.
+    #[test]
+    fn scaling_blocks_keeps_each_circuit_rigid_and_shrinks_the_outline() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut placement = place(&board).expect("place");
+        for placed in &mut placement.components {
+            placed.center = Point::new(placed.center.x_nm * 13 / 10, placed.center.y_nm * 13 / 10);
+        }
+        tighten_outline_after_sidecar(&board, &mut placement);
+        let before = placement.board_outline;
+        let sizes = courtyard_sizes(&board, &placement);
+        let free: Vec<bool> = placement
+            .components
+            .iter()
+            .map(|p| flush_edge_index(&board, p.id).is_none())
+            .collect();
+        let groups = touching_groups(&placement, &sizes, &free, 1.5);
+        let scaled = scale_blocks_toward(&board, &placement, 0.9, (0.5, 0.5), 1.5).expect("scales");
+        assert!(
+            scaled.board_outline.width_nm() * scaled.board_outline.height_nm()
+                < before.width_nm() * before.height_nm(),
+            "the outline follows the scaled blocks"
+        );
+        // Inside a block, parts keep their spacing to within the placement pitch
+        // a block may be nudged by a push, but never stretched or squeezed.
+        let pitch = mm_to_nm(0.5) * 2;
+        let mut checked = 0;
+        for group in groups.iter().filter(|g| g.len() > 1) {
+            let a0 = placement.components[group[0]].center;
+            let b0 = scaled.components[group[0]].center;
+            for &i in &group[1..] {
+                let (a, b) = (placement.components[i].center, scaled.components[i].center);
+                let (dx, dy) = (
+                    (a.x_nm - a0.x_nm) - (b.x_nm - b0.x_nm),
+                    (a.y_nm - a0.y_nm) - (b.y_nm - b0.y_nm),
+                );
+                assert!(
+                    dx.abs() <= pitch && dy.abs() <= pitch,
+                    "a block was deformed by {dx} {dy} nm"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "the board has blocks of more than one part");
     }
 
     #[test]
