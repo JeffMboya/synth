@@ -6083,7 +6083,7 @@ pub fn courtyard_fill_percent(board: &Board, placement: &Placement) -> f64 {
 /// layout is often tighter than that ring, and the caller decides by routing
 /// the result, which is the only test that knows how tight the layout can go. Each edge's connector row
 /// moves inward as one body, so connectors stay flush with the fitted outline.
-/// `None` when the parts cannot be separated at that scale.
+/// `None` only when the layout has no courtyards to scale.
 #[must_use]
 pub fn scale_layout_inward(board: &Board, placement: &Placement, factor: f64) -> Option<Placement> {
     scale_layout_toward(board, placement, factor, (0.5, 0.5))
@@ -6124,9 +6124,12 @@ pub fn scale_layout_toward(
         .iter()
         .map(|p| flush_edge(p.id).is_some())
         .collect();
-    if !separate_overlaps(&mut candidate, &sizes, &pinned) {
-        return None;
-    }
+    // Best effort. The overlaps here are in the placer's own size model, which
+    // can call parts that touch an overlap when KiCad's courtyards do not; a
+    // layout the export already passes may carry some, and refusing to move
+    // it at all would leave nothing to compact. Whatever overlap is left is
+    // for the export's DRC to judge.
+    let _ = separate_overlaps(&mut candidate, &sizes, &pinned);
     // The outline the export itself fits round a placement, so the size
     // reported here is the size of the board that gets exported.
     fit_outline_with_margin_mm(board, &mut candidate, tight_edge_margin_mm(board));
