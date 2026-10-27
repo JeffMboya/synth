@@ -29,6 +29,7 @@ pub struct SearchBudget {
     started: Instant,
     total: Duration,
     min_run: Duration,
+    final_floor: Duration,
     longest_run: Duration,
 }
 
@@ -42,17 +43,28 @@ impl SearchBudget {
         } else {
             total_secs
         };
-        Self::with_limits(Duration::from_secs(secs), Duration::from_secs(MIN_RUN_SECS))
+        Self::with_floors(
+            Duration::from_secs(secs),
+            Duration::from_secs(MIN_RUN_SECS),
+            Duration::from_secs(MIN_FINAL_SECS),
+        )
     }
 
-    /// A budget with an explicit shortest run, for tests that cannot wait
-    /// seconds.
+    /// A budget with an explicit shortest run and no standing share for the final
+    /// route beyond the longest run seen, for tests that cannot wait seconds.
     #[must_use]
     pub fn with_limits(total: Duration, min_run: Duration) -> Self {
+        Self::with_floors(total, min_run, Duration::ZERO)
+    }
+
+    /// A budget with an explicit shortest run and final-route share.
+    #[must_use]
+    pub fn with_floors(total: Duration, min_run: Duration, final_floor: Duration) -> Self {
         Self {
             started: Instant::now(),
             total,
             min_run,
+            final_floor,
             longest_run: Duration::ZERO,
         }
     }
@@ -81,12 +93,11 @@ impl SearchBudget {
         self.longest_run = self.longest_run.max(took);
     }
 
-    /// What the final route is kept: the longest run seen, or
-    /// [`MIN_FINAL_SECS`], but never more than the whole budget.
+    /// What the final route is kept: the longest run seen, or the standing share
+    /// ([`MIN_FINAL_SECS`] for a real budget), but never more than the whole
+    /// budget.
     fn reserve(&self) -> Duration {
-        self.longest_run
-            .max(Duration::from_secs(MIN_FINAL_SECS))
-            .min(self.total)
+        self.longest_run.max(self.final_floor).min(self.total)
     }
 
     /// The wall-clock limit for the next candidate run: `requested`, or what is
@@ -243,7 +254,7 @@ mod tests {
     /// final route's share, and a budget shorter than that runs no candidate.
     #[test]
     fn candidate_runs_and_the_final_route_together_fit_the_budget() {
-        let short = SearchBudget::with_limits(Duration::from_secs(30), Duration::from_secs(1));
+        let short = SearchBudget::start(30);
         assert_eq!(
             short.candidate_limit(Duration::from_secs(1200)),
             None,
@@ -252,7 +263,7 @@ mod tests {
         let final_only = short.final_limit(Duration::from_secs(1200)).expect("room");
         assert!(final_only <= Duration::from_secs(30), "{final_only:?}");
 
-        let long = SearchBudget::with_limits(Duration::from_secs(900), Duration::from_secs(1));
+        let long = SearchBudget::start(900);
         let run = long
             .candidate_limit(Duration::from_secs(1200))
             .expect("room");
