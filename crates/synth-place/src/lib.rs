@@ -7009,6 +7009,162 @@ pub fn scale_layout_toward(
     Some(candidate)
 }
 
+/// The courtyard gap, in millimetres, within which two parts are one block.
+const LINK_GAP_MM: f64 = 3.0;
+
+/// The root of `i` in a union-find forest, flattening the path as it goes.
+fn find_root(parent: &mut [usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+    }
+    i
+}
+
+/// Groups of movable parts whose courtyards are within `link_mm` of each other,
+/// directly or through other parts: the blocks a slide moves as one body. A part
+/// that is not movable belongs to no group.
+fn touching_groups(
+    placement: &Placement,
+    sizes: &[(f64, f64)],
+    movable: &[bool],
+    link_mm: f64,
+) -> Vec<Vec<usize>> {
+    let link = mm_to_nm(link_mm);
+    let rects: Vec<Rect> = placement
+        .components
+        .iter()
+        .zip(sizes)
+        .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+        .collect();
+    let mut parent: Vec<usize> = (0..rects.len()).collect();
+    for i in (0..rects.len()).filter(|&i| movable[i]) {
+        for j in ((i + 1)..rects.len()).filter(|&j| movable[j]) {
+            let near = rects[i].min.x_nm < rects[j].max.x_nm + link
+                && rects[j].min.x_nm < rects[i].max.x_nm + link
+                && rects[i].min.y_nm < rects[j].max.y_nm + link
+                && rects[j].min.y_nm < rects[i].max.y_nm + link;
+            if near {
+                let (a, b) = (find_root(&mut parent, i), find_root(&mut parent, j));
+                parent[a] = b;
+            }
+        }
+    }
+    let mut by_root: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for i in (0..rects.len()).filter(|&i| movable[i]) {
+        let root = find_root(&mut parent, i);
+        by_root.entry(root).or_default().push(i);
+    }
+    by_root.into_values().collect()
+}
+
+/// Slides each group, as one body, along one axis toward the low or high side
+/// until one of its parts meets a part outside the group, or the group reaches
+/// the edge of the layout. Groups move in order from the target side outward, so
+/// none passes another; every part not in the group, movable or not, is in its
+/// way.
+fn slide_groups(
+    placement: &mut Placement,
+    sizes: &[(f64, f64)],
+    groups: &[Vec<usize>],
+    pinned: &[bool],
+    along_y: bool,
+    toward_low: bool,
+) {
+    let pitch_nm = mm_to_nm(SLIDE_PITCH_MM);
+    let Some(envelope) = courtyard_envelope(placement, sizes) else {
+        return;
+    };
+    let mut rects: Vec<Rect> = placement
+        .components
+        .iter()
+        .zip(sizes)
+        .map(|(placed, size)| rotated_courtyard_rect(placed, *size))
+        .collect();
+    let along = |r: &Rect| {
+        if along_y {
+            (r.min.y_nm, r.max.y_nm)
+        } else {
+            (r.min.x_nm, r.max.x_nm)
+        }
+    };
+    let across = |r: &Rect| {
+        if along_y {
+            (r.min.x_nm, r.max.x_nm)
+        } else {
+            (r.min.y_nm, r.max.y_nm)
+        }
+    };
+    let (envelope_low, envelope_high) = along(&envelope);
+    let lead = |group: &Vec<usize>| {
+        if toward_low {
+            group.iter().map(|&i| along(&rects[i]).0).min().unwrap_or(0)
+        } else {
+            -group.iter().map(|&i| along(&rects[i]).1).max().unwrap_or(0)
+        }
+    };
+    let mut order: Vec<&Vec<usize>> = groups.iter().collect();
+    order.sort_by_key(|group| lead(group));
+    let _ = pinned;
+    for group in order {
+        let mut shift = if toward_low { i64::MIN } else { i64::MAX };
+        for &m in group {
+            let (low, high) = along(&rects[m]);
+            let (across_low, across_high) = across(&rects[m]);
+            // The edge of the layout bounds this part.
+            let mut allowed = if toward_low {
+                envelope_low - low
+            } else {
+                envelope_high - high
+            };
+            for (other, rect) in rects.iter().enumerate() {
+                if group.contains(&other) {
+                    continue;
+                }
+                let (other_across_low, other_across_high) = across(rect);
+                if !(across_low < other_across_high && other_across_low < across_high) {
+                    continue;
+                }
+                let (other_low, other_high) = along(rect);
+                if toward_low && other_high <= low {
+                    allowed = allowed.max(other_high + pitch_nm - low);
+                } else if !toward_low && other_low >= high {
+                    allowed = allowed.min(other_low - pitch_nm - high);
+                }
+            }
+            shift = if toward_low {
+                shift.max(allowed)
+            } else {
+                shift.min(allowed)
+            };
+        }
+        // Whole grid steps, and never away from the target side.
+        let shift = if toward_low {
+            shift.min(0)
+        } else {
+            shift.max(0)
+        };
+        let shift = shift / pitch_nm * pitch_nm;
+        if shift == 0 {
+            continue;
+        }
+        for &m in group {
+            let centre = &mut placement.components[m].center;
+            let r = &mut rects[m];
+            if along_y {
+                centre.y_nm += shift;
+                r.min.y_nm += shift;
+                r.max.y_nm += shift;
+            } else {
+                centre.x_nm += shift;
+                r.min.x_nm += shift;
+                r.max.x_nm += shift;
+            }
+        }
+    }
+}
+
 /// Slides the parts of a finished placement toward a side or a corner of the
 /// layout, until each meets the part in its way, then brings the connector rows
 /// and the mounting holes in after them and fits the outline. Where
@@ -7063,27 +7219,16 @@ pub fn slide_layout_toward(
         }
     };
     let (slide_x, slide_y) = (direction(toward.0), direction(toward.1));
+    // Parts that touch are one circuit; they move together, so a slide takes
+    // whole blocks into free space and never pulls a driver from its connector.
+    let groups = touching_groups(&candidate, &base, &movable, LINK_GAP_MM);
     for _ in 0..20 {
         let before = candidate.components.clone();
         if let Some(toward_low) = slide_x {
-            slide_parts(
-                &mut candidate,
-                &sizes,
-                &movable,
-                false,
-                toward_low,
-                SLIDE_PITCH_MM,
-            );
+            slide_groups(&mut candidate, &sizes, &groups, &pinned, false, toward_low);
         }
         if let Some(toward_low) = slide_y {
-            slide_parts(
-                &mut candidate,
-                &sizes,
-                &movable,
-                true,
-                toward_low,
-                SLIDE_PITCH_MM,
-            );
+            slide_groups(&mut candidate, &sizes, &groups, &pinned, true, toward_low);
         }
         shift_rows_inward(&mut candidate, &sizes, &flush_edge);
         if candidate.components == before {
@@ -8753,6 +8898,41 @@ board "features_only" {
                 assert!(!overlap, "courtyards overlap after sliding");
             }
         }
+    }
+
+    /// Touching parts are one block and move together: a slide must not tear a
+    /// driver from the connector it sits beside.
+    #[test]
+    fn a_slide_moves_touching_parts_as_one_block() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let sizes = courtyard_sizes(&board, &placement);
+        let movable = vec![true; placement.components.len()];
+        let groups = touching_groups(&placement, &sizes, &movable, LINK_GAP_MM);
+        let in_groups: usize = groups.iter().map(Vec::len).sum();
+        assert_eq!(
+            in_groups,
+            placement.components.len(),
+            "every movable part is in a group"
+        );
+        assert!(
+            groups.len() < placement.components.len(),
+            "a packed layout has blocks, not one group per part"
+        );
+        // Two parts 50 mm apart are two groups; with nothing linking them, a
+        // slide cannot carry one with the other.
+        let far = touching_groups(&placement, &sizes, &movable, 0.0);
+        assert!(
+            far.len() >= groups.len(),
+            "a tighter link makes more, smaller groups"
+        );
+        let mut fixed = movable.clone();
+        fixed[0] = false;
+        let without = touching_groups(&placement, &sizes, &fixed, LINK_GAP_MM);
+        assert!(
+            without.iter().all(|group| !group.contains(&0)),
+            "a part that is not movable belongs to no group"
+        );
     }
 
     #[test]
