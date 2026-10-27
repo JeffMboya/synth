@@ -6107,7 +6107,10 @@ pub fn scale_layout_inward(board: &Board, placement: &Placement, factor: f64) ->
     if !separate_overlaps(&mut candidate, &sizes, &pinned) {
         return None;
     }
-    tighten_outline_after_sidecar(board, &mut candidate);
+    // The outline the export itself fits round a placement, so the size
+    // reported here is the size of the board that gets exported.
+    fit_outline_with_margin_mm(board, &mut candidate, tight_edge_margin_mm(board));
+    trim_outline_to_grid(board, &mut candidate);
     Some(candidate)
 }
 
