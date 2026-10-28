@@ -22,7 +22,7 @@ board "buck_neg_fb_sw" {
   power "+3V3" 3.3v
 
   group "INPUT PROTECTION" color "#c2410c" {
-    component J1: connector "jst_b2b_xh_a_2pin" value "24V_IN" { placement_hint { region: left_edge edge: left priority: hard } }
+    component J1: connector "jst_b2b_xh_a_2pin" value "24V_IN"
     component F1: fuse "mf_msmf110_33x" value "1.1A_PTC"
     component D1: diode "ss36" value "SS36"
     component D2: diode "smbj30a" value "SMBJ30A"
@@ -90,7 +90,7 @@ board "buck_neg_fb_sw" {
   }
 
   group "OUTPUT" color "#be123c" {
-    component J2: connector "jst_b4b_xh_a_4pin" value "3V3_OUT" { placement_hint { region: right_edge edge: right priority: hard } }
+    component J2: connector "jst_b4b_xh_a_4pin" value "3V3_OUT"
     component D3: led "ltst_c190kgkt" value "PWR"
     component R_LED: resistor "r_generic_0603" value "470"
     notes "" {

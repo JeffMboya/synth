@@ -18,8 +18,8 @@
     "command": [
       "/usr/bin/python3",
       "/home/steve/work/synth-buck-led/tools/freeroute_autoroute.py",
-      "out/buck/buck.synth.kicad_pcb",
-      "out/buck/buck.freerouting.kicad_pcb",
+      "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.synth.kicad_pcb",
+      "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.freerouting.kicad_pcb",
       "--jar",
       "/home/steve/work/synth-buck-led/tools/freerouting/freerouting-2.4.1.jar",
       "--java",
@@ -29,9 +29,9 @@
       "--threads",
       "4",
       "--ses-output",
-      "out/buck/buck.freerouting.ses",
+      "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.freerouting.ses",
       "--report",
-      "out/buck/buck.freerouting.json",
+      "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.freerouting.json",
       "--clean-netlist"
     ],
     "settings": {
@@ -40,31 +40,31 @@
       "threads": "4",
       "wall_clock_secs": "1200"
     },
-    "input_hash": "72274669d6c004299d09977b591105bec5c6046cb35aed4b81f3dcffcca68bf7",
+    "input_hash": "920b06a8ecdab458cc8bea2b21a669c29353adddfb0334810140863f1d7fc254",
     "output_hash": "",
     "source_revision": null,
-    "duration_ms": 14304
+    "duration_ms": 21609
   },
   "statistics": {
     "connected_nets": 13,
     "open_nets": 0,
     "open_net_names": [],
-    "segments": 119,
-    "vias": 26,
-    "wire_length_mm": 330.693616,
+    "segments": 81,
+    "vias": 16,
+    "wire_length_mm": 230.50047,
     "pad_escape_rejections": 0,
     "engine_findings": {
-      "claimed_imported_segments": "119",
-      "claimed_imported_vias": "26"
+      "claimed_imported_segments": "81",
+      "claimed_imported_vias": "16"
     }
   },
   "artifacts": {
-    "baseline": "out/buck/buck.synth.kicad_pcb",
-    "candidate": "out/buck/buck.freerouting.kicad_pcb",
-    "delivered": "out/buck/buck.kicad_pcb",
-    "session_log": "out/buck/buck.freerouting.log",
-    "ses": "out/buck/buck.freerouting.ses",
-    "router_report": "out/buck/buck.freerouting.json",
+    "baseline": "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.synth.kicad_pcb",
+    "candidate": "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.freerouting.kicad_pcb",
+    "delivered": "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.kicad_pcb",
+    "session_log": "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.freerouting.log",
+    "ses": "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.freerouting.ses",
+    "router_report": "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck/buck.freerouting.json",
     "connectivity_report": null,
     "drc_report": null
   },
@@ -91,7 +91,7 @@
     "kicad_drc": {
       "errors": 0,
       "unconnected": 0,
-      "warnings": 27
+      "warnings": 4
     },
     "blocking_reasons": [],
     "unavailable_checks": []

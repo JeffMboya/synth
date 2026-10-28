@@ -36,28 +36,29 @@ kicad-cli sch export netlist --format kicadsexpr -o /tmp/buck.net $B/kicad/buck.
 ```
 
 Tool versions used: KiCad 10.0.7, FreeRouting 2.4.1 on OpenJDK 25.0.5, Synth 0.1.1 built from
-`main` `1eac8a1`, on 2026-10-26 (the previous revision on 2026-10-24); placement from `main` `2054046`. Every export run at this revision produced the same `.kicad_pcb`
-(`919ba36a...`) and `.kicad_sch` (`4cfbaf5c...`). A different placement or router version can give different
+`main` `2054046`, on 2026-10-28 (the previous revision on 2026-10-26). Every export run at this revision produced the same `.kicad_pcb`
+(`c21bee3c...`) and `.kicad_sch` (`4cfbaf5c...`). A different placement or router version can give different
 copper. `out/` is a scratch directory and is not committed, so the paths in `reports/` do not
 resolve from a fresh checkout.
 
 ## Artifact hashes
 
-`SHA256SUMS` lists every design artifact (source, KiCad project, Gerbers, drill files,
+`SHA256SUMS` lists every design artifact (source, sidecar, KiCad project, Gerbers, drill files,
 BOM, pick-and-place, pictures, routing, DRC and ERC reports). It leaves out `README.md`,
 `QUALIFICATION.md` and itself. The key ones:
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `buck.synth` | `acc80b36b762bb2d1fa85d806199841be003603154bda8aed2473e0eb12244fc` |
-| `buck_neg_fb_sw.synth` | `e6a9e94ce4d01a3b5a58b941da073648a32c1aa9c48bb83ed2bddbec0cd17299` |
-| `kicad/buck.kicad_pcb` | `919ba36aa69fb44f3ca9179f5767de95edb504ca27b8b277a65e67c3248dcb66` |
+| `buck.synth` | `a116a9c77185d708a441b958910ffa4a7c96db53bc2e784d02fea793d8f0623b` |
+| `buck.placement.layout.toml` | `2293ca255f1862884fd8b00c111d2aa3706ba4a90a8a797081677b9e8282fa36` |
+| `buck_neg_fb_sw.synth` | `f9bd41ba9bd25abdd3cb7a7315113d93dd08b4484c274bbc6d20117dcedaf5d1` |
+| `kicad/buck.kicad_pcb` | `c21bee3c4d85d41289f82bb6e0381810ae87eac1aa572e7a354d9c6c212e9e16` |
 | `kicad/buck.kicad_sch` | `4cfbaf5c6522e956386fe77ee3c7b057a43dad12e796db33124a88ecc8b87219` |
 | `kicad/bom.csv` | `2f7844d6df5a5bf57fdf612827853c8c9838406fb17f33e4d7e0ce16b95d78f2` |
-| `reports/release.json` | `1d4e41c122c06ad49706e6ca09eec62e5e92e1f54a1195c4525932797d6a2d94` |
-| `reports/release-fab.json` | `47f1aa594a03ebb6c7f18b1514ae9fc9267063fac5791418be7d742a366ca7ba` |
-| `reports/buck.kicad-drc.json` | `913bddc9493dfa9a9f50e0afe4d0eec800bc7eab7beea53cd770c65c3fa69799` |
-| `reports/buck.kicad-erc.json` | `25bd67d85262bc919f7dad62584888e9f0942557ff163c7a7fc5200ea7c68d28` |
+| `reports/release.json` | `964132b15db71927e2b4e27681ae635445fb3b0e8a87e28ce601587857100bda` |
+| `reports/release-fab.json` | `385880c9c4465f0eb4cd5a2e5f1833997fe51def33026b15b6aac7ac7dfe2c64` |
+| `reports/buck.kicad-drc.json` | `199f1b1edc38b85de5b31501566296d5358dac3b78f1997c2695aff8bd8d13bf` |
+| `reports/buck.kicad-erc.json` | `292404f3366ac68ee758932e75d5e850d8cbae83b7da8e39b0d6802c4b66923c` |
 
 Datasheet values used for the part values are in `README.md` ("Parts and datasheets"). The
 datasheets are not committed, so the figures taken from them cannot be checked from this
@@ -69,21 +70,21 @@ repository.
 | --- | --- | --- | --- |
 | A1 | The source parses, resolves and lowers | `synth validate buck.synth` | Exit 0, 0 errors, 22 warnings: 9 `W-SYNTH-PART-UNVERIFIED`, 3 `E-SYNTH-SCHEM-003`, 2 `E-SYNTH-SCHEM-004`, 4 `E-SYNTH-SCHEM-005`, 1 `W-SYNTH-ANOMALY-001`, 3 `W-SYNTH-SUPPLY-002` |
 | A2 | Regulator feedback is not taken from the switch node | `E-SYNTH-POWER-011` on `buck_neg_fb_sw.synth` | The twin exits 1 with the error and 20 warnings; the good board does not raise it. The rule follows one series resistor only, so a longer feedback path is not checked |
-| A3 | Every net is connected end to end | `reports/buck.connectivity.json`, `reports/buck.routing.json` | 13 nets, 0 open, 0 unconnected pads, 119 segments, 26 vias, 330.69 mm of copper, no via-in-pad |
-| A4 | No KiCad DRC rule violation on the delivered board | `kicad-cli pcb drc --refill-zones`, `reports/buck.kicad-drc.json` | 0 errors, 0 unconnected, 27 warnings, all `lib_footprint_issues` (library links); no silkscreen warning |
+| A3 | Every net is connected end to end | `reports/buck.connectivity.json`, `reports/buck.routing.json` | 13 nets, 0 open, 0 unconnected pads, 81 segments, 16 vias, 230.50 mm of copper, no via-in-pad |
+| A4 | No KiCad DRC rule violation on the delivered board | `kicad-cli pcb drc --refill-zones`, `reports/buck.kicad-drc.json` | 0 errors, 0 unconnected, 4 warnings: 2 `silk_overlap`, 2 `silk_over_copper` |
 | A5 | The route passes Synth's source/DRC gate | `reports/release.json` (`synth export-kicad`, no fab flags) | `release_ready` true, `production_status` production, state `routed`, 0 blocking signal-integrity findings |
 | A6 | The package is not a fabrication release | `reports/release-fab.json` (`--gerbers --drill`) | `release_ready` **false**, `production_status` `untrusted`, override `unverified_parts` naming 8 parts. This is the correct answer until #51 lands a part review |
-| A7 | Schematic electrical rules | `kicad-cli sch erc`, `reports/buck.kicad-erc.json` | 0 errors, 72 warnings: 45 `lib_symbol_issues`, 27 `footprint_link_issues` (the KiCad libraries are not in the config) |
+| A7 | Schematic electrical rules | `kicad-cli sch erc`, `reports/buck.kicad-erc.json` | 0 errors, 1 warning: 1 `lib_symbol_mismatch` (SS36 against the Diode library copy) |
 | A8 | The schematic netlist matches the source | `kicad-cli sch export netlist` | 13 nets, node for node the source's 8 `net` blocks plus the 5 names its 9 `connect` statements create: GND 16 nodes, `+3V3` 10, VIN 7, FB 4, PG 4, EN 3, SW 3, BOOT 2, U1_VCC 2, VIN_FUSED 2, VIN_RAW 2, LED_PWR 2, LED_PG 2 |
-| A9 | A layer change without a nearby ground return via is reported | `W-SYNTH-DRC-016` in both release files | 10 advisory findings in `release.json` and `release-fab.json`, none blocking (five nets, two layer changes each, no ground via within 0.64 mm). The previous hand-placed layout had none. `synth capability list` still declares return-path analysis unsupported, so read this as a proximity test; whether the findings matter is for the reviewer |
-| A10 | Manufacturing exports exist and are complete | `kicad/gerbers/` (22 Gerbers plus the `.gbrjob`), `kicad/drill/` | 4 copper layers (F, In1, In2, B), mask, paste, silkscreen and Edge.Cuts present, Edge.Cuts traces the 60.85 x 31.09 mm outline; PTH drill 32 holes (26 x 0.3 mm vias, 6 connector pins at 0.95/1.0 mm), NPTH 2 x 2.5 mm mounting holes. Not fabricated |
+| A9 | A layer change without a nearby ground return via is reported | `W-SYNTH-DRC-016` in both release files | No finding on this layout: 0 findings in `release.json` and `release-fab.json`. The previous layout had one (a `+3V3` layer change with no ground via within 0.64 mm); the re-route removed that layer change, it was not fixed on purpose. `synth capability list` still declares return-path analysis unsupported, so an empty result is a proximity test passing, not a return-path analysis |
+| A10 | Manufacturing exports exist and are complete | `kicad/gerbers/` (22 Gerbers plus the `.gbrjob`), `kicad/drill/` | 4 copper layers (F, In1, In2, B), mask, paste, silkscreen and Edge.Cuts present, Edge.Cuts traces the 70.99 x 31.1 mm outline; PTH drill 22 holes (16 x 0.3 mm vias, 6 connector pins at 0.95/1.0 mm), NPTH 2 x 2.5 mm mounting holes. Not fabricated |
 | A11 | The exported project is readable by KiCad | KiCad 10.0.7 headless | `pcb drc`, `sch erc`, `sch export netlist`, `sch export pdf`, `pcb render` and `pcb export pos` all load the committed files and succeed. Not opened in the KiCad GUI |
-| A12 | Ground pours are stored filled | `grep -c filled_polygon kicad/buck.kicad_pcb` | 6 filled polygons for the 4 GND zones (3 on F.Cu, one on each other layer); the other 2 zones are rule areas and carry no fill. KiCad opens showing the connectivity the gate validated |
-| A13 | The placement is what was exported, and the connectors sit on their edges | `kicad/buck.kicad_pcb`, `placement_hint` on J1 and J2 in `buck.synth` | There is no sidecar; Synth placed all 27 parts. J1 (hard, left edge) is at x 2.85 mm and J2 (hard, right edge) at x 56.85 mm on a board spanning x -0.05 to 60.8 mm, so each connector is flush with its edge and its plug opens outward. H1 and H2 are at (5.38, 5.75) and (55.38, 5.75) mm, in the top corners, not in front of either connector. Position checked with pcbnew, not by an automated rule |
-| A14 | The placement passes Synth's structural review | MCP `synth_describe_placement` | Not run on this revision: the Synth MCP server was not available |
+| A12 | Ground pours are stored filled | `grep -c filled_polygon kicad/buck.kicad_pcb` | 4 filled polygons for the 4 GND zones (one per layer); the other 2 zones are rule areas and carry no fill. KiCad opens showing the connectivity the gate validated |
+| A13 | The placement sidecar is what was placed | sidecar compared with `kicad/buck.kicad_pcb` | The sidecar lists all 27 parts; the exported board has 27 footprints. D4 and R_PGLED sit at the sidecar coordinates (59.0, 25.5) and (54.0, 25.5) mm. J1 and J2 differ by the documented JST pin-1 anchor offset |
+| A14 | The placement passes Synth's structural review | MCP `synth_describe_placement` with the sidecar | Not re-run on this revision: the Synth MCP server was not available. The 25-part result (score 100, no findings) does not cover D4 and R_PGLED |
 | A15 | Power-good reaches the connector | `kicad-cli sch export netlist` (A8), `E-SYNTH-POWER-011` rule set | Net `PG` has exactly four nodes: `U1.pg` (pin 4, open drain), `R_PG.p1` (100k to `+3V3`), `J2.p3` and `D4.cathode` (A17). The connection and the pull-up are proven; the behaviour is B3 |
-| A16 | Thermal copper exists under the converter | `kicad/buck.kicad_pcb`, `reports/buck.connectivity.json` | U1 pin 9 is a 2.41 x 3.1 mm exposed pad in the `GND` net, soldered to the F.Cu pour; the board has 16 GND vias, 2 within 4 mm of the pad edge (0.55 and 3.00 mm). The copper is proven; the temperature is B2 |
-| A17 | The power-good fault LED is wired as designed | `kicad-cli sch export netlist` (A8), `kicad/bom.csv`, `kicad/buck.kicad_pcb` | `D4` (`ltst_c190kgkt`, value "PG FAULT") has its anode on net `LED_PG` and its cathode on `PG`; `R_PGLED` (470 R) joins `+3V3` to `LED_PG`. Both are in the BOM and placed by Synth, D4 at (39.5, 15.0) mm and R_PGLED at (39.5, 13.5) mm. The LED current is a hand figure: (3.3 - 2.1) / 470 = 2.55 mA, taking Vf 2.1 V from the part entry's 1.9 to 2.4 V range (the LED datasheet was not read, B8), with `PG` held low by 76 to 150 ohm RDSON (TI SNVSB99C, Electrical Characteristics), so about 0.4 V. "PG FAULT" is the value field on F.Fab and is not printed on the silkscreen; only the reference D4 is. That the LED lights on a fault is B3 |
+| A16 | Thermal copper exists under the converter | `kicad/buck.kicad_pcb`, `reports/buck.connectivity.json` | U1 pin 9 is a 2.41 x 3.1 mm exposed pad in the `GND` net, soldered to the F.Cu pour; the board has 16 GND vias, 1 within 4 mm of the pad edge (1.93 mm). This is one via fewer than the previous layout (17, 2 within 4 mm): the re-route moved them. The copper is proven; the temperature is B2 |
+| A17 | The power-good fault LED is wired as designed | `kicad-cli sch export netlist` (A8), `kicad/bom.csv`, `kicad/buck.kicad_pcb` | `D4` (`ltst_c190kgkt`, value "PG FAULT") has its anode on net `LED_PG` and its cathode on `PG`; `R_PGLED` (470 R) joins `+3V3` to `LED_PG`. Both are in the BOM, both are placed at 59.0 / 54.0 mm, y 25.5 mm, next to D3 and R_LED. The LED current is a hand figure: (3.3 - 2.1) / 470 = 2.55 mA, taking Vf 2.1 V from the part entry's 1.9 to 2.4 V range (the LED datasheet was not read, B8), with `PG` held low by 76 to 150 ohm RDSON (TI SNVSB99C, Electrical Characteristics), so about 0.4 V. "PG FAULT" is the value field on F.Fab and is not printed on the silkscreen; only the reference D4 is. That the LED lights on a fault is B3 |
 
 ## B. Not proven: needs expert review
 
@@ -93,14 +94,14 @@ repository.
 | B2 | Thermal copper, thermal vias, thermal relief on pours and junction temperature | `synth capability list` declares `thermal_relief_analysis` unsupported: zone relief gap and spoke width are fixed export defaults and are not analysed. There are no vias in the pad, because the board's fabrication floor is a 0.3 mm drill and the KiCad HSOP-8 thermal-via footprint ships 0.2 mm drills. Estimate from TI Figure 9-3 (about 38 C/W at 20-24 cm2 of copper per layer on a four-layer board) and the assumed 85% efficiency: junction about 92 C at 1 A and 70 C ambient, about 114 C at 2 A. Not a simulation, not a measurement | Copper present; temperature unverified |
 | B3 | Power-good behaviour | The connection and the LED wiring are proven (A15, A17); the LED is an indicator, not a check on the thresholds. The part's datasheet gives 93/95/105/107% thresholds, a glitch filter and a 4 ms start-up delay, but nothing declares those limits and `synth capability list` marks `power_sequencing_and_power_good` unsupported, so no stage checks them. Nothing was measured | Unsupported by Synth; unverified by an expert |
 | B4 | Input and output filtering, loop stability, capacitor derating | Table 9-2 values are used (10 uF + 220 nF in, 3x 22 uF out, 6.8 uH, internal compensation). DC-bias derating of the input and output ceramics is unknown (no vendor data). C1 electrolytic ESR unknown. Crossover, phase margin and load-transient response were not computed or measured | Requires expert review |
-| B5 | Switch-node loop area, return paths, EMI and ripple | Only pad-edge gaps were measured (README). No loop area, inductance, ripple or EMI result. The placement is Synth's own and the loops are longer than on the hand layout: C3 is 19.80 mm from the VIN pad, L1 pad 1 is 3.33 mm from the SW pad and C4 is 4.63 mm from SW; the hand placement had 2.88 and 3.80 mm. Whether this loop is acceptable is not analysed | Requires expert review; likely fails |
-| B6 | Analog placement separation and grounding | `synth capability list` declares `split_ground_planes` unsupported: each ground net gets one unsplit zone. R_FB_T is 3.39 mm and R_FB_B 13.77 mm from U1 pin 5, R_FB_B's ground pad is 5.86 mm from U1 pin 1 through a via to the plane, and R_FB_T is 8.98 mm from L1 pad 1 (SW). Whether that is acceptable is for a reviewer | Requires expert review |
+| B5 | Switch-node loop area, return paths, EMI and ripple | Only pad-edge gaps were measured (README). No loop area, inductance, ripple or EMI result. The input cap C3 is 2.88 mm from the VIN pad and L1 3.80 mm from the SW pad; whether that loop is small enough is not analysed | Requires expert review |
+| B6 | Analog placement separation and grounding | `synth capability list` declares `split_ground_planes` unsupported: each ground net gets one unsplit zone. The FB divider is 3.55 mm from U1 pin 5, but R_FB_B's ground is 11.31 mm from U1 pin 1 and reaches it through a via to the plane. Whether that is acceptable is for a reviewer | Requires expert review |
 | B7 | Reverse-polarity block, PTC margin, UVLO thresholds, output voltage | All by hand calculation from datasheet numbers (README): PTC 0.162 A at 24 V and 0.248 A at the UVLO stop voltage against Ihold 0.63 A at 70 C; UVLO 18.09 / 16.62 V; Vout 3.315 V. No bench measurement | Requires expert review |
 | B8 | Part pins and footprints against the manufacturer drawings | `synth registry qualify --part <id>` (output in `reports/registry-qualify.txt`): all 8 new parts blocked by `E-SYNTH-QUAL-008` — 7 for having no reviewer, the electrolytic for carrying no provenance — and `mf_msmf110_33x` additionally reports `E-SYNTH-QUAL-016` (its footprint names a 3D model that is not installed). No person sourced or compared the footprint: the stock KiCad HSOP-8 DDA footprint was not checked against TI's DDA drawing, nor the JST footprints against JST's. LED datasheet unreachable; the electrolytic and the generic passives have no MPN | Requires expert review |
-| B9 | Compactness | Outline 60.85 x 31.09 mm (1892 mm2), 15% smaller than the hand-placed 71.9 x 31.125 mm (2238 mm2). With the connector edge hints the placer fits the outline to the parts; without them (and with the holes pinned at the old corners) it gave 67.6 x 48.09 mm. Upstream `main` before #306 gave 67.6 x 48.8 mm on that no-hint source, so #306 changed the area by 1.4% there | Smaller than hand placement |
+| B9 | Compactness | Outline 70.99 x 31.125 mm (2210 mm2), up from 58.0 x 32.6 mm (1891 mm2) for the SOT-23-6 version: 7 more parts, 2 mounting holes and the HSOP-8 package. The fault LED and its resistor fit in the existing outline. No auto-placed run was compared against this sidecar | Not a defect; not compared |
 | B10 | Keepouts and shielding | The language has keepouts; none was declared under the switch node or the inductor in this design, and none was checked | Unsupported here |
 | B11 | Power sequencing, soft-start and inrush | The converter has reference-based internal soft start (no SS pin) and a 4 ms power-good delay. Inrush into C1 and the output capacitors, and the sequencing of the PG signal against the output, were not analysed or measured | Unverified |
-| B12 | Decoupling placement | C4 6.49 mm from BOOT, C8 4.73 mm from VCC, C7 8.80 mm from R_FB_T, C3 19.80 mm from VIN, C5/C6/C9 14.35, 12.85 and 19.33 mm from L1 pad 2, in the pad-gap table in `README.md` (`pad_gaps.py`). The hand placement had 0.55 to 2.88 mm. No `near` hints were given. Loop inductance was not computed | Unverified; likely fails |
+| B12 | Decoupling placement | C4 0.62 mm from BOOT, C8 0.56 mm from VCC, C7 0.55 mm from R_FB_T, C3 2.88 mm from VIN, C5/C6/C9 1.20 to 1.73 mm from L1 pad 2, in the pad-gap table in `README.md` (`pad_gaps.py`). Loop inductance was not computed | Unverified |
 | B13 | Stackup and impedance assumptions | The board uses the default 4-layer stackup with inner ground planes. No stackup block was declared, no controlled-impedance net exists, and the capability descriptor marks inner-layer impedance unsupported | Not applicable to a single-ended power board |
 | B14 | What the Gerbers, drill files and BOM say about orderability | The files in `kicad/` were generated and hashed (A10), but nothing was fabricated, no fab accepted them, no part carries an LCSC number, and the electrolytic and every generic passive have no MPN either. Availability not checked | Not done |
 | B15 | Schematic correctness and readability | ERC has 0 errors (A7) and the netlist matches the source (A8). The sheet was rendered and read: `tools/schematic_quality.py` reports 1 overlapping text pair, 10 texts with a wire through them, 0 wire crossings, 1371.6 mm of wire, and a mean passive-to-pin distance of 62.6 mm (max 102.9). The power-good and thermal groups read correctly | Readable, not tidy |
@@ -122,13 +123,13 @@ Every line of `#38`'s "Check exactly" list, against this board.
 | Return paths and layer transitions | One advisory proximity finding; no return-current analysis, and the capability descriptor says so | A9 |
 | Impedance assumptions | Not applicable: no controlled-impedance net, no stackup block | B13 |
 | Keepouts | Unsupported here: the language has them, none was declared or checked | B10 |
-| Analog placement separation | FB divider 3.39 / 13.77 mm from the FB pin; divider ground 5.86 mm out through a via; not judged | B6 |
+| Analog placement separation | FB divider 3.55 mm from the FB pin; divider ground 11.31 mm out through a via; not judged | B6 |
 | Grounding | One unsplit GND zone per layer; split planes unsupported; see the layer-change finding | B6, A9 |
-| Decoupling | Boot and decoupling capacitors 3.33 to 19.80 mm from the pin they serve; loop inductance not computed | B12 |
+| Decoupling | Boot and decoupling capacitors 0.55 to 2.88 mm from the pin they serve; loop inductance not computed | B12 |
 | Thermal relief | Fixed export defaults, not analysed; the pad's copper is proven, the temperature is not | A16, B2 |
 | Connector ESD paths | D2 SMBJ30A on VIN is the ESD/transient clamp; J1 and J2 are 2- and 4-pin power connectors with no signal pins | B1, README |
 | Power sequencing | The power-good signal exists and is pulled up (A15); its thresholds, delay and fault behaviour are not checked or measured | A15, A17, B3, B11 |
-| ERC and DRC | 0 errors on both, 27 + 72 warnings (library links) | A4, A7 |
+| ERC and DRC | 0 errors on both, 4 DRC + 1 ERC warnings (4 silkscreen, 1 library symbol mismatch) | A4, A7 |
 | Schematic correctness | Netlist equals the source net for net; readability measured, not tidy | A8, B15 |
 | BOM correctness | 27 components, one BOM row each, no MPN or LCSC on the generic parts | A6, B14 |
 | Footprint correctness | Pins and packages not compared with the manufacturer drawings; none of the 8 new parts has a reviewer | B8 |
