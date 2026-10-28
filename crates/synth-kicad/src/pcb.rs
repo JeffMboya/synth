@@ -107,7 +107,12 @@ pub fn build_pcb(
         ),
         Sexp::list("paper", vec![Sexp::str(paper_for(placement))]),
         build_layers(board.layers),
-        build_setup_with(board.stackup.as_ref()),
+        build_setup_with(
+            board.stackup.as_ref(),
+            &synth_drc::ManufacturerProfile::from_name(
+                board.manufacturer.as_deref().unwrap_or_default(),
+            ),
+        ),
         // Net 0 = unconnected (KiCad convention). Real nets get
         // ids 1..N in IR declaration order — same ordering KiCad
         // uses when it generates from an imported netlist.
@@ -1032,6 +1037,10 @@ fn build_zone(
                     Sexp::atom("yes"),
                     Sexp::list("thermal_gap", vec![num(0.2)]),
                     Sexp::list("thermal_bridge_width", vec![num(0.25)]),
+                    // A pour can be cut into islands by traces and keepouts;
+                    // an island touches no pad, so keeping it only adds copper
+                    // that KiCad reports as an unconnected zone.
+                    Sexp::list("island_removal_mode", vec![Sexp::atom("0")]),
                 ],
             ),
             Sexp::list("polygon", vec![Sexp::list("pts", pts)]),
@@ -1253,9 +1262,17 @@ fn layer(id: i32, name: &str, kind: &str, alias: Option<&str>) -> Sexp {
 }
 
 /// Minimum `(setup ...)` block KiCad 10 will accept. Default trace
-/// widths and clearances; later slices read these from a
-/// manufacturer profile (plan §9.4).
-fn build_setup() -> Sexp {
+/// widths and clearances; the via minima come from the manufacturer profile.
+///
+/// `via_min_size` was a fixed 0.60 mm while the project file, the router and
+/// Synth's own check all worked to the profile's 0.56 mm (a 0.30 mm drill and a
+/// 0.13 mm ring each side). `kicad-cli` applies the board file's figure, so
+/// every via the router placed at the legal 0.56 mm was reported as an error
+/// and the board was refused.
+fn build_setup(profile: &synth_drc::ManufacturerProfile) -> Sexp {
+    let via_min_size =
+        synth_geometry::nm_to_mm(profile.min_drill_diameter_nm + 2 * profile.min_annular_ring_nm);
+    let via_min_drill = synth_geometry::nm_to_mm(profile.min_drill_diameter_nm);
     Sexp::list(
         "setup",
         vec![
@@ -1273,15 +1290,15 @@ fn build_setup() -> Sexp {
             // 0.127 mm is the default profile's copper clearance; the
             // router enforces this same value when choosing grid moves.
             Sexp::list("clearance_min", vec![num(0.127)]),
-            Sexp::list("via_min_size", vec![num(0.60)]),
-            Sexp::list("via_min_drill", vec![num(0.30)]),
+            Sexp::list("via_min_size", vec![num(via_min_size)]),
+            Sexp::list("via_min_drill", vec![num(via_min_drill)]),
         ],
     )
 }
 
 /// [`build_setup`], with the declared stackup (if any) as its first entry.
-fn build_setup_with(stackup: Option<&Stackup>) -> Sexp {
-    let mut setup = build_setup();
+fn build_setup_with(stackup: Option<&Stackup>, profile: &synth_drc::ManufacturerProfile) -> Sexp {
+    let mut setup = build_setup(profile);
     if let (Some(stackup), Sexp::List { children, .. }) = (stackup, &mut setup) {
         children.insert(0, build_stackup(stackup));
     }
@@ -1477,6 +1494,13 @@ fn derived_controlled_geometry(board: &Board) -> Vec<(synth_ir::NetId, DerivedGe
         .collect()
 }
 
+/// The clearance a net class takes when the author declared none: the board's
+/// manufacturer minimum, from the profile the project file and the router
+/// resolve, so the classes written here say what the project file says.
+fn default_class_clearance_mm(board: &Board) -> f64 {
+    synth_geometry::nm_to_mm(crate::export::manufacturer_profile(board).min_copper_clearance_nm)
+}
+
 fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
     // Topological power-domain map: classifies every net by connected pin types,
     // not by string name. This is the authoritative source for Power/GND class assignment.
@@ -1589,7 +1613,7 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
         let mut default_args = vec![
             Sexp::str("Default"),
             Sexp::str("Default net class"),
-            Sexp::list("clearance", vec![num(0.127)]),
+            Sexp::list("clearance", vec![num(default_class_clearance_mm(board))]),
             Sexp::list("trace_width", vec![num(0.127)]),
             Sexp::list("via_dia", vec![num(0.60)]),
             Sexp::list("via_drill", vec![num(0.30)]),
@@ -1625,7 +1649,10 @@ fn build_netclasses(net_table: &[(u32, String)], board: &Board) -> Vec<Sexp> {
     // same merge as Default above.
     if !power_nets.is_empty() && !declared.iter().any(|g| g.name == "Power") {
         let power_width = if is_rp2350_board { 0.127 } else { 0.50 };
-        let power_clearance = if is_rp2350_board { 0.127 } else { 0.2 };
+        // The project file writes this class at the manufacturer minimum, which
+        // is what the router honours. A larger value here is the one KiCad's
+        // DRC enforces, so copper the router placed legally is reported.
+        let power_clearance = default_class_clearance_mm(board);
         let mut power_args = vec![
             Sexp::str("Power"),
             Sexp::str("Power delivery network"),
@@ -3202,13 +3229,26 @@ mod tests {
         assert_eq!(fixed_6(-500_000), "-0.5");
     }
 
+    /// The board file's own minimum via has to be the profile's, because
+    /// `kicad-cli` applies it, and the router places vias down to that figure.
+    #[test]
+    fn the_via_minimum_is_the_profiles_not_a_fixed_figure() {
+        let jlc = build_setup(&synth_drc::ManufacturerProfile::jlc_standard()).to_string_pretty();
+        assert!(jlc.contains("(via_min_size 0.56)"), "{jlc}");
+        assert!(jlc.contains("(via_min_drill 0.3)"), "{jlc}");
+        let pcbway =
+            build_setup(&synth_drc::ManufacturerProfile::pcbway_standard()).to_string_pretty();
+        assert!(pcbway.contains("(via_min_size 0.6)"), "{pcbway}");
+    }
+
     #[test]
     fn without_a_stackup_setup_and_thickness_are_the_legacy_ones() {
+        let profile = synth_drc::ManufacturerProfile::jlc_standard();
         assert_eq!(
-            build_setup_with(None).to_string_pretty(),
-            build_setup().to_string_pretty()
+            build_setup_with(None, &profile).to_string_pretty(),
+            build_setup(&profile).to_string_pretty()
         );
-        assert!(!build_setup_with(None)
+        assert!(!build_setup_with(None, &profile)
             .to_string_pretty()
             .contains("stackup"));
         assert_eq!(
@@ -3219,7 +3259,7 @@ mod tests {
 
     #[test]
     fn netclass_is_top_level_outside_setup() {
-        let setup_sexp = build_setup();
+        let setup_sexp = build_setup(&synth_drc::ManufacturerProfile::jlc_standard());
         let setup_str = setup_sexp.to_string_pretty();
         assert!(
             !setup_str.contains("netclass"),
@@ -3310,6 +3350,55 @@ mod tests {
         assert!(nc_str.contains("(add_net \"VCC\")"));
         assert!(nc_str.contains("(add_net \"GND\")"));
         assert!(nc_str.contains("(add_net \"MAIN_ANT\")"));
+        // The router reads the project file, where an undeclared class is at the
+        // manufacturer minimum. The board's own classes must say the same.
+        assert_eq!(nc_str.matches("(clearance 0.127)").count(), 2, "{nc_str}");
+        assert!(!nc_str.contains("(clearance 0.2)"), "{nc_str}");
+    }
+
+    /// The Default and Power classes take the clearance of the board's
+    /// manufacturer, the figure the project file and the router work to, not a
+    /// fixed 0.127 mm: PCBWay's minimum is 0.15 mm and OSH Park's 0.125 mm.
+    #[test]
+    fn inferred_classes_take_the_manufacturers_clearance() {
+        let net = |id: u32, name: &str| synth_ir::Net {
+            id: synth_ir::NetId(id),
+            name: name.to_string(),
+            auto_named: false,
+            endpoints: vec![],
+            netclass: None,
+            voltage: None,
+        };
+        let net_table = vec![
+            (1_u32, "VCC".to_string()),
+            (2_u32, "GND".to_string()),
+            (3_u32, "SIG1".to_string()),
+        ];
+        for (manufacturer, expected) in [
+            (None, "(clearance 0.127)"),
+            (Some("jlcpcb"), "(clearance 0.127)"),
+            (Some("pcbway"), "(clearance 0.15)"),
+            (Some("oshpark"), "(clearance 0.125)"),
+        ] {
+            let mut board = plain_test_board();
+            board.manufacturer = manufacturer.map(str::to_string);
+            board.nets = vec![net(0, "VCC"), net(1, "GND"), net(2, "SIG1")];
+            let classes = build_netclasses(&net_table, &board)
+                .iter()
+                .map(crate::sexp::Sexp::to_string_pretty)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(classes.contains("\"Power\""), "{manufacturer:?}: {classes}");
+            assert_eq!(
+                classes.matches(expected).count(),
+                2,
+                "{manufacturer:?}: Default and Power both take {expected}\n{classes}"
+            );
+            assert!(
+                !classes.contains("(clearance 0.2)"),
+                "{manufacturer:?}: no class falls back to 0.2 mm\n{classes}"
+            );
+        }
     }
 
     #[test]

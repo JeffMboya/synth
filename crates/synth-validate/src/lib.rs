@@ -2352,9 +2352,12 @@ impl ErcRule for RequiredProcessOfferedRule {
                     requirement.as_source()
                 ))
                 .found(format!(
-                    "`requires {}` against profile `{}`, which does not offer it",
+                    "`requires {}` against profile `{}`, which does not offer it; \
+                     declare `manufacturer \"{}\"` to use it",
                     requirement.as_source(),
-                    profile.name
+                    profile.name,
+                    synth_drc::ManufacturerProfile::OFFERING_VIA_IN_PAD
+                        .join("\"` or `manufacturer \"")
                 ))
                 .explanation_url(format!("synth.docs/diagnostics/{}", self.code()))
                 .build()
@@ -4182,6 +4185,23 @@ mod tests {
         }
         .check(&board, "test.synth")
         .is_empty());
+    }
+
+    /// A refusal that names no way out leaves an agent guessing at profile
+    /// names; one run tried `jlcpcb` and `jlc-advanced` and gave up.
+    #[test]
+    fn the_refusal_names_the_profile_that_offers_the_process() {
+        let board = board_requiring_via_in_pad(Some("jlcpcb"));
+        let reported = RequiredProcessOfferedRule {
+            via_in_pad_override: false,
+        }
+        .check(&board, "test.synth");
+        assert_eq!(reported.len(), 1);
+        let found = reported[0].found.clone().unwrap_or_default();
+        assert!(
+            found.contains("manufacturer \"jlc-filled-via\""),
+            "the refusal must name the profile to declare: {found}"
+        );
     }
 
     #[test]

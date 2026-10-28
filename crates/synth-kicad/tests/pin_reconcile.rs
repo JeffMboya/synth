@@ -66,3 +66,42 @@ fn reconcile_fans_out_rp2040_power_legs() {
         "RP2040 power legs should be fanned onto the rail"
     );
 }
+
+#[test]
+fn usb_uart_vio_rail_gets_a_power_flag() {
+    // VIO is fed only through the J_VIO jumper, whose pins are passive, so
+    // no pin on the rail is a power output and KiCad ERC would report
+    // `power_pin_not_driven` without a flag.
+    let registry = synth_registry::load_dir(&workspace_root().join("registry").join("parts"))
+        .expect("registry");
+    let filename = "usb_uart.synth";
+    let src = std::fs::read_to_string(
+        workspace_root()
+            .join("qualification")
+            .join("class-b")
+            .join("usb-uart")
+            .join(filename),
+    )
+    .unwrap();
+    let ast = synth_parser::parse(&src, filename.to_string())
+        .ast
+        .expect("ast");
+    let board = synth_ir::lower(&ast, &registry, filename)
+        .board
+        .expect("board");
+    let layout = synth_layout::layout(&board);
+    let placements: std::collections::HashMap<_, _> =
+        layout.components.iter().map(|p| (p.id, p)).collect();
+    let drivers = synth_kicad::pin_reconcile::undriven_power_nets(&board, &placements);
+    let vio = drivers
+        .iter()
+        .find(|d| board.net(d.net).unwrap().name == "VIO")
+        .expect("VIO is flagged");
+    // U1 (CH342F) has no stock symbol, so it cannot anchor the flag stub.
+    let anchor = board.component(vio.anchor_component).unwrap();
+    assert!(
+        anchor.part.as_ref().unwrap().kicad_symbol.is_some(),
+        "anchored on {}",
+        anchor.refdes
+    );
+}

@@ -824,12 +824,16 @@ fn place_candidates_with_margins(
 
     // The export is what the external router and the independent DRC gate
     // judge, so it fits the tight rim here. The default placer keeps the
-    // wider perimeter the built-in router's coverage tests need.
+    // wider perimeter the built-in router's coverage tests need. A passive
+    // that sets an edge takes the tighter passive rim: its pads still clear
+    // the fab edge rule, and only the channel a connector or IC fans out
+    // through has to stay wide.
     for candidate in &mut candidates {
-        synth_place::fit_outline_with_margin_mm(
+        synth_place::fit_outline_with_passive_margin_mm(
             board,
             candidate,
             synth_place::tight_edge_margin_mm(board),
+            synth_place::passive_edge_margin_mm(board),
         );
         synth_place::trim_outline_to_grid(board, candidate);
     }
@@ -1085,7 +1089,7 @@ fn placement_score(board: &Board, placement: &synth_place::Placement) -> usize {
 
 /// The profile of the manufacturer the board declares, resolved as the router
 /// resolves it, so the exported rules and the router work to the same numbers.
-fn manufacturer_profile(board: &Board) -> synth_drc::ManufacturerProfile {
+pub(crate) fn manufacturer_profile(board: &Board) -> synth_drc::ManufacturerProfile {
     synth_drc::ManufacturerProfile::from_name(board.manufacturer.as_deref().unwrap_or_default())
 }
 
@@ -1303,6 +1307,14 @@ fn build_net_settings<'a>(
     for a in &assignments {
         if a.class == "Default" {
             continue;
+        }
+        // The board file names a net by its IR name, and the router reads the
+        // classes by the names in the board it routes. A net drawn as a plain
+        // wire has no label or power symbol, so it has no `visible` name and,
+        // without this, no class: it routed at the 0.2 mm default whatever the
+        // source declared.
+        if let Some(net) = board.net(a.net).filter(|net| !net.auto_named) {
+            assignments_json.insert(net.name.clone(), json!(a.class));
         }
         let Some(names) = visible.get(&a.net) else {
             continue;
@@ -1542,6 +1554,27 @@ mod tests {
         assert!(
             assignments.values().any(|v| v == "I2C"),
             "an I2C net must be assigned: {assignments:?}"
+        );
+    }
+
+    /// A net the schematic draws as a plain wire has no label for KiCad to know
+    /// it by, but the board names it, and the router reads classes by that name.
+    #[test]
+    fn a_net_with_no_label_is_still_assigned_its_class() {
+        let board = board_from(
+            r#"board "b" {
+                netclass "BIG" { trace_width 0.8mm }
+                component J1: connector "jst_xh_2pin"
+                component R1: resistor "r_generic_0603" value "1k"
+                net "VIN_RAW" class "BIG" { J1.p1 R1.p1 }
+            }"#,
+        );
+        let settings = build_net_settings(&board, std::iter::empty());
+        let assignments = settings["netclass_assignments"].as_object().unwrap();
+        assert_eq!(
+            assignments.get("VIN_RAW"),
+            Some(&json!("BIG")),
+            "{assignments:?}"
         );
     }
 
