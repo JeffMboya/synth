@@ -50,7 +50,7 @@ fn is_hub(board: &Board, id: ComponentId) -> bool {
         .is_some_and(|part| part.pins.len() > HUB_PINS)
 }
 
-fn is_rail(board: &Board, net: &synth_ir::Net) -> bool {
+pub(crate) fn is_rail(board: &Board, net: &synth_ir::Net) -> bool {
     let name = net.name.to_lowercase();
     let named = matches!(
         name.as_str(),
