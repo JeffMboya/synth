@@ -101,12 +101,15 @@ impl SearchBudget {
     }
 
     /// The wall-clock limit for the next candidate run: `requested`, or what is
-    /// left after the final route's share, whichever is less. `None` when what
-    /// is left is too short for a run to finish.
+    /// left after the final route's share, whichever is less. `None` when that
+    /// limit is shorter than the minimum run, whether it is the budget that is
+    /// short or the router timeout the caller asked for: a run given less than
+    /// [`MIN_RUN_SECS`] cannot finish, so none is started.
     #[must_use]
     pub fn candidate_limit(&self, requested: Duration) -> Option<Duration> {
         let available = self.remaining().saturating_sub(self.reserve());
-        (available >= self.min_run).then(|| requested.min(available))
+        let limit = requested.min(available);
+        (limit >= self.min_run).then_some(limit)
     }
 
     /// The wall-clock limit for the final route: `requested`, or what is left,
@@ -214,6 +217,25 @@ mod tests {
             Duration::from_secs(60),
             "never raised above the request"
         );
+    }
+
+    /// The minimum run applies to the limit a candidate would be given, not only
+    /// to what the budget has left: a router timeout shorter than the minimum
+    /// starts no candidate run, however much budget there is.
+    #[test]
+    fn a_router_timeout_below_the_minimum_run_starts_no_candidate() {
+        let budget = SearchBudget::with_floors(
+            Duration::from_secs(900),
+            Duration::from_secs(MIN_RUN_SECS),
+            Duration::from_secs(MIN_FINAL_SECS),
+        );
+        assert_eq!(budget.candidate_limit(Duration::from_secs(10)), None);
+        assert_eq!(
+            budget.candidate_limit(Duration::from_secs(MIN_RUN_SECS)),
+            Some(Duration::from_secs(MIN_RUN_SECS)),
+            "the minimum itself is allowed"
+        );
+        assert!(budget.candidate_limit(Duration::from_secs(120)).is_some());
     }
 
     #[test]
