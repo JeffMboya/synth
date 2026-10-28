@@ -3286,6 +3286,47 @@ fn compact_direction(toward: Option<&str>) -> Result<(f64, f64), String> {
     Ok((x, y))
 }
 
+/// A fingerprint of what a compaction run is for: the compiled design and the
+/// settings that shape the steps. The sidecar is tracked on its own, because the
+/// tool rewrites it when it finishes.
+fn compact_design_fingerprint(
+    board: &synth_ir::Board,
+    toward: Option<&str>,
+    step: i64,
+    floor: i64,
+) -> String {
+    let design = layout_fingerprint(board, None);
+    sha256_hex(format!("{design}|{}|{step}|{floor}", toward.unwrap_or("")).as_bytes())
+}
+
+/// Whether the design or the settings differ from those the recorded attempts
+/// were made for. No record yet means compaction has not begun.
+fn compact_config_changed(recorded: Option<&str>, current: &str) -> bool {
+    recorded.is_some_and(|recorded| recorded.trim() != current)
+}
+
+/// Forgets a compaction: the attempts, the saved start copy, the records of what
+/// they were made from, every step's export, and the backup of the start layout.
+/// The sidecar itself is left as it is: it is the layout the next run starts from.
+fn drop_compaction_state(out_dir: &Path, sidecar: &Path) {
+    for name in [
+        "compact.json",
+        "original.placement.layout.toml",
+        "sidecar.sha",
+        "config.sha",
+    ] {
+        let _ = std::fs::remove_file(out_dir.join(name));
+    }
+    if let Ok(entries) = std::fs::read_dir(out_dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("step_") {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_file(PathBuf::from(format!("{}.pre-compact", sidecar.display())));
+}
+
 /// Whether the sidecar is a different layout from the one a compaction began
 /// with. `installed` is the layout the tool itself wrote over it afterwards,
 /// which is not a change. No record yet means compaction has not begun.
@@ -3346,9 +3387,32 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     let resolution = 5;
     let toward = compact_direction(args["toward"].as_str())?;
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("Cannot create out_dir: {e}"))?;
+    let source = std::fs::read_to_string(file_name)
+        .map_err(|e| format!("Could not read source file '{file_name}': {e}"))?;
+    let parse = synth_parser::parse(&source, file_name.to_string());
+    let ast = parse.ast.ok_or("Parse failed")?;
+    let loader = synth_ir::FsImportLoader {
+        root: Path::new(file_name)
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
+    };
+    let resolved = synth_ir::resolve_imports(&ast, &loader, file_name);
+    let registry =
+        load_registry_tiered(args, default_registry).map_err(|e| format!("Registry error: {e}"))?;
+    let lowered = synth_ir::lower(&resolved.program, &registry, file_name);
+    let board = lowered.board.ok_or("Lowering failed")?;
     let state_path = out_dir.join("compact.json");
     let original = out_dir.join("original.placement.layout.toml");
     let sidecar_sha_path = out_dir.join("sidecar.sha");
+    let config_path = out_dir.join("config.sha");
+    // What the attempts were made for: the compiled design (source, imports and
+    // registry) and the compaction settings. A change in either means the
+    // attempts and the saved start copy describe another run.
+    let design = compact_design_fingerprint(&board, args["toward"].as_str(), step, floor);
+    let design_changed = compact_config_changed(
+        std::fs::read_to_string(&config_path).ok().as_deref(),
+        &design,
+    );
     // A sidecar changed since compaction began (the agent moved a part) is a
     // new start layout: the attempts and the saved start copy describe the old
     // one, so they are dropped. The layout this tool installed is not a change.
@@ -3357,13 +3421,11 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     let mut known_shas = known.lines();
     let started_from = known_shas.next();
     let installed = known_shas.next();
-    if compact_sidecar_changed(started_from, installed, &current_sha) {
-        let _ = std::fs::remove_file(&state_path);
-        let _ = std::fs::remove_file(&original);
-        let _ = std::fs::remove_file(&sidecar_sha_path);
-        let backup = PathBuf::from(format!("{}.pre-compact", sidecar.display()));
-        let _ = std::fs::remove_file(backup);
+    if design_changed || compact_sidecar_changed(started_from, installed, &current_sha) {
+        drop_compaction_state(&out_dir, &sidecar);
     }
+    std::fs::write(&config_path, format!("{design}\n"))
+        .map_err(|e| format!("Cannot record the compaction settings: {e}"))?;
     // The start layout is the sidecar as it was when compaction began, kept
     // aside so a later call never compacts an already compacted layout.
     if !original.exists() {
@@ -3383,21 +3445,6 @@ fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Resu
     let Some(permille) = next_compact_permille(&attempts, step, resolution, floor) else {
         return finish_compaction(&attempts, &sidecar, &out_dir);
     };
-
-    let source = std::fs::read_to_string(file_name)
-        .map_err(|e| format!("Could not read source file '{file_name}': {e}"))?;
-    let parse = synth_parser::parse(&source, file_name.to_string());
-    let ast = parse.ast.ok_or("Parse failed")?;
-    let loader = synth_ir::FsImportLoader {
-        root: Path::new(file_name)
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
-    };
-    let resolved = synth_ir::resolve_imports(&ast, &loader, file_name);
-    let registry =
-        load_registry_tiered(args, default_registry).map_err(|e| format!("Registry error: {e}"))?;
-    let lowered = synth_ir::lower(&resolved.program, &registry, file_name);
-    let board = lowered.board.ok_or("Lowering failed")?;
 
     // The placement the export itself writes for this sidecar, so a step is
     // scaled from the same layout the release gates would see.
@@ -5570,6 +5617,78 @@ mod tests {
             changed(Some("a"), Some("b"), "c"),
             "edited after the install"
         );
+    }
+
+    fn board_of(source: &str) -> synth_ir::Board {
+        let parse = synth_parser::parse(source, "board.synth".to_string());
+        let ast = parse.ast.expect("parses");
+        let loader = synth_ir::FsImportLoader {
+            root: std::path::PathBuf::from("."),
+        };
+        let resolved = synth_ir::resolve_imports(&ast, &loader, "board.synth");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        synth_ir::lower(&resolved.program, &registry, "board.synth")
+            .board
+            .expect("lowers")
+    }
+
+    const ONE_RESISTOR: &str = r#"board "a" { layers 2
+        component R1: resistor "r_generic_0603" value "1k" }"#;
+    const TWO_RESISTORS: &str = r#"board "a" { layers 2
+        component R1: resistor "r_generic_0603" value "1k"
+        component R2: resistor "r_generic_0603" value "1k" }"#;
+
+    #[test]
+    fn a_changed_design_or_setting_is_not_the_run_the_attempts_were_made_for() {
+        use super::{compact_config_changed, compact_design_fingerprint as fingerprint};
+        let one = board_of(ONE_RESISTOR);
+        let base = fingerprint(&one, None, 30, 600);
+        assert_eq!(base, fingerprint(&board_of(ONE_RESISTOR), None, 30, 600));
+        assert_ne!(base, fingerprint(&board_of(TWO_RESISTORS), None, 30, 600));
+        assert_ne!(
+            base,
+            fingerprint(&one, Some("center"), 30, 600),
+            "direction"
+        );
+        assert_ne!(base, fingerprint(&one, None, 50, 600), "step");
+        assert_ne!(base, fingerprint(&one, None, 30, 800), "floor");
+        assert!(!compact_config_changed(None, &base), "nothing recorded yet");
+        assert!(!compact_config_changed(Some(&format!("{base}\n")), &base));
+        assert!(compact_config_changed(Some("something else"), &base));
+    }
+
+    #[test]
+    fn dropping_a_compaction_forgets_its_attempts_but_not_the_sidecar() {
+        let dir = std::env::temp_dir().join(format!("synth_compact_drop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("step_970/export")).expect("step dir");
+        for name in [
+            "compact.json",
+            "original.placement.layout.toml",
+            "sidecar.sha",
+            "config.sha",
+        ] {
+            std::fs::write(dir.join(name), "old").expect("state file");
+        }
+        let sidecar = dir.join("board.placement.layout.toml");
+        std::fs::write(&sidecar, "current").expect("sidecar");
+        let backup = dir.join("board.placement.layout.toml.pre-compact");
+        std::fs::write(&backup, "start").expect("backup");
+        super::drop_compaction_state(&dir, &sidecar);
+        for name in [
+            "compact.json",
+            "original.placement.layout.toml",
+            "sidecar.sha",
+            "config.sha",
+            "step_970",
+        ] {
+            assert!(!dir.join(name).exists(), "{name} should be gone");
+        }
+        assert!(!backup.exists(), "the start backup belongs to the old run");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "current");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
