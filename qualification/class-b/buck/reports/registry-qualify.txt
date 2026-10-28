@@ -26,8 +26,4 @@ jst_b4b_xh_a_4pin [fail]
     found:    reviewed_by is empty
 1 part(s): 0 qualified, 1 blocked, 0 unproven
 == c_electrolytic_smd_8x10
-c_electrolytic_smd_8x10 [fail]
-  blocking E-SYNTH-QUAL-008: part carries no provenance
-    expected: a [provenance] table naming the reviewer and datasheet
-    found:    no provenance recorded
-1 part(s): 0 qualified, 1 blocked, 0 unproven
+1 part(s): 1 qualified, 0 blocked, 0 unproven

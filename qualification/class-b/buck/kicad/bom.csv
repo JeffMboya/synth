@@ -1,5 +1,5 @@
 refdes,value,kind,description,kicad_symbol,kicad_footprint,lcsc_pn,mpn
-C1,47uF,capacitor,"Generic 8 x 10 mm SMD aluminium electrolytic, polarised (pin 1 is +), any value, 50 V class",Device:C_Polarized,Capacitor_SMD:CP_Elec_8x10,,
+C1,47uF,capacitor,"Honor Elec RVT1H470M0810, 47 uF 50 V +/-20 % 105 C SMD aluminium electrolytic, 8 mm diameter x 10.2 mm, polarised (pin 1 is +); JLCPCB C2895739",Device:C_Polarized,Capacitor_SMD:CP_Elec_8x10,,RVT1H470M0810
 C2,10uF,capacitor,"Generic 1206 ceramic capacitor, any value",Device:C,Capacitor_SMD:C_1206_3216Metric,,
 C3,220nF,capacitor,"Generic 0603 MLCC, X7R/X5R, any value",Device:C,Capacitor_SMD:C_0603_1608Metric,,
 C4,100nF,capacitor,"Generic 0603 MLCC, X7R/X5R, any value",Device:C,Capacitor_SMD:C_0603_1608Metric,,

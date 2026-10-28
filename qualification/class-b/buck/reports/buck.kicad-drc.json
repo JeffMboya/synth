@@ -1,7 +1,7 @@
 {
     "$schema": "https://schemas.kicad.org/drc.v1.json",
     "coordinate_units": "mm",
-    "date": "2026-10-28T11:56:17",
+    "date": "2026-10-28T16:56:16",
     "ignored_checks": [
         {
             "description": "Footprint has no courtyard defined",
@@ -33,98 +33,5 @@
     "schematic_parity": [],
     "source": "buck.kicad_pcb",
     "unconnected_items": [],
-    "violations": [
-        {
-            "description": "Silkscreen clearance",
-            "items": [
-                {
-                    "description": "Segment of C9 on F.Silkscreen",
-                    "pos": {
-                        "x": 49.288748,
-                        "y": 19.41
-                    },
-                    "uuid": "1a3a37e7-0565-5413-987f-5db6461895f2"
-                },
-                {
-                    "description": "Reference field of R_UV_B",
-                    "pos": {
-                        "x": 21.0,
-                        "y": 16.92
-                    },
-                    "uuid": "78e0fe1d-9729-53ac-906f-1c817f3327c6"
-                }
-            ],
-            "severity": "warning",
-            "type": "silk_overlap"
-        },
-        {
-            "description": "Silkscreen clearance",
-            "items": [
-                {
-                    "description": "Reference field of C8",
-                    "pos": {
-                        "x": 38.2,
-                        "y": 15.92
-                    },
-                    "uuid": "9bb51ce5-6d2a-5529-a9b8-a02a8d1818fd"
-                },
-                {
-                    "description": "Segment of C7 on F.Silkscreen",
-                    "pos": {
-                        "x": 42.35942,
-                        "y": 19.91
-                    },
-                    "uuid": "acab18dc-a6f2-5b04-9e64-cd592b8a6328"
-                }
-            ],
-            "severity": "warning",
-            "type": "silk_overlap"
-        },
-        {
-            "description": "Silkscreen clipped by solder mask",
-            "items": [
-                {
-                    "description": "Reference field of C8",
-                    "pos": {
-                        "x": 38.2,
-                        "y": 15.92
-                    },
-                    "uuid": "9bb51ce5-6d2a-5529-a9b8-a02a8d1818fd"
-                },
-                {
-                    "description": "Pad 2 [+3V3] of C7 on F.Cu",
-                    "pos": {
-                        "x": 43.275,
-                        "y": 19.4
-                    },
-                    "uuid": "71bde6b5-50d5-52c7-9151-9f71606607f5"
-                }
-            ],
-            "severity": "warning",
-            "type": "silk_over_copper"
-        },
-        {
-            "description": "Silkscreen clipped by solder mask",
-            "items": [
-                {
-                    "description": "Reference field of C8",
-                    "pos": {
-                        "x": 38.2,
-                        "y": 15.92
-                    },
-                    "uuid": "9bb51ce5-6d2a-5529-a9b8-a02a8d1818fd"
-                },
-                {
-                    "description": "Pad 1 [FB] of C7 on F.Cu",
-                    "pos": {
-                        "x": 41.725,
-                        "y": 19.4
-                    },
-                    "uuid": "a284d219-c51b-5dfd-9406-861d0ae674d4"
-                }
-            ],
-            "severity": "warning",
-            "type": "silk_over_copper"
-        }
-    ]
+    "violations": []
 }

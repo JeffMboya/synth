@@ -5,10 +5,13 @@
   "fab_requested": false,
   "production_status": "production",
   "release_ready": true,
+  "gate_scope": "production_status and release_ready cover only Synth's routing and export gates: override flags, route validation and signal integrity. They are not a fabrication approval, a qualification result or a component review.",
   "reviewer_state": [
     {
       "part_id": "c_electrolytic_smd_8x10",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-28",
+      "reviewed": true
     },
     {
       "part_id": "c_generic_0603",
@@ -28,11 +31,15 @@
     },
     {
       "part_id": "l_bourns_srn6045ta_6r8m",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-28",
+      "reviewed": true
     },
     {
       "part_id": "lmr33640",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-28",
+      "reviewed": true
     },
     {
       "part_id": "ltst_c190kgkt",
@@ -40,7 +47,9 @@
     },
     {
       "part_id": "mf_msmf110_33x",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-28",
+      "reviewed": true
     },
     {
       "part_id": "mounting_hole_m2_5",
@@ -52,27 +61,66 @@
     },
     {
       "part_id": "smbj30a",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-28",
+      "reviewed": true
     },
     {
       "part_id": "ss36",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-28",
+      "reviewed": true
     }
   ],
   "routing": {
     "engine": "freerouting",
     "engine_version": "freerouting-2.4.1.jar",
     "state": "routed",
-    "input_hash": "920b06a8ecdab458cc8bea2b21a669c29353adddfb0334810140863f1d7fc254",
-    "run_record": "/tmp/claude-1000/-home-steve-work-synth/63ab92c4-a1b2-48ec-8cbb-bd528fa9decd/scratchpad/out/buck-nofab/buck.routing.json"
+    "input_hash": "eb4958ee5c5fda4db885765329994e1bce2b028f68573329a5a992efe05da9d4",
+    "run_record": "out/buck-nofab/buck.routing.json"
   },
   "signal_integrity": {
     "blocking": 0,
-    "warnings": 1,
+    "warnings": 8,
     "findings": [
       {
-        "code": "W-SYNTH-DRC-013",
-        "message": "nets 4 and 11 run parallel for 2.8 mm on F.Cu 0.148 mm apart, within a dielectric height; risk of crosstalk",
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 0 changes layers at (21.67, 15.31) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "blocking": false
+      },
+      {
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 0 changes layers at (10.06, 9.49) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "blocking": false
+      },
+      {
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 8 changes layers at (21.25, 18.23) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "blocking": false
+      },
+      {
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 8 changes layers at (31.36, 11.41) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "blocking": false
+      },
+      {
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 8 changes layers at (9.11, 16.60) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "blocking": false
+      },
+      {
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 8 changes layers at (18.77, 26.97) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "blocking": false
+      },
+      {
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 8 changes layers at (10.69, 14.47) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
+        "blocking": false
+      },
+      {
+        "code": "W-SYNTH-DRC-016",
+        "message": "net 11 changes layers at (12.55, 18.15) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
         "blocking": false
       }
     ]

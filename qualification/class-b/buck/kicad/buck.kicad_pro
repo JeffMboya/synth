@@ -74,7 +74,10 @@
       "+3V3": "PWR",
       "/+3V3": "PWR",
       "GND": "PWR",
-      "VIN": "PWR"
+      "SW": "PWR",
+      "VIN": "PWR",
+      "VIN_FUSED": "PWR",
+      "VIN_RAW": "PWR"
     },
     "netclass_patterns": [
       {
