@@ -249,10 +249,11 @@ impl Drop for Heartbeat {
 
 /// The token the client supplied in `params._meta.progressToken`, exactly as
 /// given. MCP only allows progress notifications under a client token, so a
-/// request without one gets no heartbeat.
+/// request without one gets no heartbeat. The protocol allows a string or any
+/// number, so `3.0` and `1.5` are tokens too.
 fn progress_token(req: &Value) -> Option<Value> {
     let token = &req["params"]["_meta"]["progressToken"];
-    (token.is_string() || token.is_i64() || token.is_u64()).then(|| token.clone())
+    (token.is_string() || token.is_number()).then(|| token.clone())
 }
 
 /// Calls in flight, by request id, each with the flag `notifications/cancelled` sets.
@@ -462,8 +463,22 @@ mod heartbeat_tests {
         assert_eq!(progress_token(&numeric), Some(Value::from(3)));
         let without = serde_json::json!({"id": 7, "params": {}});
         assert_eq!(progress_token(&without), None);
-        let bogus = serde_json::json!({"id": 7, "params": {"_meta": {"progressToken": 1.5}}});
-        assert_eq!(progress_token(&bogus), None);
+        // A number that is not an integer is a token as well.
+        for fractional in [1.5, 3.0] {
+            let req =
+                serde_json::json!({"id": 7, "params": {"_meta": {"progressToken": fractional}}});
+            assert_eq!(progress_token(&req), Some(Value::from(fractional)));
+        }
+        // Only a string or a number is a token.
+        for bogus in [
+            serde_json::json!(true),
+            serde_json::json!(null),
+            serde_json::json!({"a": 1}),
+            serde_json::json!([1]),
+        ] {
+            let req = serde_json::json!({"id": 7, "params": {"_meta": {"progressToken": bogus}}});
+            assert_eq!(progress_token(&req), None, "{bogus}");
+        }
     }
 
     fn run(input: &str, slow_ms: u64, interval_ms: u64) -> Vec<Value> {
@@ -502,6 +517,22 @@ mod heartbeat_tests {
         assert!(msgs.iter().all(
             |m| m["method"] != "notifications/progress" || m["params"]["progressToken"] == "t"
         ));
+        assert_eq!(msgs.last().unwrap()["id"], 1);
+    }
+
+    #[test]
+    fn a_fractional_numeric_token_is_echoed_in_the_progress_notifications() {
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"progressToken":1.5}}}"#;
+        let msgs = run(input, 120, 20);
+        let beats: Vec<&Value> = msgs
+            .iter()
+            .filter(|m| m["method"] == "notifications/progress")
+            .collect();
+        assert!(beats.len() >= 2, "expected heartbeats, got {}", beats.len());
+        assert!(
+            beats.iter().all(|m| m["params"]["progressToken"] == 1.5),
+            "{beats:?}"
+        );
         assert_eq!(msgs.last().unwrap()["id"], 1);
     }
 
