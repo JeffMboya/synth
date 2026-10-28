@@ -334,7 +334,7 @@ fn finalize(
         Ok(moved) => eprintln!("note: moved {moved} via(s) off the pads they sat in"),
         Err(detail) => eprintln!("warning: vias in pads were not repaired: {detail}"),
     }
-    match island_vias::tie_islands(&candidate.candidate_path) {
+    match island_vias::tie_islands(&candidate.candidate_path, &request.ground_nets) {
         Ok(outcome) => repair_blocking = outcome.unresolved,
         Err(detail) => {
             eprintln!(

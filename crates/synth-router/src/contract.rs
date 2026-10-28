@@ -422,6 +422,11 @@ pub struct RouteRequest {
     /// from it. Empty when there is no advice.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routing_order: Vec<String>,
+    /// Nets the design's DRC treats as ground by topology or pin name, which a
+    /// board file alone cannot show. The island repair uses them, with the name
+    /// rule, to find the ground pour and the signal vias that need a return.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ground_nets: Vec<String>,
 }
 
 impl RouteRequest {
@@ -604,6 +609,7 @@ impl RouteRequest {
             input_hash: String::new(),
             source_revision: None,
             routing_order: Vec::new(),
+            ground_nets: Vec::new(),
         }
     }
 }
