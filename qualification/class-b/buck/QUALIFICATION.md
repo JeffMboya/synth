@@ -55,8 +55,8 @@ BOM, pick-and-place, pictures, routing, DRC and ERC reports). It leaves out `REA
 | `kicad/buck.kicad_pcb` | `c21bee3c4d85d41289f82bb6e0381810ae87eac1aa572e7a354d9c6c212e9e16` |
 | `kicad/buck.kicad_sch` | `4cfbaf5c6522e956386fe77ee3c7b057a43dad12e796db33124a88ecc8b87219` |
 | `kicad/bom.csv` | `2f7844d6df5a5bf57fdf612827853c8c9838406fb17f33e4d7e0ce16b95d78f2` |
-| `reports/release.json` | `964132b15db71927e2b4e27681ae635445fb3b0e8a87e28ce601587857100bda` |
-| `reports/release-fab.json` | `385880c9c4465f0eb4cd5a2e5f1833997fe51def33026b15b6aac7ac7dfe2c64` |
+| `reports/release.json` | `7517497626d2d9f58ed213b000140628543db1efcc04f06d2e221e9aa6fa9299` |
+| `reports/release-fab.json` | `fead2ee45cd62a83472d82dffdb6ea8852fde7f09822c0818cae0c472485a889` |
 | `reports/buck.kicad-drc.json` | `199f1b1edc38b85de5b31501566296d5358dac3b78f1997c2695aff8bd8d13bf` |
 | `reports/buck.kicad-erc.json` | `292404f3366ac68ee758932e75d5e850d8cbae83b7da8e39b0d6802c4b66923c` |
 
