@@ -5798,6 +5798,66 @@ fn render(
 mod tests {
     use super::*;
 
+    /// The request every `route` caller builds carries the nets the DRC calls
+    /// ground, found from the board's pins, so the router's return-via passes
+    /// never fall back to guessing from names.
+    #[test]
+    fn the_route_request_carries_the_boards_ground_nets() {
+        let source = r#"board "returns" { layers 2
+            component U1: mcu "rp2350"
+            component C1: capacitor "c_generic_0603" value "100nF"
+            net "POWER_RETURN" { U1.gnd C1.p2 }
+            net "SIGNAL" { U1.gp0 C1.p1 }
+        }"#;
+        let parse = synth_parser::parse(source, "returns.synth".to_string());
+        let ast = parse.ast.as_ref().expect("parse");
+        let registry = synth_registry::load_dir(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../registry/parts"),
+        )
+        .expect("registry");
+        let loader = synth_ir::FsImportLoader {
+            root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        };
+        let resolved = synth_ir::resolve_imports(ast, &loader, "returns.synth");
+        let board = synth_ir::lower(&resolved.program, &registry, "returns.synth")
+            .board
+            .expect("board");
+        let dir = std::env::temp_dir().join(format!("synth-ground-request-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let pcb = dir.join("returns.kicad_pcb");
+        std::fs::write(&pcb, "(kicad_pcb)").expect("pcb");
+        let result = synth_kicad::ExportResult {
+            out_dir: dir.clone(),
+            project_path: dir.join("returns.kicad_pro"),
+            schematic_path: dir.join("returns.kicad_sch"),
+            library_path: dir.join("returns.kicad_sym"),
+            pcb_path: pcb,
+            bom_path: dir.join("bom.csv"),
+        };
+        let options = RouterOptions {
+            freerouting_jar: None,
+            freerouting_java: None,
+            kicad_routing_tools_repo: None,
+            kicad_routing_tools_python: None,
+            escalation: KrtEscalation::Off,
+            fab_tier: KrtFabTier::Standard,
+            fab_overrides: None,
+            same_net_pad_clearance: 0.1,
+            allow_via_in_pad: false,
+            timeout_secs: 60,
+        };
+        let request = build_route_request(
+            &board,
+            &result,
+            synth_router::RouterEngine::KiCadRoutingTools,
+            &options,
+            &[],
+        )
+        .expect("request");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(request.ground_nets, vec!["POWER_RETURN".to_string()]);
+    }
+
     /// A stage that writes more than a pipe holds must still be read.
     ///
     /// The parent used to capture both pipes and poll `try_wait` without

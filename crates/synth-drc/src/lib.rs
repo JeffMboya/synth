@@ -336,6 +336,38 @@ mod tests {
     use super::*;
     use synth_ir::Board;
 
+    fn board_from_source(source: &str) -> Board {
+        let file = "ground.synth".to_string();
+        let parse = synth_parser::parse(source, file.clone());
+        let ast = parse.ast.as_ref().expect("parse");
+        let registry_dir = std::path::Path::new("../..").join("registry").join("parts");
+        let registry = synth_registry::load_dir(&registry_dir).expect("registry");
+        let loader = synth_ir::FsImportLoader {
+            root: std::path::PathBuf::from("../.."),
+        };
+        let resolved = synth_ir::resolve_imports(ast, &loader, &file);
+        synth_ir::lower(&resolved.program, &registry, &file)
+            .board
+            .expect("board")
+    }
+
+    /// A ground that its name does not give away, which is what a repair pass
+    /// that sees only the board file must still recognise.
+    #[test]
+    fn a_net_on_ground_pins_is_ground_whatever_it_is_called() {
+        let board = board_from_source(
+            r#"board "returns" { layers 2
+                component U1: mcu "rp2350"
+                component C1: capacitor "c_generic_0603" value "100nF"
+                net "POWER_RETURN" { U1.gnd C1.p2 }
+                net "SIGNAL" { U1.gp0 C1.p1 }
+            }"#,
+        );
+        let ground = ground_net_names(&board);
+        assert!(ground.iter().any(|n| n == "POWER_RETURN"), "{ground:?}");
+        assert!(!ground.iter().any(|n| n == "SIGNAL"), "{ground:?}");
+    }
+
     fn load_board(path: &str) -> Board {
         let source = std::fs::read_to_string(path).expect("read fixture");
         let file = path.to_string();
