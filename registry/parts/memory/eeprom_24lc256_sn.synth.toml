@@ -1,8 +1,13 @@
 id = "eeprom_24lc256_sn"
 kind = "ic"
-description = "Imported from KiCad stock symbol"
+description = "Microchip 24LC256-I/SN 256 Kbit I2C EEPROM, SOIC-8; VCC 2.5 to 5.5 V, 100 nF on VCC"
 kicad_symbol = "Memory_EEPROM:24LC256"
 kicad_footprint = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+
+[operating_conditions]
+min_voltage_v = 2.5
+max_voltage_v = 5.5
+max_current_ma = 5.0
 
 [footprint_dimensions]
 width_mm = 7.4
@@ -11,7 +16,9 @@ courtyard_margin_mm = 0.25
 
 [provenance]
 source = "imported"
-reviewed_by = ""
+datasheet_url = "http://ww1.microchip.com/downloads/en/devicedoc/21203m.pdf"
+reviewed_by = "JeffMboya"
+reviewed_at = "2026-10-28"
 
 [[pins]]
 name = "A0"
@@ -52,3 +59,8 @@ electrical_type = "input"
 name = "VCC"
 number = "8"
 electrical_type = "power_input"
+
+[[required_decoupling]]
+net = "VCC"
+value = "100nf"
+count = 1

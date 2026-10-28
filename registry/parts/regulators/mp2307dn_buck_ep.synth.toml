@@ -7,7 +7,6 @@ signed_by = []
 substitutes = []
 mpn = "MP2307DN-LF-Z"
 lcsc_pn = "C18921"
-required_decoupling = []
 kicad_footprint = "Package_SO:SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.3mm"
 
 [[pins]]
@@ -28,7 +27,7 @@ required = true
 name = "sw"
 number = "3"
 electrical_type = "passive"
-capabilities = []
+capabilities = ["switch_node"]
 required = true
 
 [[pins]]
@@ -42,7 +41,7 @@ required = true
 name = "fb"
 number = "5"
 electrical_type = "input"
-capabilities = []
+capabilities = ["feedback"]
 required = true
 
 [[pins]]
@@ -71,7 +70,12 @@ name = "ep"
 number = "9"
 electrical_type = "power_input"
 capabilities = []
-required = false
+required = true
+
+[operating_conditions]
+min_voltage_v = 4.75
+max_voltage_v = 23.0
+max_current_ma = 3000.0
 
 [footprint_dimensions]
 width_mm = 7.4
@@ -80,4 +84,16 @@ courtyard_margin_mm = 0.25
 
 [provenance]
 source = "authored"
-reviewed_by = ""
+datasheet_url = "https://www.monolithicpower.com/pub/media/document/MP2307_r1.3.pdf"
+reviewed_by = "JeffMboya"
+reviewed_at = "2026-10-28"
+
+[[required_decoupling]]
+net = "in"
+value = "10uf"
+count = 2
+
+[[required_decoupling]]
+net = "in"
+value = "100nf"
+count = 1

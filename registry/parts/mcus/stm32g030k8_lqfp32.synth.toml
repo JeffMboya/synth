@@ -1,8 +1,13 @@
 id = "stm32g030k8_lqfp32"
 kind = "ic"
-description = "Imported from KiCad stock symbol"
+description = "ST STM32G030K8T6 Cortex-M0+ MCU, 64 KB flash, LQFP-32; VDD 2.0 to 3.6 V per DS12991, 100 nF plus 4.7 uF on VDD"
 kicad_symbol = "MCU_ST_STM32G0:STM32G030K8Tx"
 kicad_footprint = "Package_QFP:LQFP-32_7x7mm_P0.8mm"
+
+[operating_conditions]
+min_voltage_v = 2.0
+max_voltage_v = 3.6
+max_current_ma = 100.0
 
 [footprint_dimensions]
 width_mm = 10.36
@@ -11,7 +16,9 @@ courtyard_margin_mm = 0.25
 
 [provenance]
 source = "imported"
-reviewed_by = ""
+datasheet_url = "https://www.st.com/resource/en/datasheet/stm32g030k8.pdf"
+reviewed_by = "JeffMboya"
+reviewed_at = "2026-10-28"
 
 [[pins]]
 name = "PB9"
@@ -106,7 +113,7 @@ electrical_type = "bidirectional"
 [[pins]]
 name = "NC_PA9"
 number = "19"
-electrical_type = "unclassified"
+electrical_type = "bidirectional"
 
 [[pins]]
 name = "PC6"
@@ -116,7 +123,7 @@ electrical_type = "bidirectional"
 [[pins]]
 name = "NC_PA10"
 number = "21"
-electrical_type = "unclassified"
+electrical_type = "bidirectional"
 
 [[pins]]
 name = "PA9_PA11"
@@ -172,3 +179,13 @@ electrical_type = "bidirectional"
 name = "PB8"
 number = "32"
 electrical_type = "bidirectional"
+
+[[required_decoupling]]
+net = "VDD"
+value = "100nf"
+count = 1
+
+[[required_decoupling]]
+net = "VDD"
+value = "4.7uf"
+count = 1
