@@ -13,11 +13,9 @@
       "code": "W-SYNTH-PART-UNVERIFIED",
       "consequence": "no reviewer has checked these part definitions against their datasheets",
       "affected_parts": [
-        "jst_b2b_xh_a_2pin",
-        "ltst_c190kgkt",
-        "jst_b4b_xh_a_4pin"
+        "ltst_c190kgkt"
       ],
-      "detail": "3 part(s) have no reviewer"
+      "detail": "1 part(s) have no reviewer"
     }
   ],
   "reviewer_state": [
@@ -37,11 +35,15 @@
     },
     {
       "part_id": "jst_b2b_xh_a_2pin",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-28",
+      "reviewed": true
     },
     {
       "part_id": "jst_b4b_xh_a_4pin",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-28",
+      "reviewed": true
     },
     {
       "part_id": "l_bourns_srn6045ta_6r8m",

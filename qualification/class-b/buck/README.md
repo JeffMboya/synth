@@ -144,7 +144,7 @@ The export routes with FreeRouting 2.4.1; the routed board is written as `out/bu
 | validate, negative | exit 1, 1 error (E-SYNTH-POWER-011), 14 warnings | same on `buck_neg_fb_sw.synth` |
 | routing | `routed`, 13 nets connected, 0 open, 103 segments, 24 vias, 341.22 mm (the PCB file holds 30 vias; the routing statistics count 24) | `synth route $B/buck.synth` (JSON `state`, `statistics`); cross-check `grep -c '^\t(segment' out/buck/buck.kicad_pcb` |
 | Synth routing check | kicad_drc 0 errors, 0 unconnected, 0 warnings (routing check only) | `synth route` JSON `validation` |
-| Release gate | `release_ready` true, `production_status` production, 0 blocking signal-integrity findings and 8 non-blocking `W-SYNTH-DRC-016` warnings; with `--gerbers --drill` the same board reports `release_ready` false and `untrusted` because 3 distinct parts have no reviewer (`jst_b2b_xh_a_2pin`, `jst_b4b_xh_a_4pin`, `ltst_c190kgkt`) | `reports/release.json`, `reports/release-fab.json` |
+| Release gate | `release_ready` true, `production_status` production, 0 blocking signal-integrity findings and 8 non-blocking `W-SYNTH-DRC-016` warnings; with `--gerbers --drill` the same board reports `release_ready` false and `untrusted` because 1 part has no reviewer (`ltst_c190kgkt`, the LED) | `reports/release.json`, `reports/release-fab.json` |
 | DRC | 0 errors, 0 unconnected, 0 warnings | `kicad-cli pcb drc ... -o reports/buck.kicad-drc.json`, then `python3 -I -c "import json,collections as c;d=json.load(open('$B/reports/buck.kicad-drc.json'));print(c.Counter((v['severity'],v['type']) for v in d['violations']),len(d['unconnected_items']))"` |
 | ERC | 0 errors, 1 warning: 1 lib_symbol_mismatch (SS36: KiCad's symbol extends SB120, Synth writes it flattened) | `kicad-cli sch erc ... -o reports/buck.kicad-erc.json`, same one-liner over `sheets[].violations` |
 | Schematic netlist | 13 nets: the source's 8 `net` blocks plus the 5 distinct names its 9 `connect` statements create, node for node | `kicad-cli sch export netlist --format kicadsexpr -o /tmp/buck.net $B/kicad/buck.kicad_sch` |
@@ -212,7 +212,7 @@ together with the `#38` checklist traceability for this board and the row it dec
 - The MCP placement review (`synth_describe_placement` on `buck.synth`, final 27-part source) returns
   score 100, `requires_revision` false and no findings. It judges structure, not decoupling distance.
 - No reviewer. Availability, LCSC numbers and assembly not checked.
-- LED datasheet unreachable. J1/J2 have no reviewed footprint (JST's PCB drawing could not be read) and all generic passives have no MPN or manufacturer sheet.
+- LED datasheet unreachable. The LED's datasheet was not reached and all generic passives have no MPN or manufacturer sheet.
 - PTC behaviour with the TVS in a surge, and inrush into C1 and the output caps, are not analysed.
 - The Gerbers and drill files were not opened in a fab's DFM tool and no fab accepted them.
 - Hash reproducibility on another machine depends on FreeRouting 2.4.1, the Java build and KiCad
