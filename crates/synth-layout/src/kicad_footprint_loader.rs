@@ -379,8 +379,12 @@ pub fn courtyard_extent_from_text(text: &str) -> Option<(f64, f64, f64, f64)> {
             for (x, y) in all_xy(block) {
                 include(x, y);
             }
+        } else if block.starts_with("(fp_arc") {
+            for (x, y) in arc_extent_points(block) {
+                include(x, y);
+            }
         } else {
-            for key in ["(start ", "(mid ", "(end "] {
+            for key in ["(start ", "(end "] {
                 if let Some((x, y)) = xy_after(block, key) {
                     include(x, y);
                 }
@@ -388,6 +392,72 @@ pub fn courtyard_extent_from_text(text: &str) -> Option<(f64, f64, f64, f64)> {
         }
     }
     extent
+}
+
+/// The points that bound a courtyard arc: its end points, and every place the
+/// arc crosses an axis-aligned extreme of its circle that lies on the arc.
+/// Sampling the start, middle and end alone misses an extreme between them (an
+/// arc from -45 to 135 degrees reaches the circle's far x and far y).
+///
+/// A three-point arc (`start`, `mid`, `end`, all on the circle) is solved for
+/// its circle and sweep. The older form (`start` is the centre, `end` a point on
+/// the circle, `angle` the sweep) is bounded by its whole circle, which only
+/// ever errs larger, and so does an arc whose three points are in a line.
+fn arc_extent_points(block: &str) -> Vec<(f64, f64)> {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let start = xy_after(block, "(start ");
+    let mid = xy_after(block, "(mid ");
+    let end = xy_after(block, "(end ");
+    let (Some(from), Some(over), Some(to)) = (start, mid, end) else {
+        // Centre, end point and sweep: bound the whole circle.
+        return match (start, end) {
+            (Some((cx, cy)), Some((ex, ey))) => {
+                let radius = (ex - cx).hypot(ey - cy);
+                vec![
+                    (cx - radius, cy - radius),
+                    (cx + radius, cy + radius),
+                    (ex, ey),
+                ]
+            }
+            _ => start.into_iter().chain(mid).chain(end).collect(),
+        };
+    };
+    let square = |p: (f64, f64)| p.0 * p.0 + p.1 * p.1;
+    let denominator =
+        2.0 * (from.0 * (over.1 - to.1) + over.0 * (to.1 - from.1) + to.0 * (from.1 - over.1));
+    if denominator.abs() < 1e-9 {
+        return vec![from, over, to];
+    }
+    let centre = (
+        (square(from) * (over.1 - to.1)
+            + square(over) * (to.1 - from.1)
+            + square(to) * (from.1 - over.1))
+            / denominator,
+        (square(from) * (to.0 - over.0)
+            + square(over) * (from.0 - to.0)
+            + square(to) * (over.0 - from.0))
+            / denominator,
+    );
+    let radius = (from.0 - centre.0).hypot(from.1 - centre.1);
+    let angle = |p: (f64, f64)| (p.1 - centre.1).atan2(p.0 - centre.0);
+    let turn = |first: f64, second: f64| (second - first).rem_euclid(TAU);
+    let start_angle = angle(from);
+    let (to_mid, to_end) = (turn(start_angle, angle(over)), turn(start_angle, angle(to)));
+    // Counter-clockwise when the middle comes before the end going that way.
+    let counter_clockwise = to_mid < to_end;
+    let mut points = vec![from, over, to];
+    for quarter in 0..4 {
+        let at = f64::from(quarter) * FRAC_PI_2;
+        let on_arc = if counter_clockwise {
+            turn(start_angle, at) <= to_end
+        } else {
+            turn(at, start_angle) <= TAU - to_end
+        };
+        if on_arc {
+            points.push((centre.0 + radius * at.cos(), centre.1 + radius * at.sin()));
+        }
+    }
+    points
 }
 
 /// The size of the box that holds every pad of a footprint file's text, pad

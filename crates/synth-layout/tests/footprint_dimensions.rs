@@ -8,6 +8,8 @@ use synth_layout::kicad_footprint_loader::{
     pads_extent_from_text,
 };
 
+use std::f64::consts::SQRT_2;
+
 const MARGIN: f64 = 0.25;
 
 const SOT23: &str = include_str!("fixtures/footprints/sot23_like.kicad_mod");
@@ -17,6 +19,8 @@ const POLY: &str = include_str!("fixtures/footprints/poly_courtyard.kicad_mod");
 const NETTIE: &str = include_str!("fixtures/footprints/nettie_no_courtyard.kicad_mod");
 const DEGENERATE: &str = include_str!("fixtures/footprints/degenerate_courtyard.kicad_mod");
 const EMPTY: &str = include_str!("fixtures/footprints/empty.kicad_mod");
+const ARC_EXTREMUM: &str = include_str!("fixtures/footprints/arc_courtyard_extremum.kicad_mod");
+const ARC_CLOCKWISE: &str = include_str!("fixtures/footprints/arc_courtyard_clockwise.kicad_mod");
 
 fn derived(text: &str) -> Result<(f64, f64), String> {
     derive_footprint_dimensions_from_text(text, MARGIN)
@@ -33,11 +37,17 @@ fn the_margin_is_taken_off_the_courtyard_once() {
 #[test]
 fn a_courtyard_drawn_with_a_line_and_an_arc_is_measured_whole() {
     // Its only line is horizontal, so reading lines alone gives a height of zero;
-    // the arc carries the other 3.5 mm.
+    // the arc carries the other 3.5 mm. The arc runs from (-2, -1.5) over (0, 2) to
+    // (2, -1.5): its circle has radius 16.25 / 7 and reaches x = -2.32 and x = 2.32
+    // on the way over, wider than the 4 mm its three points span.
     let (x0, y0, x1, y1) = courtyard_extent_from_text(TO92_MIXED).expect("a courtyard");
-    assert!((x1 - x0 - 4.0).abs() < 1e-9, "{x0} {x1}");
+    let radius = 16.25 / 7.0;
+    assert!((x1 - x0 - 2.0 * radius).abs() < 1e-6, "{x0} {x1}");
     assert!((y1 - y0 - 3.5).abs() < 1e-9, "{y0} {y1}");
-    assert_eq!(derived(TO92_MIXED), Ok((3.5, 3.0)));
+    let (width, height) = derived(TO92_MIXED).expect("dimensions");
+    // The derived size is rounded to a micron.
+    assert!((width - (2.0 * radius - 0.5)).abs() < 1e-3, "{width}");
+    assert!((height - 3.0).abs() < 1e-9, "{height}");
 }
 
 #[test]
@@ -87,4 +97,29 @@ fn an_unknown_footprint_is_refused_and_named() {
         .expect_err("it cannot be read");
     assert!(why.contains("No_Such_Library:No_Such_Footprint"), "{why}");
     assert!(why.contains("spelling"), "{why}");
+}
+
+#[test]
+fn an_arc_is_bounded_by_its_extremes_and_not_only_by_the_points_it_is_sampled_at() {
+    // From -45 to 135 degrees through 45, radius 2 about the origin. The start,
+    // middle and end lie at x = 1.414 at most, but the arc passes 0 degrees and
+    // 90 degrees, so it reaches x = 2 and y = 2. Nothing on it goes below -1.414.
+    let (x0, y0, x1, y1) = courtyard_extent_from_text(ARC_EXTREMUM).expect("a courtyard");
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-5;
+    assert!(near(x1, 2.0) && near(y1, 2.0), "far side {x1} {y1}");
+    assert!(
+        near(x0, -SQRT_2) && near(y0, -SQRT_2),
+        "near side {x0} {y0}"
+    );
+}
+
+#[test]
+fn an_arc_drawn_the_other_way_round_has_the_same_extent() {
+    let (x0, y0, x1, y1) = courtyard_extent_from_text(ARC_CLOCKWISE).expect("a courtyard");
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-5;
+    assert!(near(x1, 2.0) && near(y1, 2.0), "far side {x1} {y1}");
+    assert!(
+        near(x0, -SQRT_2) && near(y0, -SQRT_2),
+        "near side {x0} {y0}"
+    );
 }

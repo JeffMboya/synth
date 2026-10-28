@@ -4728,6 +4728,9 @@ id = "no_such_footprint_res"
 kind = "resistor"
 description = "resistor naming a footprint KiCad does not ship"
 kicad_footprint = "Resistor_SMD:R_0603_1608Metric_DOES_NOT_EXIST"
+[footprint_dimensions]
+width_mm = 1.6
+height_mm = 0.8
 [[pins]]
 name = "1"
 number = "1"
