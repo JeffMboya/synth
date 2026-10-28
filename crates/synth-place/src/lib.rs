@@ -5107,6 +5107,18 @@ fn mismatched_repeats(board: &Board, placement: &Placement) -> Vec<MismatchedCop
             if anchor.rotation != ref_anchor.rotation {
                 continue;
             }
+            // The offsets are measured from each copy's anchor, so the two
+            // anchors have to be the same part of the circuit. When a copy
+            // chose another part as its anchor (a lone LED and its resistor
+            // rank alike), its offsets mean nothing against the reference.
+            let anchor_label = copy
+                .parts
+                .iter()
+                .find(|(id, _)| *id == copy.anchor)
+                .map(|(_, label)| *label);
+            if anchor_label.and_then(|l| reference.part_with_label(l)) != Some(reference.anchor) {
+                continue;
+            }
             for (id, label) in &copy.parts {
                 if *id == copy.anchor {
                     continue;
@@ -9867,6 +9879,48 @@ board "features_only" {
                 && a.refdes == "RB"
                 && a.suggested_x_mm.is_some_and(|x| (x - 16.0).abs() < 0.2)
         }));
+    }
+
+    #[test]
+    fn copies_that_anchor_on_different_parts_are_not_compared() {
+        // Two copies of one resistor-and-capacitor circuit. The first declares
+        // its resistor first, the second its capacitor first, so each copy's
+        // anchor (the lowest-numbered of equals) is a different part.
+        let board = board_from_source(
+            r#"board "anchors" { layers 2
+                power "GND" 0v
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                component RB: resistor "r_generic_0603" value "1k"
+                net "SIG_A" { RA.p1 CA.p1 }
+                net "SIG_B" { RB.p1 CB.p1 }
+                net "GND" { RA.p2 CA.p2 RB.p2 CB.p2 }
+            }"#,
+            "anchors.synth",
+        );
+        let mut placement = place(&board).expect("place");
+        for (refdes, x, y) in [
+            ("RA", 10.0, 10.0),
+            ("CA", 14.0, 10.0),
+            ("RB", 10.0, 30.0),
+            ("CB", 14.0, 30.0),
+        ] {
+            move_part(&mut placement, &board, refdes, x, y);
+        }
+        for p in &mut placement.components {
+            p.rotation = Rotation::Zero;
+        }
+        assert!(
+            repeats::find_repeated_circuits(&board)
+                .iter()
+                .any(|g| g.len() == 2),
+            "the two circuits are copies"
+        );
+        assert!(
+            mismatched_repeats(&board, &placement).is_empty(),
+            "offsets from different anchors say nothing about the layout"
+        );
     }
 
     #[test]
