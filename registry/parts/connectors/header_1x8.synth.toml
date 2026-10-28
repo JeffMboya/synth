@@ -72,5 +72,6 @@ courtyard_margin_mm = 0.25
 [provenance]
 source = "authored"
 generator = "synth_author_part"
+datasheet_url = "https://no.rs-online.com/web/p/pcb-headers/6812997"
 reviewed_by = "JeffMboya"
 reviewed_at = "2026-10-28"

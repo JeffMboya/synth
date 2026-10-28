@@ -1,6 +1,6 @@
 id = "tps22918_sot23_6"
 kind = "regulator"
-description = "TI TPS22918 1 V to 5.5 V, 2 A load switch with controlled slew rate and quick output discharge, SOT-23-6 (DBV). Pinout per datasheet SLVSD76: 1 VIN, 2 GND, 3 ON, 4 CT, 5 QOD, 6 VOUT. KiCad has no TPS22918 symbol; TPS22917DBV has the identical six-pin map."
+description = "TI TPS22918 1 V to 5.5 V, 2 A load switch with controlled slew rate and quick output discharge, SOT-23-6 (DBV). Pinout per datasheet SLVSD76: 1 VIN, 2 GND, 3 ON, 4 CT, 5 QOD, 6 VOUT. KiCad has no TPS22918 symbol; TPS22917DBV has the identical six-pin map (VIN, GND, ON, CT, QOD, VOUT), so it stands in for the symbol only; the footprint and pin numbers are the TPS22918 DBV."
 version = 0
 lifecycle = "active"
 signed_by = []
@@ -65,6 +65,7 @@ courtyard_margin_mm = 0.25
 [provenance]
 source = "authored"
 generator = "synth_author_part"
+datasheet_url = "https://www.ti.com/lit/ds/symlink/tps22918.pdf"
 reviewed_by = "JeffMboya"
 reviewed_at = "2026-10-28"
 
@@ -72,4 +73,3 @@ reviewed_at = "2026-10-28"
 net = "vin"
 value = "1uf"
 count = 1
-datasheet_url = "https://www.ti.com/lit/ds/symlink/tps22918.pdf"

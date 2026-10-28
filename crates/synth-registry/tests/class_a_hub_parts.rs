@@ -110,3 +110,44 @@ fn the_inductor_carries_the_datasheet_current_rating() {
     assert_eq!(oc.max_current_ma, Some(3200.0));
     assert!(p.description.as_deref().unwrap().contains("Isat 4.6 A"));
 }
+
+#[test]
+fn every_hub_part_has_a_reviewer_a_date_a_datasheet_and_qualifies_without_findings() {
+    use synth_registry::qualify::{qualify_part, NoFacts};
+    for id in [
+        "header_1x8",
+        "bzt52c3v3",
+        "l_power_10uh_6045",
+        "mp2307_buck_ep",
+        "tps22918_sot23_6",
+    ] {
+        let p = part(id);
+        let prov = p
+            .provenance
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id}: no provenance"));
+        assert!(
+            prov.reviewed_by.as_deref().is_some_and(|v| !v.is_empty()),
+            "{id}: reviewer"
+        );
+        assert!(
+            prov.reviewed_at.as_deref().is_some_and(|v| !v.is_empty()),
+            "{id}: date"
+        );
+        assert!(
+            prov.datasheet_url
+                .as_deref()
+                .is_some_and(|u| u.starts_with("http")),
+            "{id}: datasheet_url must sit under [provenance]"
+        );
+        let q = qualify_part(&p, &NoFacts, &NoFacts);
+        let found: Vec<&str> = q.findings().map(|f| f.code.as_str()).collect();
+        assert!(found.is_empty(), "{id}: qualification findings {found:?}");
+    }
+}
+
+#[test]
+fn the_zener_states_its_clamp_voltage() {
+    let d = part("bzt52c3v3").description.expect("description");
+    assert!(d.contains("Vz 3.1 to 3.5 V") && d.contains("Izt 5 mA"));
+}
