@@ -8263,14 +8263,17 @@ board "features" {
 
         for feature in ["H1", "H2", "H3", "H4", "FID1", "FID2"] {
             let rect = courtyards[feature];
-            let band = mm_to_nm(6.0);
+            // The placer searches a band of the feature's own width and a gap: 7.5 mm
+            // for a hole with its 7 mm courtyard. The failure this guards against
+            // is a hole at a quadrant centre, 17 mm in, so 8 mm is the line.
+            let band = mm_to_nm(8.0);
             let on_border = rect.min.x_nm <= circuit.min.x_nm + band
                 || rect.max.x_nm >= circuit.max.x_nm - band
                 || rect.min.y_nm <= circuit.min.y_nm + band
                 || rect.max.y_nm >= circuit.max.y_nm - band;
             assert!(
                 on_border,
-                "{feature} is not within 6 mm of an edge of the circuit envelope"
+                "{feature} is not within 8 mm of an edge of the circuit envelope"
             );
         }
     }
