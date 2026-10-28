@@ -488,7 +488,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "synth_import_part".into(),
-            description: "Import a component part into the Tier-2 (per-user) registry. Wraps the R15.4/R15.5 importers plus a zip-file importer: source 'lcsc' reads an EasyEDA CAD JSON (pass `from_file`; live fetch is best-effort) and emits a `.kicad_mod` + unverified `.synth.toml` (`provenance.source = generated`); source 'kicad' reads the physical pin inventory (number, name, electrical type) from an installed KiCad stock symbol and emits a pre-filled `.synth.toml` (`provenance.source = imported`); source 'kicad-zip' reads a SnapEDA/UltraLibrarian \"Export to KiCad\" zip already downloaded to disk (pass `zip_path`) — neither vendor has a public API and both prohibit automated site access in their ToS, so this never contacts snapeda.com/ultralibrarian.com, it only parses the zip the user already saved. All three land with `reviewed_by` empty until reviewed.".into(),
+            description: "Import a component part into the Tier-2 (per-user) registry. Wraps the R15.4/R15.5 importers plus a zip-file importer: source 'lcsc' reads an EasyEDA CAD JSON (pass `from_file`; live fetch is best-effort) and emits a `.kicad_mod` + unverified `.synth.toml` (`provenance.source = generated`); source 'kicad' reads the physical pin inventory (number, name, electrical type) from an installed KiCad stock symbol and emits a pre-filled `.synth.toml` (`provenance.source = imported`); pass `footprint` as well, because the part's size is measured from that footprint; source 'kicad-zip' reads a SnapEDA/UltraLibrarian \"Export to KiCad\" zip already downloaded to disk (pass `zip_path`) — neither vendor has a public API and both prohibit automated site access in their ToS, so this never contacts snapeda.com/ultralibrarian.com, it only parses the zip the user already saved. All three land with `reviewed_by` empty until reviewed.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -498,10 +498,14 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "lib_id":        { "type": "string", "description": "KiCad lib_id, e.g. 'Device:R' (source='kicad')" },
                     "zip_path":      { "type": "string", "description": "Path to a downloaded SnapEDA/UltraLibrarian KiCad-format export .zip (source='kicad-zip')" },
                     "id":            { "type": "string", "description": "Override the generated PartId (filename stem)" },
-                    "footprint":     { "type": "string", "description": "Optional kicad_footprint reference (source='kicad')" },
+                    "footprint":     { "type": "string", "description": "kicad_footprint reference, e.g. 'Resistor_SMD:R_0603_1608Metric'. Required for source='kicad': the part's size is measured from this footprint" },
                     "footprint_dir": { "type": "string", "description": "Directory to write generated .kicad_mod (source='lcsc')" },
                     "user_registry": { "type": "string", "description": "Tier-2 registry directory (defaults to SYNTH_USER_REGISTRY_DIR)" }
-                }
+                },
+                "allOf": [{
+                    "if": { "properties": { "source": { "const": "kicad" } }, "required": ["source"] },
+                    "then": { "required": ["lib_id", "footprint"] }
+                }]
             }),
         },
         McpToolInfo {
@@ -3993,6 +3997,58 @@ fn resolve_user_registry(args: &Value) -> Result<PathBuf, String> {
 }
 
 /// Import a component into the Tier-2 registry (R15.4 LCSC / R15.5 KiCad).
+/// Why a part's `[footprint_dimensions]` could not be derived, with what to do.
+fn dimensions_advice(why: &str) -> String {
+    format!(
+        "{why}. Add a [footprint_dimensions] table with width_mm and height_mm (the body, in millimetres) to the part, or name a footprint the library has"
+    )
+}
+
+/// The `[footprint_dimensions]` table of a part's TOML, for the importers that
+/// write the file as text.
+fn dimensions_table(width_mm: f64, height_mm: f64) -> String {
+    format!(
+        "\n[footprint_dimensions]\nwidth_mm = {width_mm}\nheight_mm = {height_mm}\ncourtyard_margin_mm = {}\n",
+        synth_registry::footprint_svg::COURTYARD_MARGIN_MM
+    )
+}
+
+/// Gives `part` the footprint size the registry requires. An author's own table
+/// is kept, if it is valid; otherwise the size is derived from the named
+/// footprint. A part whose size can be neither kept nor derived is refused with
+/// what to add, never written without one: the whole user registry would then
+/// fail its integrity check.
+fn ensure_footprint_dimensions(part: &mut synth_registry::Part) -> Result<(), String> {
+    if let Some(dims) = &part.footprint_dimensions {
+        if dims.width_mm > 0.0 && dims.height_mm > 0.0 {
+            return Ok(());
+        }
+        return Err(format!(
+            "footprint_dimensions must be positive, not width_mm = {} and height_mm = {}",
+            dims.width_mm, dims.height_mm
+        ));
+    }
+    let Some(footprint) = part.kicad_footprint.as_deref() else {
+        return Err(dimensions_advice(
+            "the part names no kicad_footprint and declares no [footprint_dimensions]",
+        ));
+    };
+    let (width_mm, height_mm) = synth_layout::kicad_footprint_loader::derive_footprint_dimensions(
+        footprint,
+        synth_registry::footprint_svg::COURTYARD_MARGIN_MM,
+    )
+    .map_err(|why| dimensions_advice(&why))?;
+    part.footprint_dimensions = Some(synth_registry::FootprintDimensions {
+        width_mm,
+        height_mm,
+        courtyard_margin_mm: Some(synth_registry::footprint_svg::COURTYARD_MARGIN_MM),
+        mating_face: None,
+        label_side: None,
+        label_hidden: None,
+    });
+    Ok(())
+}
+
 fn execute_import_part(args: &Value, _default_registry: Option<&Path>) -> Result<Value, String> {
     let source = args["source"].as_str().unwrap_or("lcsc");
     let user_dir = resolve_user_registry(args)?;
@@ -4022,6 +4078,12 @@ fn import_part_lcsc(args: &Value, user_dir: &Path) -> Result<Value, String> {
     let id = code.to_lowercase();
     let pins = synth_registry::easyeda::extract_pins(&comp);
     let module = synth_registry::easyeda::to_kicad_mod(&comp, &id);
+    let (width_mm, height_mm) =
+        synth_layout::kicad_footprint_loader::derive_footprint_dimensions_from_text(
+            &module,
+            synth_registry::footprint_svg::COURTYARD_MARGIN_MM,
+        )
+        .map_err(|why| dimensions_advice(&format!("the imported footprint: {why}")))?;
 
     let fp_dir = args["footprint_dir"]
         .as_str()
@@ -4032,7 +4094,7 @@ fn import_part_lcsc(args: &Value, user_dir: &Path) -> Result<Value, String> {
     let kmod_path = pretty.join(format!("{id}.kicad_mod"));
     std::fs::write(&kmod_path, &module).map_err(|e| e.to_string())?;
 
-    let toml_str = synth_registry::easyeda::generate_part_toml(
+    let mut toml_str = synth_registry::easyeda::generate_part_toml(
         &id,
         code,
         "",
@@ -4040,6 +4102,7 @@ fn import_part_lcsc(args: &Value, user_dir: &Path) -> Result<Value, String> {
         &format!("https://lcsc.com/p/{code}.html"),
         &pins,
     );
+    toml_str.push_str(&dimensions_table(width_mm, height_mm));
     let part_path = user_dir.join(format!("{id}.synth.toml"));
     std::fs::write(&part_path, toml_str).map_err(|e| e.to_string())?;
 
@@ -4083,6 +4146,16 @@ fn import_part_kicad(args: &Value, user_dir: &Path) -> Result<Value, String> {
     let part_id = args["id"].as_str().map_or(default_id, str::to_string);
     let kind = infer_kind(&resolved_lib_id);
     let footprint = args["footprint"].as_str().map(str::to_string);
+    let Some(footprint_id) = footprint.as_deref() else {
+        return Err(dimensions_advice(
+            "the import names no footprint to measure; pass `footprint` as Library:Name",
+        ));
+    };
+    let (width_mm, height_mm) = synth_layout::kicad_footprint_loader::derive_footprint_dimensions(
+        footprint_id,
+        synth_registry::footprint_svg::COURTYARD_MARGIN_MM,
+    )
+    .map_err(|why| dimensions_advice(&why))?;
 
     let mut out = String::new();
     let _ = writeln!(out, "id = \"{part_id}\"");
@@ -4123,6 +4196,7 @@ fn import_part_kicad(args: &Value, user_dir: &Path) -> Result<Value, String> {
         out.truncate(out.len() - "\n[[pins]]\n".len());
     }
 
+    out.push_str(&dimensions_table(width_mm, height_mm));
     let part_path = user_dir.join(format!("{part_id}.synth.toml"));
     std::fs::write(&part_path, out).map_err(|e| e.to_string())?;
 
@@ -4275,6 +4349,21 @@ fn imported_electrical_type(name: &str, raw: &str) -> String {
 /// never contacts snapeda.com/ultralibrarian.com — the agent (or the
 /// human it's working with) downloads the zip through their own
 /// browser session first, and this tool only reads that local file.
+/// The body size of the footprint in a KiCad zip import, or why it cannot be
+/// measured, with what to add.
+fn zip_footprint_dimensions(
+    import: &synth_layout::kicad_zip::KicadZipImport,
+) -> Result<(f64, f64), String> {
+    let Some(text) = import.footprint_text.as_deref() else {
+        return Err(dimensions_advice("the zip holds no footprint to measure"));
+    };
+    synth_layout::kicad_footprint_loader::derive_footprint_dimensions_from_text(
+        text,
+        synth_registry::footprint_svg::COURTYARD_MARGIN_MM,
+    )
+    .map_err(|why| dimensions_advice(&format!("the zip's footprint: {why}")))
+}
+
 fn import_part_kicad_zip(args: &Value, user_dir: &Path) -> Result<Value, String> {
     use std::fmt::Write as _;
 
@@ -4290,6 +4379,7 @@ fn import_part_kicad_zip(args: &Value, user_dir: &Path) -> Result<Value, String>
         .replace([' ', '-', '.', '/'], "_");
     let part_id = args["id"].as_str().map_or(default_id, str::to_string);
     let kind = infer_kind(&import.symbol_name);
+    let (width_mm, height_mm) = zip_footprint_dimensions(&import)?;
 
     let mut out = String::new();
     let _ = writeln!(out, "id = \"{part_id}\"");
@@ -4351,6 +4441,7 @@ fn import_part_kicad_zip(args: &Value, user_dir: &Path) -> Result<Value, String>
     out.push_str("generator = \"synth-part-import-zip 0.1\"\n");
     out.push_str("reviewed_by = \"\"\n");
 
+    out.push_str(&dimensions_table(width_mm, height_mm));
     let part_path = user_dir.join(format!("{part_id}.synth.toml"));
     std::fs::write(&part_path, out).map_err(|e| e.to_string())?;
 
@@ -4411,6 +4502,10 @@ fn execute_author_part(args: &Value, _default_registry: Option<&Path>) -> Result
             ..Default::default()
         });
     }
+
+    // The registry requires every part to declare its footprint's size, and an
+    // author who names a stock footprint has no reason to measure it.
+    ensure_footprint_dimensions(&mut part)?;
 
     let user_dir = resolve_user_registry(args)?;
     std::fs::create_dir_all(&user_dir).map_err(|e| format!("cannot create user registry: {e}"))?;
@@ -4637,6 +4732,9 @@ id = "no_such_footprint_res"
 kind = "resistor"
 description = "resistor naming a footprint KiCad does not ship"
 kicad_footprint = "Resistor_SMD:R_0603_1608Metric_DOES_NOT_EXIST"
+[footprint_dimensions]
+width_mm = 1.6
+height_mm = 0.8
 [[pins]]
 name = "1"
 number = "1"
@@ -4695,6 +4793,9 @@ electrical_type = "passive"
 id = "test_res_1k"
 kind = "resistor"
 description = "1k resistor"
+[footprint_dimensions]
+width_mm = 1.6
+height_mm = 0.8
 [[pins]]
 name = "1"
 number = "1"
@@ -4716,6 +4817,95 @@ electrical_type = "passive"
         let written = std::fs::read_to_string(dir.join("test_res_1k.synth.toml")).unwrap();
         assert!(written.contains("source = \"authored\""));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn authored(dir: &Path, toml_src: &str) -> Result<Value, String> {
+        call_tool(
+            "synth_author_part",
+            &json!({ "part_toml": toml_src, "user_registry": dir.to_str().unwrap() }),
+            None,
+        )
+    }
+
+    const ONE_PIN: &str = r#"
+[[pins]]
+name = "g"
+number = "1"
+electrical_type = "input"
+"#;
+
+    /// An author's own `[footprint_dimensions]` is kept as written, whatever the
+    /// footprint it names: nothing is derived over it.
+    #[test]
+    fn author_part_keeps_the_dimensions_the_author_gave() {
+        let dir = scratch("author_dims_kept");
+        let src = format!(
+            "id = \"dims_kept\"\nkind = \"transistor\"\nkicad_footprint = \"No_Such_Library:Nothing\"\n\n[footprint_dimensions]\nwidth_mm = 2.0\nheight_mm = 1.5\n{ONE_PIN}"
+        );
+        let res = authored(&dir, &src).expect("the author's table is enough");
+        assert_eq!(res["status"], "authored");
+        let written = std::fs::read_to_string(dir.join("dims_kept.synth.toml")).unwrap();
+        let part: synth_registry::Part = toml::from_str(&written).unwrap();
+        let dims = part.footprint_dimensions.expect("dimensions");
+        assert_eq!((dims.width_mm, dims.height_mm), (2.0, 1.5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A footprint that cannot be read is refused, with what to add, and nothing
+    /// is written: a part without dimensions would fail the registry's integrity
+    /// check, and `load_dir` with it.
+    #[test]
+    fn author_part_refuses_a_footprint_it_cannot_measure_and_writes_nothing() {
+        let dir = scratch("author_dims_unresolvable");
+        let src = format!(
+            "id = \"dims_nowhere\"\nkind = \"transistor\"\nkicad_footprint = \"No_Such_Library:Nothing\"\n{ONE_PIN}"
+        );
+        let why = authored(&dir, &src).expect_err("it cannot be measured");
+        assert!(why.contains("No_Such_Library:Nothing"), "{why}");
+        assert!(why.contains("[footprint_dimensions]"), "{why}");
+        assert!(!dir.join("dims_nowhere.synth.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn author_part_refuses_a_part_with_no_footprint_and_no_dimensions() {
+        let dir = scratch("author_dims_none");
+        let src = format!("id = \"dims_none\"\nkind = \"transistor\"\n{ONE_PIN}");
+        let why = authored(&dir, &src).expect_err("nothing to measure");
+        assert!(why.contains("[footprint_dimensions]"), "{why}");
+        assert!(!dir.join("dims_none.synth.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A zero or negative size is what made `load_dir` fail for the whole user
+    /// registry; it is refused before it is written.
+    #[test]
+    fn author_part_refuses_dimensions_that_are_not_positive() {
+        let dir = scratch("author_dims_zero");
+        let src = format!(
+            "id = \"dims_zero\"\nkind = \"transistor\"\n\n[footprint_dimensions]\nwidth_mm = 2.0\nheight_mm = 0.0\n{ONE_PIN}"
+        );
+        let why = authored(&dir, &src).expect_err("a height of zero");
+        assert!(why.contains("must be positive"), "{why}");
+        assert!(!dir.join("dims_zero.synth.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The table the text importers append parses back to the size it was given,
+    /// with the courtyard margin from the one constant the footprint renderer uses.
+    #[test]
+    fn the_table_the_importers_write_parses_back() {
+        let text = format!(
+            "id = \"t\"\nkind = \"ic\"\n{ONE_PIN}{}",
+            dimensions_table(3.36, 2.9)
+        );
+        let part: synth_registry::Part = toml::from_str(&text).expect("it parses");
+        let dims = part.footprint_dimensions.expect("dimensions");
+        assert_eq!((dims.width_mm, dims.height_mm), (3.36, 2.9));
+        assert_eq!(
+            dims.courtyard_margin_mm,
+            Some(synth_registry::footprint_svg::COURTYARD_MARGIN_MM)
+        );
     }
 
     #[test]
@@ -4749,11 +4939,20 @@ electrical_type = "input"
             );
             return;
         }
+        let footprint = "Resistor_SMD:R_0603_1608Metric";
+        if synth_layout::kicad_footprint_loader::derive_footprint_dimensions(footprint, 0.25)
+            .is_err()
+        {
+            eprintln!(
+                "skipping import_part_kicad_writes_user_registry: no KiCad footprint library"
+            );
+            return;
+        }
         let dir = scratch("import_kicad");
         let () = std::env::set_var("KICAD_SYMBOL_DIR", &symbol_dir);
         let res = call_tool(
             "synth_import_part",
-            &json!({ "source": "kicad", "lib_id": "Device:R", "user_registry": dir.to_str().unwrap() }),
+            &json!({ "source": "kicad", "lib_id": "Device:R", "footprint": footprint, "user_registry": dir.to_str().unwrap() }),
             None,
         )
         .expect("kicad import should succeed");
@@ -4761,6 +4960,14 @@ electrical_type = "input"
         assert_eq!(res["source"], "kicad");
         assert!(res["pin_count"].as_u64().unwrap_or(0) >= 2, "R has 2 pins");
         assert!(dir.join("r.synth.toml").exists(), "expected r.synth.toml");
+        // The part declares a size, and the user registry loads with it in.
+        let written = std::fs::read_to_string(dir.join("r.synth.toml")).unwrap();
+        let part: synth_registry::Part = toml::from_str(&written).expect("it parses");
+        assert!(
+            part.footprint_dimensions.is_some(),
+            "dimensions are written"
+        );
+        assert!(synth_registry::load_dir(&dir).is_ok(), "the registry loads");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4824,6 +5031,58 @@ electrical_type = "input"
         assert!(dir
             .join("footprints/testpart.pretty/testpart.kicad_mod")
             .exists());
+        // The footprint has pads and no courtyard, so the size is the pads' extent
+        // (two 0.6 mm pads 2 mm apart). The part declares it, and the user
+        // registry loads: without it `load_dir` failed for every part in it.
+        let written = std::fs::read_to_string(dir.join("testpart.synth.toml")).unwrap();
+        let part: synth_registry::Part = toml::from_str(&written).expect("the part parses");
+        let dims = part.footprint_dimensions.expect("dimensions are written");
+        assert!((dims.width_mm - 2.6).abs() < 1e-9 && (dims.height_mm - 0.6).abs() < 1e-9);
+        assert!(
+            synth_registry::load_dir(&dir).is_ok(),
+            "the user registry must load with the imported part in it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A zip with a symbol and no footprint has nothing to measure: refused, with
+    /// what to add, and nothing written.
+    #[test]
+    fn import_part_kicad_zip_without_a_footprint_is_refused() {
+        use std::io::Write as _;
+
+        let dir = scratch("import_kicad_zip_no_footprint");
+        let zip_path = dir.join("symbol_only.zip");
+        let mut zw = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        let opts: zip::write::FileOptions<'_, '_, ()> = zip::write::FileOptions::default();
+        zw.start_file("Only.kicad_sym", opts).unwrap();
+        zw.write_all(
+            br#"(kicad_symbol_lib (version 20211014)
+  (symbol "Only"
+    (symbol "Only_1_1"
+      (pin input line (at 0 0 0) (length 2.54)
+        (name "A" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27))))))))"#,
+        )
+        .unwrap();
+        zw.finish().unwrap();
+        let res = call_tool(
+            "synth_import_part",
+            &json!({
+                "source": "kicad-zip",
+                "zip_path": zip_path.to_str().unwrap(),
+                "user_registry": dir.to_str().unwrap()
+            }),
+            None,
+        );
+        match res {
+            Err(why) => assert!(
+                why.contains("[footprint_dimensions]") || why.contains("footprint"),
+                "{why}"
+            ),
+            Ok(done) => panic!("a zip with no footprint must be refused: {done}"),
+        }
+        assert!(!dir.join("only.synth.toml").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5139,6 +5398,45 @@ mod tool_registration_tests {
     /// via `tools/list` gets "Unknown tool" on the first call. This
     /// caught `synth_export_multiboard` being listed but never wired
     /// into the dispatch `match`.
+    /// A `source = "kicad"` import needs the footprint its size is measured from.
+    /// The published schema says so, and a request without one is refused with a
+    /// message that names it, so a caller reading the schema is not surprised.
+    #[test]
+    fn the_kicad_import_schema_requires_the_footprint_the_runtime_requires() {
+        let tool = list_tools()
+            .into_iter()
+            .find(|t| t.name == "synth_import_part")
+            .expect("the tool is listed");
+        let rule = &tool.input_schema["allOf"][0];
+        assert_eq!(rule["if"]["properties"]["source"]["const"], "kicad");
+        let required: Vec<&str> = rule["then"]["required"]
+            .as_array()
+            .expect("a conditional requirement")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(required.contains(&"footprint"), "{required:?}");
+        assert!(
+            tool.input_schema["properties"]["footprint"]["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("Required for source='kicad'")),
+            "the footprint property still reads as optional"
+        );
+        let dir = std::env::temp_dir().join(format!("synth_import_schema_{}", std::process::id()));
+        let refused = call_tool(
+            "synth_import_part",
+            &serde_json::json!({
+                "source": "kicad",
+                "lib_id": "Device:R",
+                "user_registry": dir.to_str().unwrap(),
+            }),
+            None,
+        )
+        .expect_err("a KiCad import without a footprint is refused");
+        assert!(refused.contains("footprint"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn every_listed_tool_is_dispatched() {
         for tool in list_tools() {
