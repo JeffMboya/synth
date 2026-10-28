@@ -6204,6 +6204,27 @@ fn courtyard_envelope_area_mm2(board: &Board, placement: &Placement) -> f64 {
 /// spreads out evenly instead of drifting; a part in `frozen` never moves.
 /// Returns false when the overlaps could not be removed.
 fn separate_overlaps(placement: &mut Placement, sizes: &[(f64, f64)], frozen: &[bool]) -> bool {
+    separate_overlaps_with(placement, sizes, frozen, false)
+}
+
+/// Whether two rectangles share area, not merely an edge.
+fn overlap_in_area(a: &Rect, b: &Rect) -> bool {
+    a.min.x_nm < b.max.x_nm
+        && a.max.x_nm > b.min.x_nm
+        && a.min.y_nm < b.max.y_nm
+        && a.max.y_nm > b.min.y_nm
+}
+
+/// [`separate_overlaps`], optionally letting courtyards that only touch stay
+/// as they are. The placer treats touching as a collision; a pinned layout the
+/// export already passes may legally have parts edge to edge, and pushing them
+/// apart wastes the area a compaction is after.
+fn separate_overlaps_with(
+    placement: &mut Placement,
+    sizes: &[(f64, f64)],
+    frozen: &[bool],
+    touching_is_fine: bool,
+) -> bool {
     let pitch_nm = mm_to_nm(0.5);
     let rect_of = |placement: &Placement, index: usize| {
         rotated_courtyard_rect(&placement.components[index], sizes[index])
@@ -6214,7 +6235,7 @@ fn separate_overlaps(placement: &mut Placement, sizes: &[(f64, f64)], frozen: &[
         for i in 0..placement.components.len() {
             for j in (i + 1)..placement.components.len() {
                 let (a, b) = (rect_of(placement, i), rect_of(placement, j));
-                if !a.intersects(&b) {
+                if !a.intersects(&b) || (touching_is_fine && !overlap_in_area(&a, &b)) {
                     continue;
                 }
                 // Share of the push each part takes: the lighter one moves
@@ -6722,6 +6743,80 @@ fn squeeze(
     }
 }
 
+/// The share of the board the courtyards cover, in percent.
+#[must_use]
+pub fn courtyard_fill_percent(board: &Board, placement: &Placement) -> f64 {
+    let sizes = courtyard_sizes(board, placement);
+    let covered: f64 = sizes.iter().map(|(w, h)| w * h).sum();
+    let outline = area_mm2(&placement.board_outline);
+    if outline <= 0.0 {
+        0.0
+    } else {
+        100.0 * covered / outline
+    }
+}
+
+/// Scales a finished placement toward its middle by `factor` (1.0 leaves it,
+/// 0.97 pulls every distance in by 3 %), pushes apart whatever then overlaps
+/// and fits the outline round the result. Unlike the placer's own `compact_placement` it does
+/// not judge the step and keeps no ring round a dense part: an agent's pinned
+/// layout is often tighter than that ring, and the caller decides by routing
+/// the result, which is the only test that knows how tight the layout can go. Each edge's connector row
+/// moves inward as one body, so connectors stay flush with the fitted outline.
+/// `None` only when the layout has no courtyards to scale.
+#[must_use]
+pub fn scale_layout_inward(board: &Board, placement: &Placement, factor: f64) -> Option<Placement> {
+    scale_layout_toward(board, placement, factor, (0.5, 0.5))
+}
+
+/// As [`scale_layout_inward`], scaling about the point `toward` names instead
+/// of the middle: `(0.0, 0.0)` is the top-left corner of the layout, `(1.0, 1.0)`
+/// the bottom-right, `(0.5, 0.5)` the middle. The side of the layout at that
+/// point stays where it is and the opposite side comes in, so empty space
+/// that sits against one side is taken from that side.
+#[must_use]
+pub fn scale_layout_toward(
+    board: &Board,
+    placement: &Placement,
+    factor: f64,
+    toward: (f64, f64),
+) -> Option<Placement> {
+    let mut candidate = placement.clone();
+    let sizes = courtyard_sizes(board, &candidate);
+    let envelope = courtyard_envelope(&candidate, &sizes)?;
+    let at = |low: i64, high: i64, fraction: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let offset = ((high - low) as f64 * fraction.clamp(0.0, 1.0)) as i64;
+        low + offset
+    };
+    let middle = Point::new(
+        at(envelope.min.x_nm, envelope.max.x_nm, toward.0),
+        at(envelope.min.y_nm, envelope.max.y_nm, toward.1),
+    );
+    let flush_edge = |id: ComponentId| flush_edge_index(board, id);
+    let frozen = vec![false; candidate.components.len()];
+    // Rounded, not truncated: 0.97 * 1000 is 969.999... in floating point.
+    #[allow(clippy::cast_possible_truncation)]
+    let permille = (factor.clamp(0.0, 1.0) * 1000.0).round() as i64;
+    squeeze(&mut candidate, permille, middle, &frozen, &flush_edge);
+    let pinned: Vec<bool> = candidate
+        .components
+        .iter()
+        .map(|p| flush_edge(p.id).is_some())
+        .collect();
+    // Best effort. The overlaps here are in the placer's own size model, which
+    // can call parts that touch an overlap when KiCad's courtyards do not; a
+    // layout the export already passes may carry some, and refusing to move
+    // it at all would leave nothing to compact. Whatever overlap is left is
+    // for the export's DRC to judge.
+    let _ = separate_overlaps_with(&mut candidate, &sizes, &pinned, true);
+    // The outline the export itself fits round a placement, so the size
+    // reported here is the size of the board that gets exported.
+    fit_outline_with_margin_mm(board, &mut candidate, tight_edge_margin_mm(board));
+    trim_outline_to_grid(board, &mut candidate);
+    Some(candidate)
+}
+
 /// Global compaction: pull every free part toward the middle of the layout,
 /// push apart whatever then overlaps, and keep the step only when the box
 /// around the courtyards shrinks while wiring gets no longer, nothing enters a
@@ -7114,6 +7209,13 @@ fn keepout_hits(board: &Board, placement: &Placement) -> usize {
             )
         })
         .count()
+}
+
+/// How many courtyards of `placement` sit in a keepout: the count the export's
+/// strict check rejects a layout for.
+#[must_use]
+pub fn keepout_overlap_count(board: &Board, placement: &Placement) -> usize {
+    keepout_overlaps(board, placement)
 }
 
 /// Count parts whose courtyard overlaps a keepout circle, not just whose
@@ -8467,6 +8569,108 @@ board "features_only" {
         );
         // The same connector with room to turn is turned.
         assert_eq!(run(5.0, 40.0), wanted, "with room the connector is turned");
+    }
+
+    /// Courtyards that only touch are a legal layout; the compaction's scale step
+    /// must not push them apart, or a tight layout gains less than its scale.
+    #[test]
+    fn touching_courtyards_stay_put_when_touching_is_fine() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let sizes_all = courtyard_sizes(&board, &placement);
+        let mut pair = Placement {
+            board_outline: placement.board_outline,
+            components: placement.components[..2].to_vec(),
+        };
+        let sizes = sizes_all[..2].to_vec();
+        // Put the second part's courtyard exactly against the first's right edge.
+        let first = rotated_courtyard_rect(&pair.components[0], sizes[0]);
+        let second = rotated_courtyard_rect(&pair.components[1], sizes[1]);
+        let half_width = (second.max.x_nm - second.min.x_nm) / 2;
+        pair.components[1].center =
+            Point::new(first.max.x_nm + half_width, pair.components[0].center.y_nm);
+        let before = pair.components[1].center;
+        let frozen = [false, false];
+
+        let mut kept = pair.clone();
+        assert!(separate_overlaps_with(&mut kept, &sizes, &frozen, true));
+        assert_eq!(kept.components[1].center, before, "touching is left alone");
+
+        let mut pushed = pair.clone();
+        separate_overlaps_with(&mut pushed, &sizes, &frozen, false);
+        assert_ne!(
+            pushed.components[1].center, before,
+            "the placer's own rule still separates touching courtyards"
+        );
+    }
+
+    #[test]
+    fn scaling_a_layout_inward_shrinks_the_outline_and_keeps_courtyards_apart() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        // The placer packs this board tight already, so spread it first: the
+        // slack an agent's pinned layout carries.
+        let mut placement = place(&board).expect("place");
+        for placed in &mut placement.components {
+            placed.center = Point::new(placed.center.x_nm * 13 / 10, placed.center.y_nm * 13 / 10);
+        }
+        tighten_outline_after_sidecar(&board, &mut placement);
+        let before = placement.board_outline;
+        let scaled = scale_layout_inward(&board, &placement, 0.9).expect("a 10 % scale separates");
+        assert!(
+            scaled.board_outline.width_nm() * scaled.board_outline.height_nm()
+                < before.width_nm() * before.height_nm(),
+            "the outline follows the scaled layout"
+        );
+        let sizes = courtyard_sizes(&board, &scaled);
+        let rects: Vec<Rect> = scaled
+            .components
+            .iter()
+            .zip(&sizes)
+            .map(|(p, size)| rotated_courtyard_rect(p, *size))
+            .collect();
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                let overlap = a.min.x_nm < b.max.x_nm - 1_000
+                    && b.min.x_nm < a.max.x_nm - 1_000
+                    && a.min.y_nm < b.max.y_nm - 1_000
+                    && b.min.y_nm < a.max.y_nm - 1_000;
+                assert!(!overlap, "courtyards overlap after scaling");
+            }
+        }
+        let same = scale_layout_inward(&board, &placement, 1.0).expect("unity");
+        // Positions snap to the 0.5 mm placement pitch, and nothing more.
+        for (a, b) in same.components.iter().zip(&placement.components) {
+            assert!(
+                (a.center.x_nm - b.center.x_nm).abs() <= mm_to_nm(0.5)
+                    && (a.center.y_nm - b.center.y_nm).abs() <= mm_to_nm(0.5),
+                "1.0 moves a part more than the pitch"
+            );
+        }
+    }
+
+    #[test]
+    fn scaling_toward_a_corner_takes_the_slack_from_the_opposite_sides() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut placement = place(&board).expect("place");
+        for placed in &mut placement.components {
+            placed.center = Point::new(placed.center.x_nm * 13 / 10, placed.center.y_nm * 13 / 10);
+        }
+        let sizes = courtyard_sizes(&board, &placement);
+        let before = courtyard_envelope(&placement, &sizes).expect("envelope");
+        let scaled = scale_layout_toward(&board, &placement, 0.9, (1.0, 1.0)).expect("scales");
+        let after =
+            courtyard_envelope(&scaled, &courtyard_sizes(&board, &scaled)).expect("envelope");
+        let pitch = mm_to_nm(0.5) * 2;
+        assert!(
+            (after.max.x_nm - before.max.x_nm).abs() <= pitch
+                && (after.max.y_nm - before.max.y_nm).abs() <= pitch,
+            "the bottom-right corner stays: {before:?} -> {after:?}"
+        );
+        assert!(
+            after.min.x_nm > before.min.x_nm + mm_to_nm(2.0)
+                && after.min.y_nm > before.min.y_nm + mm_to_nm(2.0),
+            "the top-left side comes in: {before:?} -> {after:?}"
+        );
     }
 
     #[test]

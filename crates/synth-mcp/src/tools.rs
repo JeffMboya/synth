@@ -359,6 +359,23 @@ pub fn list_tools() -> Vec<McpToolInfo> {
             }),
         },
         McpToolInfo {
+            name: "synth_compact_layout".into(),
+            description: "Compact a pinned placement sidecar until the router no longer closes. Each call makes ONE attempt: it scales the layout inward (3 % a step), exports it into out_dir/step_<permille> with the full release gates (every net routed, KiCad DRC clean, no via in a pad), and records pass or fail in out_dir/compact.json. After the first failure it bisects between the last good and the failed scale. Call it again until `done` is true; then the best passing layout has been written to the sidecar (the original is kept as <sidecar>.pre-compact). Takes file_path, layout_file_path, out_dir and the router options of synth_export, plus optional step_percent (default 3) and min_scale_percent (default 60). Connectors stay flush because the outline is refitted round each attempt.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": { "type": "string", "description": "Path to the .synth source file" },
+                    "layout_file_path": { "type": "string", "description": "The PCB placement sidecar to compact (<design>.placement.layout.toml; board millimetres)" },
+                    "out_dir": { "type": "string", "description": "Working directory; holds compact.json and one export per attempt" },
+                    "step_percent": { "type": "number", "description": "Scale step in percent before the first failure, 0.1 to 50 (default 3)" },
+                    "min_scale_percent": { "type": "number", "description": "Never scale below this (default 60)" },
+                    "toward": { "type": "string", "description": "Where the layout is pulled to: center (default), a side (left, right, top, bottom) or a corner (bottom_right, top_left, ...). The side or corner named stays put and the opposite side comes in, so empty space against one side is taken from that side. Use a fresh out_dir when you change it." },
+                    "router": { "type": "string", "description": "External engine, as synth_export" }
+                },
+                "required": ["file_path", "layout_file_path", "out_dir"]
+            }),
+        },
+        McpToolInfo {
             name: "synth_place_with_hints".into(),
             description: "Run the PCB placer with explicit semantic placement hints (region, edge, near/side) for one or more components. Does not modify the source file. Returns placement positions, hint satisfaction, structural visual-review findings, functional-cluster warnings, compactness warnings, unrouted net count, and full DRC violation reports. Call with run_routing=false first; if placement_quality.visual_review.requires_revision is true, revise the hints or sidecar before routing. A combined run also stops before the router when review requires revision; use synth_route with allow_placement_warnings=true only for deliberate manual/debug routing. For production layouts, keep MCU/flash/decouplers and interface passives close, keep connectors edge-oriented, then use a sidecar for relative or exact refinements. Each `component_placements[].center` is the footprint origin (the point KiCad writes as the footprint `(at x y)`), in nanometres, so it overlays the exported PCB exactly; it is not the placement sidecar's coordinate space.".into(),
             input_schema: serde_json::json!({
@@ -607,6 +624,7 @@ pub fn call_tool(
         "synth_schematic_baseline" => execute_schematic_baseline(args, default_registry),
         "synth_review_schematic" => execute_review_schematic(args, default_registry),
         "synth_export" => execute_export(args, default_registry),
+        "synth_compact_layout" => execute_compact_layout(args, default_registry),
         "synth_predict_patch_consequence" => {
             execute_predict_patch_consequence(args, default_registry)
         }
@@ -3180,6 +3198,414 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
     Ok(with_process_warnings(result, &process_warnings))
 }
 
+/// One attempt of the compaction loop, in thousandths of the original scale.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CompactAttempt {
+    permille: i64,
+    passed: bool,
+    width_mm: f64,
+    height_mm: f64,
+    fill_percent: f64,
+    reason: String,
+}
+
+/// The scale to try next, in thousandths, or `None` when the search is over.
+/// Scales shrink by `step` until one fails, then bisect between the lowest
+/// passing scale and the highest failing one below it, down to `resolution`.
+/// A start layout that fails has nothing to compact.
+fn next_compact_permille(
+    attempts: &[CompactAttempt],
+    step: i64,
+    resolution: i64,
+    floor: i64,
+) -> Option<i64> {
+    let Some(first) = attempts.first() else {
+        return Some(1000);
+    };
+    if !first.passed {
+        return None;
+    }
+    let good = attempts
+        .iter()
+        .filter(|a| a.passed)
+        .map(|a| a.permille)
+        .min()?;
+    let bad = attempts
+        .iter()
+        .filter(|a| !a.passed && a.permille < good)
+        .map(|a| a.permille)
+        .max();
+    match bad {
+        None => (good - step >= floor).then_some(good - step),
+        Some(bad) if good - bad <= resolution => None,
+        Some(bad) => Some((good + bad) / 2),
+    }
+}
+
+/// Why an export did not release: the router's blocking reasons when it gave
+/// them, else the status or error code, shortened to one line.
+fn compact_failure_reason(result: &Value) -> String {
+    let reasons = result["routing"]["validation"]["blocking_reasons"]
+        .as_array()
+        .or_else(|| result["validation"]["blocking_reasons"].as_array());
+    let text = match reasons {
+        Some(list) if !list.is_empty() => list
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("; "),
+        _ => result["error_code"]
+            .as_str()
+            .or_else(|| result["status"].as_str())
+            .unwrap_or("not release ready")
+            .to_string(),
+    };
+    text.chars().take(240).collect()
+}
+
+/// The point of the layout the compaction scales toward, as fractions of its
+/// width and height from the top-left: `toward` names a side or a corner, and
+/// absent or `center` is the middle.
+fn compact_direction(toward: Option<&str>) -> Result<(f64, f64), String> {
+    let toward = toward.unwrap_or("center");
+    let (mut x, mut y) = (0.5, 0.5);
+    for word in toward.split('_') {
+        match word {
+            "center" => {}
+            "left" => x = 0.0,
+            "right" => x = 1.0,
+            "top" => y = 0.0,
+            "bottom" => y = 1.0,
+            _ => {
+                return Err(format!(
+                    "toward must be center, a side (left, right, top, bottom) or a corner such as bottom_right, not '{toward}'"
+                ))
+            }
+        }
+    }
+    Ok((x, y))
+}
+
+/// A fingerprint of what a compaction run is for: the compiled design and the
+/// settings that shape the steps. The sidecar is tracked on its own, because the
+/// tool rewrites it when it finishes.
+fn compact_design_fingerprint(
+    board: &synth_ir::Board,
+    toward: Option<&str>,
+    step: i64,
+    floor: i64,
+) -> String {
+    let design = layout_fingerprint(board, None);
+    sha256_hex(format!("{design}|{}|{step}|{floor}", toward.unwrap_or("")).as_bytes())
+}
+
+/// Whether the design or the settings differ from those the recorded attempts
+/// were made for. No record yet means compaction has not begun.
+fn compact_config_changed(recorded: Option<&str>, current: &str) -> bool {
+    recorded.is_some_and(|recorded| recorded.trim() != current)
+}
+
+/// Forgets a compaction: the attempts, the saved start copy, the records of what
+/// they were made from, every step's export, and the backup of the start layout.
+/// The sidecar itself is left as it is: it is the layout the next run starts from.
+fn drop_compaction_state(out_dir: &Path, sidecar: &Path) {
+    for name in [
+        "compact.json",
+        "original.placement.layout.toml",
+        "sidecar.sha",
+        "config.sha",
+    ] {
+        let _ = std::fs::remove_file(out_dir.join(name));
+    }
+    if let Ok(entries) = std::fs::read_dir(out_dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("step_") {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_file(PathBuf::from(format!("{}.pre-compact", sidecar.display())));
+}
+
+/// Whether the sidecar is a different layout from the one a compaction began
+/// with. `installed` is the layout the tool itself wrote over it afterwards,
+/// which is not a change. No record yet means compaction has not begun.
+fn compact_sidecar_changed(
+    started_from: Option<&str>,
+    installed: Option<&str>,
+    current: &str,
+) -> bool {
+    started_from.is_some_and(|started| started != current) && installed != Some(current)
+}
+
+/// The step and the floor of a compaction, in thousandths of the start scale.
+///
+/// A step that rounds to zero would offer the same scale on every call and the
+/// loop would never reach `done`; a negative or oversized one, or a floor
+/// outside 0-100 %, makes the search meaningless. Each is refused with the
+/// reason, before anything is exported.
+fn compact_scales(args: &Value) -> Result<(i64, i64), String> {
+    let percent = |key: &str, default: f64, min: f64, max: f64| -> Result<i64, String> {
+        let value = match &args[key] {
+            Value::Null => default,
+            other => other
+                .as_f64()
+                .ok_or_else(|| format!("'{key}' must be a number of percent"))?,
+        };
+        if !value.is_finite() || value < min || value > max {
+            return Err(format!(
+                "'{key}' must be between {min} and {max} percent, got {value}"
+            ));
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        Ok((value * 10.0).round() as i64)
+    };
+    let step = percent("step_percent", 3.0, 0.1, 50.0)?;
+    let floor = percent("min_scale_percent", 60.0, 1.0, 100.0)?;
+    Ok((step, floor))
+}
+
+/// `synth_compact_layout`: one attempt of the compaction loop. See the tool
+/// description; state lives in `<out_dir>/compact.json` so each call is short
+/// enough for an agent's tool timeout.
+#[allow(clippy::too_many_lines)]
+fn execute_compact_layout(args: &Value, default_registry: Option<&Path>) -> Result<Value, String> {
+    let file_name = args["file_path"]
+        .as_str()
+        .ok_or("Missing required parameter 'file_path'")?;
+    let sidecar = PathBuf::from(
+        args["layout_file_path"]
+            .as_str()
+            .ok_or("Missing required parameter 'layout_file_path'")?,
+    );
+    let out_dir = PathBuf::from(
+        args["out_dir"]
+            .as_str()
+            .ok_or("Missing required parameter 'out_dir'")?,
+    );
+    let (step, floor) = compact_scales(args)?;
+    let resolution = 5;
+    let toward = compact_direction(args["toward"].as_str())?;
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("Cannot create out_dir: {e}"))?;
+    let source = std::fs::read_to_string(file_name)
+        .map_err(|e| format!("Could not read source file '{file_name}': {e}"))?;
+    let parse = synth_parser::parse(&source, file_name.to_string());
+    let ast = parse.ast.ok_or("Parse failed")?;
+    let loader = synth_ir::FsImportLoader {
+        root: Path::new(file_name)
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
+    };
+    let resolved = synth_ir::resolve_imports(&ast, &loader, file_name);
+    let registry =
+        load_registry_tiered(args, default_registry).map_err(|e| format!("Registry error: {e}"))?;
+    let lowered = synth_ir::lower(&resolved.program, &registry, file_name);
+    let board = lowered.board.ok_or("Lowering failed")?;
+    let state_path = out_dir.join("compact.json");
+    let original = out_dir.join("original.placement.layout.toml");
+    let sidecar_sha_path = out_dir.join("sidecar.sha");
+    let config_path = out_dir.join("config.sha");
+    // What the attempts were made for: the compiled design (source, imports and
+    // registry) and the compaction settings. A change in either means the
+    // attempts and the saved start copy describe another run.
+    let design = compact_design_fingerprint(&board, args["toward"].as_str(), step, floor);
+    let design_changed = compact_config_changed(
+        std::fs::read_to_string(&config_path).ok().as_deref(),
+        &design,
+    );
+    // A sidecar changed since compaction began (the agent moved a part) is a
+    // new start layout: the attempts and the saved start copy describe the old
+    // one, so they are dropped. The layout this tool installed is not a change.
+    let current_sha = sha256_of(&sidecar);
+    let known = std::fs::read_to_string(&sidecar_sha_path).unwrap_or_default();
+    let mut known_shas = known.lines();
+    let started_from = known_shas.next();
+    let installed = known_shas.next();
+    if design_changed || compact_sidecar_changed(started_from, installed, &current_sha) {
+        drop_compaction_state(&out_dir, &sidecar);
+    }
+    std::fs::write(&config_path, format!("{design}\n"))
+        .map_err(|e| format!("Cannot record the compaction settings: {e}"))?;
+    // The start layout is the sidecar as it was when compaction began, kept
+    // aside so a later call never compacts an already compacted layout.
+    if !original.exists() {
+        std::fs::copy(&sidecar, &original).map_err(|e| format!("Cannot read the sidecar: {e}"))?;
+        let backup = PathBuf::from(format!("{}.pre-compact", sidecar.display()));
+        if !backup.exists() {
+            let _ = std::fs::copy(&sidecar, &backup);
+        }
+        std::fs::write(&sidecar_sha_path, format!("{current_sha}\n"))
+            .map_err(|e| format!("Cannot record the sidecar: {e}"))?;
+    }
+    let mut attempts: Vec<CompactAttempt> = std::fs::read_to_string(&state_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+
+    let Some(permille) = next_compact_permille(&attempts, step, resolution, floor) else {
+        return finish_compaction(&attempts, &sidecar, &out_dir);
+    };
+
+    // The placement the export itself writes for this sidecar, so a step is
+    // scaled from the same layout the release gates would see.
+    let start = synth_kicad::placement_for_export(
+        &board,
+        &synth_kicad::Sidecars {
+            schematic: None,
+            placement: Some(original.clone()),
+        },
+    )
+    .map_err(|e| format!("Could not place the start layout: {e}"))?;
+    #[allow(clippy::cast_precision_loss)]
+    let factor = permille as f64 / 1000.0;
+    // Scale 1.0 is the layout as the agent pinned it: no scaling, so no
+    // snapping to the placement grid, and its sidecar goes to the export as is.
+    let identity = permille == 1000;
+    let candidate = if identity {
+        Some(start.clone())
+    } else {
+        synth_place::scale_layout_toward(&board, &start, factor, toward)
+    };
+    let step_dir = out_dir.join(format!("step_{permille}"));
+    let mut attempt = CompactAttempt {
+        permille,
+        passed: false,
+        width_mm: 0.0,
+        height_mm: 0.0,
+        fill_percent: 0.0,
+        reason: "the layout has no courtyards to scale".into(),
+    };
+    // A scale that puts more courtyards into a keepout than the start layout has
+    // fails the export's strict check before the router runs, so it is recorded
+    // as a failed attempt without paying for the export.
+    let start_hits = synth_place::keepout_overlap_count(&board, &start);
+    let candidate = candidate.filter(|placed| {
+        let hits = synth_place::keepout_overlap_count(&board, placed);
+        if !identity && hits > start_hits {
+            attempt.width_mm = synth_geometry::nm_to_mm(placed.board_outline.width_nm());
+            attempt.height_mm = synth_geometry::nm_to_mm(placed.board_outline.height_nm());
+            attempt.fill_percent = synth_place::courtyard_fill_percent(&board, placed);
+            attempt.reason = format!(
+                "scaling puts {hits} courtyard(s) into a keepout, the start layout has {start_hits}; not exported"
+            );
+            return false;
+        }
+        true
+    });
+    if let Some(placed) = candidate {
+        attempt.width_mm = synth_geometry::nm_to_mm(placed.board_outline.width_nm());
+        attempt.height_mm = synth_geometry::nm_to_mm(placed.board_outline.height_nm());
+        attempt.fill_percent = synth_place::courtyard_fill_percent(&board, &placed);
+        let mut layout =
+            synth_layout::sidecar::SidecarLayout::load_from_file(&original).unwrap_or_default();
+        for comp in board.components.iter().filter(|_| !identity) {
+            let Some(p) = placed.components.iter().find(|p| p.id == comp.id) else {
+                continue;
+            };
+            let entry = layout
+                .components
+                .entry(comp.refdes.clone())
+                .or_insert_with(|| synth_layout::sidecar::SidecarPlacement {
+                    x: 0.0,
+                    y: 0.0,
+                    rotation: 0,
+                    sheet: None,
+                    source: synth_layout::sidecar::OverrideSource::Agent,
+                    priority: synth_layout::sidecar::OverridePriority::Hard,
+                    timestamp: None,
+                    relative_to: None,
+                    dx: 0.0,
+                    dy: 0.0,
+                });
+            entry.relative_to = None;
+            entry.x = synth_geometry::nm_to_mm(p.center.x_nm);
+            entry.y = synth_geometry::nm_to_mm(p.center.y_nm);
+        }
+        std::fs::create_dir_all(&step_dir).map_err(|e| format!("Cannot create step dir: {e}"))?;
+        let step_sidecar = step_dir.join("layout.placement.layout.toml");
+        layout
+            .save_to_file(&step_sidecar)
+            .map_err(|e| format!("Cannot write the step sidecar: {e}"))?;
+        let mut export_args = args.clone();
+        export_args["layout_file_path"] = Value::String(step_sidecar.display().to_string());
+        export_args["out_dir"] = Value::String(step_dir.join("export").display().to_string());
+        export_args["allow_incomplete"] = Value::Bool(false);
+        match execute_export(&export_args, default_registry) {
+            Ok(result) if result["status"].as_str() == Some("success") => {
+                attempt.passed = true;
+                attempt.reason = "released".into();
+            }
+            Ok(result) => attempt.reason = compact_failure_reason(&result),
+            Err(e) => attempt.reason = e.chars().take(240).collect(),
+        }
+    }
+    attempts.push(attempt);
+    std::fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&attempts).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Cannot write compact.json: {e}"))?;
+    if next_compact_permille(&attempts, step, resolution, floor).is_none() {
+        return finish_compaction(&attempts, &sidecar, &out_dir);
+    }
+    Ok(serde_json::json!({
+        "status": "continue",
+        "done": false,
+        "attempts": attempts,
+        "next": "call synth_compact_layout again with the same arguments"
+    }))
+}
+
+/// Installs the best passing layout over the sidecar and reports the search.
+fn finish_compaction(
+    attempts: &[CompactAttempt],
+    sidecar: &Path,
+    out_dir: &Path,
+) -> Result<Value, String> {
+    let best = attempts
+        .iter()
+        .filter(|a| a.passed)
+        .min_by_key(|a| a.permille);
+    let Some(best) = best else {
+        return Ok(serde_json::json!({
+            "status": "error",
+            "done": true,
+            "error": "the starting layout does not release, so there is nothing to compact; fix the export first",
+            "attempts": attempts
+        }));
+    };
+    let chosen = out_dir
+        .join(format!("step_{}", best.permille))
+        .join("layout.placement.layout.toml");
+    if best.permille != 1000 {
+        std::fs::copy(&chosen, sidecar).map_err(|e| format!("Cannot install the layout: {e}"))?;
+        // Remember which layout this tool installed, so a later call does not
+        // mistake it for an edit by the author.
+        let sha_path = out_dir.join("sidecar.sha");
+        let started_from = std::fs::read_to_string(&sha_path)
+            .ok()
+            .and_then(|text| text.lines().next().map(str::to_string))
+            .unwrap_or_default();
+        let _ = std::fs::write(
+            &sha_path,
+            format!("{started_from}\n{}\n", sha256_of(sidecar)),
+        );
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let best_scale_percent = best.permille as f64 / 10.0;
+    Ok(serde_json::json!({
+        "status": "done",
+        "done": true,
+        "best_scale_percent": best_scale_percent,
+        "best_outline_mm": [best.width_mm, best.height_mm],
+        "best_fill_percent": best.fill_percent,
+        "best_export_dir": out_dir.join(format!("step_{}", best.permille)).join("export"),
+        "sidecar_installed": best.permille != 1000,
+        "original_kept_as": format!("{}.pre-compact", sidecar.display()),
+        "attempts": attempts
+    }))
+}
+
 fn execute_live_supply_chain(
     args: &Value,
     default_registry: Option<&Path>,
@@ -5156,6 +5582,176 @@ mod tool_registration_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::{next_compact_permille, CompactAttempt};
+
+    fn attempt(permille: i64, passed: bool) -> CompactAttempt {
+        CompactAttempt {
+            permille,
+            passed,
+            width_mm: 0.0,
+            height_mm: 0.0,
+            fill_percent: 0.0,
+            reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_compaction_direction_names_a_side_or_a_corner() {
+        use super::compact_direction as dir;
+        assert_eq!(dir(None), Ok((0.5, 0.5)));
+        assert_eq!(dir(Some("center")), Ok((0.5, 0.5)));
+        assert_eq!(dir(Some("bottom_right")), Ok((1.0, 1.0)));
+        assert_eq!(dir(Some("left")), Ok((0.0, 0.5)));
+        assert_eq!(dir(Some("top_left")), Ok((0.0, 0.0)));
+        assert!(dir(Some("sideways")).is_err());
+    }
+
+    #[test]
+    fn an_edited_sidecar_restarts_compaction_but_the_installed_layout_does_not() {
+        use super::compact_sidecar_changed as changed;
+        assert!(!changed(None, None, "a"), "nothing recorded yet");
+        assert!(!changed(Some("a"), None, "a"), "unchanged since the start");
+        assert!(changed(Some("a"), None, "b"), "the author edited it");
+        assert!(!changed(Some("a"), Some("b"), "b"), "the tool installed it");
+        assert!(
+            changed(Some("a"), Some("b"), "c"),
+            "edited after the install"
+        );
+    }
+
+    fn board_of(source: &str) -> synth_ir::Board {
+        let parse = synth_parser::parse(source, "board.synth".to_string());
+        let ast = parse.ast.expect("parses");
+        let loader = synth_ir::FsImportLoader {
+            root: std::path::PathBuf::from("."),
+        };
+        let resolved = synth_ir::resolve_imports(&ast, &loader, "board.synth");
+        let registry =
+            synth_registry::load_dir(&std::path::Path::new("../..").join("registry").join("parts"))
+                .expect("registry");
+        synth_ir::lower(&resolved.program, &registry, "board.synth")
+            .board
+            .expect("lowers")
+    }
+
+    const ONE_RESISTOR: &str = r#"board "a" { layers 2
+        component R1: resistor "r_generic_0603" value "1k" }"#;
+    const TWO_RESISTORS: &str = r#"board "a" { layers 2
+        component R1: resistor "r_generic_0603" value "1k"
+        component R2: resistor "r_generic_0603" value "1k" }"#;
+
+    #[test]
+    fn a_changed_design_or_setting_is_not_the_run_the_attempts_were_made_for() {
+        use super::{compact_config_changed, compact_design_fingerprint as fingerprint};
+        let one = board_of(ONE_RESISTOR);
+        let base = fingerprint(&one, None, 30, 600);
+        assert_eq!(base, fingerprint(&board_of(ONE_RESISTOR), None, 30, 600));
+        assert_ne!(base, fingerprint(&board_of(TWO_RESISTORS), None, 30, 600));
+        assert_ne!(
+            base,
+            fingerprint(&one, Some("center"), 30, 600),
+            "direction"
+        );
+        assert_ne!(base, fingerprint(&one, None, 50, 600), "step");
+        assert_ne!(base, fingerprint(&one, None, 30, 800), "floor");
+        assert!(!compact_config_changed(None, &base), "nothing recorded yet");
+        assert!(!compact_config_changed(Some(&format!("{base}\n")), &base));
+        assert!(compact_config_changed(Some("something else"), &base));
+    }
+
+    #[test]
+    fn dropping_a_compaction_forgets_its_attempts_but_not_the_sidecar() {
+        let dir = std::env::temp_dir().join(format!("synth_compact_drop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("step_970/export")).expect("step dir");
+        for name in [
+            "compact.json",
+            "original.placement.layout.toml",
+            "sidecar.sha",
+            "config.sha",
+        ] {
+            std::fs::write(dir.join(name), "old").expect("state file");
+        }
+        let sidecar = dir.join("board.placement.layout.toml");
+        std::fs::write(&sidecar, "current").expect("sidecar");
+        let backup = dir.join("board.placement.layout.toml.pre-compact");
+        std::fs::write(&backup, "start").expect("backup");
+        super::drop_compaction_state(&dir, &sidecar);
+        for name in [
+            "compact.json",
+            "original.placement.layout.toml",
+            "sidecar.sha",
+            "config.sha",
+            "step_970",
+        ] {
+            assert!(!dir.join(name).exists(), "{name} should be gone");
+        }
+        assert!(!backup.exists(), "the start backup belongs to the old run");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "current");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_step_that_would_never_advance_is_refused_with_a_reason() {
+        use super::compact_scales;
+        for bad in [
+            serde_json::json!({ "step_percent": 0 }),
+            serde_json::json!({ "step_percent": 0.04 }),
+            serde_json::json!({ "step_percent": -3 }),
+            serde_json::json!({ "step_percent": 75 }),
+            serde_json::json!({ "step_percent": "3" }),
+            serde_json::json!({ "min_scale_percent": 0 }),
+            serde_json::json!({ "min_scale_percent": 150 }),
+            serde_json::json!({ "min_scale_percent": -1 }),
+        ] {
+            let err = compact_scales(&bad).expect_err("must be refused");
+            assert!(err.contains("percent"), "{bad}: {err}");
+        }
+        assert_eq!(compact_scales(&serde_json::json!({})), Ok((30, 600)));
+        assert_eq!(
+            compact_scales(&serde_json::json!({ "step_percent": 0.5, "min_scale_percent": 80 })),
+            Ok((5, 800))
+        );
+    }
+
+    #[test]
+    fn the_tool_returns_a_structured_error_for_a_zero_step_before_exporting_anything() {
+        let args = serde_json::json!({
+            "file_path": "/nowhere/board.synth",
+            "layout_file_path": "/nowhere/board.placement.layout.toml",
+            "out_dir": "/nowhere/compact",
+            "step_percent": 0,
+        });
+        let err = super::execute_compact_layout(&args, None).expect_err("refused");
+        assert!(err.contains("step_percent"), "{err}");
+        assert!(!std::path::Path::new("/nowhere/compact").exists());
+    }
+
+    #[test]
+    fn compaction_steps_down_then_bisects_between_the_last_pass_and_the_first_failure() {
+        let next = |a: &[CompactAttempt]| next_compact_permille(a, 30, 5, 600);
+        assert_eq!(next(&[]), Some(1000), "the start layout is tried first");
+        assert_eq!(
+            next(&[attempt(1000, false)]),
+            None,
+            "a failing start has nothing to compact"
+        );
+        assert_eq!(next(&[attempt(1000, true)]), Some(970));
+        assert_eq!(next(&[attempt(1000, true), attempt(970, true)]), Some(940));
+        // First failure at 940: bisect 970..940.
+        let mut run = vec![attempt(1000, true), attempt(970, true), attempt(940, false)];
+        assert_eq!(next(&run), Some(955));
+        run.push(attempt(955, true));
+        assert_eq!(next(&run), Some(947));
+        run.push(attempt(947, false));
+        assert_eq!(next(&run), Some(951));
+        run.push(attempt(951, true));
+        assert_eq!(next(&run), None, "951 and 947 are within the resolution");
+        // It never goes below the floor.
+        let deep = [attempt(1000, true), attempt(620, true)];
+        assert_eq!(next(&deep), None);
+    }
+
     #[test]
     fn a_placement_path_is_not_read_as_the_schematic_sidecar() {
         let only_placement =
