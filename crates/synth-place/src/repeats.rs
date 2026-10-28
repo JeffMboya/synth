@@ -225,15 +225,15 @@ pub(crate) fn find_repeated_circuits(board: &Board) -> Vec<Vec<Island>> {
 }
 
 impl Island {
-    /// The part of this copy that corresponds to `label` in another copy, when
-    /// exactly one part carries it.
-    pub(crate) fn part_with_label(&self, label: u64) -> Option<ComponentId> {
-        let mut found = self.parts.iter().filter(|(_, l)| *l == label);
-        let first = found.next()?;
-        if found.next().is_some() {
-            None
-        } else {
-            Some(first.0)
-        }
+    /// The parts of this copy that carry `label`, other than `skip`. Parts
+    /// serving different pins of the same hub can carry one label (two equal
+    /// resistors on two pins of one connector), so a label names a set; the
+    /// caller pairs the sets of two copies.
+    pub(crate) fn parts_with_label(&self, label: u64, skip: ComponentId) -> Vec<ComponentId> {
+        self.parts
+            .iter()
+            .filter(|(id, l)| *l == label && *id != skip)
+            .map(|(id, _)| *id)
+            .collect()
     }
 }
