@@ -2930,6 +2930,9 @@ fn evaluate_candidate_mcp(
     index: usize,
     limit: std::time::Duration,
 ) -> Result<Option<(RouteCost, Vec<String>)>, String> {
+    // The limit covers the export as well as the routing, so the clock starts
+    // here and the router gets what the export left of it.
+    let clock = synth_router::search_budget::RunClock::start(limit);
     let scratch = std::env::temp_dir().join(format!(
         "synth-mcp-place-route-{}-{index}",
         std::process::id()
@@ -2939,9 +2942,7 @@ fn evaluate_candidate_mcp(
         .map_err(|e| format!("candidate export failed: {e}"))?;
     let mut request = routing_request(args, engine);
     request.ground_nets = synth_drc::ground_net_names(board);
-    // Capped at what is left of the search budget, so a run that starts late
-    // cannot take the router's whole timeout.
-    request.limits = request.limits.with_wall_clock(limit.as_secs().max(1));
+    request.limits = request.limits.with_wall_clock(clock.router_timeout_secs());
     request.board_path.clone_from(&res.pcb_path);
     request.out_dir.clone_from(&res.out_dir);
     request.stem = synth_router::sanitize_stem(&board.name);

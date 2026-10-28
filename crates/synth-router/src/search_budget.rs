@@ -124,6 +124,40 @@ impl SearchBudget {
     }
 }
 
+/// The clock of one run that is granted a wall-clock limit: it starts when the
+/// limit is granted, before the run's export and other preparation, and the
+/// router is given what is left of the limit when it starts, so preparation time
+/// plus routing time cannot exceed the limit.
+#[derive(Debug, Clone, Copy)]
+pub struct RunClock {
+    started: Instant,
+    limit: Duration,
+}
+
+impl RunClock {
+    /// Starts the clock for a run granted `limit`.
+    #[must_use]
+    pub fn start(limit: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            limit,
+        }
+    }
+
+    /// What is left of the limit.
+    #[must_use]
+    pub fn left(&self) -> Duration {
+        self.limit.saturating_sub(self.started.elapsed())
+    }
+
+    /// The router's wall-clock limit in whole seconds: what is left of the run's
+    /// limit, and never less than the one second the router can be given.
+    #[must_use]
+    pub fn router_timeout_secs(&self) -> u64 {
+        self.left().as_secs().max(1)
+    }
+}
+
 /// One candidate's result: its cost (lower is better) and the routing order the
 /// router recommends.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +251,38 @@ mod tests {
             Duration::from_secs(60),
             "never raised above the request"
         );
+    }
+
+    /// The router gets what preparation left of the run's limit, not the whole of
+    /// it: the export before the router starts counts against the same limit.
+    #[test]
+    fn preparation_time_and_routing_time_together_stay_within_the_limit() {
+        let limit = Duration::from_secs(30);
+        let clock = RunClock {
+            started: Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .expect("a clock that has run for 10 s"),
+            limit,
+        };
+        let router = clock.router_timeout_secs();
+        assert!(
+            router <= 20,
+            "the router got {router} s after 10 s of preparation"
+        );
+        assert!(
+            Duration::from_secs(10 + router) <= limit,
+            "preparation plus routing is over the limit"
+        );
+        // A fresh clock gives the router the whole limit; an exhausted one the one
+        // second the router can be given.
+        assert!(RunClock::start(limit).router_timeout_secs() >= 29);
+        let spent = RunClock {
+            started: Instant::now()
+                .checked_sub(Duration::from_secs(40))
+                .expect("a clock that has run for 40 s"),
+            limit,
+        };
+        assert_eq!(spent.router_timeout_secs(), 1);
     }
 
     /// The minimum run applies to the limit a candidate would be given, not only
