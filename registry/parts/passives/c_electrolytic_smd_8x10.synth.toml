@@ -1,6 +1,7 @@
 id = "c_electrolytic_smd_8x10"
 kind = "capacitor"
-description = "Generic 8 x 10 mm SMD aluminium electrolytic, polarised (pin 1 is +), any value, 50 V class"
+description = "Honor Elec RVT1H470M0810, 47 uF 50 V +/-20 % 105 C SMD aluminium electrolytic, 8 mm diameter x 10.2 mm, polarised (pin 1 is +); JLCPCB C2895739"
+mpn = "RVT1H470M0810"
 kicad_symbol = "Device:C_Polarized"
 kicad_footprint = "Capacitor_SMD:CP_Elec_8x10"
 
@@ -21,3 +22,9 @@ electrical_type = "passive"
 name = "p2"
 number = "2"
 electrical_type = "passive"
+
+[provenance]
+source = "authored"
+datasheet_url = "https://wmsc.lcsc.com/wmsc/upload/file/pdf/v2/lcsc/2109290630_Honor-Elec-RVT1H470M0810_C2895739.pdf"
+reviewed_by = "Steve Munene"
+reviewed_at = "2026-10-28"
