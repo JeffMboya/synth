@@ -79,6 +79,7 @@ pub mod cem;
 pub mod floorplan;
 pub mod modules;
 pub mod outline_packer;
+mod repeats;
 pub mod score;
 
 use serde::{Deserialize, Serialize};
@@ -5065,6 +5066,273 @@ fn distant_support_parts(board: &Board, placement: &Placement) -> Vec<DistantSup
     found
 }
 
+/// A part of a repeated circuit that sits where its counterpart in the first
+/// copy would not put it.
+struct MismatchedCopy {
+    refdes: String,
+    reference_refdes: String,
+    reference_anchor: String,
+    anchor: String,
+    mm: f64,
+    rotation_differs: bool,
+    suggested: (f64, f64),
+    suggested_rotation: Rotation,
+}
+
+/// How far a part may sit from where the first copy's layout would put it
+/// before two copies of one circuit no longer read as copies.
+const REPEAT_TOLERANCE_MM: f64 = 1.0;
+
+/// Parts of repeated circuits whose position, relative to their copy's anchor,
+/// differs from the first copy's. Copies whose anchors face different ways are
+/// not compared: the offsets would have to be turned, and a wrong turn would be
+/// worse advice than none.
+fn mismatched_repeats(board: &Board, placement: &Placement) -> Vec<MismatchedCopy> {
+    let by_id: std::collections::HashMap<ComponentId, &ComponentPlacement> =
+        placement.components.iter().map(|p| (p.id, p)).collect();
+    let mut found = Vec::new();
+    for group in repeats::find_repeated_circuits(board) {
+        let reference = &group[0];
+        let Some(ref_anchor) = by_id.get(&reference.anchor) else {
+            continue;
+        };
+        for copy in &group[1..] {
+            let Some(anchor) = by_id.get(&copy.anchor) else {
+                continue;
+            };
+            if anchor.rotation != ref_anchor.rotation {
+                continue;
+            }
+            for (id, label) in &copy.parts {
+                if *id == copy.anchor {
+                    continue;
+                }
+                let Some(ref_part) = reference.part_with_label(*label) else {
+                    continue;
+                };
+                if copy.part_with_label(*label) != Some(*id) {
+                    continue;
+                }
+                let (Some(here), Some(there)) = (by_id.get(id), by_id.get(&ref_part)) else {
+                    continue;
+                };
+                let want = Point::new(
+                    anchor.center.x_nm + (there.center.x_nm - ref_anchor.center.x_nm),
+                    anchor.center.y_nm + (there.center.y_nm - ref_anchor.center.y_nm),
+                );
+                let mm = synth_geometry::nm_to_mm(want.x_nm - here.center.x_nm)
+                    .hypot(synth_geometry::nm_to_mm(want.y_nm - here.center.y_nm));
+                let rotation_differs = here.rotation != there.rotation;
+                if mm > REPEAT_TOLERANCE_MM || rotation_differs {
+                    let name = |c: ComponentId| {
+                        board
+                            .component(c)
+                            .map_or_else(|| format!("#{}", c.0), |c| c.refdes.clone())
+                    };
+                    found.push(MismatchedCopy {
+                        refdes: name(*id),
+                        reference_refdes: name(ref_part),
+                        reference_anchor: name(reference.anchor),
+                        anchor: name(copy.anchor),
+                        mm,
+                        rotation_differs,
+                        suggested: (
+                            synth_geometry::nm_to_mm(want.x_nm),
+                            synth_geometry::nm_to_mm(want.y_nm),
+                        ),
+                        suggested_rotation: there.rotation,
+                    });
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The most mismatched-copy warnings one review lists; the rest are counted.
+const MAX_REPEAT_WARNINGS: usize = 6;
+
+/// The most far-support-part warnings one review lists; the rest are counted.
+const MAX_SUPPORT_PART_WARNINGS: usize = 8;
+
+/// Farthest a recognized support part may sit from the anchor pad it is bound
+/// to, centre to pad, by what it does. A decoupling capacitor loses its job
+/// as the loop to its pin grows, a load capacitor changes the oscillator, and
+/// a pull-up or a filter resistor only has to be near enough to route.
+///
+/// A dense anchor (see [`DENSE_PART_PINS`]) keeps a wider ring free for its pin
+/// escape, calibrated against routing on the reference boards
+/// ([`DENSE_PART_RING_MM`]), so a support part cannot sit as close to it. The
+/// limit allows for that ring, or the warning would ask for what the placer
+/// cannot give.
+fn support_part_limit_mm(role: synth_ir::MemberRole, anchor_is_dense: bool) -> f64 {
+    use synth_ir::MemberRole::{
+        DecouplingCap, DividerPartner, EsdDiode, I2cPullUp, LoadCap, OrphanRailCap, PullUp,
+        RailCap, ResetNetwork, RfMatchElement, SeriesElement, SeriesLimit, SignalSeries,
+    };
+    let base = match role {
+        DecouplingCap => 4.0,
+        LoadCap | EsdDiode | RfMatchElement | RailCap => 6.0,
+        DividerPartner => 8.0,
+        ResetNetwork | PullUp | I2cPullUp | SeriesElement | SeriesLimit | SignalSeries => 10.0,
+        OrphanRailCap => 12.0,
+    };
+    if anchor_is_dense {
+        base + DENSE_PART_RING_MM / 2.0 + 0.5
+    } else {
+        base
+    }
+}
+
+/// A support part that is farther from the pad it serves than its role allows.
+struct FarSupportPart {
+    refdes: String,
+    anchor: String,
+    pin: u32,
+    /// The anchor pin's name, as a `near: <part>.<pin>` hint spells it.
+    pin_name: String,
+    role: synth_ir::MemberRole,
+    mm: f64,
+    limit_mm: f64,
+}
+
+/// Every member of a recognized functional cluster that sits farther from its
+/// anchor pad than [`support_part_limit_mm`] allows. The cluster pass names
+/// the member's role and the anchor pin it is bound to, so the rule is stated
+/// by role and holds for any board; it names no part. A crystal or a reset
+/// button is advised separately and is not repeated here.
+fn far_support_parts(board: &Board, placement: &Placement) -> Vec<FarSupportPart> {
+    let pad_offsets = build_pad_offset_lookup(board);
+    let by_id: std::collections::HashMap<ComponentId, &ComponentPlacement> =
+        placement.components.iter().map(|p| (p.id, p)).collect();
+    let mut found = Vec::new();
+    for cluster in synth_ir::recognize_clusters(board) {
+        let Some(anchor) = board.component(cluster.anchor) else {
+            continue;
+        };
+        let Some(anchor_placed) = by_id.get(&cluster.anchor) else {
+            continue;
+        };
+        for member in &cluster.members {
+            let Some(part) = board.component(member.component) else {
+                continue;
+            };
+            if matches!(part.kind.as_str(), "switch" | "crystal") {
+                continue;
+            }
+            let Some(member_placed) = by_id.get(&member.component) else {
+                continue;
+            };
+            let pin = member.binding.anchor_pin.0;
+            let offset = pad_offsets
+                .lookup(cluster.anchor, pin as usize)
+                .unwrap_or((0, 0));
+            let pad = apply_rotation(**anchor_placed, offset);
+            let dx = synth_geometry::nm_to_mm(member_placed.center.x_nm - pad.x_nm);
+            let dy = synth_geometry::nm_to_mm(member_placed.center.y_nm - pad.y_nm);
+            let mm = dx.hypot(dy);
+            let limit_mm = support_part_limit_mm(member.role, is_dense_part(board, cluster.anchor));
+            if mm > limit_mm {
+                let pin_name = anchor
+                    .part
+                    .as_ref()
+                    .and_then(|p| p.pins.get(pin as usize))
+                    .map_or_else(|| pin.to_string(), |p| p.name.clone());
+                found.push(FarSupportPart {
+                    refdes: part.refdes.clone(),
+                    anchor: anchor.refdes.clone(),
+                    pin,
+                    pin_name,
+                    role: member.role,
+                    mm,
+                    limit_mm,
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Farthest a test point may sit from the nearest pad on its net, centre to pad.
+/// A probe point that is not beside what it measures is found by tracing, not by
+/// looking, and a long stub on a fast net changes the signal it probes.
+const TEST_POINT_MAX_MM: f64 = 5.0;
+
+/// A test point that is farther from every pad on its net than
+/// [`TEST_POINT_MAX_MM`].
+struct FarTestPoint {
+    refdes: String,
+    anchor: String,
+    /// The nearest pad's pin name, as a `near: <part>.<pin>` hint spells it.
+    pin_name: String,
+    mm: f64,
+}
+
+/// Every test point whose nearest neighbour on its own net is farther than
+/// [`TEST_POINT_MAX_MM`]. Stated by kind and connectivity, so it names no part.
+/// Mounting holes and fiducials carry no net and are not test points.
+fn far_test_points(board: &Board, placement: &Placement) -> Vec<FarTestPoint> {
+    let pad_offsets = build_pad_offset_lookup(board);
+    let by_id: std::collections::HashMap<ComponentId, &ComponentPlacement> =
+        placement.components.iter().map(|p| (p.id, p)).collect();
+    let mut found = Vec::new();
+    for net in &board.nets {
+        for probe in net.endpoints.iter().filter(|e| {
+            board
+                .component(e.component)
+                .is_some_and(|c| c.kind == "testpoint")
+        }) {
+            let Some(probe_placed) = by_id.get(&probe.component) else {
+                continue;
+            };
+            let mut nearest: Option<(f64, &synth_ir::NetEndpoint)> = None;
+            for other in net.endpoints.iter().filter(|e| {
+                board
+                    .component(e.component)
+                    .is_some_and(|c| c.kind != "testpoint")
+            }) {
+                let Some(placed) = by_id.get(&other.component) else {
+                    continue;
+                };
+                let offset = pad_offsets
+                    .lookup(other.component, other.pin.0 as usize)
+                    .unwrap_or((0, 0));
+                let pad = apply_rotation(**placed, offset);
+                let mm = synth_geometry::nm_to_mm(probe_placed.center.x_nm - pad.x_nm).hypot(
+                    synth_geometry::nm_to_mm(probe_placed.center.y_nm - pad.y_nm),
+                );
+                if nearest.is_none_or(|(best, _)| mm < best) {
+                    nearest = Some((mm, other));
+                }
+            }
+            let Some((mm, endpoint)) = nearest else {
+                continue;
+            };
+            if mm <= TEST_POINT_MAX_MM {
+                continue;
+            }
+            let (Some(probe_part), Some(anchor)) = (
+                board.component(probe.component),
+                board.component(endpoint.component),
+            ) else {
+                continue;
+            };
+            let pin_name = anchor
+                .part
+                .as_ref()
+                .and_then(|p| p.pins.get(endpoint.pin.0 as usize))
+                .map_or_else(|| endpoint.pin.0.to_string(), |p| p.name.clone());
+            found.push(FarTestPoint {
+                refdes: probe_part.refdes.clone(),
+                anchor: anchor.refdes.clone(),
+                pin_name,
+                mm,
+            });
+        }
+    }
+    found
+}
+
 // Area-ratio math in the body casts nanometer integers to f64.
 // Board envelopes stay far below 2^53 nm, so the cast is exact for
 // every representable board; the allow documents that bound.
@@ -5556,6 +5824,106 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
                 ),
             });
         }
+    }
+
+    // A support part belongs beside the pad it serves. Advice, not a visual
+    // review failure, as for a far reset button: the named `near:` hint is
+    // what makes the placer put it there.
+    // The worst few only: on a board the placer has not tuned, most support
+    // parts can be flagged, and a list that long hides the one to fix first.
+    let mut far_parts = far_support_parts(board, placement);
+    far_parts.sort_by(|a, b| (b.mm - b.limit_mm).total_cmp(&(a.mm - a.limit_mm)));
+    let omitted = far_parts.len().saturating_sub(MAX_SUPPORT_PART_WARNINGS);
+    far_parts.truncate(MAX_SUPPORT_PART_WARNINGS);
+    for far in far_parts {
+        functional_warnings.push(format!(
+            "{} ({:?}) is {:.0} mm from {} pin {} ({}), which it serves; keep it within {:.0} mm",
+            far.refdes, far.role, far.mm, far.anchor, far.pin_name, far.pin, far.limit_mm
+        ));
+        recommended_actions.push(PlacementRecommendation {
+            action: "place_support_part_near".into(),
+            refdes: far.refdes.clone(),
+            relative_to: Some(far.anchor.clone()),
+            suggested_x_mm: None,
+            suggested_y_mm: None,
+            suggested_rotation_deg: None,
+            rationale: format!(
+                "add a hard `near: {}.{}` placement hint to {}: it places the part at that pad",
+                far.anchor, far.pin_name, far.refdes
+            ),
+        });
+    }
+    if omitted > 0 {
+        functional_warnings.push(format!(
+            "{omitted} more support part(s) are also farther from the pad they serve than their role allows; fix the ones above first"
+        ));
+    }
+
+    // A test point belongs beside the pad it probes.
+    let mut far_probes = far_test_points(board, placement);
+    far_probes.sort_by(|a, b| b.mm.total_cmp(&a.mm));
+    for far in far_probes {
+        functional_warnings.push(format!(
+            "{} is {:.0} mm from the nearest pad on its net ({} pin {}); keep a test point within {:.0} mm of what it probes",
+            far.refdes, far.mm, far.anchor, far.pin_name, TEST_POINT_MAX_MM
+        ));
+        recommended_actions.push(PlacementRecommendation {
+            action: "place_test_point_near".into(),
+            refdes: far.refdes.clone(),
+            relative_to: Some(far.anchor.clone()),
+            suggested_x_mm: None,
+            suggested_y_mm: None,
+            suggested_rotation_deg: None,
+            rationale: format!(
+                "add a hard `near: {}.{}` placement hint to {}: it places the test point at that pad",
+                far.anchor, far.pin_name, far.refdes
+            ),
+        });
+    }
+
+    // Copies of one circuit read as copies only when laid out alike. Compared
+    // by structure, not by name; the first copy is the reference. The advice
+    // carries the coordinates that would make a part match, so the agent can
+    // pin them in its placement sidecar.
+    let mut mismatched = mismatched_repeats(board, placement);
+    mismatched.sort_by(|a, b| b.mm.total_cmp(&a.mm));
+    let omitted_copies = mismatched.len().saturating_sub(MAX_REPEAT_WARNINGS);
+    mismatched.truncate(MAX_REPEAT_WARNINGS);
+    for m in mismatched {
+        functional_warnings.push(format!(
+            "{} is laid out differently from {} in the identical circuit round {}: {:.1} mm{} from where {} puts it relative to {}; place it at ({:.1}, {:.1}) mm",
+            m.refdes,
+            m.reference_refdes,
+            m.reference_anchor,
+            m.mm,
+            if m.rotation_differs { " and turned differently" } else { "" },
+            m.reference_refdes,
+            m.anchor,
+            m.suggested.0,
+            m.suggested.1
+        ));
+        recommended_actions.push(PlacementRecommendation {
+            action: "match_repeated_circuit".into(),
+            refdes: m.refdes.clone(),
+            relative_to: Some(m.anchor.clone()),
+            suggested_x_mm: Some(m.suggested.0),
+            suggested_y_mm: Some(m.suggested.1),
+            suggested_rotation_deg: Some(match m.suggested_rotation {
+                Rotation::Zero => 0,
+                Rotation::Ninety => 90,
+                Rotation::OneEighty => 180,
+                Rotation::TwoSeventy => 270,
+            }),
+            rationale: format!(
+                "pin {} at the same offset from {} as {} is from {}",
+                m.refdes, m.anchor, m.reference_refdes, m.reference_anchor
+            ),
+        });
+    }
+    if omitted_copies > 0 {
+        functional_warnings.push(format!(
+            "{omitted_copies} more part(s) of repeated circuits are also laid out differently from the first copy"
+        ));
     }
 
     // Human-style first-pass review of dense connector composition. A
@@ -9331,6 +9699,287 @@ board "features_only" {
         );
     }
 
+    /// A support part is judged by the role the cluster pass gives it and the
+    /// pad it is bound to, so a decoupling capacitor moved far from its IC is
+    /// advised against, and one beside it is not. The rule names no part.
+    #[test]
+    fn a_support_part_far_from_the_pad_it_serves_is_advised_against() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let mut placement = place(&board).expect("place");
+        let cluster = synth_ir::recognize_clusters(&board)
+            .into_iter()
+            .find(|c| {
+                c.members
+                    .iter()
+                    .any(|m| m.role == synth_ir::MemberRole::DecouplingCap)
+            })
+            .expect("sensor_logger has an IC with decoupling");
+        let cap = cluster
+            .members
+            .iter()
+            .find(|m| m.role == synth_ir::MemberRole::DecouplingCap)
+            .expect("a decoupling capacitor");
+        let cap_refdes = board
+            .component(cap.component)
+            .expect("component")
+            .refdes
+            .clone();
+        let anchor = board
+            .component(cluster.anchor)
+            .expect("anchor")
+            .refdes
+            .clone();
+
+        // Beside the pad it serves it is not reported.
+        let anchor_placed = *placement
+            .components
+            .iter()
+            .find(|p| p.id == cluster.anchor)
+            .expect("anchor placed");
+        let pad = apply_rotation(
+            anchor_placed,
+            build_pad_offset_lookup(&board)
+                .lookup(cluster.anchor, cap.binding.anchor_pin.0 as usize)
+                .unwrap_or((0, 0)),
+        );
+        let anchor_center = anchor_placed.center;
+        move_part(
+            &mut placement,
+            &board,
+            &cap_refdes,
+            synth_geometry::nm_to_mm(pad.x_nm) + 2.0,
+            synth_geometry::nm_to_mm(pad.y_nm),
+        );
+        assert!(
+            !far_support_parts(&board, &placement)
+                .iter()
+                .any(|f| f.refdes == cap_refdes),
+            "{cap_refdes} is 2 mm from {anchor} pin {} and must not be reported",
+            cap.binding.anchor_pin.0
+        );
+
+        // Moved 40 mm away it is, with a named fix.
+        move_part(
+            &mut placement,
+            &board,
+            &cap_refdes,
+            synth_geometry::nm_to_mm(anchor_center.x_nm) + 40.0,
+            synth_geometry::nm_to_mm(anchor_center.y_nm),
+        );
+        let far = far_support_parts(&board, &placement);
+        assert!(
+            far.iter().any(|f| f.refdes == cap_refdes && f.mm > 30.0),
+            "{cap_refdes} is 40 mm from {anchor} and must be reported"
+        );
+        let desc = describe_placement(&board, &placement);
+        assert!(desc
+            .functional_warnings
+            .iter()
+            .any(|w| w.starts_with(&format!("{cap_refdes} ("))));
+        assert!(desc.visual_review.recommended_actions.iter().any(|a| {
+            a.action == "place_support_part_near"
+                && a.refdes == cap_refdes
+                && a.rationale.contains(&format!("near: {anchor}."))
+        }));
+        // It is advice: it is a functional warning and a recommended action,
+        // never one of the visual-review findings that fail a placement.
+        assert!(
+            !desc
+                .visual_review
+                .findings
+                .iter()
+                .any(|f| f.starts_with(&format!("{cap_refdes} ("))),
+            "{:?}",
+            desc.visual_review.findings
+        );
+    }
+
+    /// A board the placer has not tuned can flag most of its support parts; the
+    /// review lists the worst few and counts the rest.
+    #[test]
+    fn the_support_part_warnings_are_capped_and_the_rest_counted() {
+        let board = load_board("../../fixtures/designs/feather_m4_express.synth");
+        let placement = place(&board).expect("place");
+        let total = far_support_parts(&board, &placement).len();
+        let desc = describe_placement(&board, &placement);
+        let listed = desc
+            .functional_warnings
+            .iter()
+            .filter(|w| w.contains("which it serves"))
+            .count();
+        assert!(listed <= MAX_SUPPORT_PART_WARNINGS, "{listed} listed");
+        if total > MAX_SUPPORT_PART_WARNINGS {
+            assert!(desc.functional_warnings.iter().any(|w| {
+                w.starts_with(&format!(
+                    "{} more support part",
+                    total - MAX_SUPPORT_PART_WARNINGS
+                ))
+            }));
+        }
+    }
+
+    /// The fix the advice names works: a hard `near: <part>.<pin>` hint on a
+    /// flagged support part moves it nearer the pad it names, so an agent that
+    /// follows the warning gets closer to clearing it. How near depends on the
+    /// anchor's courtyard and the dense-part ring, which the placer keeps free.
+    #[test]
+    fn following_the_named_near_hint_brings_the_part_nearer_its_pad() {
+        let board = load_board("../../examples/sensor_logger/sensor_logger.synth");
+        let placement = place(&board).expect("place");
+        let far = far_support_parts(&board, &placement);
+        // The farthest one has the most room to improve.
+        let target = far
+            .iter()
+            .filter(|f| matches!(f.role, synth_ir::MemberRole::DecouplingCap))
+            .max_by(|a, b| a.mm.total_cmp(&b.mm))
+            .expect("sensor_logger has a decoupling capacitor that is too far");
+        let hinted = board_with_external_hints(
+            &board,
+            &[ExternalHint {
+                component: Some(target.refdes.clone()),
+                near: Some(format!("{}.{}", target.anchor, target.pin_name)),
+                priority: Some("hard".into()),
+                ..ExternalHint::default()
+            }],
+        );
+        let after = place(&hinted).expect("place with the hint");
+        let still = far_support_parts(&hinted, &after)
+            .into_iter()
+            .find(|f| f.refdes == target.refdes);
+        // Either it is no longer flagged, or it is flagged at a clearly smaller
+        // distance than before the hint.
+        assert!(
+            still.as_ref().is_none_or(|f| f.mm + 1.0 < target.mm),
+            "{} was {:.1} mm from {}.{} and is {:?} mm after the hint",
+            target.refdes,
+            target.mm,
+            target.anchor,
+            target.pin_name,
+            still.map(|f| f.mm)
+        );
+    }
+
+    /// Two copies of one circuit and one that only looks similar: a connector,
+    /// a series resistor and a filter capacitor to ground, twice, and a third
+    /// whose resistor and capacitor are wired the other way round.
+    fn repeated_circuits_board() -> Board {
+        board_from_source(
+            r#"board "rep" { layers 2
+                power "GND" 0v
+                component JA: connector "jst_ph_2pin"
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component JB: connector "jst_ph_2pin"
+                component RB: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                component JC: connector "jst_ph_2pin"
+                component RC: resistor "r_generic_0603" value "1k"
+                component CC: capacitor "c_generic_0603" value "10nF"
+                net "SIG_A" { JA.p1 RA.p1 }
+                net "MID_A" { RA.p2 CA.p1 }
+                net "SIG_B" { JB.p1 RB.p1 }
+                net "MID_B" { RB.p2 CB.p1 }
+                net "SIG_C" { JC.p1 CC.p1 }
+                net "MID_C" { CC.p2 RC.p1 }
+                net "GND" { CA.p2 CB.p2 RC.p2 JA.p2 JB.p2 JC.p2 }
+            }"#,
+            "rep.synth",
+        )
+    }
+
+    #[test]
+    fn identical_circuits_are_found_by_structure_and_a_lookalike_is_not_grouped() {
+        let board = repeated_circuits_board();
+        let groups = repeats::find_repeated_circuits(&board);
+        assert_eq!(groups.len(), 1, "one group of copies");
+        let names: Vec<std::collections::BTreeSet<String>> = groups[0]
+            .iter()
+            .map(|island| {
+                island
+                    .parts
+                    .iter()
+                    .map(|(id, _)| board.component(*id).expect("part").refdes.clone())
+                    .collect()
+            })
+            .collect();
+        let set = |a: &str, b: &str, c: &str| -> std::collections::BTreeSet<String> {
+            [a, b, c].iter().map(|s| (*s).to_string()).collect()
+        };
+        assert!(names.contains(&set("JA", "RA", "CA")), "{names:?}");
+        assert!(names.contains(&set("JB", "RB", "CB")), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("JC")), "{names:?}");
+    }
+
+    #[test]
+    fn copies_laid_out_alike_are_not_reported_and_a_moved_part_is_with_its_coordinates() {
+        let board = repeated_circuits_board();
+        let mut placement = place(&board).expect("place");
+        for (refdes, x, y) in [
+            ("JA", 10.0, 10.0),
+            ("RA", 16.0, 10.0),
+            ("CA", 16.0, 16.0),
+            ("JB", 10.0, 40.0),
+            ("RB", 16.0, 40.0),
+            ("CB", 16.0, 46.0),
+        ] {
+            move_part(&mut placement, &board, refdes, x, y);
+        }
+        // Turn every part of the second copy as its counterpart in the first, so
+        // the copies are compared on position, not on how the placer happened to
+        // turn each part.
+        for (copy, first) in [("JB", "JA"), ("RB", "RA"), ("CB", "CA")] {
+            let rotation = placement
+                .component_by_refdes(&board, first)
+                .expect(first)
+                .rotation;
+            for p in &mut placement.components {
+                if board.component(p.id).is_some_and(|c| c.refdes == copy) {
+                    p.rotation = rotation;
+                }
+            }
+        }
+        assert!(
+            mismatched_repeats(&board, &placement).is_empty(),
+            "alike copies must not be reported"
+        );
+
+        // Move one part of the second copy 6 mm.
+        move_part(&mut placement, &board, "RB", 22.0, 40.0);
+        let off = mismatched_repeats(&board, &placement);
+        let rb = off.iter().find(|m| m.refdes == "RB").expect("RB reported");
+        assert_eq!(rb.reference_refdes, "RA");
+        assert!((rb.mm - 6.0).abs() < 0.2, "{}", rb.mm);
+        assert!((rb.suggested.0 - 16.0).abs() < 0.2 && (rb.suggested.1 - 40.0).abs() < 0.2);
+
+        let desc = describe_placement(&board, &placement);
+        assert!(desc
+            .functional_warnings
+            .iter()
+            .any(|w| w.starts_with("RB is laid out differently from RA")));
+        assert!(desc.visual_review.recommended_actions.iter().any(|a| {
+            a.action == "match_repeated_circuit"
+                && a.refdes == "RB"
+                && a.suggested_x_mm.is_some_and(|x| (x - 16.0).abs() < 0.2)
+        }));
+    }
+
+    #[test]
+    fn support_part_limits_are_tighter_for_decoupling_than_for_pull_ups() {
+        use synth_ir::MemberRole::{DecouplingCap, LoadCap, PullUp};
+        for dense in [false, true] {
+            assert!(
+                support_part_limit_mm(DecouplingCap, dense) < support_part_limit_mm(LoadCap, dense)
+            );
+            assert!(support_part_limit_mm(LoadCap, dense) < support_part_limit_mm(PullUp, dense));
+        }
+        // A dense anchor keeps its pin-escape ring, so its support parts get
+        // room for it.
+        assert!(
+            support_part_limit_mm(DecouplingCap, true)
+                > support_part_limit_mm(DecouplingCap, false)
+        );
+    }
+
     /// An IC keeps its decoupling caps beside it: squeezing the board does not
     /// leave them further away than they started.
     #[test]
@@ -10419,6 +11068,53 @@ board "features_only" {
                 "{kind}: the outline keeps the board-feature rim"
             );
         }
+    }
+
+    /// A test point on a net is advised toward the pad it probes, and following
+    /// the named hint clears the warning.
+    #[test]
+    fn a_test_point_far_from_its_net_is_advised_toward_it() {
+        let board = load_board_replacing(
+            FEATHER,
+            &[
+                (
+                    "component J2:",
+                    "component TP1: testpoint \"testpoint_pad_1_5\"\n  component J2:",
+                ),
+                (
+                    "connect J1.vbus -> C1.p1",
+                    "connect J1.vbus -> C1.p1\n  connect C1.p1 -> TP1.p1",
+                ),
+            ],
+        );
+        let mut placement = place(&board).expect("place");
+        let c1 = centre_of(&board, &placement, "C1");
+        move_part(
+            &mut placement,
+            &board,
+            "TP1",
+            synth_geometry::nm_to_mm(c1.x_nm) + 2.0,
+            synth_geometry::nm_to_mm(c1.y_nm),
+        );
+        assert!(
+            far_test_points(&board, &placement).is_empty(),
+            "a test point 2 mm from its net is not reported"
+        );
+        move_part(
+            &mut placement,
+            &board,
+            "TP1",
+            synth_geometry::nm_to_mm(c1.x_nm) + 40.0,
+            synth_geometry::nm_to_mm(c1.y_nm),
+        );
+        let far = far_test_points(&board, &placement);
+        assert!(far.iter().any(|f| f.refdes == "TP1" && f.mm > 5.0));
+        let desc = describe_placement(&board, &placement);
+        assert!(desc
+            .visual_review
+            .recommended_actions
+            .iter()
+            .any(|a| a.action == "place_test_point_near" && a.refdes == "TP1"));
     }
 
     #[test]
