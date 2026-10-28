@@ -4942,16 +4942,24 @@ fn select_placement_for_routing(
         &candidates,
         budget,
         requested,
-        |candidate, index, limit| {
-            let Some((cost, report)) = evaluate_candidate(
-                board, sidecars, engine, options, best_of, candidate, index, limit,
-            )?
-            else {
-                eprintln!(
-                    "placement feedback: {} is unavailable; keeping the export's own placement",
-                    engine.as_str()
-                );
-                return Ok::<_, anyhow::Error>(None);
+        |candidate, index, clock| {
+            let (cost, report) = match evaluate_candidate(
+                board, sidecars, engine, options, best_of, candidate, index, clock,
+            )? {
+                CliAttempt::Routed(cost, report) => (cost, report),
+                CliAttempt::NoTime => {
+                    eprintln!(
+                        "placement feedback: candidate {index} used its time preparing; skipped"
+                    );
+                    return Ok::<_, anyhow::Error>(synth_router::search_budget::Attempt::NoTime);
+                }
+                CliAttempt::EngineUnavailable => {
+                    eprintln!(
+                        "placement feedback: {} is unavailable; keeping the export's own placement",
+                        engine.as_str()
+                    );
+                    return Ok(synth_router::search_budget::Attempt::EngineUnavailable);
+                }
             };
             eprintln!(
                 "placement feedback: candidate {index} -> {} (open nets {}, blocking {}, vias {}, \
@@ -4962,10 +4970,12 @@ fn select_placement_for_routing(
                 report.statistics.vias,
                 report.statistics.segments,
             );
-            Ok(Some(synth_router::search_budget::Evaluated {
-                cost,
-                order: report.recommended_routing_order.clone(),
-            }))
+            Ok(synth_router::search_budget::Attempt::Routed(
+                synth_router::search_budget::Evaluated {
+                    cost,
+                    order: report.recommended_routing_order.clone(),
+                },
+            ))
         },
     )?
     else {
@@ -5009,10 +5019,15 @@ fn select_placement_for_routing(
                             best_of,
                             &candidate,
                             usize::MAX,
-                            limit,
+                            budget.run_clock(limit),
                         )?;
                         budget.note_run(began.elapsed());
-                        if let Some((cost, report)) = evaluated {
+                        if matches!(evaluated, CliAttempt::NoTime) {
+                            eprintln!(
+                                "placement feedback: the hardest-net grouping run used its time preparing; skipped"
+                            );
+                        }
+                        if let CliAttempt::Routed(cost, report) = evaluated {
                             eprintln!(
                                 "placement feedback: hardest-net grouping -> {cost:?} \
                                  (was {best_cost:?})"
@@ -5048,6 +5063,13 @@ fn select_placement_for_routing(
 
 /// Export `candidate` to a scratch directory and route it, returning the route
 /// cost and report. `None` when the engine is unavailable.
+/// How one candidate's routing ended, with the report the caller prints from.
+enum CliAttempt {
+    Routed(CandidateCost, Box<synth_router::RouteReport>),
+    EngineUnavailable,
+    NoTime,
+}
+
 fn evaluate_candidate(
     board: &synth_ir::Board,
     sidecars: &synth_kicad::Sidecars,
@@ -5056,19 +5078,20 @@ fn evaluate_candidate(
     best_of: bool,
     candidate: &synth_place::Placement,
     index: usize,
-    limit: std::time::Duration,
-) -> anyhow::Result<Option<(CandidateCost, synth_router::RouteReport)>> {
-    // The limit covers the export as well as the routing, so the clock starts
-    // here and the router gets what the export left of it.
-    let clock = synth_router::search_budget::RunClock::start(limit);
+    clock: synth_router::search_budget::RunClock,
+) -> anyhow::Result<CliAttempt> {
+    // The clock started before this export, so the router gets what the export
+    // left of the run's limit, and is not started when too little is left.
     let scratch =
         std::env::temp_dir().join(format!("synth-place-route-{}-{index}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     let result = synth_kicad::export_with_placement(board, &scratch, sidecars, candidate)
         .map_err(|e| anyhow::anyhow!("candidate export failed: {e}"))?;
-    let capped = options
-        .clone()
-        .with_timeout(Some(clock.router_timeout_secs()));
+    let Some(router_secs) = clock.router_timeout_secs() else {
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Ok(CliAttempt::NoTime);
+    };
+    let capped = options.clone().with_timeout(Some(router_secs));
     let request = build_route_request(board, &result, engine.into(), &capped, &[])?;
     // Best-of-N per candidate when asked: the winner is the best engine's
     // attempt, judged by the same independent checks.
@@ -5081,9 +5104,9 @@ fn evaluate_candidate(
     };
     let _ = std::fs::remove_dir_all(&scratch);
     if report.state == synth_router::RouteState::RouterUnavailable {
-        return Ok(None);
+        return Ok(CliAttempt::EngineUnavailable);
     }
-    Ok(Some((report.layout_cost(), report)))
+    Ok(CliAttempt::Routed(report.layout_cost(), Box::new(report)))
 }
 
 /// Synth's rule engine run on the **routed** board, read back from disk.

@@ -87,6 +87,12 @@ impl SearchBudget {
         self.total.saturating_sub(self.elapsed())
     }
 
+    /// The clock for a run granted `limit`, started now.
+    #[must_use]
+    pub fn run_clock(&self, limit: Duration) -> RunClock {
+        RunClock::start(limit, self.min_run)
+    }
+
     /// Records how long a run took, so the time the final route will need is
     /// kept back from the next one.
     pub fn note_run(&mut self, took: Duration) {
@@ -127,20 +133,24 @@ impl SearchBudget {
 /// The clock of one run that is granted a wall-clock limit: it starts when the
 /// limit is granted, before the run's export and other preparation, and the
 /// router is given what is left of the limit when it starts, so preparation time
-/// plus routing time cannot exceed the limit.
+/// plus routing time cannot exceed the limit. A run left with less than the
+/// minimum run is not started.
 #[derive(Debug, Clone, Copy)]
 pub struct RunClock {
     started: Instant,
     limit: Duration,
+    min_run: Duration,
 }
 
 impl RunClock {
-    /// Starts the clock for a run granted `limit`.
+    /// Starts the clock for a run granted `limit`, which the router needs at
+    /// least `min_run` of.
     #[must_use]
-    pub fn start(limit: Duration) -> Self {
+    pub fn start(limit: Duration, min_run: Duration) -> Self {
         Self {
             started: Instant::now(),
             limit,
+            min_run,
         }
     }
 
@@ -151,10 +161,39 @@ impl RunClock {
     }
 
     /// The router's wall-clock limit in whole seconds: what is left of the run's
-    /// limit, and never less than the one second the router can be given.
+    /// limit. `None` when that is less than the minimum run, so the router is not
+    /// started: a run given less than [`MIN_RUN_SECS`] cannot finish, and starting
+    /// it would take time the budget no longer has.
     #[must_use]
-    pub fn router_timeout_secs(&self) -> u64 {
-        self.left().as_secs().max(1)
+    pub fn router_timeout_secs(&self) -> Option<u64> {
+        let left = self.left();
+        (left >= self.min_run).then_some(left.as_secs())
+    }
+}
+
+/// How one candidate's evaluation ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attempt<C> {
+    /// The candidate was routed.
+    Routed(Evaluated<C>),
+    /// The routing engine is unavailable, which ends the search.
+    EngineUnavailable,
+    /// Preparing the candidate used the time its run was granted, so the router
+    /// was not started and the candidate is skipped.
+    NoTime,
+}
+
+impl<C> Attempt<C> {
+    /// Maps what a routed attempt carries, leaving the other two as they are.
+    pub fn map<D>(self, f: impl FnOnce(C) -> D) -> Attempt<D> {
+        match self {
+            Self::Routed(evaluated) => Attempt::Routed(Evaluated {
+                cost: f(evaluated.cost),
+                order: evaluated.order,
+            }),
+            Self::EngineUnavailable => Attempt::EngineUnavailable,
+            Self::NoTime => Attempt::NoTime,
+        }
     }
 }
 
@@ -182,9 +221,11 @@ pub struct Search<T, C> {
 /// Routes `candidates` in order, each under the budget, and keeps the cheapest.
 /// A tie keeps the earlier candidate, so the choice is deterministic.
 ///
-/// `evaluate` routes one candidate with the wall-clock limit it is given and
-/// returns `None` when the engine is unavailable, which ends the search with
-/// `Ok(None)`: the caller keeps its own placement.
+/// `evaluate` routes one candidate under the clock it is given, which started
+/// before the candidate's export. It answers with an [`Attempt`]: an unavailable
+/// engine ends the search with `Ok(None)`, and the caller keeps its own
+/// placement; a candidate whose preparation used up its time is skipped and the
+/// search goes on, flagged as cut short.
 ///
 /// # Errors
 /// Whatever `evaluate` returns.
@@ -192,7 +233,7 @@ pub fn route_candidates<T: Clone, C: Ord, E>(
     candidates: &[T],
     budget: &mut SearchBudget,
     requested: Duration,
-    mut evaluate: impl FnMut(&T, usize, Duration) -> Result<Option<Evaluated<C>>, E>,
+    mut evaluate: impl FnMut(&T, usize, RunClock) -> Result<Attempt<C>, E>,
 ) -> Result<Option<Search<T, C>>, E> {
     let mut best: Option<(C, T, Vec<String>)> = None;
     let mut routed = 0;
@@ -203,10 +244,15 @@ pub fn route_candidates<T: Clone, C: Ord, E>(
             break;
         };
         let began = Instant::now();
-        let evaluated = evaluate(candidate, index, limit)?;
+        let evaluated = evaluate(candidate, index, budget.run_clock(limit))?;
         budget.note_run(began.elapsed());
-        let Some(Evaluated { cost, order }) = evaluated else {
-            return Ok(None);
+        let Evaluated { cost, order } = match evaluated {
+            Attempt::Routed(evaluated) => evaluated,
+            Attempt::EngineUnavailable => return Ok(None),
+            Attempt::NoTime => {
+                cut_short = true;
+                continue;
+            }
         };
         routed += 1;
         if best
@@ -254,35 +300,77 @@ mod tests {
     }
 
     /// The router gets what preparation left of the run's limit, not the whole of
-    /// it: the export before the router starts counts against the same limit.
+    /// it, and is not started at all when less than the minimum run is left.
     #[test]
     fn preparation_time_and_routing_time_together_stay_within_the_limit() {
-        let limit = Duration::from_secs(30);
-        let clock = RunClock {
+        let (limit, min_run) = (Duration::from_secs(100), Duration::from_secs(30));
+        let after = |secs: u64| RunClock {
             started: Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .expect("a clock that has run for 10 s"),
+                .checked_sub(Duration::from_secs(secs))
+                .expect("a clock that has run for a while"),
             limit,
+            min_run,
         };
-        let router = clock.router_timeout_secs();
+        // A fresh clock gives the router nearly the whole limit.
+        assert!(RunClock::start(limit, min_run).router_timeout_secs() >= Some(99));
+        // After 40 s of preparation the router gets what is left, so the two add up
+        // to no more than the limit.
+        let router = after(40).router_timeout_secs().expect("time is left");
         assert!(
-            router <= 20,
-            "the router got {router} s after 10 s of preparation"
+            router <= 60,
+            "the router got {router} s after 40 s of preparation"
+        );
+        assert!(Duration::from_secs(40 + router) <= limit);
+        // With less than the minimum run left, or nothing, the router is not started.
+        assert_eq!(
+            after(80).router_timeout_secs(),
+            None,
+            "20 s is under the minimum run"
+        );
+        assert_eq!(
+            after(100).router_timeout_secs(),
+            None,
+            "preparation took it all"
+        );
+        assert_eq!(
+            after(500).router_timeout_secs(),
+            None,
+            "and more than all of it"
+        );
+    }
+
+    /// A candidate whose preparation used up its time is skipped, not routed with
+    /// a second or two, and the search goes on with the next one.
+    #[test]
+    fn a_candidate_whose_preparation_used_its_time_is_skipped_and_the_search_goes_on() {
+        let mut budget =
+            SearchBudget::with_limits(Duration::from_secs(900), Duration::from_secs(10));
+        let search = route_candidates::<_, u32, ()>(
+            &["slow", "fast"],
+            &mut budget,
+            Duration::from_secs(60),
+            |&name, _, _| {
+                Ok(if name == "slow" {
+                    Attempt::NoTime
+                } else {
+                    Attempt::Routed(Evaluated {
+                        cost: 1,
+                        order: Vec::new(),
+                    })
+                })
+            },
+        )
+        .expect("no error")
+        .expect("an engine");
+        assert_eq!(
+            search.routed, 1,
+            "only the candidate that was routed counts"
         );
         assert!(
-            Duration::from_secs(10 + router) <= limit,
-            "preparation plus routing is over the limit"
+            search.cut_short,
+            "a skipped candidate is a truncated search"
         );
-        // A fresh clock gives the router the whole limit; an exhausted one the one
-        // second the router can be given.
-        assert!(RunClock::start(limit).router_timeout_secs() >= 29);
-        let spent = RunClock {
-            started: Instant::now()
-                .checked_sub(Duration::from_secs(40))
-                .expect("a clock that has run for 40 s"),
-            limit,
-        };
-        assert_eq!(spent.router_timeout_secs(), 1);
+        assert_eq!(search.best.expect("the other one").1, "fast");
     }
 
     /// The minimum run applies to the limit a candidate would be given, not only
@@ -373,10 +461,10 @@ mod tests {
             &candidates,
             &mut budget,
             Duration::from_secs(1200),
-            |&candidate, index, limit| {
-                limits.push(limit);
+            |&candidate, index, clock| {
+                limits.push(clock.left());
                 std::thread::sleep(MS(80));
-                Ok(Some(Evaluated {
+                Ok(Attempt::Routed(Evaluated {
                     cost: costs[index],
                     order: vec![format!("net{candidate}")],
                 }))
@@ -412,7 +500,7 @@ mod tests {
             &mut budget,
             Duration::from_secs(10),
             |_, index, _| {
-                Ok(Some(Evaluated {
+                Ok(Attempt::Routed(Evaluated {
                     cost: [2_u32, 1, 1][index],
                     order: Vec::new(),
                 }))
@@ -436,7 +524,7 @@ mod tests {
             &["a", "b"],
             &mut budget,
             Duration::from_secs(10),
-            |_, _, _| Ok(None),
+            |_, _, _| Ok(Attempt::EngineUnavailable),
         )
         .expect("no error");
         assert!(search.is_none());

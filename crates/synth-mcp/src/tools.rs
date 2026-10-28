@@ -2862,11 +2862,8 @@ fn select_placement_by_route(
         &candidates,
         budget,
         requested,
-        |candidate, index, limit| {
-            Ok::<_, String>(
-                evaluate_candidate_mcp(board, sidecars, args, engine, candidate, index, limit)?
-                    .map(|(cost, order)| synth_router::search_budget::Evaluated { cost, order }),
-            )
+        |candidate, index, clock| {
+            evaluate_candidate_mcp(board, sidecars, args, engine, candidate, index, clock)
         },
     )?
     else {
@@ -2897,13 +2894,20 @@ fn select_placement_by_route(
                                 engine,
                                 &candidate,
                                 usize::MAX,
-                                limit,
+                                budget.run_clock(limit),
                             )?;
                             budget.note_run(began.elapsed());
-                            if let Some((cost, _)) = evaluated {
-                                if cost < best_cost {
-                                    best = Some((cost, candidate, order));
+                            match evaluated {
+                                synth_router::search_budget::Attempt::Routed(evaluated) => {
+                                    if evaluated.cost < best_cost {
+                                        best = Some((evaluated.cost, candidate, order));
+                                    }
                                 }
+                                synth_router::search_budget::Attempt::NoTime => {
+                                    hard_net_pass = "skipped_for_budget";
+                                    truncated = true;
+                                }
+                                synth_router::search_budget::Attempt::EngineUnavailable => {}
                             }
                         }
                     }
@@ -2919,8 +2923,8 @@ fn select_placement_by_route(
 }
 
 /// Export `candidate` to a scratch directory and route it, returning the route
-/// cost and the report's recommended net order. `None` when the engine is
-/// unavailable.
+/// cost and the report's recommended net order, or says that the engine is
+/// unavailable or that the export left no time to route.
 fn evaluate_candidate_mcp(
     board: &synth_ir::Board,
     sidecars: &synth_kicad::Sidecars,
@@ -2928,11 +2932,10 @@ fn evaluate_candidate_mcp(
     engine: synth_router::RouterEngine,
     candidate: &synth_place::Placement,
     index: usize,
-    limit: std::time::Duration,
-) -> Result<Option<(RouteCost, Vec<String>)>, String> {
-    // The limit covers the export as well as the routing, so the clock starts
-    // here and the router gets what the export left of it.
-    let clock = synth_router::search_budget::RunClock::start(limit);
+    clock: synth_router::search_budget::RunClock,
+) -> Result<synth_router::search_budget::Attempt<RouteCost>, String> {
+    // The clock started before this export, so the router gets what the export
+    // left of the run's limit, and is not started when too little is left.
     let scratch = std::env::temp_dir().join(format!(
         "synth-mcp-place-route-{}-{index}",
         std::process::id()
@@ -2940,9 +2943,13 @@ fn evaluate_candidate_mcp(
     let _ = std::fs::remove_dir_all(&scratch);
     let res = synth_kicad::export_with_placement(board, &scratch, sidecars, candidate)
         .map_err(|e| format!("candidate export failed: {e}"))?;
+    let Some(router_secs) = clock.router_timeout_secs() else {
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Ok(synth_router::search_budget::Attempt::NoTime);
+    };
     let mut request = routing_request(args, engine);
     request.ground_nets = synth_drc::ground_net_names(board);
-    request.limits = request.limits.with_wall_clock(clock.router_timeout_secs());
+    request.limits = request.limits.with_wall_clock(router_secs);
     request.board_path.clone_from(&res.pcb_path);
     request.out_dir.clone_from(&res.out_dir);
     request.stem = synth_router::sanitize_stem(&board.name);
@@ -2962,12 +2969,14 @@ fn evaluate_candidate_mcp(
     let report = synth_router::route(&request);
     let _ = std::fs::remove_dir_all(&scratch);
     if report.state == synth_router::RouteState::RouterUnavailable {
-        return Ok(None);
+        return Ok(synth_router::search_budget::Attempt::EngineUnavailable);
     }
-    Ok(Some((
-        report.layout_cost(),
-        report.recommended_routing_order.clone(),
-    )))
+    Ok(synth_router::search_budget::Attempt::Routed(
+        synth_router::search_budget::Evaluated {
+            cost: report.layout_cost(),
+            order: report.recommended_routing_order.clone(),
+        },
+    ))
 }
 
 /// Signal/power-integrity rules run on the routed board, read back from disk.
