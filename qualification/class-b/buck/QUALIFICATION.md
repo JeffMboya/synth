@@ -45,7 +45,7 @@ resolve from a fresh checkout.
 
 `SHA256SUMS` lists every design artifact (source, sidecar, KiCad project, Gerbers, drill files,
 BOM, pick-and-place, pictures, routing, DRC and ERC reports). It leaves out `README.md`,
-`QUALIFICATION.md` and itself. The key ones:
+`QUALIFICATION.md` and itself. The JSON reports had the generating machine's directory prefix removed (paths are repository-relative); they do not record a source commit, so the source is identified by the `buck.synth` hash below and the Synth `main` commit in the tool versions above. The key ones:
 
 | Artifact | SHA-256 |
 | --- | --- |

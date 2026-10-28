@@ -1,7 +1,7 @@
 {
   "schema_version": "synth.release.v1",
   "tool_version": "synth-cli 0.1.1",
-  "input": "/home/steve/work/synth-buck-led/qualification/class-b/buck/buck.synth",
+  "input": "qualification/class-b/buck/buck.synth",
   "fab_requested": false,
   "production_status": "production",
   "release_ready": true,
