@@ -5071,6 +5071,7 @@ fn distant_support_parts(board: &Board, placement: &Placement) -> Vec<DistantSup
 
 /// A part of a repeated circuit that sits where its counterpart in the first
 /// copy would not put it.
+#[derive(Debug)]
 struct MismatchedCopy {
     refdes: String,
     reference_refdes: String,
@@ -5080,6 +5081,52 @@ struct MismatchedCopy {
     rotation_differs: bool,
     suggested: (f64, f64),
     suggested_rotation: Rotation,
+}
+
+/// The pairing of `n` parts with `n` counterparts that has the smallest total
+/// `cost(part, counterpart)`: every order for the few equal parts a circuit
+/// has, the given order for an unusually large set.
+fn closest_pairing(n: usize, cost: impl Fn(usize, usize) -> f64) -> Vec<usize> {
+    fn search(
+        n: usize,
+        cost: &impl Fn(usize, usize) -> f64,
+        row: usize,
+        used: &mut Vec<bool>,
+        current: &mut Vec<usize>,
+        so_far: f64,
+        best: &mut (f64, Vec<usize>),
+    ) {
+        if so_far >= best.0 {
+            return;
+        }
+        if row == n {
+            *best = (so_far, current.clone());
+            return;
+        }
+        for j in 0..n {
+            if !used[j] {
+                used[j] = true;
+                current.push(j);
+                search(n, cost, row + 1, used, current, so_far + cost(row, j), best);
+                current.pop();
+                used[j] = false;
+            }
+        }
+    }
+    if n > 7 {
+        return (0..n).collect();
+    }
+    let mut best = (f64::INFINITY, (0..n).collect());
+    search(
+        n,
+        &cost,
+        0,
+        &mut vec![false; n],
+        &mut Vec::new(),
+        0.0,
+        &mut best,
+    );
+    best.1
 }
 
 /// How far a part may sit from where the first copy's layout would put it
@@ -5110,53 +5157,70 @@ fn mismatched_repeats(board: &Board, placement: &Placement) -> Vec<MismatchedCop
             // anchors have to be the same part of the circuit. When a copy
             // chose another part as its anchor (a lone LED and its resistor
             // rank alike), its offsets mean nothing against the reference.
-            let anchor_label = copy
-                .parts
-                .iter()
-                .find(|(id, _)| *id == copy.anchor)
-                .map(|(_, label)| *label);
-            if anchor_label.and_then(|l| reference.part_with_label(l)) != Some(reference.anchor) {
+            let label_of = |island: &repeats::Island, id: ComponentId| {
+                island.parts.iter().find(|(p, _)| *p == id).map(|(_, l)| *l)
+            };
+            if label_of(copy, copy.anchor) != label_of(reference, reference.anchor) {
                 continue;
             }
-            for (id, label) in &copy.parts {
-                if *id == copy.anchor {
+            let mut labels: Vec<u64> = copy.parts.iter().map(|(_, l)| *l).collect();
+            labels.sort_unstable();
+            labels.dedup();
+            let offset = |id: ComponentId, from: &ComponentPlacement| {
+                by_id.get(&id).map(|p| {
+                    (
+                        synth_geometry::nm_to_mm(p.center.x_nm - from.center.x_nm),
+                        synth_geometry::nm_to_mm(p.center.y_nm - from.center.y_nm),
+                    )
+                })
+            };
+            for label in labels {
+                let ours = copy.parts_with_label(label, copy.anchor);
+                let theirs = reference.parts_with_label(label, reference.anchor);
+                if ours.is_empty() || ours.len() != theirs.len() {
                     continue;
                 }
-                let Some(ref_part) = reference.part_with_label(*label) else {
-                    continue;
+                // Equal parts on different pins are interchangeable by
+                // structure alone; pair them so the layouts differ least.
+                let cost = |i: usize, j: usize| match (
+                    offset(ours[i], anchor),
+                    offset(theirs[j], ref_anchor),
+                ) {
+                    (Some(a), Some(b)) => (a.0 - b.0).hypot(a.1 - b.1),
+                    _ => f64::MAX / 8.0,
                 };
-                if copy.part_with_label(*label) != Some(*id) {
-                    continue;
-                }
-                let (Some(here), Some(there)) = (by_id.get(id), by_id.get(&ref_part)) else {
-                    continue;
-                };
-                let want = Point::new(
-                    anchor.center.x_nm + (there.center.x_nm - ref_anchor.center.x_nm),
-                    anchor.center.y_nm + (there.center.y_nm - ref_anchor.center.y_nm),
-                );
-                let mm = synth_geometry::nm_to_mm(want.x_nm - here.center.x_nm)
-                    .hypot(synth_geometry::nm_to_mm(want.y_nm - here.center.y_nm));
-                let rotation_differs = here.rotation != there.rotation;
-                if mm > REPEAT_TOLERANCE_MM || rotation_differs {
-                    let name = |c: ComponentId| {
-                        board
-                            .component(c)
-                            .map_or_else(|| format!("#{}", c.0), |c| c.refdes.clone())
+                for (i, j) in closest_pairing(ours.len(), cost).into_iter().enumerate() {
+                    let (id, ref_part) = (&ours[i], theirs[j]);
+                    let (Some(here), Some(there)) = (by_id.get(id), by_id.get(&ref_part)) else {
+                        continue;
                     };
-                    found.push(MismatchedCopy {
-                        refdes: name(*id),
-                        reference_refdes: name(ref_part),
-                        reference_anchor: name(reference.anchor),
-                        anchor: name(copy.anchor),
-                        mm,
-                        rotation_differs,
-                        suggested: (
-                            synth_geometry::nm_to_mm(want.x_nm),
-                            synth_geometry::nm_to_mm(want.y_nm),
-                        ),
-                        suggested_rotation: there.rotation,
-                    });
+                    let want = Point::new(
+                        anchor.center.x_nm + (there.center.x_nm - ref_anchor.center.x_nm),
+                        anchor.center.y_nm + (there.center.y_nm - ref_anchor.center.y_nm),
+                    );
+                    let mm = synth_geometry::nm_to_mm(want.x_nm - here.center.x_nm)
+                        .hypot(synth_geometry::nm_to_mm(want.y_nm - here.center.y_nm));
+                    let rotation_differs = here.rotation != there.rotation;
+                    if mm > REPEAT_TOLERANCE_MM || rotation_differs {
+                        let name = |c: ComponentId| {
+                            board
+                                .component(c)
+                                .map_or_else(|| format!("#{}", c.0), |c| c.refdes.clone())
+                        };
+                        found.push(MismatchedCopy {
+                            refdes: name(*id),
+                            reference_refdes: name(ref_part),
+                            reference_anchor: name(reference.anchor),
+                            anchor: name(copy.anchor),
+                            mm,
+                            rotation_differs,
+                            suggested: (
+                                synth_geometry::nm_to_mm(want.x_nm),
+                                synth_geometry::nm_to_mm(want.y_nm),
+                            ),
+                            suggested_rotation: there.rotation,
+                        });
+                    }
                 }
             }
         }
@@ -10140,6 +10204,124 @@ board "features_only" {
                 && a.refdes == "RB"
                 && a.suggested_x_mm.is_some_and(|x| (x - 16.0).abs() < 0.2)
         }));
+    }
+
+    /// Lay `parts` out at their coordinates, every part turned the same way.
+    fn lay_out(board: &Board, parts: &[(&str, f64, f64)]) -> Placement {
+        let mut placement = place(board).expect("place");
+        for (refdes, x, y) in parts {
+            move_part(&mut placement, board, refdes, *x, *y);
+        }
+        for p in &mut placement.components {
+            p.rotation = Rotation::Zero;
+        }
+        placement
+    }
+
+    #[test]
+    fn equal_parts_on_different_hub_pins_are_still_compared() {
+        // Each copy holds two identical resistors that join one capacitor and
+        // leave by different pins of the MCU, so structure alone cannot tell
+        // them apart within a copy.
+        let board = board_from_source(
+            r#"board "twins" { layers 2
+                power "GND" 0v
+                component U1: mcu "rp2350"
+                component R1A: resistor "r_generic_0603" value "1k"
+                component R2A: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component R1B: resistor "r_generic_0603" value "1k"
+                component R2B: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                net "G0" { U1.gp0 R1A.p1 }
+                net "G1" { U1.gp1 R2A.p1 }
+                net "MID_A" { R1A.p2 R2A.p2 CA.p1 }
+                net "G2" { U1.gp2 R1B.p1 }
+                net "G3" { U1.gp3 R2B.p1 }
+                net "MID_B" { R1B.p2 R2B.p2 CB.p1 }
+                net "GND" { CA.p2 CB.p2 }
+            }"#,
+            "twins.synth",
+        );
+        let mut parts = vec![
+            ("U1", 60.0, 30.0),
+            ("R1A", 10.0, 10.0),
+            ("R2A", 10.0, 14.0),
+            ("CA", 16.0, 12.0),
+            ("R1B", 10.0, 40.0),
+            ("R2B", 10.0, 44.0),
+            ("CB", 16.0, 42.0),
+        ];
+        assert!(
+            mismatched_repeats(&board, &lay_out(&board, &parts)).is_empty(),
+            "alike copies must not be reported"
+        );
+        // Move one of the twins in the second copy 6 mm.
+        parts[5] = ("R2B", 10.0, 50.0);
+        let off = mismatched_repeats(&board, &lay_out(&board, &parts));
+        let moved = off
+            .iter()
+            .find(|m| m.refdes == "R2B")
+            .expect("R2B reported");
+        assert_eq!(moved.reference_refdes, "R2A");
+        assert!((moved.mm - 6.0).abs() < 0.2, "{}", moved.mm);
+        assert!(
+            (moved.suggested.1 - 44.0).abs() < 0.2,
+            "{:?}",
+            moved.suggested
+        );
+        assert_eq!(off.len(), 1, "{off:?}");
+    }
+
+    #[test]
+    fn a_displaced_part_of_a_valve_driver_is_reported_with_a_coordinate() {
+        // The shape of the irrigation controller's valve drivers: a connector,
+        // a MOSFET, a gate resistor to the MCU, a pull-down and a flyback
+        // diode, twice.
+        let valve = |n: &str, gpio: &str| {
+            format!(
+                r#"component J{n}: connector "jst_xh_2pin"
+                component Q{n}: transistor "p_mosfet_si2301"
+                component RG{n}: resistor "r_generic_0603" value "100"
+                component RP{n}: resistor "r_generic_0603" value "100k"
+                component D{n}: diode "d_schottky"
+                net "V12_{n}" {{ J{n}.p1 D{n}.cathode }}
+                net "SW_{n}" {{ J{n}.p2 Q{n}.d D{n}.anode }}
+                net "DRV_{n}" {{ U1.{gpio} RG{n}.p1 }}
+                net "GATE_{n}" {{ RG{n}.p2 Q{n}.g RP{n}.p1 }}
+                net "GND" {{ Q{n}.s RP{n}.p2 }}"#
+            )
+        };
+        let source = format!(
+            r#"board "valves" {{ layers 2
+                power "GND" 0v
+                component U1: mcu "rp2350"
+                {}
+                {}
+            }}"#,
+            valve("1", "gp0"),
+            valve("2", "gp1")
+        );
+        let board = board_from_source(&source, "valves.synth");
+        let mut parts = vec![
+            ("U1", 80.0, 30.0),
+            ("J1", 10.0, 5.0),
+            ("Q1", 10.0, 12.0),
+            ("RG1", 16.0, 12.0),
+            ("RP1", 16.0, 16.0),
+            ("D1", 4.0, 12.0),
+            ("J2", 30.0, 5.0),
+            ("Q2", 30.0, 12.0),
+            ("RG2", 36.0, 12.0),
+            ("RP2", 36.0, 16.0),
+            ("D2", 24.0, 12.0),
+        ];
+        assert!(mismatched_repeats(&board, &lay_out(&board, &parts)).is_empty());
+        parts[10] = ("D2", 24.0, 22.0);
+        let off = mismatched_repeats(&board, &lay_out(&board, &parts));
+        let d = off.iter().find(|m| m.refdes == "D2").expect("D2 reported");
+        assert_eq!(d.reference_refdes, "D1");
+        assert!((d.suggested.0 - 24.0).abs() < 0.2 && (d.suggested.1 - 12.0).abs() < 0.2);
     }
 
     #[test]
