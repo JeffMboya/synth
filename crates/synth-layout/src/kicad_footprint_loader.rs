@@ -460,9 +460,43 @@ fn arc_extent_points(block: &str) -> Vec<(f64, f64)> {
     points
 }
 
+/// Half of a pad's width and height in the footprint's own axes, with the pad's
+/// angle (`(at x y angle)`) applied: a 0.5 x 2.0 mm pad turned a quarter is
+/// 2.0 x 0.5 mm. A circular pad looks the same turned any way.
+fn rotated_half_extent(pad_block: &str, size_mm: (f64, f64)) -> (f64, f64) {
+    let (half_w, half_h) = (size_mm.0 / 2.0, size_mm.1 / 2.0);
+    let round = pad_block
+        .split_whitespace()
+        .take(4)
+        .any(|token| token == "circle");
+    let angle = pad_angle_deg(pad_block);
+    if round || angle.abs() < 1e-9 {
+        return (half_w, half_h);
+    }
+    let (sin, cos) = angle.to_radians().sin_cos();
+    (
+        half_w * cos.abs() + half_h * sin.abs(),
+        half_w * sin.abs() + half_h * cos.abs(),
+    )
+}
+
+/// The angle of a pad in degrees: the third number of its `(at x y angle)`, or
+/// zero when it has none.
+fn pad_angle_deg(pad_block: &str) -> f64 {
+    let Some(at) = pad_block.find("(at ") else {
+        return 0.0;
+    };
+    pad_block[at + 4..]
+        .split(')')
+        .next()
+        .and_then(|numbers| numbers.split_whitespace().nth(2))
+        .and_then(|angle| angle.parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
 /// The size of the box that holds every pad of a footprint file's text, pad
-/// copper included. Pad rotation is ignored, so a rotated pad's extent is its
-/// unrotated one. `None` when there is no pad.
+/// copper included, with each pad's rotation applied to its corners. `None`
+/// when there is no pad.
 #[must_use]
 pub fn pads_extent_from_text(text: &str) -> Option<(f64, f64)> {
     let mut min = (f64::INFINITY, f64::INFINITY);
@@ -474,10 +508,11 @@ pub fn pads_extent_from_text(text: &str) -> Option<(f64, f64)> {
             break;
         };
         if let Some(pad) = parse_pad(&text[start..end]) {
-            min.0 = min.0.min(pad.center_mm.0 - pad.size_mm.0 / 2.0);
-            min.1 = min.1.min(pad.center_mm.1 - pad.size_mm.1 / 2.0);
-            max.0 = max.0.max(pad.center_mm.0 + pad.size_mm.0 / 2.0);
-            max.1 = max.1.max(pad.center_mm.1 + pad.size_mm.1 / 2.0);
+            let (half_w, half_h) = rotated_half_extent(&text[start..end], pad.size_mm);
+            min.0 = min.0.min(pad.center_mm.0 - half_w);
+            min.1 = min.1.min(pad.center_mm.1 - half_h);
+            max.0 = max.0.max(pad.center_mm.0 + half_w);
+            max.1 = max.1.max(pad.center_mm.1 + half_h);
             any = true;
         }
         pos = end;

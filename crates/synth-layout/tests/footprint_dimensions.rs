@@ -19,6 +19,7 @@ const POLY: &str = include_str!("fixtures/footprints/poly_courtyard.kicad_mod");
 const NETTIE: &str = include_str!("fixtures/footprints/nettie_no_courtyard.kicad_mod");
 const DEGENERATE: &str = include_str!("fixtures/footprints/degenerate_courtyard.kicad_mod");
 const EMPTY: &str = include_str!("fixtures/footprints/empty.kicad_mod");
+const ROTATED_PAD: &str = include_str!("fixtures/footprints/rotated_pad_no_courtyard.kicad_mod");
 const ARC_EXTREMUM: &str = include_str!("fixtures/footprints/arc_courtyard_extremum.kicad_mod");
 const ARC_CLOCKWISE: &str = include_str!("fixtures/footprints/arc_courtyard_clockwise.kicad_mod");
 
@@ -122,4 +123,29 @@ fn an_arc_drawn_the_other_way_round_has_the_same_extent() {
         near(x0, -SQRT_2) && near(y0, -SQRT_2),
         "near side {x0} {y0}"
     );
+}
+
+#[test]
+fn a_rotated_pad_is_measured_turned_in_the_pad_fallback() {
+    // A 0.5 x 2.0 mm pad turned 90 degrees covers 2.0 x 0.5 mm.
+    let (w, h) = pads_extent_from_text(ROTATED_PAD).expect("a pad");
+    assert!(
+        (w - 2.0).abs() < 1e-9 && (h - 0.5).abs() < 1e-9,
+        "{w} x {h}"
+    );
+    let turned_45 = ROTATED_PAD.replace("(at 0 0 90)", "(at 0 0 45)");
+    let (w, h) = pads_extent_from_text(&turned_45).expect("a pad");
+    // Half the width of a 0.5 x 2.0 pad turned 45 degrees is (0.25 + 1.0) / sqrt 2.
+    assert!((w - 2.0 * (0.25 + 1.0) / SQRT_2).abs() < 1e-9, "{w}");
+    assert!((h - w).abs() < 1e-9, "{h}");
+    // An unturned pad keeps its own size, and so does a round one turned any way.
+    let straight = ROTATED_PAD.replace("(at 0 0 90)", "(at 0 0)");
+    assert_eq!(pads_extent_from_text(&straight), Some((0.5, 2.0)));
+    let round = ROTATED_PAD.replace(
+        "smd rect (at 0 0 90) (size 0.5 2.0)",
+        "smd circle (at 0 0 45) (size 1.5 1.5)",
+    );
+    assert_eq!(pads_extent_from_text(&round), Some((1.5, 1.5)));
+    // The derived size follows, with the margin taken off once.
+    assert_eq!(derived(ROTATED_PAD), Ok((2.0, 0.5)));
 }

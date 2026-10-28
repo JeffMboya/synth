@@ -488,7 +488,7 @@ pub fn list_tools() -> Vec<McpToolInfo> {
         },
         McpToolInfo {
             name: "synth_import_part".into(),
-            description: "Import a component part into the Tier-2 (per-user) registry. Wraps the R15.4/R15.5 importers plus a zip-file importer: source 'lcsc' reads an EasyEDA CAD JSON (pass `from_file`; live fetch is best-effort) and emits a `.kicad_mod` + unverified `.synth.toml` (`provenance.source = generated`); source 'kicad' reads the physical pin inventory (number, name, electrical type) from an installed KiCad stock symbol and emits a pre-filled `.synth.toml` (`provenance.source = imported`); source 'kicad-zip' reads a SnapEDA/UltraLibrarian \"Export to KiCad\" zip already downloaded to disk (pass `zip_path`) — neither vendor has a public API and both prohibit automated site access in their ToS, so this never contacts snapeda.com/ultralibrarian.com, it only parses the zip the user already saved. All three land with `reviewed_by` empty until reviewed.".into(),
+            description: "Import a component part into the Tier-2 (per-user) registry. Wraps the R15.4/R15.5 importers plus a zip-file importer: source 'lcsc' reads an EasyEDA CAD JSON (pass `from_file`; live fetch is best-effort) and emits a `.kicad_mod` + unverified `.synth.toml` (`provenance.source = generated`); source 'kicad' reads the physical pin inventory (number, name, electrical type) from an installed KiCad stock symbol and emits a pre-filled `.synth.toml` (`provenance.source = imported`); pass `footprint` as well, because the part's size is measured from that footprint; source 'kicad-zip' reads a SnapEDA/UltraLibrarian \"Export to KiCad\" zip already downloaded to disk (pass `zip_path`) — neither vendor has a public API and both prohibit automated site access in their ToS, so this never contacts snapeda.com/ultralibrarian.com, it only parses the zip the user already saved. All three land with `reviewed_by` empty until reviewed.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -498,10 +498,14 @@ pub fn list_tools() -> Vec<McpToolInfo> {
                     "lib_id":        { "type": "string", "description": "KiCad lib_id, e.g. 'Device:R' (source='kicad')" },
                     "zip_path":      { "type": "string", "description": "Path to a downloaded SnapEDA/UltraLibrarian KiCad-format export .zip (source='kicad-zip')" },
                     "id":            { "type": "string", "description": "Override the generated PartId (filename stem)" },
-                    "footprint":     { "type": "string", "description": "Optional kicad_footprint reference (source='kicad')" },
+                    "footprint":     { "type": "string", "description": "kicad_footprint reference, e.g. 'Resistor_SMD:R_0603_1608Metric'. Required for source='kicad': the part's size is measured from this footprint" },
                     "footprint_dir": { "type": "string", "description": "Directory to write generated .kicad_mod (source='lcsc')" },
                     "user_registry": { "type": "string", "description": "Tier-2 registry directory (defaults to SYNTH_USER_REGISTRY_DIR)" }
-                }
+                },
+                "allOf": [{
+                    "if": { "properties": { "source": { "const": "kicad" } }, "required": ["source"] },
+                    "then": { "required": ["lib_id", "footprint"] }
+                }]
             }),
         },
         McpToolInfo {
@@ -5394,6 +5398,45 @@ mod tool_registration_tests {
     /// via `tools/list` gets "Unknown tool" on the first call. This
     /// caught `synth_export_multiboard` being listed but never wired
     /// into the dispatch `match`.
+    /// A `source = "kicad"` import needs the footprint its size is measured from.
+    /// The published schema says so, and a request without one is refused with a
+    /// message that names it, so a caller reading the schema is not surprised.
+    #[test]
+    fn the_kicad_import_schema_requires_the_footprint_the_runtime_requires() {
+        let tool = list_tools()
+            .into_iter()
+            .find(|t| t.name == "synth_import_part")
+            .expect("the tool is listed");
+        let rule = &tool.input_schema["allOf"][0];
+        assert_eq!(rule["if"]["properties"]["source"]["const"], "kicad");
+        let required: Vec<&str> = rule["then"]["required"]
+            .as_array()
+            .expect("a conditional requirement")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(required.contains(&"footprint"), "{required:?}");
+        assert!(
+            tool.input_schema["properties"]["footprint"]["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("Required for source='kicad'")),
+            "the footprint property still reads as optional"
+        );
+        let dir = std::env::temp_dir().join(format!("synth_import_schema_{}", std::process::id()));
+        let refused = call_tool(
+            "synth_import_part",
+            &serde_json::json!({
+                "source": "kicad",
+                "lib_id": "Device:R",
+                "user_registry": dir.to_str().unwrap(),
+            }),
+            None,
+        )
+        .expect_err("a KiCad import without a footprint is refused");
+        assert!(refused.contains("footprint"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn every_listed_tool_is_dispatched() {
         for tool in list_tools() {
