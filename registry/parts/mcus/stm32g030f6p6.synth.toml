@@ -10,7 +10,7 @@ kicad_symbol = "MCU_ST_STM32G0:STM32G030F6Px"
 kicad_footprint = "Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm"
 
 [operating_conditions]
-min_voltage_v = 1.7
+min_voltage_v = 2.0
 max_voltage_v = 3.6
 max_current_ma = 100.0
 
@@ -171,5 +171,6 @@ courtyard_margin_mm = 0.25
 
 [provenance]
 source = "authored"
+datasheet_url = "https://www.st.com/resource/en/datasheet/stm32g030f6.pdf"
 reviewed_by = "JeffMboya"
 reviewed_at = "2026-10-28"

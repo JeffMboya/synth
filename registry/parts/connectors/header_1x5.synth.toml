@@ -1,6 +1,6 @@
 id = "header_1x5"
 kind = "connector"
-description = "1x5 through-hole pin header, 2.54 mm pitch (SWD)"
+description = "1x5 through-hole pin header, 2.54 mm pitch (SWD); datasheet_url is the product page of the Harwin M20 series, no manufacturer PDF link was verifiable"
 version = 0
 lifecycle = "active"
 signed_by = []
@@ -51,5 +51,6 @@ required = false
 
 [provenance]
 source = "authored"
+datasheet_url = "https://no.rs-online.com/web/p/pcb-headers/6812997"
 reviewed_by = "JeffMboya"
 reviewed_at = "2026-10-28"

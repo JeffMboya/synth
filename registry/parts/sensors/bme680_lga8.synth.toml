@@ -87,5 +87,6 @@ courtyard_margin_mm = 0.25
 
 [provenance]
 source = "authored"
+datasheet_url = "https://ae-bst.resource.bosch.com/media/_tech/media/datasheets/BST-BME680-DS001.pdf"
 reviewed_by = "JeffMboya"
 reviewed_at = "2026-10-28"

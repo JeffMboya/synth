@@ -1,6 +1,6 @@
 id = "ch340c"
 kind = "ic"
-description = "WCH CH340C USB to UART bridge with internal oscillator (no crystal), SOP-16. Pin map checked against KiCad Interface_USB:CH340C"
+description = "WCH CH340C USB to UART bridge with internal oscillator (no crystal), SOP-16. Pin map checked against KiCad Interface_USB:CH340C. V3 depends on the supply mode: with VCC at 3.3 V tie V3 to VCC, with VCC at 5 V decouple V3 with 100 nF to GND; only the VCC decoupling is modelled, so a 5 V design must add the V3 capacitor itself"
 version = 0
 lifecycle = "active"
 signed_by = []
@@ -138,5 +138,6 @@ courtyard_margin_mm = 0.25
 
 [provenance]
 source = "authored"
+datasheet_url = "https://datasheet.lcsc.com/szlcsc/Jiangsu-Qin-Heng-CH340C_C84681.pdf"
 reviewed_by = "JeffMboya"
 reviewed_at = "2026-10-28"

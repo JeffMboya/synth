@@ -115,3 +115,86 @@ fn the_mcu_declares_gpio_buses_reset_and_boot() {
     }
     assert_electrical_metadata(&p, &["vdd", "vss"]);
 }
+
+#[test]
+fn the_mcu_operating_range_is_the_datasheets_not_the_families() {
+    // DS12991 gives the STM32G030x6/x8 a 2.0 to 3.6 V supply; 1.7 V is the
+    // STM32G0 family's, not this device's.
+    let oc = part("stm32g030f6p6").operating_conditions.expect("a range");
+    assert_eq!(oc.min_voltage_v, Some(2.0));
+    assert_eq!(oc.max_voltage_v, Some(3.6));
+}
+
+#[test]
+fn the_eeprom_has_one_canonical_part_and_the_older_entry_points_at_it() {
+    let reg = registry();
+    let same_mpn: Vec<_> = reg
+        .iter()
+        .filter(|(_, p)| p.mpn.as_deref() == Some("24LC256-I/SN"))
+        .map(|(k, p)| (k.as_str().to_string(), p.lifecycle.clone()))
+        .collect();
+    let active: Vec<_> = same_mpn
+        .iter()
+        .filter(|(_, lifecycle)| *lifecycle == synth_registry::Lifecycle::Active)
+        .collect();
+    assert_eq!(
+        active.len(),
+        1,
+        "two live definitions of one part: {same_mpn:?}"
+    );
+    assert_eq!(active[0].0, "24lc256_soic8");
+    let old = part("24lc256_eeprom");
+    assert_eq!(old.lifecycle, synth_registry::Lifecycle::Obsolete);
+    assert!(old
+        .substitutes
+        .iter()
+        .any(|s| s.as_str() == "24lc256_soic8"));
+}
+
+#[test]
+fn every_new_part_has_a_reviewer_a_date_a_datasheet_and_qualifies_without_findings() {
+    use synth_registry::qualify::{qualify_part, NoFacts};
+    for id in [
+        "stm32g030f6p6",
+        "bme680_lga8",
+        "24lc256_soic8",
+        "ch340c",
+        "header_1x12",
+        "header_1x5",
+    ] {
+        let p = part(id);
+        let prov = p
+            .provenance
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id}: no provenance"));
+        assert!(
+            prov.reviewed_by.as_deref().is_some_and(|v| !v.is_empty()),
+            "{id}: reviewer"
+        );
+        assert!(
+            prov.reviewed_at.as_deref().is_some_and(|v| !v.is_empty()),
+            "{id}: date"
+        );
+        assert!(
+            prov.datasheet_url
+                .as_deref()
+                .is_some_and(|u| u.starts_with("http")),
+            "{id}: datasheet_url"
+        );
+        let q = qualify_part(&p, &NoFacts, &NoFacts);
+        let found: Vec<&str> = q.findings().map(|f| f.code.as_str()).collect();
+        assert!(
+            found.is_empty(),
+            "{id}: unexpected qualification findings {found:?}"
+        );
+    }
+}
+
+#[test]
+fn the_usb_bridge_says_what_its_v3_pin_needs_in_each_supply_mode() {
+    let description = part("ch340c").description.expect("a description");
+    assert!(
+        description.contains("V3") && description.contains("5 V") && description.contains("3.3 V"),
+        "{description}"
+    );
+}

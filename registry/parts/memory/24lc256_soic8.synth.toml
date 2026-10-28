@@ -83,5 +83,6 @@ courtyard_margin_mm = 0.25
 
 [provenance]
 source = "authored"
+datasheet_url = "http://ww1.microchip.com/downloads/en/devicedoc/21203m.pdf"
 reviewed_by = "JeffMboya"
 reviewed_at = "2026-10-28"
