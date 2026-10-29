@@ -129,7 +129,7 @@ SammyOina's review of 2026-10-28, point by point:
 
 - `irrigation_controller_gerbers.zip`: the nine Gerber layers, the Excellon drill file, a drill map and the job file, from KiCad 10.0.7;
 - `irrigation_controller_cpl.csv`: 106 placements in JLCPCB's column order;
-- `irrigation_controller_bom_orderable.csv`: the exported BOM joined with [`agent-run/tools/sourcing.csv`](agent-run/tools/sourcing.csv);
+- `irrigation_controller_bom_orderable.csv`: the exported BOM joined with [`agent-run/tools/sourcing.csv`](agent-run/tools/sourcing.csv). Each of the 106 fitted lines carries refdes, value, KiCad footprint, package, manufacturer, manufacturer part number, rating, datasheet, distributor, order number and the product page; the other 20 lines are mounting holes and test points, which are board features with no part;
 - `SHA256SUMS` and `GERBER_CONTENT_SHA256`: the Gerber headers carry the creation time, so the content is hashed with those lines masked; the three exports give the same hash, `719038ef3d`.
 
 Regenerate them with [`fab_package.sh`](agent-run/tools/fab_package.sh). Every part
@@ -146,6 +146,21 @@ used as the amber indicator. The APDS-9301 and the through-hole parts are not st
 JLCPCB assembly and are fitted by hand. The registry's own `lcsc_pn` for `d_schottky` (C8224),
 `led_green_0603` (C72043) and `mp2307dn_buck_ep` (C18921) could not be confirmed
 by any search and are not used here.
+
+Where each BOM figure comes from: the rating, package and datasheet columns were read
+on 2026-10-29 from the product page in the `link` column (LCSC, JLCPCB, DigiKey,
+Distrelec, RS), and the Yageo resistors from Yageo's own datasheet (RC_L series,
+V.14, November 2025). Datasheet PDFs marked "(not opened)" in the table were not
+opened; their URL is the one the listing gives. Where two sources disagree the
+row says so: the BZT52C5V1 power (370 mW against 500 mW on the same page), the
+KT-0603Y peak wavelength (596 nm against a 584 to 594 nm range), the 24LC256
+supply range (2.5 to 5.5 V in the LCSC table, 1.8 to 5.5 V in its intro; LCSC
+lists the tape-and-reel 24LC256T-I/SN) and the PTS645 actuation force (1.57 N at
+Distrelec, 1.6 N at Mouser). The LCSC page for the crystal gives no ratings, so its
+figures (load 8 pF, tolerance +/-50 ppm, maximum ESR 500 ohm) are from NDK
+datasheet copies, not the LCSC page. DigiKey lists the MP2307DN-LF-Z as Not For
+New Designs: it is orderable today, but a longer-lived buck would be a
+design change.
 
 ## Reproducibility
 
