@@ -62,17 +62,52 @@ fn is_rail(board: &Board, domains: &synth_ir::PowerDomainMap, net: &synth_ir::Ne
     crate::is_supply_net(board, domains, net) || net.endpoints.len() > RAIL_FANOUT
 }
 
-/// What a pin is for, as the part declares it: its first capability, else its
+/// A bus function a general-purpose pin can be multiplexed to. Which of the
+/// several I2C, SPI or UART pins a circuit is wired to does not change what the
+/// circuit is, so these do not separate one pin's role from another's.
+fn is_bus_option(capability: synth_registry::PinCapability) -> bool {
+    use synth_registry::PinCapability as C;
+    matches!(
+        capability,
+        C::SpiMosi
+            | C::SpiMiso
+            | C::SpiSck
+            | C::SpiCs
+            | C::I2cSda
+            | C::I2cScl
+            | C::UartTx
+            | C::UartRx
+    )
+}
+
+/// The role a list of pin capabilities gives a pin: the sorted set of every
+/// capability that is not a bus option (so `gpio` and `gpio` + `analog_input`
+/// differ, and the order in the part file does not matter), or the first
+/// capability when a pin has nothing else.
+fn capability_role(capabilities: &[synth_registry::PinCapability]) -> Option<String> {
+    let mut functions: Vec<String> = capabilities
+        .iter()
+        .filter(|c| !is_bus_option(**c))
+        .map(|c| format!("{c:?}"))
+        .collect();
+    functions.sort();
+    functions.dedup();
+    if functions.is_empty() {
+        capabilities.first().map(|c| format!("{c:?}"))
+    } else {
+        Some(functions.join("+"))
+    }
+}
+
+/// What a pin is for, as the part declares it: its capability role, else its
 /// electrical type. Two copies of a circuit wired to a hub are the same circuit
 /// only if they are wired to the same kind of pin of the same hub part.
 fn pin_role(board: &Board, endpoint: &synth_ir::NetEndpoint) -> String {
     board.pin(endpoint.component, endpoint.pin).map_or_else(
         || endpoint.pin.0.to_string(),
         |pin| {
-            pin.capabilities.first().map_or_else(
-                || format!("{:?}", pin.electrical_type),
-                |c| format!("{c:?}"),
-            )
+            capability_role(&pin.capabilities)
+                .unwrap_or_else(|| format!("{:?}", pin.electrical_type))
         },
     )
 }
@@ -259,5 +294,46 @@ impl Island {
             .filter(|(id, l)| *l == label && *id != skip)
             .map(|(id, _)| *id)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use synth_registry::PinCapability as C;
+
+    use super::capability_role;
+
+    #[test]
+    fn pins_that_differ_in_a_non_bus_capability_have_different_roles() {
+        assert_ne!(
+            capability_role(&[C::Gpio]),
+            capability_role(&[C::Gpio, C::AnalogInput])
+        );
+        assert_ne!(
+            capability_role(&[C::Gpio, C::I2cSda]),
+            capability_role(&[C::Gpio, C::AnalogInput, C::I2cSda])
+        );
+    }
+
+    #[test]
+    fn pins_that_differ_only_in_bus_options_share_a_role() {
+        assert_eq!(
+            capability_role(&[C::Gpio, C::SpiMosi, C::UartTx, C::I2cSda]),
+            capability_role(&[C::Gpio, C::SpiSck, C::UartTx])
+        );
+    }
+
+    #[test]
+    fn the_order_of_capabilities_does_not_change_the_role() {
+        assert_eq!(
+            capability_role(&[C::AnalogInput, C::Gpio]),
+            capability_role(&[C::Gpio, C::AnalogInput])
+        );
+    }
+
+    #[test]
+    fn a_bus_only_pin_keeps_its_first_capability_as_its_role() {
+        assert_eq!(capability_role(&[C::I2cSda]), Some("I2cSda".to_string()));
+        assert_eq!(capability_role(&[]), None);
     }
 }

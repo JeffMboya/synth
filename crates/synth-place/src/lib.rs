@@ -5090,7 +5090,7 @@ struct MismatchedCopy {
 
 /// The pairing of `n` parts with `n` counterparts that has the smallest total
 /// `cost(part, counterpart)`: every order for the few equal parts a circuit
-/// has, the given order for an unusually large set.
+/// has, the Hungarian algorithm for a larger set.
 fn closest_pairing(n: usize, cost: impl Fn(usize, usize) -> f64) -> Vec<usize> {
     fn search(
         n: usize,
@@ -5119,7 +5119,7 @@ fn closest_pairing(n: usize, cost: impl Fn(usize, usize) -> f64) -> Vec<usize> {
         }
     }
     if n > 7 {
-        return (0..n).collect();
+        return hungarian_pairing(n, &cost);
     }
     let mut best = (f64::INFINITY, (0..n).collect());
     search(
@@ -5132,6 +5132,68 @@ fn closest_pairing(n: usize, cost: impl Fn(usize, usize) -> f64) -> Vec<usize> {
         &mut best,
     );
     best.1
+}
+
+/// The minimum-cost pairing of `n` parts with `n` counterparts in O(n^3): the
+/// shortest-augmenting-path form of the Hungarian algorithm with row and column
+/// potentials. Ties go to the lower index, so the result is deterministic.
+fn hungarian_pairing(n: usize, cost: &impl Fn(usize, usize) -> f64) -> Vec<usize> {
+    // Rows and columns are 1-based; index 0 is the virtual start.
+    let mut u = vec![0.0_f64; n + 1];
+    let mut v = vec![0.0_f64; n + 1];
+    let mut owner = vec![0_usize; n + 1];
+    let mut way = vec![0_usize; n + 1];
+    for row in 1..=n {
+        owner[0] = row;
+        let mut col = 0;
+        let mut min_to = vec![f64::INFINITY; n + 1];
+        let mut visited = vec![false; n + 1];
+        loop {
+            visited[col] = true;
+            let current = owner[col];
+            let mut delta = f64::INFINITY;
+            let mut next = 0;
+            for j in 1..=n {
+                if visited[j] {
+                    continue;
+                }
+                let reduced = cost(current - 1, j - 1) - u[current] - v[j];
+                if reduced < min_to[j] {
+                    min_to[j] = reduced;
+                    way[j] = col;
+                }
+                if min_to[j] < delta {
+                    delta = min_to[j];
+                    next = j;
+                }
+            }
+            for j in 0..=n {
+                if visited[j] {
+                    u[owner[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    min_to[j] -= delta;
+                }
+            }
+            col = next;
+            if owner[col] == 0 {
+                break;
+            }
+        }
+        loop {
+            let previous = way[col];
+            owner[col] = owner[previous];
+            col = previous;
+            if col == 0 {
+                break;
+            }
+        }
+    }
+    let mut pairing = vec![0; n];
+    for j in 1..=n {
+        pairing[owner[j] - 1] = j - 1;
+    }
+    pairing
 }
 
 /// How far a part may sit from where the first copy's layout would put it
@@ -9871,6 +9933,48 @@ board "features_only" {
             }"#,
             "rep.synth",
         )
+    }
+
+    #[test]
+    fn nine_equal_parts_are_paired_by_least_total_cost_not_in_source_order() {
+        // Counterparts are listed in reverse: the cheapest pairing is the
+        // reversal, and source order is the most expensive one.
+        let n = 9;
+        let cost =
+            |i: usize, j: usize| f64::from(u32::try_from(i.abs_diff(n - 1 - j)).expect("small"));
+        let pairing = closest_pairing(n, cost);
+        assert_eq!(pairing, (0..n).rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_hungarian_pairing_matches_an_exhaustive_search_on_small_matrices() {
+        // A fixed pseudo-random matrix per size; the exhaustive search is the
+        // same function below its size limit.
+        let mut seed = 12_345_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            f64::from(u32::try_from((seed >> 33) % 1000).expect("below 1000")) / 10.0
+        };
+        for n in 2..=7 {
+            let matrix: Vec<Vec<f64>> = (0..n).map(|_| (0..n).map(|_| next()).collect()).collect();
+            let cost = |i: usize, j: usize| matrix[i][j];
+            let total = |p: &[usize]| {
+                p.iter()
+                    .enumerate()
+                    .map(|(i, &j)| matrix[i][j])
+                    .sum::<f64>()
+            };
+            let best = closest_pairing(n, cost);
+            let hungarian = hungarian_pairing(n, &cost);
+            assert!(
+                (total(&best) - total(&hungarian)).abs() < 1e-9,
+                "n = {n}: exhaustive {} against Hungarian {}",
+                total(&best),
+                total(&hungarian)
+            );
+        }
     }
 
     #[test]
