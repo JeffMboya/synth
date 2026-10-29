@@ -111,3 +111,21 @@ fn d_schottky_limits_are_the_datasheet_ratings_of_its_mpn() {
     assert_eq!(limits.max_voltage_v, Some(40.0));
     assert_eq!(limits.max_current_ma, Some(1000.0));
 }
+
+#[test]
+fn a_decoupling_rule_names_a_pin_the_part_has() {
+    // A rule on a pin that does not exist is never checked, so it protects nothing.
+    let dir = workspace_root().join("registry").join("parts");
+    let registry = synth_registry::load_dir(&dir).expect("seed registry must load without errors");
+    for (_, part) in registry.iter() {
+        for rule in &part.required_decoupling {
+            for pin in std::iter::once(&rule.net).chain(rule.to.as_ref()) {
+                assert!(
+                    part.find_pin(pin).is_some(),
+                    "part {}: required_decoupling names pin `{pin}`, which it does not have",
+                    part.id
+                );
+            }
+        }
+    }
+}
