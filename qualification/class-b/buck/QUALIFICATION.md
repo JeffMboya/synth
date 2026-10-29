@@ -3,7 +3,7 @@
 **Status: requires expert review. This is not a completed qualification result.**
 Nothing here was fabricated or powered. Section A lists what Synth or KiCad checked and the
 evidence. Section B lists what no tool here proves and an SI/PI/RF or power expert has to sign
-off. No expert has reviewed this board, and two of its parts (`lmr38010`, `ltst_c190kgkt`) have no reviewer.
+off. No expert has reviewed this board. Every part on the board that carries a registry review record is signed (Steve Munene); the generic passives and the mounting hole have none.
 
 This is one board in Class B (#38) and it carries **case 1 only**, the switching regulator:
 24 V to 3.3 V with input and output filtering, feedback, power-good and thermal copper. The analog
@@ -41,13 +41,11 @@ kicad-cli sch export netlist --format kicadsexpr -o /tmp/buck.net $B/kicad/buck.
 There is no `--place-route-iterate`: the sidecar `buck.placement.layout.toml` decides placement.
 Tool versions used: KiCad 10.0.7, FreeRouting 2.4.1 on OpenJDK 25.0.4.1 (from `reports/buck.routing.json`),
 Synth 0.1.1, on 2026-10-29. `SYNTH_SOURCE_REVISION` makes `buck.routing.json` record `source_revision`: it holds
-`a9c7546e4aeecee7719aa003f3699064bb30b912`, the commit of the sources the board was built from (the later
-commit only adds artifacts and docs). The JSON reports were generated with a relative board path and the
+`a79570cd84d7c9dcc67931593a42fc3836b76065`, the commit the reports were regenerated from (the copper is byte-identical to the previous run, whose revision was `a9c7546`). The JSON reports were generated with a relative board path and the
 repository root prefix was stripped with `sed`; `out/` is a scratch directory and is not committed. A different
 router version can give different copper. `reports/registry-qualify.txt` was regenerated for the 8 registry parts on the board
 with `synth registry qualify --part <id>` (`lmr38010`, `l_bourns_srn6045ta_6r8m`, `ss36`, `smbj30a`,
-`mf_msmf110_33x`, `jst_b2b_xh_a_2pin`, `jst_b4b_xh_a_4pin`, `c_electrolytic_smd_8x10`): `lmr38010` is blocked
-only by `E-SYNTH-QUAL-008` (no reviewer); the other seven qualify.
+`mf_msmf110_33x`, `jst_b2b_xh_a_2pin`, `jst_b4b_xh_a_4pin`, `c_electrolytic_smd_8x10`): all eight qualify (`lmr38010` was reviewed on 2026-10-29).
 
 ## Artifact hashes
 
@@ -63,9 +61,9 @@ BOM, pick-and-place, pictures, routing, DRC and ERC reports, `pad_gaps.py`). It 
 | `kicad/buck.kicad_pcb` | `93d7b760e2caa0c09cb27fd1a429857efeed4dde174b62e6ff59a3fcab9f34ea` |
 | `kicad/buck.kicad_sch` | `0c4bf60be83892bc186e555484b0b65c9c6ab9aa0d2b5c99a2e6fcc7bb77bc45` |
 | `kicad/bom.csv` | `2a4faa316306140a1e6178fcf388840e6913b05edd23a92547fcd7f0b80dadce` |
-| `reports/release.json` | `6a8c419680076ad4437b7aa0a13b81eadbc0762b744adc94b09af55eef13bb21` |
-| `reports/release-fab.json` | `e2c9ffde91702e00133b7707a024cfe0093edbee028c7d74177f6930398a4466` |
-| `reports/buck.routing.json` | `3ac4090f42b89828834e8ae3d9fed285a1735c77d762aacb361083b46057f0b6` |
+| `reports/release.json` | `b84d5f6f9a1bc4905c96b6ca5358ca62c09a73e180c5af22b85f4e2cb90bc0e4` |
+| `reports/release-fab.json` | `a88da875adeac3b2dfbcdb5465b8881e2ea3c1f50e5aa2d547524611f56655aa` |
+| `reports/buck.routing.json` | `0bd40e39186408234da897f39debfc993b0222570c4294f22e25ee7c6bfef9e2` |
 | `reports/buck.kicad-drc.json` | `1d8f117b95a1728dda9771a4140e416021027857e71325fdcf7d167396a400dc` |
 | `reports/buck.kicad-erc.json` | `ad9091137e7be2f3a8cbe14d1a9b4f066f2f5c44ea276658b288c9d3b23c2726` |
 
@@ -82,7 +80,7 @@ repository.
 | A3 | Every net is connected end to end | `reports/buck.connectivity.json`, `reports/buck.routing.json` | 13 nets, 0 open, 0 unconnected pads, 97 segments (all F.Cu), 21 vias in the routing statistics and in the PCB file, 200.08 mm of copper. The only via-in-pad are the six declared thermal vias (`via_in_pad` list in the connectivity report) |
 | A4 | No KiCad DRC rule violation on the delivered board | `kicad-cli pcb drc --refill-zones`, `reports/buck.kicad-drc.json` | 0 errors, 0 unconnected, 0 warnings |
 | A5 | The route passes Synth's source/DRC gate | `reports/release.json` (`synth export-kicad`, no fab flags) | `release_ready` true, `production_status` production, state `routed`, 0 signal-integrity findings (blocking 0, warnings 0) |
-| A6 | The package is not a fabrication release | `reports/release-fab.json` (`--gerbers --drill`) | `release_ready` **false**, `production_status` `untrusted`, override `unverified_parts` ("2 part(s) have no reviewer") naming `lmr38010` and `ltst_c190kgkt`. This is the correct answer until both have a reviewer (B8) |
+| A6 | The package passes Synth's release gate | `reports/release-fab.json` (`--gerbers --drill`) | `release_ready` true, `production_status` production, no overrides, with the board routed by FreeRouting as in the commands above. `lmr38010` and `ltst_c190kgkt` were reviewed on 2026-10-29 (B8). `synth check --fab` does not agree: see A18 |
 | A7 | Schematic electrical rules | `kicad-cli sch erc`, `reports/buck.kicad-erc.json` | 0 violations. The earlier `lib_symbol_mismatch` for SS36 is gone: SS36 is now drawn with `Device:D_Schottky`. The two `power_pin_not_driven` errors that the new part would have caused are fixed by a Synth change that lets a generated symbol anchor the PWR_FLAG |
 | A8 | The schematic netlist matches the source | `kicad-cli sch export netlist` | 13 nets, node for node the source's 7 `net` blocks plus the 6 further names its 10 `connect` statements create: GND 16 nodes, `+3V3` 10, VIN 7, FB 4, PG 4, EN 3, SW 3, BOOT 2, RT 2, VIN_FUSED 2, VIN_RAW 2, LED_PWR 2, LED_PG 2. 27 components |
 | A9 | A layer change without a nearby ground return via is reported | `W-SYNTH-DRC-016` in both release files | 0 findings. A Synth change made the return-via pass use the same window as the rule (the thickest height the rule derives from the default four-layer stackup, 0.6377 mm, where the pass used 1.53 mm) and lets it try the window's diagonal corners. The only layer changes are the 21 GND vias; no signal net leaves F.Cu. `synth capability list` still declares return-path analysis unsupported, so this is a proximity test, not a return-path analysis |
@@ -94,6 +92,7 @@ repository.
 | A15 | Power-good reaches the connector | `kicad-cli sch export netlist` (A8) | Net `PG` has exactly four nodes: `U1.pg` (pin 6, open drain), `R_PG.p1` (100k to `+3V3`), `J2.p3` and `D4.cathode` (A17). The connection and the pull-up are proven; the behaviour is B3 |
 | A16 | Thermal copper and vias exist under the converter | `kicad/buck.kicad_pcb`, `reports/buck.connectivity.json` | U1 pin 9 is a 2.41 x 3.1 mm exposed pad in the `GND` net, soldered to the F.Cu pour, with 6 GND vias inside it (2 x 3, 0.6 mm pad, 0.3 mm drill). GND vias within 1 / 2 / 3 / 4 mm of the pad centre: 2 / 6 / 6 / 7. The board has 21 vias, all GND. The board is `jlc-filled-via` with `requires via_in_pad`. The copper is proven; the temperature is B2 |
 | A17 | The power-good fault LED is wired as designed | `kicad-cli sch export netlist` (A8), `kicad/bom.csv`, `kicad/buck.kicad_pcb` | `D4` (`ltst_c190kgkt`, value "PG FAULT") has its anode on net `LED_PG` and its cathode on `PG`; `R_PGLED` (470 R) joins `+3V3` to `LED_PG`. Both are in the BOM. The LED current is a hand figure: (3.3 - 2.1) / 470 = 2.55 mA, taking Vf 2.1 V from the 1.9 to 2.4 V range, with `PG` held low by U1's 92 ohm typ on-resistance, so about 0.2 V. "PG FAULT" is the value field on F.Fab and is not printed on the silkscreen; only the reference D4 is. That the LED lights on a fault is B3 |
+| A18 | `synth check` verdict from the matrix row | `synth check <board> --json` and `--fab --json` (KiCadRoutingTools `61bde44`) | Release: pass. `--fab`: source, DRC and native KiCad verification pass; manufacturing `fail` because the KiCadRoutingTools copper has 11 vias without a ground return via within 0.64 mm. Matches `expect = "pass"`, `expect_fab = "fail"` |
 
 Pad-edge gaps (`pad_gaps.py`, final routed file), against the first auto placement in brackets where it was recorded:
 
@@ -134,7 +133,7 @@ My own measurement on the final files:
 | B5 | Switch-node loop area, return paths, EMI and ripple | Only pad-edge gaps were measured (table above). No loop area, inductance, ripple or EMI result. The input capacitors are 0.82 and 1.46 mm from the VIN pad but their ground pads are 2.69 and 5.35 mm from the GND pad, a longer ground leg than VIN leg. Not analysed further | Requires expert review |
 | B6 | Analog placement separation and grounding | `synth capability list` declares `split_ground_planes` unsupported: each ground net gets one unsplit zone. R_FB_T is 3.55 mm and R_FB_B 3.79 mm from U1 pin 5; R_FB_B's ground is 11.31 mm from U1 pin 1 and reaches it through the plane. R_FB_T's FB pad is 2.58 mm from L1 pad 1 (SW). Whether that is acceptable is for a reviewer | Requires expert review |
 | B7 | Reverse-polarity block, PTC margin, UVLO thresholds, output voltage | All by hand calculation from datasheet numbers (README): PTC 0.162 A at 24 V and 0.240 A at the UVLO stop voltage against Ihold 0.63 A at 70 C; UVLO start 18.4 V (16.2 to 20.6) and stop 16.2 V (14.0 to 17.9); Vout 3.315 V. No bench measurement | Requires expert review |
-| B8 | Part pins and footprints against the manufacturer drawings | `synth registry qualify --part <id>` (`reports/registry-qualify.txt`): 7 of the 8 registry parts qualify (`l_bourns_srn6045ta_6r8m`, `ss36`, `smbj30a`, `mf_msmf110_33x`, `jst_b2b_xh_a_2pin`, `jst_b4b_xh_a_4pin`, `c_electrolytic_smd_8x10`; reviewer Steve Munene, 2026-10-28), each compared with its manufacturer datasheet. `lmr38010` is blocked only by `E-SYNTH-QUAL-008` (no reviewer). Five of the seven were compared for pin function, polarity and land pattern against the stock KiCad footprint; the KiCad pads differ from the datasheet land patterns in places (the SS36 and SMBJ30A pads sit wider apart than Vishay's reference, the SRN6045TA pads are 0.55 mm longer inward, the MF-MSMF110/33X pads are 1.125 mm long against Bourns' 1.68 mm). The electrolytic (Honor Elec RVT1H470M0810, JLCPCB C2895739) was checked for value, voltage, size and part number; its datasheet does not state the polarity marking or a land pattern, so pin 1 as + follows the KiCad `CP_Elec_8x10` convention and is not verified. `mf_msmf110_33x` also reports `E-SYNTH-QUAL-016` as a review finding (its footprint names a 3D model that is not installed). The two JST headers were checked for pitch, hole diameter, pad diameter and the 3 A / 250 V rating; pin-1 polarity is not stated in the catalogue. The generic passives have no MPN. Review records for the two unreviewed parts follow | Requires expert review |
+| B8 | Part pins and footprints against the manufacturer drawings | `synth registry qualify --part <id>` (`reports/registry-qualify.txt`): all 8 registry parts qualify (`lmr38010`, `l_bourns_srn6045ta_6r8m`, `ss36`, `smbj30a`, `mf_msmf110_33x`, `jst_b2b_xh_a_2pin`, `jst_b4b_xh_a_4pin`, `c_electrolytic_smd_8x10`; reviewer Steve Munene, 2026-10-28), each compared with its manufacturer datasheet. `lmr38010` was reviewed on 2026-10-29 and now qualifies too. Five of the seven were compared for pin function, polarity and land pattern against the stock KiCad footprint; the KiCad pads differ from the datasheet land patterns in places (the SS36 and SMBJ30A pads sit wider apart than Vishay's reference, the SRN6045TA pads are 0.55 mm longer inward, the MF-MSMF110/33X pads are 1.125 mm long against Bourns' 1.68 mm). The electrolytic (Honor Elec RVT1H470M0810, JLCPCB C2895739) was checked for value, voltage, size and part number; its datasheet does not state the polarity marking or a land pattern, so pin 1 as + follows the KiCad `CP_Elec_8x10` convention and is not verified. `mf_msmf110_33x` also reports `E-SYNTH-QUAL-016` as a review finding (its footprint names a 3D model that is not installed). The two JST headers were checked for pitch, hole diameter, pad diameter and the 3 A / 250 V rating; pin-1 polarity is not stated in the catalogue. The generic passives have no MPN. Review records for the two unreviewed parts follow | Requires expert review |
 | B9 | Compactness | Outline 70.99 x 33.99 mm (2413 mm2). The earlier auto placement of the LMR33640 version was 60.75 x 31.855 mm (1935 mm2); before that 70.99 x 31.125 mm (2210 mm2, a hand layout) and 58.0 x 32.6 mm (1891 mm2, the SOT-23-6 version). The outline follows the pinned part positions and the corner holes. I did not isolate the cause of the growth from 1935 mm2 | Not a defect; not compared |
 | B10 | Keepouts and shielding | The language has keepouts; none was declared under the switch node or the inductor in this design, and none was checked | Unsupported here |
 | B11 | Power sequencing, soft-start and inrush | The converter has internal soft start and a 4 ms power-good delay. Inrush into C1 and the output capacitors, and the sequencing of the PG signal against the output, were not analysed or measured | Unverified |
@@ -199,10 +198,10 @@ Every line of `#38`'s "Check exactly" list, against this board.
 | ERC and DRC | 0 violations on ERC, 0 errors and 0 warnings on DRC | A4, A7 |
 | Schematic correctness | Netlist equals the source net for net; readability scored, not tidy | A8, B15 |
 | BOM correctness | 27 components, one BOM row each, no MPN or LCSC on the generic parts | A6, B14 |
-| Footprint correctness | 7 of 8 registry parts qualify; `lmr38010` has no reviewer; the LED footprint differs from the datasheet pad recommendation | B8 |
+| Footprint correctness | 8 of 8 registry parts qualify; the LED footprint differs from the datasheet pad recommendation | B8 |
 | Manufacturing exports | Gerbers, drill, BOM and pick-and-place generated and hashed; not fabricated | A10, B14 |
 | KiCad reopenability | Loaded headlessly by KiCad 10.0.7 for every export used here; not opened in the GUI | A11 |
-| Which claims Synth proves | Section A, and only section A | A1-A17 |
+| Which claims Synth proves | Section A, and only section A | A1-A18 |
 | Which claims need SI/PI/RF expert analysis | Section B | B1-B19 |
 | Comparison against a human reference | Only datasheet equations; no layout comparison | B17 |
 
@@ -221,8 +220,15 @@ Nothing in this branch runs the row yet, so the board is not discoverable by the
 then.
 
 How the values were chosen, from the #247 harness: `expect` is compared with the source and DRC stages
-together (A1, A4: pass); `expect_fab` is compared with the manufacturing stage under `--fab`, which refuses
-unreviewed parts, so it is `fail` while `lmr38010` and `ltst_c190kgkt` have no reviewer (A6) and becomes
-`pass` once both are signed. I did not run `synth check` to confirm: it selects KiCadRoutingTools, which was
-not installed here, and the DRC stage reported `unknown`. The values come from the measured gate results
-(A1, A4, A5, A6), not from a harness run.
+together (A1, A4: pass); `expect_fab` is compared with the manufacturing stage under `--fab`.
+
+`synth check` was run on 2026-10-29 against this board with KiCadRoutingTools `61bde44` (`SYNTH_KRT_PYTHON` set
+to a venv holding scipy and shapely) and the DRC-stage budget raised from 30 s to 120 s (the 30 s budget made
+the DRC stage report `unknown` on a loaded machine). Results: without `--fab`, source `pass`, DRC `pass`,
+overall `pass`, as `expect = "pass"` says. With `--fab`, the DRC stage passes and the native verification
+passes (kicad_fab, kicad_erc and kicad_drc, 0 violations each), but the manufacturing stage is `fail`: that
+stage routes with KiCadRoutingTools, not FreeRouting, and its copper leaves 11 signal vias without a ground
+return via within 0.64 mm (`W-SYNTH-DRC-016`), so the release manifest is `validation_failed` and `untrusted`.
+The committed copper (FreeRouting) has none of them (A9). `expect_fab` therefore stays `fail`; the reason is
+the router, no longer the part reviews. Closing it needs the return-via pass to work on KiCadRoutingTools
+output, or the matrix row to route with FreeRouting.

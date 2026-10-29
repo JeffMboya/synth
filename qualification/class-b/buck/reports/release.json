@@ -41,11 +41,15 @@
     },
     {
       "part_id": "lmr38010",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-29",
+      "reviewed": true
     },
     {
       "part_id": "ltst_c190kgkt",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-29",
+      "reviewed": true
     },
     {
       "part_id": "mf_msmf110_33x",

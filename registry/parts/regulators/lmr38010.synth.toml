@@ -89,3 +89,6 @@ count = 1
 source = "authored"
 generator = "hand-written from the TI LMR38010 datasheet (SNVSBM3B)"
 datasheet_url = "https://www.ti.com/lit/ds/symlink/lmr38010.pdf"
+
+reviewed_by = "Steve Munene"
+reviewed_at = "2026-10-29"

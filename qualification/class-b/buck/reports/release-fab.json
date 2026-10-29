@@ -3,22 +3,9 @@
   "tool_version": "synth-cli 0.1.1",
   "input": "qualification/class-b/buck/buck.synth",
   "fab_requested": true,
-  "production_status": "untrusted",
-  "release_ready": false,
+  "production_status": "production",
+  "release_ready": true,
   "gate_scope": "production_status and release_ready cover only Synth's routing and export gates: override flags, route validation and signal integrity. They are not a fabrication approval, a qualification result or a component review.",
-  "overrides": [
-    {
-      "kind": "unverified_parts",
-      "flag": "--allow-unverified-parts",
-      "code": "W-SYNTH-PART-UNVERIFIED",
-      "consequence": "no reviewer has checked these part definitions against their datasheets",
-      "affected_parts": [
-        "lmr38010",
-        "ltst_c190kgkt"
-      ],
-      "detail": "2 part(s) have no reviewer"
-    }
-  ],
   "reviewer_state": [
     {
       "part_id": "c_electrolytic_smd_8x10",
@@ -54,11 +41,15 @@
     },
     {
       "part_id": "lmr38010",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-29",
+      "reviewed": true
     },
     {
       "part_id": "ltst_c190kgkt",
-      "reviewed": false
+      "reviewed_by": "Steve Munene",
+      "reviewed_at": "2026-10-29",
+      "reviewed": true
     },
     {
       "part_id": "mf_msmf110_33x",
