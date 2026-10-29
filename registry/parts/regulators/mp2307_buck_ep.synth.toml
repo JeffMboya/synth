@@ -100,3 +100,19 @@ count = 2
 net = "in"
 value = "100nf"
 count = 1
+
+# BS needs 0.01 uF or more to SW (datasheet pin 1 description; 10 nF in its
+# typical application).
+[[required_decoupling]]
+net = "bs"
+to = "sw"
+value = "10nf"
+count = 1
+
+# The output capacitor sits behind the inductor on SW; the datasheet's typical
+# application uses 22 uF ceramic.
+[[required_decoupling]]
+net = "sw"
+through = "inductor"
+value = "22uf"
+count = 1

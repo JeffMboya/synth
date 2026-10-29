@@ -26,6 +26,10 @@ required = false
 [operating_conditions]
 max_current_ma = 150.0
 max_power_mw = 500
+breakdown_voltage_v = 3.3
+breakdown_voltage_min_v = 3.1
+breakdown_voltage_max_v = 3.5
+breakdown_test_current_ma = 5.0
 
 [footprint_dimensions]
 width_mm = 4.7
@@ -35,6 +39,6 @@ courtyard_margin_mm = 0.25
 [provenance]
 source = "authored"
 generator = "synth_author_part"
-datasheet_url = "https://www.digikey.com/en/products/detail/diodes-incorporated/BZT52C3V3-7-F/717854"
+datasheet_url = "https://www.diodes.com/assets/Datasheets/ds18004.pdf"
 reviewed_by = "JeffMboya"
 reviewed_at = "2026-10-28"

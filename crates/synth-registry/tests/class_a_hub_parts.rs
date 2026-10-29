@@ -147,7 +147,29 @@ fn every_hub_part_has_a_reviewer_a_date_a_datasheet_and_qualifies_without_findin
 }
 
 #[test]
-fn the_zener_states_its_clamp_voltage() {
-    let d = part("bzt52c3v3").description.expect("description");
-    assert!(d.contains("Vz 3.1 to 3.5 V") && d.contains("Izt 5 mA"));
+fn the_zener_states_its_clamp_voltage_as_data() {
+    // Diodes Inc. BZT52 series datasheet, BZT52C3V3: Vz 3.3 V (3.1 to 3.5 V) at IZT 5 mA.
+    let oc = part("bzt52c3v3")
+        .operating_conditions
+        .expect("operating conditions");
+    assert_eq!(oc.breakdown_voltage_v, Some(3.3));
+    assert_eq!(oc.breakdown_voltage_min_v, Some(3.1));
+    assert_eq!(oc.breakdown_voltage_max_v, Some(3.5));
+    assert_eq!(oc.breakdown_test_current_ma, Some(5.0));
+}
+
+#[test]
+fn the_eight_pin_header_is_an_orderable_harwin_part() {
+    // Harwin M20 series component specification: 3 A per contact.
+    let p = part("header_1x8");
+    assert_eq!(p.mpn.as_deref(), Some("M20-9990846"));
+    let url = p
+        .provenance
+        .as_ref()
+        .and_then(|v| v.datasheet_url.as_deref())
+        .expect("datasheet url");
+    assert!(
+        url.starts_with("https://content.harwin.com/"),
+        "the manufacturer's own document, not a reseller page: {url}"
+    );
 }
