@@ -13,9 +13,10 @@
       "code": "W-SYNTH-PART-UNVERIFIED",
       "consequence": "no reviewer has checked these part definitions against their datasheets",
       "affected_parts": [
+        "lmr38010",
         "ltst_c190kgkt"
       ],
-      "detail": "1 part(s) have no reviewer"
+      "detail": "2 part(s) have no reviewer"
     }
   ],
   "reviewer_state": [
@@ -52,10 +53,8 @@
       "reviewed": true
     },
     {
-      "part_id": "lmr33640",
-      "reviewed_by": "Steve Munene",
-      "reviewed_at": "2026-10-28",
-      "reviewed": true
+      "part_id": "lmr38010",
+      "reviewed": false
     },
     {
       "part_id": "ltst_c190kgkt",
@@ -92,53 +91,20 @@
     "engine": "freerouting",
     "engine_version": "freerouting-2.4.1.jar",
     "state": "routed",
-    "input_hash": "eb4958ee5c5fda4db885765329994e1bce2b028f68573329a5a992efe05da9d4",
-    "run_record": "out/buck/buck.routing.json"
+    "input_hash": "21ab61af2653af929d81f239895b75d0cc9bcbe4a1bb2a31258c347184d48302",
+    "run_record": "out/buck/buck.routing.json",
+    "fabrication_notes": [
+      "via at (32.400, 14.800) mm U1.9: via-in-pad, order with filled and capped vias",
+      "via at (32.400, 16.000) mm U1.9: via-in-pad, order with filled and capped vias",
+      "via at (32.400, 17.200) mm U1.9: via-in-pad, order with filled and capped vias",
+      "via at (33.600, 14.800) mm U1.9: via-in-pad, order with filled and capped vias",
+      "via at (33.600, 16.000) mm U1.9: via-in-pad, order with filled and capped vias",
+      "via at (33.600, 17.200) mm U1.9: via-in-pad, order with filled and capped vias"
+    ]
   },
   "signal_integrity": {
     "blocking": 0,
-    "warnings": 8,
-    "findings": [
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 0 changes layers at (21.67, 15.31) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      },
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 0 changes layers at (10.06, 9.49) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      },
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 8 changes layers at (21.25, 18.23) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      },
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 8 changes layers at (31.36, 11.41) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      },
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 8 changes layers at (9.11, 16.60) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      },
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 8 changes layers at (18.77, 26.97) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      },
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 8 changes layers at (10.69, 14.47) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      },
-      {
-        "code": "W-SYNTH-DRC-016",
-        "message": "net 11 changes layers at (12.55, 18.15) mm with no ground return via within 0.64 mm, so the return current has to jump reference planes",
-        "blocking": false
-      }
-    ]
+    "warnings": 0,
+    "findings": []
   }
 }

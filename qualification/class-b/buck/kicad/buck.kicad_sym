@@ -886,91 +886,63 @@
 		)
 		(embedded_fonts no)
 	)
-	(symbol "Regulator_Switching:LMR33640ADDA"
-		(exclude_from_sim no)
+	(symbol
+		"synth:lmr38010"
+		(pin_names
+			(offset 0.508)
+		)
+		(pin_numbers
+			(hide yes)
+		)
 		(in_bom yes)
 		(on_board yes)
-		(in_pos_files yes)
-		(duplicate_pin_numbers_are_jumpers no)
-		(property "Reference" "U"
-			(at 0 11.43 0)
-			(show_name no)
-			(do_not_autoplace no)
+		(property
+			"Reference"
+			"U"
+			(at 0 12.7 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
 			)
 		)
-		(property "Value" "LMR33640ADDA"
-			(at 0 8.89 0)
-			(show_name no)
-			(do_not_autoplace no)
+		(property
+			"Value"
+			"lmr38010"
+			(at 0 15.24 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
 			)
 		)
-		(property "Footprint" "Package_SO:Texas_HSOP-8-1EP_3.9x4.9mm_P1.27mm_ThermalVias"
-			(at 0 -20.32 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "http://www.ti.com/lit/ds/symlink/lmr33640.pdf"
-			(at 0 -2.54 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Simple Switcher Synchronous Buck Regulator, Vin=3.8-36V, Iout=4A, F=400kHz, Adjustable output voltage, HSOP-8"
+		(property
+			"Footprint"
+			"Package_SO:HSOP-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.1mm"
 			(at 0 0 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
+				(hide yes)
 			)
 		)
-		(property "ki_keywords" "simple-switcher synchronous buck step-down voltage-regulator"
+		(property
+			"Datasheet"
+			"https://www.ti.com/lit/ds/symlink/lmr38010.pdf"
 			(at 0 0 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
+				(hide yes)
 			)
 		)
-		(property "ki_fp_filters" "Texas*HSOP*1EP*"
-			(at 0 0 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(symbol "LMR33640ADDA_0_1"
+		(symbol
+			"lmr38010_0_1"
 			(rectangle
-				(start -7.62 7.62)
-				(end 7.62 -7.62)
+				(start -7.62 -10.16)
+				(end 7.62 10.16)
 				(stroke
 					(width 0.254)
 					(type default)
@@ -980,18 +952,23 @@
 				)
 			)
 		)
-		(symbol "LMR33640ADDA_1_1"
-			(pin power_in line
-				(at 0 -10.16 90)
+		(symbol
+			"lmr38010_1_1"
+			(pin
+				power_in
+				line
+				(at -2.54 -12.7 90)
 				(length 2.54)
-				(name "GND"
+				(name
+					"gnd"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "1"
+				(number
+					"1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -999,17 +976,65 @@
 					)
 				)
 			)
-			(pin power_in line
+			(pin
+				input
+				line
+				(at -10.16 7.62 0)
+				(length 2.54)
+				(name
+					"en"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number
+					"2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin
+				power_in
+				line
+				(at -2.54 12.7 270)
+				(length 2.54)
+				(name
+					"vin"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number
+					"3"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin
+				passive
+				line
 				(at -10.16 5.08 0)
 				(length 2.54)
-				(name "VIN"
+				(name
+					"rt_sync"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "2"
+				(number
+					"4"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1017,17 +1042,43 @@
 					)
 				)
 			)
-			(pin input line
+			(pin
+				input
+				line
+				(at -10.16 2.54 0)
+				(length 2.54)
+				(name
+					"fb"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number
+					"5"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin
+				open_collector
+				line
 				(at -10.16 0 0)
 				(length 2.54)
-				(name "EN"
+				(name
+					"pg"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "3"
+				(number
+					"6"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1035,35 +1086,21 @@
 					)
 				)
 			)
-			(pin open_collector line
-				(at 10.16 -5.08 180)
+			(pin
+				passive
+				line
+				(at -10.16 -2.54 0)
 				(length 2.54)
-				(name "PG"
+				(name
+					"boot"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "4"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin input line
-				(at 10.16 -2.54 180)
-				(length 2.54)
-				(name "FB"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "5"
+				(number
+					"7"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1071,35 +1108,21 @@
 					)
 				)
 			)
-			(pin power_out line
+			(pin
+				passive
+				line
 				(at -10.16 -5.08 0)
 				(length 2.54)
-				(name "VCC"
+				(name
+					"sw"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "6"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin input line
-				(at 10.16 5.08 180)
-				(length 2.54)
-				(name "BOOT"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "7"
+				(number
+					"8"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1107,36 +1130,21 @@
 					)
 				)
 			)
-			(pin output line
-				(at 10.16 2.54 180)
+			(pin
+				power_in
+				line
+				(at 0 12.7 270)
 				(length 2.54)
-				(name "SW"
+				(name
+					"pad"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "8"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin passive line
-				(at 0 -10.16 90)
-				(length 2.54)
-				(hide yes)
-				(name "GND"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "9"
+				(number
+					"9"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1145,7 +1153,6 @@
 				)
 			)
 		)
-		(embedded_fonts no)
 	)
 	(symbol "Device:LED"
 		(pin_numbers
@@ -1967,8 +1974,20 @@
 		)
 		(embedded_fonts no)
 	)
-	(symbol "Diode:SS36"
-				(property "Reference" "D"
+	(symbol "Device:D_Schottky"
+		(pin_numbers
+			(hide yes)
+		)
+		(pin_names
+			(offset 1.016)
+			(hide yes)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(duplicate_pin_numbers_are_jumpers no)
+		(property "Reference" "D"
 			(at 0 2.54 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1978,7 +1997,7 @@
 				)
 			)
 		)
-		(property "Value" "SS36"
+		(property "Value" "D_Schottky"
 			(at 0 -2.54 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1988,18 +2007,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SMA"
-			(at 0 -4.445 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.vishay.com/docs/88751/ss32.pdf"
+		(property "Footprint" ""
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2010,7 +2018,18 @@
 				)
 			)
 		)
-		(property "Description" "60V 3A Schottky Diode, SMA"
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Schottky diode"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2032,7 +2051,7 @@
 				)
 			)
 		)
-		(property "ki_fp_filters" "D*SMA*"
+		(property "ki_fp_filters" "TO-???* *_Diode_* *SingleDiode* D_*"
 			(at 0 0 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2043,9 +2062,7 @@
 				)
 			)
 		)
-		(embedded_fonts no)
-	
-		(symbol "SS36_0_1"
+		(symbol "D_Schottky_0_1"
 			(polyline
 				(pts
 					(xy -1.905 0.635) (xy -1.905 1.27) (xy -1.27 1.27) (xy -1.27 -1.27) (xy -0.635 -1.27) (xy -0.635 -0.635)
@@ -2083,7 +2100,7 @@
 				)
 			)
 		)
-		(symbol "SS36_1_1"
+		(symbol "D_Schottky_1_1"
 			(pin passive line
 				(at -3.81 0 0)
 				(length 2.54)
@@ -2120,7 +2137,9 @@
 					)
 				)
 			)
-		))
+		)
+		(embedded_fonts no)
+	)
 	(symbol "power:GND"
 		(power global)
 		(pin_numbers

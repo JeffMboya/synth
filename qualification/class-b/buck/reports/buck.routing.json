@@ -14,7 +14,7 @@
     "engine": "freerouting",
     "engine_version": "freerouting-2.4.1.jar",
     "runtime_version": "openjdk version \"25.0.4.1\" 2026-08-18 LTS",
-    "profile": "jlcpcb",
+    "profile": "jlc-filled-via",
     "command": [
       "/usr/bin/python3",
       "tools/freeroute_autoroute.py",
@@ -32,7 +32,8 @@
       "out/buck/buck.freerouting.ses",
       "--report",
       "out/buck/buck.freerouting.json",
-      "--clean-netlist"
+      "--clean-netlist",
+      "--allow-via-in-pad"
     ],
     "settings": {
       "clean_netlist": "true",
@@ -40,22 +41,22 @@
       "threads": "4",
       "wall_clock_secs": "1200"
     },
-    "input_hash": "eb4958ee5c5fda4db885765329994e1bce2b028f68573329a5a992efe05da9d4",
+    "input_hash": "21ab61af2653af929d81f239895b75d0cc9bcbe4a1bb2a31258c347184d48302",
     "output_hash": "",
-    "source_revision": null,
-    "duration_ms": 20028
+    "source_revision": "a9c7546e4aeecee7719aa003f3699064bb30b912",
+    "duration_ms": 36803
   },
   "statistics": {
     "connected_nets": 13,
     "open_nets": 0,
     "open_net_names": [],
-    "segments": 103,
-    "vias": 24,
-    "wire_length_mm": 341.222564,
+    "segments": 97,
+    "vias": 21,
+    "wire_length_mm": 200.081486,
     "pad_escape_rejections": 0,
     "engine_findings": {
-      "claimed_imported_segments": "103",
-      "claimed_imported_vias": "24"
+      "claimed_imported_segments": "97",
+      "claimed_imported_vias": "21"
     }
   },
   "artifacts": {
@@ -84,7 +85,14 @@
       "open_nets": 0,
       "open": [],
       "unconnected_pads": [],
-      "via_in_pad": [],
+      "via_in_pad": [
+        "via at (32.400, 14.800) mm U1.9",
+        "via at (32.400, 16.000) mm U1.9",
+        "via at (32.400, 17.200) mm U1.9",
+        "via at (33.600, 14.800) mm U1.9",
+        "via at (33.600, 16.000) mm U1.9",
+        "via at (33.600, 17.200) mm U1.9"
+      ],
       "undersized_vias": [],
       "undersized_tracks": []
     },

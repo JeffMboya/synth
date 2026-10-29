@@ -6,9 +6,8 @@ C4,100nF,capacitor,"Generic 0603 MLCC, X7R/X5R, any value",Device:C,Capacitor_SM
 C5,22uF,capacitor,"Generic 1206 ceramic capacitor, any value",Device:C,Capacitor_SMD:C_1206_3216Metric,,
 C6,22uF,capacitor,"Generic 1206 ceramic capacitor, any value",Device:C,Capacitor_SMD:C_1206_3216Metric,,
 C7,56pF,capacitor,"Generic 0603 MLCC, X7R/X5R, any value",Device:C,Capacitor_SMD:C_0603_1608Metric,,
-C8,1uF,capacitor,"Generic 0603 MLCC, X7R/X5R, any value",Device:C,Capacitor_SMD:C_0603_1608Metric,,
 C9,22uF,capacitor,"Generic 1206 ceramic capacitor, any value",Device:C,Capacitor_SMD:C_1206_3216Metric,,
-D1,SS36,diode,"Vishay SS36 60 V 3 A Schottky rectifier, SMC (DO-214AB), for reverse-polarity blocking",Diode:SS36,Diode_SMD:D_SMC,,SS36
+D1,SS36,diode,"Vishay SS36 60 V 3 A Schottky rectifier, SMC (DO-214AB), for reverse-polarity blocking",Device:D_Schottky,Diode_SMD:D_SMC,,SS36
 D2,SMBJ30A,diode,"Vishay SMBJ30A 600 W unidirectional TVS, SMB (DO-214AA). max_voltage_v is the 30 V standoff VWM, not a clamp or abs max: VBR 33.3-36.8 V at 1 mA, VC 48.4 V at 12.4 A",Device:D_Zener,Diode_SMD:D_SMB,,SMBJ30A
 D3,PWR,led,"Lite-On LTST-C190KGKT green AlInGaP LED, 0603, Vf 1.9 to 2.4V at 20mA",Device:LED,LED_SMD:LED_0603_1608Metric,,LTST-C190KGKT
 D4,PG FAULT,led,"Lite-On LTST-C190KGKT green AlInGaP LED, 0603, Vf 1.9 to 2.4V at 20mA",Device:LED,LED_SMD:LED_0603_1608Metric,,LTST-C190KGKT
@@ -23,6 +22,7 @@ R_FB_T,100k,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,R
 R_LED,470,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,
 R_PG,100k,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,
 R_PGLED,470,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,
+R_RT,33k,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,
 R_UV_B,100k,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,
 R_UV_T,1.37M,resistor,"Generic 0603 thick-film resistor, any value",Device:R_US,Resistor_SMD:R_0603_1608Metric,,
-U1,LMR33640ADDA,regulator,"TI LMR33640 3.8-36 V input, 4 A synchronous step-down converter, 400 kHz, internal compensation, HSOIC-8 (DDA) with exposed thermal pad and open-drain power-good. VFB 1.0 V; VIN abs max 38 V",Regulator_Switching:LMR33640ADDA,Package_SO:HSOP-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.1mm,,LMR33640ADDA
+U1,LMR38010SDDAR,regulator,"TI LMR38010SDDAR 4.2-80 V input, 1 A synchronous step-down converter, adjustable 400 kHz-2.2 MHz through RT, PFM with spread spectrum, HSOIC-8 (DDA) with exposed thermal pad and open-drain power-good. VFB 1.0 V; VIN abs max 85 V",,Package_SO:HSOP-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.1mm,,LMR38010SDDAR

@@ -1,5 +1,9 @@
-== lmr33640
-1 part(s): 1 qualified, 0 blocked, 0 unproven
+== lmr38010
+lmr38010 [fail]
+  blocking E-SYNTH-QUAL-008: part has no reviewer
+    expected: [provenance].reviewed_by to name whoever checked this part against its datasheet
+    found:    reviewed_by is empty
+1 part(s): 0 qualified, 1 blocked, 0 unproven
 == l_bourns_srn6045ta_6r8m
 1 part(s): 1 qualified, 0 blocked, 0 unproven
 == ss36
