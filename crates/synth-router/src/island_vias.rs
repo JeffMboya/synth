@@ -16,7 +16,7 @@
 //! its own yet is not joined to the main pour, adds a via where the island and
 //! a polygon of the main pour on another layer both have room for it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -88,22 +88,29 @@ pub struct TieOutcome {
 /// validated. On any failure it is put back exactly as it was, however many
 /// rounds had already written.
 ///
+/// `ground_nets` are the nets the design's DRC calls ground, by topology and pin
+/// as well as by name; a net whose name does not say so, such as `POWER_RETURN`,
+/// is ground only if it is listed. The name rule still applies on top.
+///
 /// # Errors
 /// Returns why the board could not be filled, read or written. A caller must
 /// treat that as the repair not having run, never as nothing to repair.
-pub fn tie_islands(candidate: &Path) -> Result<TieOutcome, String> {
-    tie_islands_with(candidate, &mut |path| crate::zone_fill::filled_text(path))
+pub fn tie_islands(candidate: &Path, ground_nets: &[String]) -> Result<TieOutcome, String> {
+    tie_islands_with(candidate, ground_nets, &mut |path| {
+        crate::zone_fill::filled_text(path)
+    })
 }
 
 /// [`tie_islands`] with the fill supplied, so a failure in a later round can be
 /// tested without KiCad.
 fn tie_islands_with(
     candidate: &Path,
+    ground_nets: &[String],
     fill: &mut dyn FnMut(&Path) -> Result<Option<String>, String>,
 ) -> Result<TieOutcome, String> {
     let original = std::fs::read_to_string(candidate)
         .map_err(|e| format!("could not read {}: {e}", candidate.display()))?;
-    run_rounds(candidate, fill).inspect_err(|_| {
+    run_rounds(candidate, ground_nets, fill).inspect_err(|_| {
         // Each round writes the candidate; a later failure must not leave an
         // earlier round's vias in a file that was never checked.
         let _ = std::fs::write(candidate, &original);
@@ -112,6 +119,7 @@ fn tie_islands_with(
 
 fn run_rounds(
     candidate: &Path,
+    ground_nets: &[String],
     fill: &mut dyn FnMut(&Path) -> Result<Option<String>, String>,
 ) -> Result<TieOutcome, String> {
     let mut added = 0;
@@ -125,7 +133,11 @@ fn run_rounds(
         let board = PcbBoard::parse(&filled).map_err(|e| e.to_string())?;
         let text = std::fs::read_to_string(candidate)
             .map_err(|e| format!("could not read {}: {e}", candidate.display()))?;
-        let plan = plan_all(&board, dielectric_reach_mm(&text));
+        let plan = plan_all_with(
+            &board,
+            dielectric_reach_mm(&text),
+            &Ground::new(ground_nets),
+        );
         if plan.vias.is_empty() {
             return Ok(TieOutcome {
                 added,
@@ -146,15 +158,34 @@ fn run_rounds(
         });
     };
     let board = PcbBoard::parse(&filled).map_err(|e| e.to_string())?;
-    let plan = plan_ties(&board);
+    let text = std::fs::read_to_string(candidate)
+        .map_err(|e| format!("could not read {}: {e}", candidate.display()))?;
+    // The whole plan, not the island ties alone: a signal via that still has no
+    // legal return via must be reported with the islands, or a candidate that
+    // spent its rounds on island vias would leave with the return path missing.
+    let islands = plan_ties(&board).vias.len();
+    let plan = plan_all_with(
+        &board,
+        dielectric_reach_mm(&text),
+        &Ground::new(ground_nets),
+    );
     let mut unresolved = plan.unresolved;
-    unresolved.extend(plan.vias.iter().map(|via| {
-        format!(
-            "a ground island on net {} near ({:.2}, {:.2}) mm is still untied after {MAX_ROUNDS} rounds",
-            via.net,
-            via.at.x_mm(),
-            via.at.y_mm()
-        )
+    unresolved.extend(plan.vias.iter().enumerate().map(|(i, via)| {
+        if i < islands {
+            format!(
+                "a ground island on net {} near ({:.2}, {:.2}) mm is still untied after {MAX_ROUNDS} rounds",
+                via.net,
+                via.at.x_mm(),
+                via.at.y_mm()
+            )
+        } else {
+            format!(
+                "a signal via still wants a ground return via on net {} near ({:.2}, {:.2}) mm after {MAX_ROUNDS} rounds",
+                via.net,
+                via.at.x_mm(),
+                via.at.y_mm()
+            )
+        }
     }));
     Ok(TieOutcome { added, unresolved })
 }
@@ -352,10 +383,45 @@ pub fn plan_ties(board: &PcbBoard) -> TiePlan {
 /// planned knowing where the tie vias will go, so neither lands on the other.
 #[must_use]
 pub fn plan_all(board: &PcbBoard, reach_mm: f64) -> TiePlan {
+    plan_all_with(board, reach_mm, &Ground::default())
+}
+
+/// [`plan_all`] with the nets the design's DRC calls ground.
+#[must_use]
+pub fn plan_all_with(board: &PcbBoard, reach_mm: f64, ground: &Ground) -> TiePlan {
     let mut plan = plan_ties(board);
-    let returns = stitch_vias(board, reach_mm, &plan.vias);
-    plan.vias.extend(returns);
+    let stitched = stitch(board, reach_mm, &plan.vias, ground);
+    plan.vias.extend(stitched.vias);
+    plan.unresolved.extend(stitched.unresolved);
     plan
+}
+
+/// Which nets are ground. The DRC's return-path check calls a net ground by
+/// topology (a ground-reference pin, a declared domain) and by a pin's name, not
+/// only by the net's own; the board file carries none of that, so the caller
+/// lists them. The name rule is always applied as well.
+#[derive(Debug, Clone, Default)]
+pub struct Ground {
+    named: BTreeSet<String>,
+}
+
+impl Ground {
+    #[must_use]
+    pub fn new(names: &[String]) -> Self {
+        Self {
+            named: names.iter().cloned().collect(),
+        }
+    }
+
+    fn is_ground(&self, net: &str) -> bool {
+        synth_drc::is_ground_name(net) || self.named.contains(net)
+    }
+}
+
+/// The return vias to add, and the signal vias that could not be given one.
+struct Stitched {
+    vias: Vec<TieVia>,
+    unresolved: Vec<String>,
 }
 
 /// A pad's copper as a rectangle turned to the pad's own angle.
@@ -746,10 +812,18 @@ fn dielectric_reach_mm(text: &str) -> f64 {
 /// it, so neighbours share one.
 #[must_use]
 pub fn stitch_vias(board: &PcbBoard, reach_mm: f64, planned: &[TieVia]) -> Vec<TieVia> {
+    stitch(board, reach_mm, planned, &Ground::default()).vias
+}
+
+fn stitch(board: &PcbBoard, reach_mm: f64, planned: &[TieVia], ground_nets: &Ground) -> Stitched {
+    let none = || Stitched {
+        vias: Vec::new(),
+        unresolved: Vec::new(),
+    };
     let pours = pours(board);
     let Some((net, regions)) = pours
         .iter()
-        .filter(|(net, _)| synth_drc::is_ground_name(net))
+        .filter(|(net, _)| ground_nets.is_ground(net))
         .max_by(|a, b| {
             let area = |r: &Vec<Region>| r.iter().map(|x| x.area).sum::<f64>();
             area(a.1)
@@ -757,11 +831,11 @@ pub fn stitch_vias(board: &PcbBoard, reach_mm: f64, planned: &[TieVia]) -> Vec<T
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
     else {
-        return Vec::new();
+        return none();
     };
     let net_of_via = |via: &crate::pcb_read::Via| net_of(board, via.net, via.net_name.as_ref());
     let is_ground =
-        |via: &crate::pcb_read::Via| net_of_via(via).is_some_and(|n| synth_drc::is_ground_name(&n));
+        |via: &crate::pcb_read::Via| net_of_via(via).is_some_and(|n| ground_nets.is_ground(&n));
 
     let sizes: Vec<(i64, i64)> = board
         .vias
@@ -784,13 +858,14 @@ pub fn stitch_vias(board: &PcbBoard, reach_mm: f64, planned: &[TieVia]) -> Vec<T
 
     let copper = board.copper_layers();
     let (Some(first), Some(last)) = (copper.first(), copper.last()) else {
-        return Vec::new();
+        return none();
     };
     let room = |layer: &str, p: (f64, f64)| -> bool {
         regions
             .iter()
             .any(|r| r.layer == layer && r.contains(p) && r.edge_distance(p) >= need - EPS)
     };
+    let room_both = |p: (f64, f64)| room(first, p) && room(last, p);
     // Built once: the signal vias and the keep-out do not change over the loop.
     let keepout = Keepout::from_board(board, net);
     let signals: Vec<(f64, f64, f64)> = board
@@ -803,6 +878,7 @@ pub fn stitch_vias(board: &PcbBoard, reach_mm: f64, planned: &[TieVia]) -> Vec<T
     let steps = (window / RETURN_STEP_MM).floor() as i32;
     let apart = nm_to_mm(size_nm) + VIA_GAP_MM;
     let mut out = Vec::new();
+    let mut unresolved = Vec::new();
     for &(vx, vy, _) in &signals {
         if ground
             .iter()
@@ -810,27 +886,16 @@ pub fn stitch_vias(board: &PcbBoard, reach_mm: f64, planned: &[TieVia]) -> Vec<T
         {
             continue;
         }
-        let mut best: Option<(f64, (f64, f64))> = None;
-        for ix in -steps..=steps {
-            for iy in -steps..=steps {
-                let p = (
-                    vx + f64::from(ix) * RETURN_STEP_MM,
-                    vy + f64::from(iy) * RETURN_STEP_MM,
-                );
-                let distance = (p.0 - vx).hypot(p.1 - vy);
-                if best.is_some_and(|(d, _)| distance >= d) {
-                    continue;
-                }
-                if ground.iter().all(|g| (g.0 - p.0).hypot(g.1 - p.1) >= apart)
-                    && room(first, p)
-                    && room(last, p)
-                    && keepout.clear(p, radius)
-                {
-                    best = Some((distance, p));
-                }
-            }
-        }
-        if let Some((_, p)) = best {
+        let best = nearest_return_spot(
+            (vx, vy),
+            steps,
+            apart,
+            &ground,
+            &room_both,
+            &keepout,
+            radius,
+        );
+        if let Some(p) = best {
             ground.push(p);
             out.push(TieVia {
                 net: net.clone(),
@@ -838,9 +903,50 @@ pub fn stitch_vias(board: &PcbBoard, reach_mm: f64, planned: &[TieVia]) -> Vec<T
                 size_nm,
                 drill_nm,
             });
+        } else {
+            unresolved.push(format!(
+                "the signal via at ({vx:.2}, {vy:.2}) mm has no ground return via within {reach_mm:.2} mm, and no spot in the {net} pour holds one clear of the pads, vias and tracks beside it"
+            ));
         }
     }
-    out
+    Stitched {
+        vias: out,
+        unresolved,
+    }
+}
+
+/// The point nearest the signal via `from`, on the search grid, that is clear of
+/// the ground vias, inside the pour on both outer layers and clear of every
+/// obstacle.
+fn nearest_return_spot(
+    from: (f64, f64),
+    steps: i32,
+    apart: f64,
+    ground: &[(f64, f64)],
+    room: &dyn Fn((f64, f64)) -> bool,
+    keepout: &Keepout,
+    radius: f64,
+) -> Option<(f64, f64)> {
+    let mut best: Option<(f64, (f64, f64))> = None;
+    for ix in -steps..=steps {
+        for iy in -steps..=steps {
+            let p = (
+                from.0 + f64::from(ix) * RETURN_STEP_MM,
+                from.1 + f64::from(iy) * RETURN_STEP_MM,
+            );
+            let distance = (p.0 - from.0).hypot(p.1 - from.1);
+            if best.is_some_and(|(d, _)| distance >= d) {
+                continue;
+            }
+            if ground.iter().all(|g| (g.0 - p.0).hypot(g.1 - p.1) >= apart)
+                && room(p)
+                && keepout.clear(p, radius)
+            {
+                best = Some((distance, p));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -1106,6 +1212,42 @@ mod tests {
         );
     }
 
+    /// A signal via that cannot be given a return must be reported, not skipped:
+    /// W-SYNTH-DRC-016 is a warning, so a silent skip would let the candidate be
+    /// promoted with the return path still missing.
+    #[test]
+    fn a_signal_via_with_no_legal_spot_for_a_return_is_reported() {
+        // A 6 mm pad round the via covers every spot within the reach.
+        let blocker = r#"(footprint "R" (at 0 0) (layer "F.Cu")
+            (pad "1" smd rect (at 10 10) (size 6 6) (layers "F.Cu") (net 3)))"#;
+        let board = stitched_board(blocker);
+        let plan = plan_all(&board, REACH);
+        assert!(plan.vias.is_empty(), "{plan:?}");
+        assert_eq!(plan.unresolved.len(), 1, "{plan:?}");
+        assert!(
+            plan.unresolved[0].contains("no ground return via"),
+            "{plan:?}"
+        );
+        // The free board resolves it, so the finding is the blockage's.
+        assert!(plan_all(&stitched_board(""), REACH).unresolved.is_empty());
+    }
+
+    /// A ground net the DRC knows by topology, not by name, is ground here too.
+    #[test]
+    fn a_ground_net_named_for_neither_gnd_nor_vss_is_ground_when_listed() {
+        let text = stitched_text(r#"(0 "F.Cu" signal) (2 "B.Cu" signal)"#, "")
+            .replace("\"GND\"", "\"POWER_RETURN\"");
+        let board = PcbBoard::parse(&text).expect("board must parse");
+        assert!(
+            stitch_vias(&board, REACH, &[]).is_empty(),
+            "by name alone nothing here is ground"
+        );
+        let ground = Ground::new(&["POWER_RETURN".to_string()]);
+        let plan = plan_all_with(&board, REACH, &ground);
+        assert_eq!(plan.vias.len(), 1, "{plan:?}");
+        assert_eq!(plan.vias[0].net, "POWER_RETURN");
+    }
+
     #[test]
     fn a_layer_change_with_a_ground_via_near_it_gets_nothing() {
         let near = r#"(via (at 11 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))"#;
@@ -1255,7 +1397,7 @@ mod tests {
         let text = board_text("");
         let path = scratch_file("restore", &text);
         let mut rounds = 0;
-        let result = tie_islands_with(&path, &mut |_| {
+        let result = tie_islands_with(&path, &[], &mut |_| {
             rounds += 1;
             if rounds == 1 {
                 Ok(Some(text.clone()))
@@ -1276,6 +1418,38 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// The rounds are spent on island vias; a signal via that has no legal
+    /// return via must still be in the outcome, not dropped with the planning.
+    #[test]
+    fn an_unresolved_return_is_reported_when_the_repair_rounds_are_spent() {
+        // A 6 mm pad round the signal via leaves no spot for its return.
+        let extra = r#"(net 3 "BLK")
+            (via (at 10 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 2))
+            (footprint "R" (at 0 0) (layer "F.Cu")
+              (pad "1" smd rect (at 10 10) (size 6 6) (layers "F.Cu") (net 3)))"#;
+        let text = board_text(extra);
+        let path = scratch_file("spent", &text);
+        // The fill never shows the vias written, so the island stays and every
+        // round is used up.
+        let outcome =
+            tie_islands_with(&path, &[], &mut |_| Ok(Some(text.clone()))).expect("the repair runs");
+        assert!(
+            outcome
+                .unresolved
+                .iter()
+                .any(|u| u.contains("still untied after")),
+            "{outcome:?}"
+        );
+        assert!(
+            outcome
+                .unresolved
+                .iter()
+                .any(|u| u.contains("no ground return via")),
+            "the unresolved return path was dropped: {outcome:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// A clean board costs one fill; one that needs vias costs the fill that
     /// finds them and the fill that confirms nothing is left.
     #[test]
@@ -1286,7 +1460,7 @@ mod tests {
         );
         let path = scratch_file("clean", &clean);
         let mut fills = 0;
-        let outcome = tie_islands_with(&path, &mut |_| {
+        let outcome = tie_islands_with(&path, &[], &mut |_| {
             fills += 1;
             Ok(Some(clean.clone()))
         })
@@ -1297,7 +1471,7 @@ mod tests {
         let text = board_text("");
         let path = scratch_file("island", &text);
         let mut fills = 0;
-        let outcome = tie_islands_with(&path, &mut |path| {
+        let outcome = tie_islands_with(&path, &[], &mut |path| {
             fills += 1;
             // The first fill is the island's; the second is of the tied board.
             let now = std::fs::read_to_string(path).expect("read");
