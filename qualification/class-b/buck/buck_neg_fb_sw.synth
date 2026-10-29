@@ -62,9 +62,9 @@ board "buck_neg_fb_sw" {
     component C9: capacitor "c_generic_1206" value "22uF" dielectric "X7R" voltage "25V"
     notes "" {
       "LMR38010SDDAR: internal compensation, exposed pad (pin 9) on GND, open-drain PG, PFM with spread spectrum."
-      "R_RT 33k from RT/SYNC to GND sets 800 kHz (datasheet Table 8-1); the pin must not float."
+      "R_RT 33k from RT/SYNC to GND sets 800 kHz (RT table under datasheet Figure 8-4); the pin must not float."
       "C4 100 nF boot capacitor between BOOT and SW."
-      "L1 6.8 uH at 800 kHz gives about 0.5 A ripple at 26.4 V in (datasheet Eq 10 K about 0.5), above the 2.1 uH minimum of Eq 11; 3x 22 uF exceeds the Table 9-1 minimum for a 1 A output."
+      "L1 6.8 uH at 800 kHz gives about 0.5 A ripple at 26.4 V in (datasheet Eq 10 K about 0.5), above the 1.03 uH minimum of Eq 11 (0.25 x 3.3 V / 800 kHz); 3x 22 uF is unverified: Table 9-1 has no 3.3 V row."
       "The exposed pad (pin 9) is soldered to the F.Cu GND pour. There are no vias in the pad:"
       "the board's fabrication floor is a 0.3 mm drill and the KiCad thermal-via footprint ships 0.2 mm."
     }
