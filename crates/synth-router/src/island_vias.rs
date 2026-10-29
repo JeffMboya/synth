@@ -125,7 +125,10 @@ fn run_rounds(
         let board = PcbBoard::parse(&filled).map_err(|e| e.to_string())?;
         let text = std::fs::read_to_string(candidate)
             .map_err(|e| format!("could not read {}: {e}", candidate.display()))?;
-        let plan = plan_all(&board, dielectric_reach_mm(&text));
+        let plan = plan_all(
+            &board,
+            dielectric_reach_mm(&text, board.copper_layers().len()),
+        );
         if plan.vias.is_empty() {
             return Ok(TieOutcome {
                 added,
@@ -684,7 +687,7 @@ fn escape_net_name(name: &str) -> String {
 /// How far from a signal via W-SYNTH-DRC-016 looks for a ground via, along either
 /// axis: the thickest dielectric in the board's stackup, as the rule takes it.
 /// A board with no stackup gets the rule's own window on a 1.6 mm board.
-fn dielectric_reach_mm(text: &str) -> f64 {
+fn dielectric_reach_mm(text: &str, copper_layers: usize) -> f64 {
     fn block_end(text: &str) -> usize {
         let mut depth = 0_i32;
         for (index, byte) in text.bytes().enumerate() {
@@ -702,10 +705,10 @@ fn dielectric_reach_mm(text: &str) -> f64 {
         text.len()
     }
     let Some(start) = text.find("(stackup") else {
-        return DEFAULT_REACH_MM;
+        return default_reach_mm(copper_layers);
     };
     let stackup = &text[start..start + block_end(&text[start..])];
-    let mut thickest = 0.0_f64;
+    let mut dielectrics = Vec::new();
     let mut rest = stackup;
     while let Some(index) = rest.find("(layer ") {
         let layer = &rest[index..index + block_end(&rest[index..])];
@@ -719,12 +722,42 @@ fn dielectric_reach_mm(text: &str) -> f64 {
                     .take_while(|c| c.is_ascii_digit() || *c == '.')
                     .collect();
                 if let Ok(value) = number.parse::<f64>() {
-                    thickest = thickest.max(value);
+                    dielectrics.push(value);
                 }
             }
         }
         rest = &rest[index + layer.len().max(1)..];
     }
+    // The rule reads each copper layer's height: the one dielectric beside an
+    // outer layer, the mean of the two around an inner layer.
+    let mut thickest = 0.0_f64;
+    for (index, below) in dielectrics.iter().enumerate() {
+        let above = if index == 0 {
+            None
+        } else {
+            dielectrics.get(index - 1)
+        };
+        thickest = thickest.max(above.map_or(*below, |above| (above + below) / 2.0));
+    }
+    if let Some(last) = dielectrics.last() {
+        thickest = thickest.max(*last);
+    }
+    if thickest > 0.0 {
+        thickest
+    } else {
+        default_reach_mm(copper_layers)
+    }
+}
+
+/// The window of the default stackup for a board of `copper_layers`, as the
+/// rule computes it for a board that declares none.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn default_reach_mm(copper_layers: usize) -> f64 {
+    let thickest = synth_geometry::StackupProfile::default_for_layers(copper_layers as u32)
+        .layers
+        .iter()
+        .map(|geometry| geometry.dielectric_height.to_mm())
+        .fold(0.0_f64, f64::max);
     if thickest > 0.0 {
         thickest
     } else {
@@ -800,7 +833,14 @@ pub fn stitch_vias(board: &PcbBoard, reach_mm: f64, planned: &[TieVia]) -> Vec<T
         .map(|via| (via.at.x_mm(), via.at.y_mm(), nm_to_mm(via.size_nm) / 2.0))
         .collect();
 
+    // The grid, plus the window's own edges: a via and its return need `apart`
+    // between centres, which inside a narrow window is only reached out on the
+    // diagonal, past the last whole grid step.
     let steps = (window / RETURN_STEP_MM).floor() as i32;
+    let offsets: Vec<f64> = (-steps..=steps)
+        .map(|i| f64::from(i) * RETURN_STEP_MM)
+        .chain([-window, window])
+        .collect();
     let apart = nm_to_mm(size_nm) + VIA_GAP_MM;
     let mut out = Vec::new();
     for &(vx, vy, _) in &signals {
@@ -811,12 +851,9 @@ pub fn stitch_vias(board: &PcbBoard, reach_mm: f64, planned: &[TieVia]) -> Vec<T
             continue;
         }
         let mut best: Option<(f64, (f64, f64))> = None;
-        for ix in -steps..=steps {
-            for iy in -steps..=steps {
-                let p = (
-                    vx + f64::from(ix) * RETURN_STEP_MM,
-                    vy + f64::from(iy) * RETURN_STEP_MM,
-                );
+        for &dx in &offsets {
+            for &dy in &offsets {
+                let p = (vx + dx, vy + dy);
                 let distance = (p.0 - vx).hypot(p.1 - vy);
                 if best.is_some_and(|(d, _)| distance >= d) {
                     continue;
@@ -1106,6 +1143,23 @@ mod tests {
         );
     }
 
+    /// A 0.6 mm via needs 0.8 mm between centres, so inside a window of 0.64 mm
+    /// along either axis the only room is out on the diagonal, past the last
+    /// grid step. The thin 4-layer stackup the buck board declares has exactly
+    /// that window.
+    #[test]
+    fn a_tight_window_still_gets_a_return_via_on_the_diagonal() {
+        const TIGHT: f64 = 0.64;
+        let vias = stitch_vias(&stitched_board(""), TIGHT, &[]);
+        assert_eq!(vias.len(), 1, "{vias:?}");
+        let at = at_mm(&vias[0]);
+        assert!(
+            (at.0 - 10.0).abs() <= TIGHT && (at.1 - 10.0).abs() <= TIGHT,
+            "{at:?}"
+        );
+        assert!((at.0 - 10.0).hypot(at.1 - 10.0) >= 0.8, "{at:?}");
+    }
+
     #[test]
     fn a_layer_change_with_a_ground_via_near_it_gets_nothing() {
         let near = r#"(via (at 11 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))"#;
@@ -1201,9 +1255,19 @@ mod tests {
                     (layer "B.Cu" (type "copper") (thickness 0.035)))"#
             )
         };
-        assert!((dielectric_reach_mm(&stackup("1.51")) - 1.51).abs() < 1e-9);
-        assert!((dielectric_reach_mm(&stackup("1.0")) - 1.0).abs() < 1e-9);
-        assert!((dielectric_reach_mm("(kicad_pcb)") - DEFAULT_REACH_MM).abs() < 1e-9);
+        assert!((dielectric_reach_mm(&stackup("1.51"), 2) - 1.51).abs() < 1e-9);
+        assert!((dielectric_reach_mm(&stackup("1.0"), 2) - 1.0).abs() < 1e-9);
+        let jlc = r#"(stackup (layer "F.Cu" (type "copper") (thickness 0.035))
+            (layer "dielectric 1" (type "prepreg") (thickness 0.2104))
+            (layer "In1.Cu" (type "copper") (thickness 0.0152))
+            (layer "dielectric 2" (type "core") (thickness 1.065))
+            (layer "In2.Cu" (type "copper") (thickness 0.0152))
+            (layer "dielectric 3" (type "prepreg") (thickness 0.2104))
+            (layer "B.Cu" (type "copper") (thickness 0.035)))"#;
+        assert!((dielectric_reach_mm(jlc, 4) - 0.6377).abs() < 1e-9);
+        // No stackup: the rule falls back to the default profile of the layer count,
+        // whose widest height is half of the prepreg and core on a four-layer board.
+        assert!((dielectric_reach_mm("(kicad_pcb)", 4) - 0.6377).abs() < 1e-9);
         let ground = r#"(via (at 11.2 10) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))"#;
         let board = stitched_board(ground);
         assert!(
