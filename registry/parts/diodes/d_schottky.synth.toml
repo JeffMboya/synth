@@ -12,8 +12,11 @@ height_mm = 1.2
 courtyard_margin_mm = 0.25
 
 [operating_conditions]
-max_voltage_v = 100.0
+max_voltage_v = 40.0
 max_current_ma = 1000.0
+
+[provenance]
+datasheet_url = "https://www.diodes.com/datasheet/download/1N5819HW.pdf"
 
 [[pins]]
 name = "anode"
