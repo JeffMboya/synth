@@ -95,7 +95,12 @@ Measured on the exported file:
 
 The SWD header is 43.8 mm from the MCU on purpose: it is a pin header on the
 board edge so a probe cable reaches it without crossing the board, and the MCU
-sits mid-board. `TP_3V3` is a rail probe on the 3.3 V pour; the one position
+sits mid-board. The reset button is 11.6 mm from the MCU: reset is a slow
+input behind a pull-up and a capacitor, so the track length does not affect its
+timing, and pulling it closer broke routing in an earlier layout. The per-pin
+decoupling distances above are measured from footprint origin to origin; the
+nearest pad of the 20-pin MCU is closer than that, but `C_VDD2` at 11.0 mm is
+the weakest point of the layout and is not justified electrically. `TP_3V3` is a rail probe on the 3.3 V pour; the one position
 tried beside the new `C_OUT2` released but added a silkscreen warning, so it
 stayed.
 
