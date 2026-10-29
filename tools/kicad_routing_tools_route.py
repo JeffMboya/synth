@@ -35,6 +35,9 @@ from pathlib import Path
 # router refused this board" from "the router broke".
 POLICY_REJECTED = 3
 
+# Engine via penalty for the first attempt; its own default is 75.
+KEEP_LAYER_VIA_COST = 1000
+
 
 def _load_summary(stats: Path) -> dict:
     """Read the engine's JSON summary, or explain why it could not be read."""
@@ -44,6 +47,17 @@ def _load_summary(stats: Path) -> dict:
         return json.loads(stats.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError(f"could not parse the KRT summary at {stats}: {error}") from error
+
+
+def _failed_nets(stats: Path) -> bool:
+    """Whether the engine's summary shows an open or failed connection group."""
+    try:
+        report = _load_summary(stats)
+    except RuntimeError:
+        return True
+    return any(
+        report.get(key) for key in ("failed_single", "open_single", "failed_multipoint")
+    )
 
 
 def _policy_findings(report: dict, allow_via_in_pad: bool) -> list[str]:
@@ -137,8 +151,15 @@ def main() -> int:
     if not args.no_write_fill:
         command.append("--write-fill")
 
+    # A layer change on a signal net cuts its return path and W-SYNTH-DRC-016
+    # flags it, so the first attempt prices vias high and keeps nets on one
+    # layer. A board that does not route that way is routed again at the
+    # engine's own via cost rather than failed.
     print("running KiCadRoutingTools:", " ".join(command), flush=True)
-    completed = subprocess.run(command, check=False)
+    completed = subprocess.run([*command, "--via-cost", str(KEEP_LAYER_VIA_COST)], check=False)
+    if completed.returncode or _failed_nets(stats):
+        print("retrying KiCadRoutingTools at its default via cost", flush=True)
+        completed = subprocess.run(command, check=False)
 
     policy_ok = completed.returncode == 0
     if completed.returncode:
