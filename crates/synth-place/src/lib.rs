@@ -4912,7 +4912,11 @@ fn courtyard_gap_mm(a: Rect, b: Rect) -> f64 {
 /// inference calls it a rail or ground, or any pin on it is typed as a ground
 /// reference or a power input or output. The pin types are what the inference
 /// misses on a net the author left unnamed.
-fn is_supply_net(board: &Board, domains: &synth_ir::PowerDomainMap, net: &synth_ir::Net) -> bool {
+pub(crate) fn is_supply_net(
+    board: &Board,
+    domains: &synth_ir::PowerDomainMap,
+    net: &synth_ir::Net,
+) -> bool {
     use synth_registry::ElectricalType;
     domains
         .get(net.id)
@@ -9884,12 +9888,13 @@ board "features_only" {
                     .collect()
             })
             .collect();
-        let set = |a: &str, b: &str, c: &str| -> std::collections::BTreeSet<String> {
-            [a, b, c].iter().map(|s| (*s).to_string()).collect()
+        let set = |a: &str, b: &str| -> std::collections::BTreeSet<String> {
+            [a, b].iter().map(|s| (*s).to_string()).collect()
         };
-        assert!(names.contains(&set("JA", "RA", "CA")), "{names:?}");
-        assert!(names.contains(&set("JB", "RB", "CB")), "{names:?}");
-        assert!(!names.iter().any(|n| n.contains("JC")), "{names:?}");
+        // The connectors are the boundary, not part of a copy.
+        assert!(names.contains(&set("RA", "CA")), "{names:?}");
+        assert!(names.contains(&set("RB", "CB")), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("RC")), "{names:?}");
     }
 
     #[test]
@@ -9926,21 +9931,21 @@ board "features_only" {
         );
 
         // Move one part of the second copy 6 mm.
-        move_part(&mut placement, &board, "RB", 22.0, 40.0);
+        move_part(&mut placement, &board, "CB", 16.0, 52.0);
         let off = mismatched_repeats(&board, &placement);
-        let rb = off.iter().find(|m| m.refdes == "RB").expect("RB reported");
-        assert_eq!(rb.reference_refdes, "RA");
+        let rb = off.iter().find(|m| m.refdes == "CB").expect("CB reported");
+        assert_eq!(rb.reference_refdes, "CA");
         assert!((rb.mm - 6.0).abs() < 0.2, "{}", rb.mm);
-        assert!((rb.suggested.0 - 16.0).abs() < 0.2 && (rb.suggested.1 - 40.0).abs() < 0.2);
+        assert!((rb.suggested.0 - 16.0).abs() < 0.2 && (rb.suggested.1 - 46.0).abs() < 0.2);
 
         let desc = describe_placement(&board, &placement);
         assert!(desc
             .functional_warnings
             .iter()
-            .any(|w| w.starts_with("RB is laid out differently from RA")));
+            .any(|w| w.starts_with("CB is laid out differently from CA")));
         assert!(desc.visual_review.recommended_actions.iter().any(|a| {
             a.action == "match_repeated_circuit"
-                && a.refdes == "RB"
+                && a.refdes == "CB"
                 && a.suggested_x_mm.is_some_and(|x| (x - 16.0).abs() < 0.2)
         }));
     }
@@ -10061,6 +10066,92 @@ board "features_only" {
         let d = off.iter().find(|m| m.refdes == "D2").expect("D2 reported");
         assert_eq!(d.reference_refdes, "D1");
         assert!((d.suggested.0 - 24.0).abs() < 0.2 && (d.suggested.1 - 12.0).abs() < 0.2);
+        // Turned the way D1 is, so the advice carries a usable rotation too.
+        let first = lay_out(&board, &parts)
+            .component_by_refdes(&board, "D1")
+            .expect("D1")
+            .rotation;
+        assert_eq!(d.suggested_rotation, first);
+    }
+
+    #[test]
+    fn two_circuits_on_two_pins_of_one_small_connector_are_two_copies() {
+        // A two-pin connector joins nothing: each pin carries its own circuit.
+        let board = board_from_source(
+            r#"board "two_pins" { layers 2
+                power "GND" 0v
+                component J1: connector "jst_ph_2pin"
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component RB: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                net "SA" { J1.p1 RA.p1 }
+                net "MA" { RA.p2 CA.p1 }
+                net "SB" { J1.p2 RB.p1 }
+                net "MB" { RB.p2 CB.p1 }
+                net "GND" { CA.p2 CB.p2 }
+            }"#,
+            "two_pins.synth",
+        );
+        let groups = repeats::find_repeated_circuits(&board);
+        assert_eq!(groups.len(), 1, "one group of two copies: {groups:?}");
+        assert_eq!(groups[0].len(), 2);
+        assert!(
+            groups[0].iter().all(|island| island.parts.len() == 2),
+            "each copy is a resistor and a capacitor, not the connector or the other copy"
+        );
+    }
+
+    #[test]
+    fn supply_nets_are_recognised_by_the_project_not_by_a_fixed_list_of_names() {
+        // Two copies of a resistor and capacitor whose rail is called `+3V3`
+        // and whose other rail is a declared ground: neither name is in a
+        // fixed list, and neither may join the two copies into one island.
+        let board = board_from_source(
+            r#"board "aliases" { layers 2
+                power "+3V3" 3.3v
+                power "GND" 0v
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component RB: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                net "+3V3" { RA.p1 RB.p1 }
+                net "MA" { RA.p2 CA.p1 }
+                net "MB" { RB.p2 CB.p1 }
+                net "GND" { CA.p2 CB.p2 }
+            }"#,
+            "aliases.synth",
+        );
+        let groups = repeats::find_repeated_circuits(&board);
+        assert_eq!(groups.len(), 1, "the copies are found: {groups:?}");
+        assert!(groups[0].iter().all(|island| island.parts.len() == 2));
+    }
+
+    #[test]
+    fn same_shaped_circuits_on_different_kinds_of_pin_are_not_copies() {
+        // The same resistor and capacitor, once on a GPIO and once on the
+        // reset pin of the MCU: one circuit drives a line, the other holds the
+        // chip in reset, and a placement review must not compare them.
+        let board = board_from_source(
+            r#"board "roles" { layers 2
+                power "GND" 0v
+                component U1: mcu "rp2350"
+                component RA: resistor "r_generic_0603" value "10k"
+                component CA: capacitor "c_generic_0603" value "100nF"
+                component RB: resistor "r_generic_0603" value "10k"
+                component CB: capacitor "c_generic_0603" value "100nF"
+                net "GPIO_A" { U1.gp0 RA.p1 }
+                net "MA" { RA.p2 CA.p1 }
+                net "RESET_B" { U1.run RB.p1 }
+                net "MB" { RB.p2 CB.p1 }
+                net "GND" { CA.p2 CB.p2 }
+            }"#,
+            "roles.synth",
+        );
+        assert!(
+            repeats::find_repeated_circuits(&board).is_empty(),
+            "a GPIO circuit and a reset circuit are not copies"
+        );
     }
 
     #[test]
