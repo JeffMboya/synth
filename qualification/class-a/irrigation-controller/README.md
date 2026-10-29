@@ -10,9 +10,9 @@ on the board: a breakout attaches to the I2C header at address 0x44.
 
 **Status:** the board is routed and released (every net routed, KiCad reports no
 error, three exports are identical), and a fabrication package is generated from
-it. **The JLCPCB DFM check has not been run**: it needs a logged-in JLCPCB
-session, so the package is ready to upload as it is. Nothing here was built or
-tested on hardware.
+it. The JLCPCB DFM check (2026-10-29, PCB DFM, `fab/` Gerbers) reports no
+routing danger but silkscreen dangers and one through-hole-to-SMD danger: see
+the DFM section. Nothing here was built or tested on hardware.
 
 ## How this board was made
 
@@ -110,7 +110,7 @@ SammyOina's review of 2026-10-28, point by point:
 | SHT30 footprint and escape | The SHT30 and its capacitor are removed; a breakout attaches to `J_I2C` at 0x44. The router reported the 0.5 mm DFN unescapable; no fine-pitch part is left on the board. |
 | BOM and fabrication output | 126 of 126 lines sourced; Gerbers, drill and pick-and-place generated and hashed (below). |
 | DRC with the library table | 0 errors, 0 unconnected, 1 warning, above. |
-| JLCPCB DFM | **not run**: needs a logged-in JLCPCB session; the package under [`fab/`](fab/) is ready to upload. |
+| JLCPCB DFM | run 2026-10-29 on the `fab/` Gerbers (PCB DFM only, 2 layers, 75.1 x 65.4 mm): 7 danger items, below. |
 | Return-path advisories | none unresolved: Synth's release gate now refuses a board with a signal via that has no ground return, and this board passes. |
 | SWD and reset distance, decouplers | see the layout table: the reset button moved from 16.7 to 11.6 mm, the regulator's output capacitor from 29 to 11.6 mm; the SWD header is justified above. |
 | Crystal load | the NDK NX3225GD-8MHZ-STD-CRA-3 has an 8 pF load. With 5 pF assumed for stray capacitance, CL = C1 x C2 / (C1 + C2) + 5 pF; C1 = C2 = 2 x (8 - 5) = 6 pF, the nearest E24 value 6.2 pF gives 8.1 pF. `C_X1` and `C_X2` are 6.2 pF. The 5 pF stray figure is an assumption. |
@@ -136,8 +136,8 @@ part itself: the MP2307DN, the AO3401A, the fuse, the 9.1 k resistor and the
 reset switch (DigiKey or Mouser), the EEPROM and the 100 uF capacitor (RS), and
 the APDS-9301 and the 1x5 header (Farnell). The two LEDs are the only parts
 chosen as stand-ins: the green is a NationStar NCD0603G1 and the amber a KENTO
-KT-0603Y, which is yellow (584 to 594 nm), so the amber LED needs a decision
-before an order. The APDS-9301 and the through-hole parts are not stocked for
+KT-0603Y, listed as yellow at 584 to 594 nm, which is the amber range, so it is
+used as the amber indicator. The APDS-9301 and the through-hole parts are not stocked for
 JLCPCB assembly and are fitted by hand. The registry's own `lcsc_pn` for `d_schottky` (C8224),
 `led_green_0603` (C72043) and `mp2307dn_buck_ep` (C18921) could not be confirmed
 by any search and are not used here.
@@ -168,9 +168,30 @@ The command-line export ran with the corrected registry parts of #326 and the tw
 new parts, so its BOM text can differ from an export through the MCP tool, which
 uses the registry checkout. Positions and routing are the same.
 
+## JLCPCB DFM result (PCB DFM, 2026-10-29)
+
+Run by Jeff on `irrigation_controller_gerbers.zip`. Clear: sharp corners, BGA,
+via in pad, trace to edge, trace spacing, unconnected ends, trace width (0.2 mm,
+85 good), plated-hole to trace (0.39 mm), drill checks, slots. Findings:
+
+| Item | Danger | Warning |
+|---|---|---|
+| Silkscreen to hole (0 mm) | 50 | 0 |
+| Silkscreen to pad (0 mm) | 5 | 33 |
+| Through-hole to SMD clearance (1.9 mm) | 1 | 4 |
+| Silkscreen line width (0.12 mm) | 0 | 50 |
+| Annular ring (0.15 mm) | 0 | 100 |
+| Pad spacing (0.15 mm) | 0 | 2 |
+| Solder mask opening near a trace (0.15 mm) | 0 | 57 |
+| Negative mask expansion (0.04 mm) | 0 | 50 |
+
+The silkscreen items are reference text drawn over holes and pads; fixing them
+is the silkscreen tidy, which Synth does not do yet. The report is not
+committed (3.5 MB).
+
 ## Not done
 
-- The JLCPCB quote and DFM check, above.
-- The amber LED is a yellow stand-in and needs a decision before an order.
+- The JLCPCB quote and the SMT DFM (the PCB DFM ran, below).
+- The DFM dangers below are not fixed yet.
 - Values not checked against datasheets: the bleeder resistors and the LED currents; the 5 pF stray capacitance of the crystal.
 - Nothing was built or run on hardware.
