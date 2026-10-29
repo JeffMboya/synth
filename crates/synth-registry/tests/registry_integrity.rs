@@ -94,3 +94,20 @@ fn diodes_number_pins_like_kicad() {
         "expected at least 10 diodes, checked {checked}"
     );
 }
+
+#[test]
+fn d_schottky_limits_are_the_datasheet_ratings_of_its_mpn() {
+    let dir = workspace_root().join("registry").join("parts");
+    let registry = synth_registry::load_dir(&dir).expect("seed registry must load without errors");
+    let part = registry
+        .lookup("d_schottky")
+        .expect("d_schottky is shipped");
+    assert_eq!(part.mpn.as_deref(), Some("1N5819HW-7-F"));
+    // Diodes Inc. 1N5819HW: VRRM 40 V, IO 1.0 A.
+    let limits = part
+        .operating_conditions
+        .as_ref()
+        .expect("operating limits");
+    assert_eq!(limits.max_voltage_v, Some(40.0));
+    assert_eq!(limits.max_current_ma, Some(1000.0));
+}
