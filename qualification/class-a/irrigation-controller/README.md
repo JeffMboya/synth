@@ -12,7 +12,8 @@ on the board: a breakout attaches to the I2C header at address 0x44.
 error, three exports are identical), and a fabrication package is generated from
 it. The JLCPCB DFM check (2026-10-29, PCB DFM, `fab/` Gerbers) reports no
 routing danger but silkscreen dangers and one through-hole-to-SMD danger: see
-the DFM section. Nothing here was built or tested on hardware.
+the DFM section; the board was re-exported after that check with the label pass
+described under the routing table. Nothing here was built or tested on hardware.
 
 ## How this board was made
 
@@ -59,19 +60,21 @@ All figures come from the files of the first of the three exports below.
 | | |
 |---|---|
 | Board | 75.1 x 65.4 mm, 4,912 mm2, two layers, 126 components (106 excluding holes and test points), 45 nets |
-| Routing | state `routed`, 45 of 45 nets connected, 589 segments, 89 router vias, 165 vias in the file, all 0.6 / 0.3 mm |
-| KiCad DRC, 10.0.7, `--refill-zones --severity-all`, with the KiCad footprint library table | 0 errors, 0 unconnected, 1 warning: `silk_overlap` (below). Without a library table the same file shows 126 more `lib_footprint_issues` warnings. |
+| Routing | state `routed`, 45 of 45 nets connected, 589 segments, 179 vias in the file, all 0.6 / 0.3 mm |
+| KiCad DRC, 10.0.7, `--refill-zones --severity-all`, with the KiCad footprint library table | 0 errors, 0 unconnected, 4 warnings, all `silk_overlap` (below). Without a library table the same file shows 126 more `lib_footprint_issues` warnings. |
 | Router and release gate | `release_ready` true, no blocking reason, no via in a pad, no unresolved return via |
 | Trace width, as routed | `VIN_FUSED`, `VALVE1_SW`, `VALVE2_SW` 0.8 mm; `+12V_VALVE` 0.4 to 0.8 mm; `+3V3` 0.2 to 0.4 mm |
 | BOM | 126 rows, every one with a manufacturer, MPN, distributor, order number and page (below) |
 | Schematic | 13 sheets, one per functional group, no `OTHER` region (below) |
 
-The one DRC warning pairs the reference text of test point `TP_V1`, at (42.3,
-18.5), with a silkscreen line of `D_FZ`, at (4.1, 41.0), 45 mm away. It does not
-describe an overlap: deleting the `TP_V1` footprint from a scratch copy of the
-board clears it, but hiding or renaming its label does not, and removing
-`TP_V1` from the design breaks the routing, so it stays. It is treated as a
-KiCad report fault.
+The four warnings are all `silk_overlap`: the reference text of `TP_SWCLK`
+against a line of `J_SWD`'s outline, `D_FLY1` against `J_VALVE2`'s outline,
+`TP_V1` against the text of `C_SN1`, and `R_D1` against `J_FLOW`'s outline. They are
+labels that the post-routing label pass moved off a via or a pad and that now
+graze a neighbour's silkscreen. The pass moved 33 labels clear of the vias and
+pads they sat on and hid 6 (`C_NRST`, `TP_NRST`, `R_G1`, `R_PWR`, `C_N11`,
+`C_B4`) that had no clear spot within 6.4 mm; no visible label is left over a
+hole. A hidden label is still in the BOM and the placement file.
 
 The schematic is 13 sheets because 125 parts no longer fit one A0 page, which
 is the largest single page Synth uses; each sheet is one functional group.
@@ -100,7 +103,7 @@ input behind a pull-up and a capacitor, so the track length does not affect its
 timing, and pulling it closer broke routing in an earlier layout. The per-pin
 decoupling distances above are measured from footprint origin to origin; the
 nearest pad of the 20-pin MCU is closer than that, but `C_VDD2` at 11.0 mm is
-the weakest point of the layout and is not justified electrically. `TP_3V3` is a rail probe on the 3.3 V pour; the one position
+the weakest point of the layout and is not justified electrically. A search moved parts to bring it to the pin: from 24 blocking findings down to 3 over three rounds of 42 trials, never to a released board (two signal vias were left with no room for a return via), and removing each of the 16 fill parts nearest the crowded area, one at a time, did not release a board either. The layout stays as exported. `TP_3V3` is a rail probe on the 3.3 V pour; the one position
 tried beside the new `C_OUT2` released but added a silkscreen warning, so it
 stayed.
 
@@ -114,7 +117,7 @@ SammyOina's review of 2026-10-28, point by point:
 | Input TVS against the buck | `D_TVS` is an SMAJ13A (13 V standoff, 21.5 V clamp at 18.6 A), under the MP2307's 23 V input limit by 1.5 V. The supply maximum of 13.2 V is 0.2 V above the standoff, so it may leak a little; the leakage figure needs the datasheet. `Q1` is now an AO3401A (30 V drain-source) instead of a 20 V Si2301. `D_TVS` sits after `Q1`, so a surge at the connector reaches `Q1` unclamped and its 30 V rating is the limit. The 5.1 V gate-source zener `D_QG` is inside its 12 V gate rating. |
 | SHT30 footprint and escape | The SHT30 and its capacitor are removed; a breakout attaches to `J_I2C` at 0x44. The router reported the 0.5 mm DFN unescapable; no fine-pitch part is left on the board. |
 | BOM and fabrication output | 126 of 126 lines sourced; Gerbers, drill and pick-and-place generated and hashed (below). |
-| DRC with the library table | 0 errors, 0 unconnected, 1 warning, above. |
+| DRC with the library table | 0 errors, 0 unconnected, 4 `silk_overlap` warnings, above. |
 | JLCPCB DFM | run 2026-10-29 on the `fab/` Gerbers (PCB DFM only, 2 layers, 75.1 x 65.4 mm): 7 danger items, below. |
 | Return-path advisories | none unresolved: Synth's release gate now refuses a board with a signal via that has no ground return, and this board passes. |
 | SWD and reset distance, decouplers | see the layout table: the reset button moved from 16.7 to 11.6 mm, the regulator's output capacitor from 29 to 11.6 mm; the SWD header is justified above. |
@@ -168,11 +171,13 @@ is the first ten characters of a SHA-256. All three exports are `routed` and
 | `bom.csv` | 93f2a1e278 | 93f2a1e278 | 93f2a1e278 | identical |
 | `pnp.csv` | 247cc82e12 | 247cc82e12 | 247cc82e12 | identical |
 | `irrigation_controller.synth.kicad_pcb` (un-routed) | ebc4d0245d | ebc4d0245d | ebc4d0245d | identical |
-| `irrigation_controller.kicad_pcb` | a4c8c34203 | b0c7950a27 | a117b1134c | identical after zone-fill ids |
-| Gerber and drill content | 719038ef3d | 719038ef3d | 719038ef3d | identical |
+| `irrigation_controller.kicad_pcb` | a14da8ca5f | b4f0073c64 | 30f8363dac | identical after the router's and KiCad's random ids |
+| Gerber and drill content | e2328c644b | e2328c644b | e2328c644b | identical |
 
-The routed PCB differs between runs only in the ids KiCad gives its zone fills.
-With those masked, all three are `c473cf6ca0`.
+The routed PCB differs between runs only in the random ids the router gives its
+tracks and vias and KiCad gives its zone fills. With those masked, all three are
+`ddd28c2ec4`. The Gerber hash masks the creation time KiCad writes into every
+Gerber, the drill file and the job file, and leaves out the drill-map PDF.
 
 The command-line export ran with the corrected registry parts of #326 and the two
 new parts, so its BOM text can differ from an export through the MCP tool, which
@@ -180,7 +185,9 @@ uses the registry checkout. Positions and routing are the same.
 
 ## JLCPCB DFM result (PCB DFM, 2026-10-29)
 
-Run by Jeff on `irrigation_controller_gerbers.zip`. Clear: sharp corners, BGA,
+Run by Jeff on the Gerbers of the export before the label pass, so the silkscreen rows
+below are from that file; the package in `fab/` has since been regenerated and the
+check has to be run again on it. Clear: sharp corners, BGA,
 via in pad, trace to edge, trace spacing, unconnected ends, trace width (0.2 mm,
 85 good), plated-hole to trace (0.39 mm), drill checks, slots. Findings:
 
@@ -195,13 +202,14 @@ via in pad, trace to edge, trace spacing, unconnected ends, trace width (0.2 mm,
 | Solder mask opening near a trace (0.15 mm) | 0 | 57 |
 | Negative mask expansion (0.04 mm) | 0 | 50 |
 
-The silkscreen items are reference text drawn over holes and pads; fixing them
-is the silkscreen tidy, which Synth does not do yet. The report is not
+The silkscreen items are reference text drawn over holes and pads, which the label
+pass moves or hides; the other rows (annular ring, mask, pad spacing, line width,
+the one through-hole-to-SMD clearance) are not changed by it. The report is not
 committed (3.5 MB).
 
 ## Not done
 
 - The JLCPCB quote and the SMT DFM (the PCB DFM ran, below).
-- The DFM dangers below are not fixed yet.
+- The JLCPCB DFM has to be re-run on the regenerated `fab/` Gerbers; the through-hole-to-SMD danger, the annular ring and the mask warnings are not looked at.
 - Values not checked against datasheets: the bleeder resistors and the LED currents; the 5 pF stray capacitance of the crystal.
 - Nothing was built or run on hardware.
