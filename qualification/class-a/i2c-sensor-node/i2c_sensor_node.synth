@@ -45,7 +45,7 @@ board "i2c_sensor_node" {
   // ---- A1: JST 5 V input and its protection chain --------------------------
   group "5V INPUT: FUSE THEN DIODE" color "#c2410c" {
     component J1: connector "jst_xh_2pin" value "JST S2B-XH-A-1"
-    component F1: fuse      "polyfuse_500ma" value "0.5A hold" { placement_hint { near: "J1" priority: soft } }
+    component F1: fuse      "polyfuse" value "0.5A hold" { placement_hint { near: "J1" priority: soft } }
     component D1: diode     "d_schottky" value "1N5819" { placement_hint { near: "F1" priority: soft } }
     component D4: diode     "ptvs6v0s1ur" value "PTVS6V0S1UR" { placement_hint { near: "D1" priority: soft } }
     notes "" {
@@ -60,7 +60,7 @@ board "i2c_sensor_node" {
     component J2: connector "usb_c_receptacle" value "TYPE-C-31-M-12"
     component R1: resistor  "r_generic_0603" value "5.1k" { placement_hint { near: "J2" priority: soft } }
     component R2: resistor  "r_generic_0603" value "5.1k" { placement_hint { near: "J2" priority: soft } }
-    component F2: fuse      "polyfuse_500ma" value "0.5A hold" { placement_hint { near: "J2" priority: soft } }
+    component F2: fuse      "polyfuse" value "0.5A hold" { placement_hint { near: "J2" priority: soft } }
     component D2: diode     "d_schottky" value "1N5819" { placement_hint { near: "F2" priority: soft } }
     component D3: diode     "ptvs6v0s1ur" value "PTVS6V0S1UR" { placement_hint { near: "J2" priority: soft } }
     component D5: diode     "prtr5v0u2x" value "PRTR5V0U2X" { placement_hint { near: "J2" priority: soft } }
