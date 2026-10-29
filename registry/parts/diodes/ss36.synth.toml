@@ -4,7 +4,7 @@ version = 0
 lifecycle = "active"
 description = "Vishay SS36 60 V 3 A Schottky rectifier, SMC (DO-214AB), for reverse-polarity blocking"
 mpn = "SS36"
-kicad_symbol = "Diode:SS36"
+kicad_symbol = "Device:D_Schottky"
 kicad_footprint = "Diode_SMD:D_SMC"
 
 [footprint_dimensions]
