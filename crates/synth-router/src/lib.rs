@@ -287,7 +287,7 @@ fn finalize(
     // promoted, because the island is a zone against itself and KiCad refuses it.
     let mut repair_blocking: Vec<String> = Vec::new();
     let mut repair_unavailable: Vec<String> = Vec::new();
-    match island_vias::tie_islands(&candidate.candidate_path) {
+    match island_vias::tie_islands(&candidate.candidate_path, &request.ground_nets) {
         Ok(outcome) => repair_blocking = outcome.unresolved,
         Err(detail) => {
             eprintln!(
