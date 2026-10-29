@@ -15,11 +15,11 @@ board "protected_power_entry" {
 
   group "INPUT AND PROTECTION" color "#c2410c" {
     component J1: connector "jst_xh_2pin"
-    component F1: fuse "polyfuse_1r5a"
+    component F1: fuse "polyfuse"
     component Q1: transistor "p_mosfet_si2301"
     component D9: diode "d_zener_5v1"
     component R1: resistor "r_generic_0603" value "47k"
-    component D1: diode "smaj15a_tvs"
+    component D1: diode "d_tvs_5v"
     component C1: capacitor "c_electrolytic_100uf" value "100uF 25V"
     notes "" {
       "J1 pin 1 = +12 V, pin 2 = GND (JST S2B-XH-A, mate with XHP-2)."
@@ -71,8 +71,8 @@ board "protected_power_entry" {
   }
 
   group "OUTPUTS" color "#7c3aed" {
-    component F2: fuse "polyfuse_1r5a"
-    component F3: fuse "polyfuse_1r5a"
+    component F2: fuse "polyfuse"
+    component F3: fuse "polyfuse"
     component J3: connector "jst_xh_2pin"
     component J4: connector "jst_xh_2pin"
     component J5: connector "jst_xh_2pin"
