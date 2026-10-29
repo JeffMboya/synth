@@ -5,13 +5,13 @@ import sys
 
 import pcbnew
 
-PAIRS = [("C2", "1", "U1", "2", "C2 to U1 VIN"), ("C3", "1", "U1", "2", "C3 to U1 VIN"),
+PAIRS = [("C2", "1", "U1", "3", "C2 to U1 VIN"), ("C3", "1", "U1", "3", "C3 to U1 VIN"),
          ("C2", "2", "U1", "1", "C2 GND pad to U1 GND"), ("C3", "2", "U1", "1", "C3 GND pad to U1 GND"),
          ("C4", "1", "U1", "7", "C4 to U1 BOOT"), ("C4", "2", "U1", "8", "C4 to U1 SW"),
          ("L1", "1", "U1", "8", "L1 pad 1 to U1 SW"), ("C5", "1", "L1", "2", "C5 to L1 pad 2"),
          ("C6", "1", "L1", "2", "C6 to L1 pad 2"), ("C9", "1", "L1", "2", "C9 to L1 pad 2"),
-         ("D2", "1", "U1", "2", "D2 TVS to U1 VIN"), ("C8", "1", "U1", "6", "C8 to U1 VCC"),
-         ("R_UV_T", "2", "U1", "3", "R_UV_T to U1 EN"), ("R_PG", "1", "U1", "4", "R_PG to U1 PG"),
+         ("D2", "1", "U1", "3", "D2 TVS to U1 VIN"), ("R_RT", "1", "U1", "4", "R_RT to U1 RT/SYNC"),
+         ("R_UV_T", "2", "U1", "2", "R_UV_T to U1 EN"), ("R_PG", "1", "U1", "6", "R_PG to U1 PG"),
          ("R_FB_T", "2", "U1", "5", "R_FB_T to U1 FB"), ("R_FB_B", "1", "U1", "5", "R_FB_B to U1 FB"),
          ("C7", "1", "R_FB_T", "2", "C7 to R_FB_T (FB side)"), ("R_FB_B", "2", "U1", "1", "R_FB_B GND to U1 GND"),
          ("R_FB_T", "2", "L1", "1", "R_FB_T FB pad to L1 pad 1 (SW)")]
