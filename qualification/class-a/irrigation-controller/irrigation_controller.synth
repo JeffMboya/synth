@@ -1,14 +1,15 @@
 // Two-zone irrigation controller, 12 V DC in, STM32G030K8 (LQFP-32), 2-layer JLCPCB.
 // Design assumptions (not verified on hardware):
-//   Input 12 V nominal, 10.8 to 13.2 V. Each valve output is a 12 V DC solenoid, coil current at most 0.5 A (stated assumption).
+//   Input 12 V nominal, 10.8 to 13.0 V maximum. Each valve output is a 12 V DC solenoid, coil current at most 0.5 A (stated assumption).
 //   Total protected-rail load <= 1.1 A (two valves + flow sensor + buck); F1 holds 1.5 A at 23 C.
 //   Soil probes: resistive 2-electrode, 1 k to 200 k in soil. Flow meter: Hall, open-collector, 5 to 18 V supply, <= 2 kHz.
 board "irrigation_controller" {
   layers 2
   manufacturer "jlcpcb"
 
-  netclass "PWR12" { trace_width 0.8mm clearance 0.25mm }
-  netclass "PWR33" { trace_width 0.4mm clearance 0.2mm }
+  netclass "PWR12" { trace_width 0.8mm clearance 0.25mm via_diameter 0.6mm via_drill 0.2mm }
+  netclass "PWR33" { trace_width 0.4mm clearance 0.2mm via_diameter 0.6mm via_drill 0.2mm }
+  netclass "Default" { via_diameter 0.6mm via_drill 0.2mm }
 
   power "VIN_12V_RAW" 12v class "PWR12"
   power "VIN_FUSED" 12v class "PWR12"
@@ -29,9 +30,9 @@ board "irrigation_controller" {
     notes "" {
       "J1 JST XH S2B-XH-A: pin1 VIN_12V_RAW, pin2 GND. Mate with XHP-2 housing.  Pin 1 is the +12 V pin."
       "F1 1.5 A hold PPTC, then Q1 AO3401A P-FET (30 V Vds, 12 V Vgs max, 4 A) reverse-polarity switch (body diode to start, Vgs clamped to -5.1 V by D_QG)."
-      "Q1 gate check: the 5.1 V zener D_QG across source and gate limits Vgs to about 5.1 V, within the AO3401A 12 V gate-source rating; the 21.5 V worst-case TVS clamp is below its 30 V Vds rating."
-      "D_TVS SMAJ13A (13 V standoff, 14.4 to 15.9 V breakdown, 21.5 V max clamp at 18.6 A) sits on the protected rail after Q1 so a reversed supply never forward-biases it."
-      "TVS check: supply max 13.2 V is above the 13.0 V standoff by 0.2 V (1.5 %): at 13.2 V the TVS may leak a little (sub-mA, see datasheet) but is below the 14.4 V minimum breakdown by 1.2 V. Worst-case clamp 21.5 V is below the buck maximum input of 23 V by 1.5 V."
+      "Q1 gate check: the 5.1 V zener D_QG across source and gate limits Vgs to about 5.1 V, within the AO3401A 12 V gate-source rating. The drain sees at most the TVS clamp of 21.5 V (D_TVS is upstream of Q1), below the AO3401A 30 V drain-source rating by 8.5 V."
+      "D_TVS SMAJ13A (Littelfuse, 400 W, VR 13.0 V, VBR 14.40 to 15.90 V at 1 mA, IR 1 uA maximum at VR, VC 21.5 V at IPP 18.6 A) sits on VIN_FUSED, before Q1: its cathode joins the fused input net on the Q1 drain side and its anode is on GND, so a surge is clamped before it reaches Q1, the buck or any capacitor. A reversed supply forward-biases D_TVS, which conducts and opens F1; Q1 then isolates the protected rail."
+      "TVS check: the supply maximum is 13.0 V, equal to the 13.0 V standoff VR, so leakage at the maximum input is the datasheet IR of 1 uA maximum, and 13.0 V is 1.4 V below the 14.40 V minimum breakdown. Worst-case clamp 21.5 V is below the MP2307 recommended input maximum 23 V by 1.5 V and its absolute maximum 26 V by 4.5 V, below the AO3401A 30 V Vds by 8.5 V, and below the 25 V rating of C_BULK, C_IN1, C_IN2 and C_N7 by 3.5 V."
     }
   }
   group "BUCK 3V3" color "#b45309" {
@@ -106,7 +107,7 @@ board "irrigation_controller" {
     notes "" {
       "J_VALVE2 pin1 +12V_VALVE, pin2 VALVE2_SW (low-side). Flyback cathode to +12V_VALVE."
       "Load: 12 V DC solenoid, coil current at most 0.5 A. Same checks as valve 1: MOSFET, flyback diode and PWR12 tracks carry 0.5 A."
-      "R_SN2 100 ohm in series with C_SN2 10 nF is an RC snubber across the valve 2 coil connector. TP_V2 probes VALVE2_SW. C_B3 100 nF bypasses +12V_VALVE beside the valve 2 driver; R_B3 47 k bleeds the 12 V rail (0.28 mA at 13.2 V)."
+      "R_SN2 100 ohm in series with C_SN2 10 nF is an RC snubber across the valve 2 coil connector. TP_V2 probes VALVE2_SW. C_B3 100 nF bypasses +12V_VALVE beside the valve 2 driver; R_B3 47 k bleeds the 12 V rail: 13.0 V / 47 k = 0.277 mA, 3.6 mW."
     }
   }
 
@@ -147,7 +148,7 @@ board "irrigation_controller" {
     component C_FL: capacitor "c_generic_0603" value "10nF"
     component TP_FLOW: testpoint "testpoint_pad_1_5"
     notes "" {
-      "J_FLOW pin1 +12V_VALVE sensor supply, pin2 GND, pin3 pulse. Open-collector assumed; 3.3 V zener D_FZ (cathode on FLOW_PULSE, anode on GND) behind R_FS 2.2 k clamps a push-pull output to the STM32G030 input range. Current at 13.2 V sensor output: (13.2 - 3.3) / 2.2 k = 4.5 mA (12 V: 4.0 mA), about 15 mW in the zener, far below a 500 mW SOD-123 zener class rating (exact rating needs datasheet sourcing)."
+      "J_FLOW pin1 +12V_VALVE sensor supply, pin2 GND, pin3 pulse. Open-collector assumed; 3.3 V zener D_FZ (cathode on FLOW_PULSE, anode on GND) behind R_FS 2.2 k clamps a push-pull output to the STM32G030 input range. Current at a 13.0 V sensor output: (13.0 - 3.3) / 2.2 k = 4.41 mA (12 V: 3.95 mA), about 3.3 V x 4.41 mA = 14.5 mW in the zener, far below a 500 mW SOD-123 zener class rating (exact rating needs datasheet sourcing). With the line open the 10 k pull-up R_FPU on +3V3 holds it at 3.3 V, so R_FPU adds at most 3.3 V / 10 k = 0.33 mA."
     }
   }
 
@@ -168,17 +169,18 @@ board "irrigation_controller" {
 
   // ---- Indicators -----------------------------------------------------------------------------
   group "LEDS" color "#be123c" {
-    component D_PWR: led "led_green_0603"
+    component D_PWR: led "led_green_ltst_c190gkt"
     component R_PWR: resistor "r_generic_0603" value "680"
     component D_VALVE: led "led_amber_0603"
     component R_LV: resistor "r_generic_0603" value "680"
     component R_N3: resistor "r_generic_0603" value "2.2k"
     component D_N1: led "led_amber_0603"
     component R_N4: resistor "r_generic_0603" value "680"
-    component D_N2: led "led_green_0603"
+    component D_N2: led "led_green_ltst_c190gkt"
     notes "" {
       "D_PWR lit when +3V3 is present. D_VALVE lit when firmware commands either valve on."
       "D_N1 lit when +12V_VALVE is present (R_N3), D_N2 lit when +3V3 is present (R_N4)."
+      "LED currents are I = (V - Vf) / R; the Vf of the selected LEDs is not yet read from their datasheets (needs sourcing), so the upper bound with Vf = 0 is given and the real current is lower. D_PWR, R_PWR 680: at most 3.3 V / 680 = 4.85 mA. D_VALVE, R_LV 680, driven from MCU pin PA7 at 3.3 V: at most 4.85 mA, which the pin must source (needs the STM32G030 pin current limit sourced). D_N2, R_N4 680 on +3V3: at most 4.85 mA. D_N1, R_N3 2.2 k on +12V_VALVE: at most 13.0 V / 2.2 k = 5.9 mA at 13.0 V, 12 V / 2.2 k = 5.5 mA nominal, about 77 mW in R_N3 at 13.0 V, within a 0603 resistor rating only if that rating is confirmed (needs sourcing)."
     }
   }
 
@@ -208,7 +210,7 @@ board "irrigation_controller" {
     component C_B8: capacitor "c_generic_0805" value "4.7uF"
     notes "" {
       "+3V3 bulk and high-frequency decoupling; R_N1 and R_N2 are bleeders across +3V3."
-      "C_B8 4.7 uF adds bulk decoupling to +3V3 beside the MCU. C_B2 and C_B4 100 nF plus C_B5 4.7 uF add high-frequency and bulk decoupling to +3V3 near the I2C parts. R_B2 100 k and R_B4 47 k are bleeders across +3V3 (33 uA and 70 uA at 3.3 V). TP_SDA and TP_SCL probe the I2C bus."
+      "C_B8 4.7 uF adds bulk decoupling to +3V3 beside the MCU. C_B2 and C_B4 100 nF plus C_B5 4.7 uF add high-frequency and bulk decoupling to +3V3 near the I2C parts. R_B2 100 k and R_B4 47 k are bleeders across +3V3 (3.3 V / 100 k = 33 uA and 3.3 V / 47 k = 70 uA); R_N1 100 k and R_N2 47 k give the same 33 uA and 70 uA, so the four bleeders draw 206 uA in total, 0.68 mW. TP_SDA and TP_SCL probe the I2C bus."
     }
   }
   group "12V RAIL DECOUPLING" color "#92400e" {
@@ -221,7 +223,7 @@ board "irrigation_controller" {
     component TP_V1: testpoint "testpoint_pad_1_5"
     notes "" {
       "+12V_VALVE decoupling and bleeders."
-      "R_B1 bleeds C_BULK (100 k, 0.14 mA at 13.2 V). C_B1 is 100 nF high-frequency bypass on +12V_VALVE. R_SN1 100 ohm in series with C_SN1 10 nF is an RC snubber across the valve 1 coil connector. TP_V1 is a test point on VALVE1_SW."
+      "R_B1 bleeds C_BULK (100 k, 13.0 V / 100 k = 0.130 mA). R_N5 and R_N6 are 100 k bleeders on the same rail, 0.130 mA each. Resistive bleed of the +12V_VALVE rail: R_N5, R_N6, R_B1 (100 k each) and R_B3 (47 k) in parallel are 19.5 k, 0.67 mA at 13.0 V; with R_EN 100 k to the buck enable 16.3 k. C_BULK 100 uF plus about 30 uF of other capacitance on the rail (C_IN1, C_IN2 10 uF each, C_N7 10 uF, small 100 nF parts) is about 130 uF, so the time constant is 16.3 k x 130 uF = 2.1 s and the rail is below 5 % (3 tau) in about 6 s, ignoring the faster discharge through the buck, LED and valve loads. C_B1 is 100 nF high-frequency bypass on +12V_VALVE. R_SN1 100 ohm in series with C_SN1 10 nF is an RC snubber across the valve 1 coil connector. TP_V1 is a test point on VALVE1_SW."
     }
   }
   group "TEST POINTS AND MOUNTING" color "#475569" {
@@ -259,10 +261,10 @@ board "irrigation_controller" {
   net "LED_N12_A" { R_N3.p2 D_N1.anode }
   net "LED_N33_A" { R_N4.p2 D_N2.anode }
   net "VIN_12V_RAW" class "PWR12" { J1.p1 F1.p1 }
-  net "VIN_FUSED" class "PWR12" { F1.p2 Q1.d TP_VIN.p1 }
+  net "VIN_FUSED" class "PWR12" { F1.p2 Q1.d D_TVS.cathode TP_VIN.p1 }
   net "Q1_GATE" { Q1.g R_QG.p1 D_QG.anode }
   net "+12V_VALVE" class "PWR12" {
-    Q1.s D_QG.cathode D_TVS.cathode C_BULK.p1 TP_12V.p1
+    Q1.s D_QG.cathode C_BULK.p1 TP_12V.p1
     C_IN1.p1 C_IN2.p1 U1.in R_EN.p1
     J_VALVE1.p1 D_FLY1.cathode J_VALVE2.p1 D_FLY2.cathode J_FLOW.p1
     R_N3.p1 C_N7.p1 R_N5.p1 C_N9.p1 R_N6.p1
