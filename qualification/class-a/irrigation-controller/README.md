@@ -10,10 +10,10 @@ on the board: a breakout attaches to the I2C header at address 0x44.
 
 **Status:** the board is routed and released (every net routed, KiCad reports no
 error, three exports are identical), and a fabrication package is generated from
-it. The JLCPCB DFM check (2026-10-29, PCB DFM, `fab/` Gerbers) reports no
-routing danger but silkscreen dangers and one through-hole-to-SMD danger: see
-the DFM section; the board was re-exported after that check with the label pass
-described under the routing table. Nothing here was built or tested on hardware.
+it. The JLCPCB PCB DFM check of that package (2026-10-29, 16:13) reports 19
+dangers and warnings in eight rows; none is a routing, drill or trace-spacing
+fault. What each one is, and why it stays or what tracks it, is under "Open
+items". Nothing here was built or tested on hardware.
 
 ## How this board was made
 
@@ -118,7 +118,7 @@ SammyOina's review of 2026-10-28, point by point:
 | SHT30 footprint and escape | The SHT30 and its capacitor are removed; a breakout attaches to `J_I2C` at 0x44. The router reported the 0.5 mm DFN unescapable; no fine-pitch part is left on the board. |
 | BOM and fabrication output | 126 of 126 lines sourced; Gerbers, drill and pick-and-place generated and hashed (below). |
 | DRC with the library table | 0 errors, 0 unconnected, 4 `silk_overlap` warnings, above. |
-| JLCPCB DFM | run 2026-10-29 on the `fab/` Gerbers (PCB DFM only, 2 layers, 75.1 x 65.4 mm): 7 danger items, below. |
+| JLCPCB DFM | run 2026-10-29 16:13 on the final `fab/` Gerbers (PCB DFM only, 2 layers, 75.1 x 65.4 mm): 19 dangers in two rows and warnings in eight rows, all listed under "Open items". |
 | Return-path advisories | none unresolved: Synth's release gate now refuses a board with a signal via that has no ground return, and this board passes. |
 | SWD and reset distance, decouplers | see the layout table: the reset button moved from 16.7 to 11.6 mm, the regulator's output capacitor from 29 to 11.6 mm; the SWD header is justified above. |
 | Crystal load | the NDK NX3225GD-8MHZ-STD-CRA-3 has an 8 pF load. With 5 pF assumed for stray capacitance, CL = C1 x C2 / (C1 + C2) + 5 pF; C1 = C2 = 2 x (8 - 5) = 6 pF, the nearest E24 value 6.2 pF gives 8.1 pF. `C_X1` and `C_X2` are 6.2 pF. The 5 pF stray figure is an assumption. |
@@ -183,33 +183,54 @@ The command-line export ran with the corrected registry parts of #326 and the tw
 new parts, so its BOM text can differ from an export through the MCP tool, which
 uses the registry checkout. Positions and routing are the same.
 
-## JLCPCB DFM result (PCB DFM, 2026-10-29)
+## JLCPCB DFM result (PCB DFM, 2026-10-29 16:13)
 
-Run by Jeff on the Gerbers of the export before the label pass, so the silkscreen rows
-below are from that file; the package in `fab/` has since been regenerated and the
-check has to be run again on it. Clear: sharp corners, BGA,
-via in pad, trace to edge, trace spacing, unconnected ends, trace width (0.2 mm,
-85 good), plated-hole to trace (0.39 mm), drill checks, slots. Findings:
+Run by Jeff on the `fab/` Gerbers (`irrigation_controller_gerbers.zip`, the final
+export with the label pass). Clear: sharp corners, BGA, via in pad, trace to
+edge, trace spacing, unconnected ends, trace width (0.2 mm, 85 good),
+plated-hole to trace (0.39 mm), fiducial, pad to board edge, drill checks and
+slots. Findings:
 
 | Item | Danger | Warning |
 |---|---|---|
-| Silkscreen to hole (0 mm) | 50 | 0 |
-| Silkscreen to pad (0 mm) | 5 | 33 |
+| Silkscreen to hole (0 mm) | 18 | 7 |
 | Through-hole to SMD clearance (1.9 mm) | 1 | 4 |
+| Silkscreen to pad (0.14 mm) | 0 | 32 |
 | Silkscreen line width (0.12 mm) | 0 | 50 |
 | Annular ring (0.15 mm) | 0 | 100 |
 | Pad spacing (0.15 mm) | 0 | 2 |
 | Solder mask opening near a trace (0.15 mm) | 0 | 57 |
 | Negative mask expansion (0.04 mm) | 0 | 50 |
 
-The silkscreen items are reference text drawn over holes and pads, which the label
-pass moves or hides; the other rows (annular ring, mask, pad spacing, line width,
-the one through-hole-to-SMD clearance) are not changed by it. The report is not
-committed (3.5 MB).
+The previous run of the same check, before the label pass, reported 50 dangers
+for silkscreen to hole; the pass moved reference labels off vias and pads, and
+18 remain. The report is not committed (3.5 MB).
+
+### Open items
+
+None of these is a routing or electrical fault. Each is a fabrication-check
+finding on the legend (silkscreen) or on the pad and via geometry the exporter
+writes, and none changes a net. Limits quoted below are from JLCPCB's
+[capabilities page](https://jlcpcb.com/capabilities/pcb-capabilities), read
+2026-10-29.
+
+| Finding | What it is | Why it stays, or what tracks it |
+|---|---|---|
+| Silkscreen to hole, 18 danger and 7 warning | Seven vias lie under lines of a part's silkscreen outline, measured on the Gerber: `U2` (two), `U4`, `U1`, `Q_V1`, `D_FLY1`, `C_OUT2`. No reference label is over a hole. | A silkscreen line over a 0.3 mm via hole changes nothing electrically. Synth commit `8052ca52` (branch `SYN-silk-clear-of-vias`) cuts outlines back from vias and passes its tests; this board was not re-exported with it. Tracked in #379. |
+| Through-hole to SMD, 1 danger and 4 warning | `C_BULK` pad 1 to `C_IN2` pad 2 is 1.9 mm (danger); `J_SWD` pads to `TP_SWDIO` and `TP_SWCLK` are 2.05 mm (warnings). | The capabilities page has no through-hole-to-SMD row, so the threshold is not sourced. Moving `C_IN2` 0.1 mm re-routes a released board, which can break it; not done. Tracked in #380. |
+| Silkscreen line width, 50 warning | Strokes are 0.12 mm; the page lists 0.15 mm as the minimum line width. | Below the limit, so it is not justified: the exporter's silkscreen width needs to change. Tracked in #379. |
+| Silkscreen to pad, 32 warning | 0.14 mm; the page lists 0.15 mm. | 0.01 mm short of the limit. Tracked in #379. |
+| Annular ring, 100 warning | Every via is 0.6 mm over a 0.3 mm drill: a ring of 0.15 mm. | Meets the page's via rule (diameter at least 0.1 mm over the hole, minimum 0.15 mm hole and 0.25 mm pad) but is below its plated-hole annular ring of 0.20 mm (0.18 mm absolute minimum at 1 oz). A warning, not a danger. Tracked in #378. |
+| Pad spacing, 2 warning | 0.15 mm between pads. | Equal to the page's 0.15 mm SMD pad clearance, so at the limit, not under it. |
+| Mask opening near a trace, 57 warning; negative mask expansion, 50 warning | Mask openings 0.15 mm from a trace; openings 0.04 mm smaller than their pads. | The page's rule is 1:1 pad to opening and 0.09 mm opening-to-trace clearance. I did not trace which pads these are; tracked in #378. |
+| `C_VDD2` 11 mm from its pin | Origin to origin; the nearest pad is closer. | Not justified electrically. A search never produced a released board with it closer (see the layout section). Tracked in #377. |
+
+Not run: the JLCPCB SMT DFM and the quote. A re-run of the PCB DFM was not done
+after the outline change above.
 
 ## Not done
 
-- The JLCPCB quote and the SMT DFM (the PCB DFM ran, below).
-- The JLCPCB DFM has to be re-run on the regenerated `fab/` Gerbers; the through-hole-to-SMD danger, the annular ring and the mask warnings are not looked at.
+- The JLCPCB quote and the SMT DFM.
+- A PCB DFM re-run on a board re-exported with the outline-trim change (#379).
 - Values not checked against datasheets: the bleeder resistors and the LED currents; the 5 pF stray capacitance of the crystal.
 - Nothing was built or run on hardware.
