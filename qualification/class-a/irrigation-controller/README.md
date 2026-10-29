@@ -147,20 +147,10 @@ JLCPCB assembly and are fitted by hand. The registry's own `lcsc_pn` for `d_scho
 `led_green_0603` (C72043) and `mp2307dn_buck_ep` (C18921) could not be confirmed
 by any search and are not used here.
 
-Where each BOM figure comes from: the rating, package and datasheet columns were read
-on 2026-10-29 from the product page in the `link` column (LCSC, JLCPCB, DigiKey,
-Distrelec, RS), and the Yageo resistors from Yageo's own datasheet (RC_L series,
-V.14, November 2025). Datasheet PDFs marked "(not opened)" in the table were not
-opened; their URL is the one the listing gives. Where two sources disagree the
-row says so: the BZT52C5V1 power (370 mW against 500 mW on the same page), the
-KT-0603Y peak wavelength (596 nm against a 584 to 594 nm range), the 24LC256
-supply range (2.5 to 5.5 V in the LCSC table, 1.8 to 5.5 V in its intro; LCSC
-lists the tape-and-reel 24LC256T-I/SN) and the PTS645 actuation force (1.57 N at
-Distrelec, 1.6 N at Mouser). The LCSC page for the crystal gives no ratings, so its
-figures (load 8 pF, tolerance +/-50 ppm, maximum ESR 500 ohm) are from NDK
-datasheet copies, not the LCSC page. DigiKey lists the MP2307DN-LF-Z as Not For
-New Designs: it is orderable today, but a longer-lived buck would be a
-design change.
+The rating, package and datasheet columns come from the manufacturer datasheets
+(Yageo, NIC, NDK, Broadcom, AOS) where they could be read, and otherwise from the
+product page named in the `link` column; the figures are listed in
+[`extend_sourcing.py`](agent-run/tools/extend_sourcing.py).
 
 ## Reproducibility
 
