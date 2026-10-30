@@ -110,8 +110,9 @@ pub fn build_pcb(
         build_layers(board.layers),
         build_setup_with(
             board.stackup.as_ref(),
-            &synth_drc::ManufacturerProfile::from_name(
+            &synth_drc::ManufacturerProfile::for_layers(
                 board.manufacturer.as_deref().unwrap_or_default(),
+                board.layers,
             ),
         ),
         // Net 0 = unconnected (KiCad convention). Real nets get

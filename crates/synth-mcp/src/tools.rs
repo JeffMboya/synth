@@ -1565,6 +1565,7 @@ fn route_design_externally_with(
             .manufacturer
             .clone()
             .unwrap_or_else(|| "jlc-standard".to_string()),
+        board.layers,
     );
     let process_warnings = grant_processes(&mut request, &board);
     request.input_hash = sha256_of(&res.pcb_path);
@@ -2891,6 +2892,7 @@ fn evaluate_candidate_mcp(
             .manufacturer
             .clone()
             .unwrap_or_else(|| "jlc-standard".to_string()),
+        board.layers,
     );
     // Granting only. Reporting belongs to the run the caller keeps: this is
     // reached from `select_placement_by_route` inside `execute_export`, which
@@ -3096,6 +3098,7 @@ fn execute_export(args: &Value, default_registry: Option<&Path>) -> Result<Value
             .manufacturer
             .clone()
             .unwrap_or_else(|| "jlc-standard".to_string()),
+        board.layers,
     );
     let process_warnings = grant_processes(&mut request, &board);
     request.input_hash = sha256_of(&res.pcb_path);

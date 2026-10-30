@@ -4785,6 +4785,7 @@ fn build_route_request(
             .manufacturer
             .clone()
             .unwrap_or_else(|| "jlc-standard".to_string()),
+        board.layers,
     );
     // After the floor, so the capability is read from the profile this board
     // actually names.
