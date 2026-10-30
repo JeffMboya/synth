@@ -63,8 +63,8 @@ electrical_type = "differential_negative"
 capabilities = ["usb_dn"]
 
 # --- General-purpose IO with peripheral capabilities ---
-# GP0..GP3 sample subset for ERC testing. The RP2350 GPIO mux is much
-# richer than what is recorded here; expanding is mechanical.
+# All thirty GPIOs are declared. The capabilities recorded on them are a
+# subset of the RP2350 GPIO mux; expanding them is mechanical.
 #
 # Every pin number in this file was compared against the installed
 # `MCU_RaspberryPi:RP2350A` symbol, hidden stacked pins included: 61 symbol
