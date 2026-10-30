@@ -4,11 +4,15 @@
   "gates": {
     "routing_and_drc": {
       "passed": false,
-      "evidence": "DRC: 2 unconnected items (+12V_PROT, +3V3). Needs routing fix."
+      "evidence": "DRC: 135 unconnected pads. 2 open nets (+12V_PROT, +3V3). Routing failed due to placement issues (connectors not flush, support parts too far from pads). Placement requires revision."
     },
     "erc_dispositioned": {
-      "passed": False,
+      "passed": false,
       "evidence": "56 ERC warnings, 0 errors. See synth_validate output."
+    },
+    "placement_review": {
+      "passed": false,
+      "evidence": "Visual review requires revision: J1/J3/J4/J5 not flush with board edges, support parts too far from served pads, decoupling caps too far from regulators."
     }
   }
 }
