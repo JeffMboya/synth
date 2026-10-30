@@ -5061,8 +5061,6 @@ fn select_placement_for_routing(
     Ok(best.map(|(_, placement, order)| (placement, order)))
 }
 
-/// Export `candidate` to a scratch directory and route it, returning the route
-/// cost and report. `None` when the engine is unavailable.
 /// How one candidate's routing ended, with the report the caller prints from.
 enum CliAttempt {
     Routed(CandidateCost, Box<synth_router::RouteReport>),
@@ -5070,6 +5068,9 @@ enum CliAttempt {
     NoTime,
 }
 
+/// Export `candidate` to a scratch directory and route it under `clock`,
+/// returning the route cost and report, or saying that the engine is
+/// unavailable or that the export left no time to route.
 fn evaluate_candidate(
     board: &synth_ir::Board,
     sidecars: &synth_kicad::Sidecars,
