@@ -88,24 +88,39 @@ def _fanout(python: str, repo: Path, board: Path, components: list[str],
     flags, escaping a 121-ball BGA rewrote the project's own minimums from
     0.56/0.3 down to 0.35/0.2 and placed 11 vias there.
     """
-    # Under-pad escape puts a via inside a pad, which is a fabrication
-    # decision and not the escape engine's to make. The board declares
-    # `requires via_in_pad` and the manufacturer profile offers it, or it does
-    # not; when it does not, escaping under-pad produces geometry that is
-    # invalid before anything validates it.
-    if method == "underpad" and not allow_via_in_pad:
-        if required:
-            raise RuntimeError(
-                "declared escape needs via-in-pad, which this board does not "
-                f"permit: {', '.join(sorted(required))}. Declare `requires "
-                "via_in_pad` and choose a tier that offers it, or escape "
-                "another way."
+    # `REFDES[:method[:layers]]`: a design that declared an `escape` block
+    # names its own engine and layers, and one that declared nothing takes the
+    # defaults. Split on ':' rather than parsing a second flag so the
+    # per-package choice cannot drift from the package it belongs to.
+    plan: list[tuple[str, str, list[str]]] = []
+    for spec in components:
+        parts = spec.split(":")
+        refdes = parts[0]
+        want_method = parts[1] if len(parts) > 1 and parts[1] else method
+        want_layers = [l for l in (parts[2].split(",") if len(parts) > 2 else []) if l]
+        # Under-pad escape puts a via inside a pad, which is a fabrication
+        # decision and not the escape engine's to make. The board declares
+        # `requires via_in_pad` and the manufacturer profile offers it, or it
+        # does not; when it does not, escaping under-pad produces geometry that
+        # is invalid before anything validates it. Judged per package, on the
+        # method that package will actually use: one declared `channel` needs
+        # no via in a pad, and must not be refused for the default the others
+        # take.
+        if want_method == "underpad" and not allow_via_in_pad:
+            if refdes in required:
+                raise RuntimeError(
+                    f"declared escape of {refdes} needs via-in-pad, which this "
+                    "board does not permit. Declare `requires via_in_pad` and "
+                    "choose a tier that offers it, or escape it another way."
+                )
+            print(
+                f"skipping under-pad escape of {refdes}: the board does not "
+                "permit via-in-pad, so it routes unescaped",
+                file=sys.stderr,
             )
-        print(
-            "skipping under-pad escape: the board does not permit via-in-pad, "
-            "so these packages route unescaped",
-            file=sys.stderr,
-        )
+            continue
+        plan.append((refdes, want_method, want_layers))
+    if not plan:
         return board
 
     planes = repo / "py_router" / "route_planes.py"
@@ -130,6 +145,40 @@ def _fanout(python: str, repo: Path, board: Path, components: list[str],
         print(f"warning: no bga_fanout.py under {repo}; skipping escape", file=sys.stderr)
         return current
 
+    for index, (refdes, want_method, want_layers) in enumerate(plan):
+        fanned = board.with_suffix(f".fanned{index}.kicad_pcb")
+        command = [
+            python, str(fanout), str(current),
+            "--component", refdes,
+            "--output", str(fanned),
+            "--escape-method", want_method,
+            "--clearance", str(clearance),
+        ]
+        if want_layers:
+            command.append("--layers")
+            command.extend(want_layers)
+        # The escape via is the one the net class declared, so a package that
+        # needs the tier's smallest via escapes with it rather than with the
+        # engine's default.
+        if via_size and via_drill:
+            command.extend(("--via-size", str(via_size), "--via-drill", str(via_drill)))
+        command.extend(("--fab-tier", fab_tier, "--escalation", escalation))
+        if strict_sizes:
+            command.append("--strict-sizes")
+        print(f"escaping {refdes}:", " ".join(command), flush=True)
+        if subprocess.run(command, check=False).returncode == 0 and fanned.is_file():
+            current = fanned
+        else:
+            if refdes in required:
+                raise RuntimeError(
+                    f"declared escape of {refdes} failed; the board asked for "
+                    "it explicitly, so the route fails rather than silently "
+                    "handing the package to the general router"
+                )
+            print(f"warning: fanout of {refdes} failed; routing it unescaped", file=sys.stderr)
+
+    return current
+
     for index, spec in enumerate(components):
         # `REFDES[:method[:layers]]`: a design that declared an `escape` block
         # names its own engine and layers, and one that declared nothing takes
@@ -139,6 +188,26 @@ def _fanout(python: str, repo: Path, board: Path, components: list[str],
         refdes = parts[0]
         want_method = parts[1] if len(parts) > 1 and parts[1] else method
         want_layers = [l for l in (parts[2].split(",") if len(parts) > 2 else []) if l]
+        # Under-pad escape puts a via inside a pad, which is a fabrication
+        # decision and not the escape engine's to make. The board declares
+        # `requires via_in_pad` and the manufacturer profile offers it, or it
+        # does not; when it does not, escaping under-pad produces geometry that
+        # is invalid before anything validates it. Judged per package, on the
+        # method that package will actually use: one declared `channel` needs
+        # no via in a pad, and must not be refused for its neighbours' default.
+        if want_method == "underpad" and not allow_via_in_pad:
+            if refdes in required:
+                raise RuntimeError(
+                    f"declared escape of {refdes} needs via-in-pad, which this "
+                    "board does not permit. Declare `requires via_in_pad` and "
+                    "choose a tier that offers it, or escape it another way."
+                )
+            print(
+                f"skipping under-pad escape of {refdes}: the board does not "
+                "permit via-in-pad, so it routes unescaped",
+                file=sys.stderr,
+            )
+            continue
         fanned = board.with_suffix(f".fanned{index}.kicad_pcb")
         command = [
             python, str(fanout), str(current),
