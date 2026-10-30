@@ -261,7 +261,7 @@ impl ManufacturerProfile {
     ///
     /// [`Self::from_name`] answers "what is this name", which is the right
     /// question when printing a catalogue and the wrong one when deciding
-    /// what geometry a board may be judged against. `E-SYNTH-PROCESS-004`
+    /// what geometry a board may be judged against. `E-SYNTH-PROCESS-006`
     /// reports the mismatch, but it only fires through the validator: every
     /// other consumer -- the exporter's rule file, `synth route`, `synth
     /// export-kicad`, the MCP signal-integrity tool -- called `from_name` and
@@ -388,7 +388,7 @@ mod tests {
 
     /// The direct DRC path must not grant a process the board cannot buy.
     ///
-    /// `E-SYNTH-PROCESS-004` reports the mismatch, but it only fires through
+    /// `E-SYNTH-PROCESS-006` reports the mismatch, but it only fires through
     /// the validator. Every other consumer -- the exporter's rule file,
     /// `synth route`, `synth export-kicad`, the MCP signal-integrity tool --
     /// resolves the profile for itself, so the refusal has to live in

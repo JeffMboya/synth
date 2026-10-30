@@ -1,4 +1,4 @@
-# E-SYNTH-PROCESS-004 — the declared process is not offered for this stackup
+# E-SYNTH-PROCESS-006 — the declared process is not offered for this stackup
 
 **Severity:** error
 **Stage:** erc

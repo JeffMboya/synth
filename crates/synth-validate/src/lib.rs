@@ -2461,7 +2461,7 @@ impl ErcRule for RequiredProcessOfferedRule {
 }
 
 // -----------------------------------------------------------------------------
-// E-SYNTH-PROCESS-004 — the declared process is not offered for this stackup
+// E-SYNTH-PROCESS-006 — the declared process is not offered for this stackup
 // -----------------------------------------------------------------------------
 
 /// A surcharged tier is quoted against a stackup, not sold outright.
@@ -2481,7 +2481,7 @@ struct ProcessLayerApplicabilityRule;
 
 impl ErcRule for ProcessLayerApplicabilityRule {
     fn code(&self) -> &'static str {
-        "E-SYNTH-PROCESS-004"
+        "E-SYNTH-PROCESS-006"
     }
 
     fn category(&self) -> ErcCategory {
@@ -4342,7 +4342,7 @@ mod tests {
         let found = ProcessLayerApplicabilityRule.check(&board, "test.synth");
 
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].code, "E-SYNTH-PROCESS-004");
+        assert_eq!(found[0].code, "E-SYNTH-PROCESS-006");
         assert_eq!(found[0].severity, Severity::Error);
         assert!(
             found[0]
