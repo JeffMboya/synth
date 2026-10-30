@@ -382,7 +382,8 @@ pub fn statistics_from(
     if let Some(report) = report {
         let open = report.open_nets();
         statistics.open_net_names.clone_from(&open);
-        statistics.open_nets = open.len();
+        // A count-only failure names no net but still leaves the route incomplete.
+        statistics.open_nets = open.len().max(report.failed.unwrap_or(0));
         findings.insert(
             "claimed_successful".to_string(),
             report
@@ -636,6 +637,17 @@ mod tests {
                 .map(String::as_str),
             Some("2")
         );
+    }
+
+    #[test]
+    fn a_count_only_failure_marks_the_candidate_incomplete() {
+        let report = KrtReport {
+            failed: Some(2),
+            ..KrtReport::default()
+        };
+        let statistics = statistics_from(None, Some(&report));
+        assert_eq!(statistics.open_nets, 2);
+        assert!(statistics.open_net_names.is_empty());
     }
 
     #[test]

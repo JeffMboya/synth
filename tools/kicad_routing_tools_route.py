@@ -49,13 +49,21 @@ def _load_summary(stats: Path) -> dict:
         raise RuntimeError(f"could not parse the KRT summary at {stats}: {error}") from error
 
 
+def _failed_count(report: dict) -> int:
+    """The summary's aggregate failure count, which may come with no net names."""
+    failed = report.get("failed")
+    if isinstance(failed, bool) or not isinstance(failed, (int, float)):
+        return 0
+    return int(failed) if failed > 0 else 0
+
+
 def _failed_nets(stats: Path) -> bool:
     """Whether the engine's summary shows an open or failed connection group."""
     try:
         report = _load_summary(stats)
     except RuntimeError:
         return True
-    return any(
+    return _failed_count(report) > 0 or any(
         report.get(key) for key in ("failed_single", "open_single", "failed_multipoint")
     )
 
@@ -70,6 +78,8 @@ def _policy_findings(report: dict, allow_via_in_pad: bool) -> list[str]:
     )
     if open_items:
         findings.append(f"{open_items} open/failed connection group(s)")
+    elif failed := _failed_count(report):
+        findings.append(f"{failed} failed connection(s) reported without net names")
 
     design_rules = report.get("design_rules") or {}
     floors = design_rules.get("board_floors") or {}
