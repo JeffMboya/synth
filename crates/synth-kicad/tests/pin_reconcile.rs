@@ -105,3 +105,38 @@ fn usb_uart_vio_rail_gets_a_power_flag() {
         anchor.refdes
     );
 }
+
+#[test]
+fn a_rail_whose_only_power_pins_are_on_generated_symbols_still_gets_a_power_flag() {
+    // The buck board's U1 (LMR38010) is drawn from a generated symbol, and no
+    // other pin on VIN or GND is a power input, so without a flag KiCad ERC
+    // reports `power_pin_not_driven` on both.
+    let registry = synth_registry::load_dir(&workspace_root().join("registry").join("parts"))
+        .expect("registry");
+    let filename = "buck.synth";
+    let src = std::fs::read_to_string(
+        workspace_root()
+            .join("qualification")
+            .join("class-b")
+            .join("buck")
+            .join(filename),
+    )
+    .unwrap();
+    let ast = synth_parser::parse(&src, filename.to_string())
+        .ast
+        .expect("ast");
+    let board = synth_ir::lower(&ast, &registry, filename)
+        .board
+        .expect("board");
+    let layout = synth_layout::layout(&board);
+    let placements: std::collections::HashMap<_, _> =
+        layout.components.iter().map(|p| (p.id, p)).collect();
+    let drivers = synth_kicad::pin_reconcile::undriven_power_nets(&board, &placements);
+    for rail in ["VIN", "GND"] {
+        let driver = drivers
+            .iter()
+            .find(|d| board.net(d.net).unwrap().name == rail)
+            .unwrap_or_else(|| panic!("{rail} is flagged"));
+        assert!(driver.anchor_terminal.is_some(), "{rail}: {driver:?}");
+    }
+}
