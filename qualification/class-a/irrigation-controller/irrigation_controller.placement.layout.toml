@@ -228,8 +228,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C_BS]
-x = 27.1
-y = 15.5
+x = 25.10
+y = 15.50
 rotation = 0
 source = "agent"
 priority = "hard"
@@ -318,8 +318,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C_U5]
-x = 54.0
-y = 56.0
+x = 54.64
+y = 48.76
 rotation = 0
 source = "agent"
 priority = "hard"
@@ -678,8 +678,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C_IN1]
-x = 31.0
-y = 11.5
+x = 27.54
+y = 13.19
 rotation = 0
 source = "agent"
 priority = "hard"
@@ -768,8 +768,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C_N13]
-x = 54.5
-y = 48.0
+x = 52.50
+y = 39.00
 rotation = 0
 source = "agent"
 priority = "hard"
@@ -1110,8 +1110,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C_N9]
-x = 26.5
-y = 13.0
+x = 23.00
+y = 6.00
 rotation = 0
 source = "agent"
 priority = "hard"
