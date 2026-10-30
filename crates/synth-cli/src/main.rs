@@ -4439,6 +4439,7 @@ fn export_kicad(
         overrides,
         release::reviewer_state(board),
     )
+    .with_synthetic_symbols(release::synthetic_symbol_parts(board))
     .with_signal_integrity(&synth_violations)
     .with_release_blocked(release_drc_blocked)
     .with_routing(Some(release::RoutingState::from_report(

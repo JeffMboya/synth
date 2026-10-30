@@ -82,6 +82,7 @@ pub fn build_pcb(
     routing: &Routing,
     project: &Uuid,
     label_overrides: &HashMap<String, synth_layout::sidecar::SidecarLabel>,
+    fixed_vias: &[synth_layout::sidecar::SidecarVia],
 ) -> Result<Sexp, PlaneFanoutError> {
     let placements_by_id: HashMap<ComponentId, &ComponentPlacement> =
         placement.components.iter().map(|p| (p.id, p)).collect();
@@ -186,6 +187,25 @@ pub fn build_pcb(
     }
     for (idx, via) in routing.vias.iter().enumerate() {
         children.push(build_via(via, idx, &net_id_lookup, project));
+    }
+    for (idx, via) in fixed_vias.iter().enumerate() {
+        let Some((pcb_net, _)) = net_table.iter().find(|(_, name)| *name == via.net) else {
+            return Err(PlaneFanoutError {
+                net: via.net.clone(),
+                detail: format!(
+                    "the placement sidecar fixes a via at ({}, {}) mm on a net the board does not have",
+                    via.x, via.y
+                ),
+            });
+        };
+        children.push(build_ground_stitch_via(
+            mm_to_nm(via.x),
+            mm_to_nm(via.y),
+            *pcb_net,
+            project,
+            // Past every stitch via the exporter itself places, so the uuids stay distinct.
+            FIXED_VIA_UUID_BASE + idx,
+        ));
     }
 
     // Ground Plane Copper Flood Zone: Inject continuous GND copper zones on F.Cu, B.Cu, and inner layers
@@ -804,6 +824,9 @@ fn clear_of_mounting_holes(via: Point, inward: i64, holes: &[(Point, i64)]) -> P
     }
     via
 }
+
+/// Uuid index of the first sidecar-fixed via, clear of the stitch vias the exporter derives.
+const FIXED_VIA_UUID_BASE: usize = 1_000_000;
 
 fn build_ground_stitch_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usize) -> Sexp {
     let via_uuid = derive_entity_uuid(project, "ground-stitch-via", &idx.to_string());
@@ -3589,6 +3612,66 @@ mod tests {
     }
 
     #[test]
+    fn a_sidecar_via_is_written_on_its_net_before_routing() {
+        let mut board = plain_test_board();
+        board.nets = vec![synth_ir::Net {
+            id: synth_ir::NetId(0),
+            name: "GND".to_string(),
+            auto_named: false,
+            endpoints: vec![],
+            netclass: None,
+            voltage: None,
+        }];
+        let placement = Placement {
+            board_outline: synth_geometry::Rect::from_center_half_extents(
+                Point::new(0, 0),
+                mm_to_nm(25.0),
+                mm_to_nm(25.0),
+            ),
+            components: vec![],
+        };
+        let vias = [synth_layout::sidecar::SidecarVia {
+            x: 3.5,
+            y: -4.25,
+            net: "GND".into(),
+        }];
+        let text = build_pcb(
+            &board,
+            &placement,
+            &Routing::default(),
+            &Uuid::nil(),
+            &HashMap::new(),
+            &vias,
+        )
+        .expect("export")
+        .to_string_pretty();
+        let start = text
+            .match_indices("(via")
+            .map(|(at, _)| at)
+            .find(|at| text[at + 4..].starts_with(char::is_whitespace))
+            .expect("a via is written");
+        let via = &text[start..];
+        assert!(via.contains("(at 3.5 -4.25)"), "{via}");
+        assert!(via.contains("(net 1)"), "{via}");
+
+        let unknown = [synth_layout::sidecar::SidecarVia {
+            x: 0.0,
+            y: 0.0,
+            net: "NOPE".into(),
+        }];
+        let error = build_pcb(
+            &board,
+            &placement,
+            &Routing::default(),
+            &Uuid::nil(),
+            &HashMap::new(),
+            &unknown,
+        )
+        .expect_err("an unknown net is refused");
+        assert_eq!(error.net, "NOPE");
+    }
+
+    #[test]
     fn test_kicad_cli_roundtrip_valid_board() {
         let board = Board {
             schematic_overflow: None,
@@ -3630,7 +3713,7 @@ mod tests {
             pad_escape_rejections: 0,
         };
         let project = Uuid::nil();
-        let pcb_sexp = build_pcb(&board, &placement, &routing, &project, &HashMap::new())
+        let pcb_sexp = build_pcb(&board, &placement, &routing, &project, &HashMap::new(), &[])
             .expect("plane fanout");
         let pcb_str = pcb_sexp.to_string_pretty();
 

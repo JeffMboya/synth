@@ -607,16 +607,34 @@ impl RouteRequest {
             policy: FabricationPolicy::default(),
             profile_name: "unspecified".to_string(),
             input_hash: String::new(),
-            source_revision: None,
+            source_revision: revision_from(std::env::var("SYNTH_SOURCE_REVISION").ok()),
             routing_order: Vec::new(),
             ground_nets: Vec::new(),
         }
     }
 }
 
+/// The source revision a caller names in `SYNTH_SOURCE_REVISION`, so the routing
+/// report says which commit its board was built from. An empty value names none.
+fn revision_from(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_named_source_revision_is_kept_and_a_blank_one_is_not() {
+        assert_eq!(
+            revision_from(Some(" abc123\n".into())).as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(revision_from(Some("  ".into())), None);
+        assert_eq!(revision_from(None), None);
+    }
 
     /// A scratch directory holding an exported board and, optionally, its
     /// sibling project.

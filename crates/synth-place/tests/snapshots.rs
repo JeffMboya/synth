@@ -258,9 +258,12 @@ fn jst_connectors_face_outward_on_every_edge() {
     );
 }
 
+const VERTICAL_JST_XH: [&str; 2] = ["jst_b2b_xh_a_2pin", "jst_b4b_xh_a_4pin"];
+
 /// A connector part that goes on a board edge says which way its plug opens, or
 /// the placer has nothing to orient it by and the DRC cannot check it. Vertical
 /// pin headers are the exception: their opening faces up, not out of an edge.
+/// The two top-entry JST XH headers are vertical too, so they are listed by id.
 #[test]
 fn every_edge_connector_declares_which_way_its_plug_opens() {
     let registry = synth_registry::load_dir(&workspace_root().join("registry").join("parts"))
@@ -268,7 +271,10 @@ fn every_edge_connector_declares_which_way_its_plug_opens() {
     let mut missing = Vec::new();
     let mut checked = 0;
     for (_, part) in registry.iter() {
-        if !matches!(part.kind.as_str(), "connector" | "jack") || part.id.0.starts_with("header_") {
+        if !matches!(part.kind.as_str(), "connector" | "jack")
+            || part.id.0.starts_with("header_")
+            || VERTICAL_JST_XH.contains(&part.id.0.as_str())
+        {
             continue;
         }
         checked += 1;

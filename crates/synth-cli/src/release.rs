@@ -233,6 +233,12 @@ pub struct ReleaseManifest {
     pub exception: Option<Exception>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviewer_state: Vec<ReviewerState>,
+    /// Parts whose schematic symbol Synth drew from the registry pin map
+    /// because the part names no KiCad library symbol. The artwork is
+    /// generated, not a reviewed library symbol, so a reader of the package
+    /// knows which parts' symbols to check.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub synthetic_symbols: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<RoutingState>,
     /// Signal/power-integrity findings on the routed board. Recorded so a CI
@@ -289,9 +295,17 @@ impl ReleaseManifest {
             overrides,
             exception: None,
             reviewer_state,
+            synthetic_symbols: Vec::new(),
             routing: None,
             signal_integrity: None,
         }
+    }
+
+    /// Record the parts whose schematic symbol is synthesized.
+    #[must_use]
+    pub fn with_synthetic_symbols(mut self, parts: Vec<String>) -> Self {
+        self.synthetic_symbols = parts;
+        self
     }
 
     /// Record the routed signal/power-integrity findings.
@@ -452,6 +466,20 @@ pub enum GateVerdict {
     Accepted,
     AcceptedUnderException { authorized_by: String },
     Rejected,
+}
+
+/// The ids of the board's parts that name no KiCad symbol, so the schematic
+/// exporter draws them from the registry pin map, sorted and without repeats.
+pub fn synthetic_symbol_parts(board: &synth_ir::Board) -> Vec<String> {
+    board
+        .components
+        .iter()
+        .filter_map(|c| c.part.as_ref())
+        .filter(|p| p.kicad_symbol.is_none())
+        .map(|p| p.id.0.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub fn reviewer_state(board: &synth_ir::Board) -> Vec<ReviewerState> {
