@@ -1047,8 +1047,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C_U4]
-x = 55.0
-y = 44.5
+x = 51.62
+y = 41.78
 rotation = 0
 source = "agent"
 priority = "hard"

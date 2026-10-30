@@ -169,14 +169,14 @@ board "irrigation_controller" {
 
   // ---- Indicators -----------------------------------------------------------------------------
   group "LEDS" color "#be123c" {
-    component D_PWR: led "led_green_ltst_c190gkt"
+    component D_PWR: led "ltst_c190kgkt"
     component R_PWR: resistor "r_generic_0603" value "680"
     component D_VALVE: led "led_amber_0603"
     component R_LV: resistor "r_generic_0603" value "680"
     component R_N3: resistor "r_generic_0603" value "2.2k"
     component D_N1: led "led_amber_0603"
     component R_N4: resistor "r_generic_0603" value "680"
-    component D_N2: led "led_green_ltst_c190gkt"
+    component D_N2: led "ltst_c190kgkt"
     notes "" {
       "D_PWR lit when +3V3 is present. D_VALVE lit when firmware commands either valve on."
       "D_N1 lit when +12V_VALVE is present (R_N3), D_N2 lit when +3V3 is present (R_N4)."
