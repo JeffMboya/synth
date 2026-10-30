@@ -165,15 +165,17 @@ def main() -> int:
     # flags it, so the first attempt prices vias high and keeps nets on one
     # layer. A board that does not route that way is routed again at the
     # engine's own via cost rather than failed.
-    # The summary is the evidence for the attempt that wrote it, so it is
-    # removed before each attempt: an attempt that writes none is a failure
-    # rather than a pass on the previous attempt's report.
+    # The summary and the board are the evidence for the attempt that wrote
+    # them, so both are removed before each attempt: an attempt that writes
+    # none is a failure rather than a pass on the previous attempt's output.
     print("running KiCadRoutingTools:", " ".join(command), flush=True)
     stats.unlink(missing_ok=True)
+    args.output_board.unlink(missing_ok=True)
     completed = subprocess.run([*command, "--via-cost", str(KEEP_LAYER_VIA_COST)], check=False)
     if completed.returncode or _failed_nets(stats):
         print("retrying KiCadRoutingTools at its default via cost", flush=True)
         stats.unlink(missing_ok=True)
+        args.output_board.unlink(missing_ok=True)
         completed = subprocess.run(command, check=False)
 
     policy_ok = completed.returncode == 0

@@ -31,7 +31,8 @@ if not isinstance(step, dict) or "summary" not in step:
     step = {"summary": step}
 if step["summary"] is not None:
     Path(sys.argv[sys.argv.index("--json-out") + 1]).write_text(json.dumps(step["summary"]))
-Path(sys.argv[2]).write_text("(kicad_pcb)")
+if step.get("board", True):
+    Path(sys.argv[2]).write_text("(kicad_pcb)")
 sys.exit(step.get("exit", 0))
 """
 
@@ -39,8 +40,8 @@ sys.exit(step.get("exit", 0))
 def run_adapter(summaries):
     """Run the adapter against the stub; return (exit code, via costs requested).
 
-    Each step is a summary, or `{"summary": ..., "exit": n}`; a `None` summary
-    means the attempt writes no report."""
+    Each step is a summary, or `{"summary": ..., "exit": n, "board": bool}`;
+    a `None` summary means the attempt writes no report, `board: False` no board."""
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp) / "krt"
         (repo / "py_router").mkdir(parents=True)
@@ -111,6 +112,16 @@ class RetryTest(unittest.TestCase):
 
     def test_a_retry_that_follows_a_failed_attempt_needs_its_own_summary(self):
         code, costs = run_adapter([{"summary": CLEAN, "exit": 1}, {"summary": None}])
+        self.assertEqual(costs, ["1000", "default"])
+        self.assertNotEqual(code, 0)
+
+    def test_a_retry_without_a_fresh_board_is_not_judged_on_the_first_one(self):
+        code, costs = run_adapter(
+            [
+                {"summary": {"successful": 0, "failed": 1}},
+                {"summary": CLEAN, "board": False},
+            ]
+        )
         self.assertEqual(costs, ["1000", "default"])
         self.assertNotEqual(code, 0)
 
