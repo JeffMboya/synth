@@ -79,6 +79,7 @@ pub mod cem;
 pub mod floorplan;
 pub mod modules;
 pub mod outline_packer;
+mod repeats;
 pub mod score;
 
 use serde::{Deserialize, Serialize};
@@ -4911,7 +4912,11 @@ fn courtyard_gap_mm(a: Rect, b: Rect) -> f64 {
 /// inference calls it a rail or ground, or any pin on it is typed as a ground
 /// reference or a power input or output. The pin types are what the inference
 /// misses on a net the author left unnamed.
-fn is_supply_net(board: &Board, domains: &synth_ir::PowerDomainMap, net: &synth_ir::Net) -> bool {
+pub(crate) fn is_supply_net(
+    board: &Board,
+    domains: &synth_ir::PowerDomainMap,
+    net: &synth_ir::Net,
+) -> bool {
     use synth_registry::ElectricalType;
     domains
         .get(net.id)
@@ -5068,6 +5073,230 @@ fn distant_support_parts(board: &Board, placement: &Placement) -> Vec<DistantSup
 /// How far past its role limit a hinted support part may still sit: the
 /// nearest legal spot beside a crowded pad is not always inside it.
 const LEGAL_SPOT_SLACK_MM: f64 = 0.5;
+
+/// A part of a repeated circuit that sits where its counterpart in the first
+/// copy would not put it.
+#[derive(Debug)]
+struct MismatchedCopy {
+    refdes: String,
+    reference_refdes: String,
+    reference_anchor: String,
+    anchor: String,
+    mm: f64,
+    rotation_differs: bool,
+    suggested: (f64, f64),
+    suggested_rotation: Rotation,
+}
+
+/// The pairing of `n` parts with `n` counterparts that has the smallest total
+/// `cost(part, counterpart)`: every order for the few equal parts a circuit
+/// has, the Hungarian algorithm for a larger set.
+fn closest_pairing(n: usize, cost: impl Fn(usize, usize) -> f64) -> Vec<usize> {
+    fn search(
+        n: usize,
+        cost: &impl Fn(usize, usize) -> f64,
+        row: usize,
+        used: &mut Vec<bool>,
+        current: &mut Vec<usize>,
+        so_far: f64,
+        best: &mut (f64, Vec<usize>),
+    ) {
+        if so_far >= best.0 {
+            return;
+        }
+        if row == n {
+            *best = (so_far, current.clone());
+            return;
+        }
+        for j in 0..n {
+            if !used[j] {
+                used[j] = true;
+                current.push(j);
+                search(n, cost, row + 1, used, current, so_far + cost(row, j), best);
+                current.pop();
+                used[j] = false;
+            }
+        }
+    }
+    if n > 7 {
+        return hungarian_pairing(n, &cost);
+    }
+    let mut best = (f64::INFINITY, (0..n).collect());
+    search(
+        n,
+        &cost,
+        0,
+        &mut vec![false; n],
+        &mut Vec::new(),
+        0.0,
+        &mut best,
+    );
+    best.1
+}
+
+/// The minimum-cost pairing of `n` parts with `n` counterparts in O(n^3): the
+/// shortest-augmenting-path form of the Hungarian algorithm with row and column
+/// potentials. Ties go to the lower index, so the result is deterministic.
+fn hungarian_pairing(n: usize, cost: &impl Fn(usize, usize) -> f64) -> Vec<usize> {
+    // Rows and columns are 1-based; index 0 is the virtual start.
+    let mut u = vec![0.0_f64; n + 1];
+    let mut v = vec![0.0_f64; n + 1];
+    let mut owner = vec![0_usize; n + 1];
+    let mut way = vec![0_usize; n + 1];
+    for row in 1..=n {
+        owner[0] = row;
+        let mut col = 0;
+        let mut min_to = vec![f64::INFINITY; n + 1];
+        let mut visited = vec![false; n + 1];
+        loop {
+            visited[col] = true;
+            let current = owner[col];
+            let mut delta = f64::INFINITY;
+            let mut next = 0;
+            for j in 1..=n {
+                if visited[j] {
+                    continue;
+                }
+                let reduced = cost(current - 1, j - 1) - u[current] - v[j];
+                if reduced < min_to[j] {
+                    min_to[j] = reduced;
+                    way[j] = col;
+                }
+                if min_to[j] < delta {
+                    delta = min_to[j];
+                    next = j;
+                }
+            }
+            for j in 0..=n {
+                if visited[j] {
+                    u[owner[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    min_to[j] -= delta;
+                }
+            }
+            col = next;
+            if owner[col] == 0 {
+                break;
+            }
+        }
+        loop {
+            let previous = way[col];
+            owner[col] = owner[previous];
+            col = previous;
+            if col == 0 {
+                break;
+            }
+        }
+    }
+    let mut pairing = vec![0; n];
+    for j in 1..=n {
+        pairing[owner[j] - 1] = j - 1;
+    }
+    pairing
+}
+
+/// How far a part may sit from where the first copy's layout would put it
+/// before two copies of one circuit no longer read as copies.
+const REPEAT_TOLERANCE_MM: f64 = 1.0;
+
+/// Parts of repeated circuits whose position, relative to their copy's anchor,
+/// differs from the first copy's. Copies whose anchors face different ways are
+/// not compared: the offsets would have to be turned, and a wrong turn would be
+/// worse advice than none.
+fn mismatched_repeats(board: &Board, placement: &Placement) -> Vec<MismatchedCopy> {
+    let by_id: std::collections::HashMap<ComponentId, &ComponentPlacement> =
+        placement.components.iter().map(|p| (p.id, p)).collect();
+    let mut found = Vec::new();
+    for group in repeats::find_repeated_circuits(board) {
+        let reference = &group[0];
+        let Some(ref_anchor) = by_id.get(&reference.anchor) else {
+            continue;
+        };
+        for copy in &group[1..] {
+            let Some(anchor) = by_id.get(&copy.anchor) else {
+                continue;
+            };
+            if anchor.rotation != ref_anchor.rotation {
+                continue;
+            }
+            // The offsets are measured from each copy's anchor, so the two
+            // anchors have to be the same part of the circuit. When a copy
+            // chose another part as its anchor (a lone LED and its resistor
+            // rank alike), its offsets mean nothing against the reference.
+            let label_of = |island: &repeats::Island, id: ComponentId| {
+                island.parts.iter().find(|(p, _)| *p == id).map(|(_, l)| *l)
+            };
+            if label_of(copy, copy.anchor) != label_of(reference, reference.anchor) {
+                continue;
+            }
+            let mut labels: Vec<u64> = copy.parts.iter().map(|(_, l)| *l).collect();
+            labels.sort_unstable();
+            labels.dedup();
+            let offset = |id: ComponentId, from: &ComponentPlacement| {
+                by_id.get(&id).map(|p| {
+                    (
+                        synth_geometry::nm_to_mm(p.center.x_nm - from.center.x_nm),
+                        synth_geometry::nm_to_mm(p.center.y_nm - from.center.y_nm),
+                    )
+                })
+            };
+            for label in labels {
+                let ours = copy.parts_with_label(label, copy.anchor);
+                let theirs = reference.parts_with_label(label, reference.anchor);
+                if ours.is_empty() || ours.len() != theirs.len() {
+                    continue;
+                }
+                // Equal parts on different pins are interchangeable by
+                // structure alone; pair them so the layouts differ least.
+                let cost = |i: usize, j: usize| match (
+                    offset(ours[i], anchor),
+                    offset(theirs[j], ref_anchor),
+                ) {
+                    (Some(a), Some(b)) => (a.0 - b.0).hypot(a.1 - b.1),
+                    _ => f64::MAX / 8.0,
+                };
+                for (i, j) in closest_pairing(ours.len(), cost).into_iter().enumerate() {
+                    let (id, ref_part) = (&ours[i], theirs[j]);
+                    let (Some(here), Some(there)) = (by_id.get(id), by_id.get(&ref_part)) else {
+                        continue;
+                    };
+                    let want = Point::new(
+                        anchor.center.x_nm + (there.center.x_nm - ref_anchor.center.x_nm),
+                        anchor.center.y_nm + (there.center.y_nm - ref_anchor.center.y_nm),
+                    );
+                    let mm = synth_geometry::nm_to_mm(want.x_nm - here.center.x_nm)
+                        .hypot(synth_geometry::nm_to_mm(want.y_nm - here.center.y_nm));
+                    let rotation_differs = here.rotation != there.rotation;
+                    if mm > REPEAT_TOLERANCE_MM || rotation_differs {
+                        let name = |c: ComponentId| {
+                            board
+                                .component(c)
+                                .map_or_else(|| format!("#{}", c.0), |c| c.refdes.clone())
+                        };
+                        found.push(MismatchedCopy {
+                            refdes: name(*id),
+                            reference_refdes: name(ref_part),
+                            reference_anchor: name(reference.anchor),
+                            anchor: name(copy.anchor),
+                            mm,
+                            rotation_differs,
+                            suggested: (
+                                synth_geometry::nm_to_mm(want.x_nm),
+                                synth_geometry::nm_to_mm(want.y_nm),
+                            ),
+                            suggested_rotation: there.rotation,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The most mismatched-copy warnings one review lists; the rest are counted.
+const MAX_REPEAT_WARNINGS: usize = 6;
 
 /// The most far-support-part warnings one review lists; the rest are counted.
 const MAX_SUPPORT_PART_WARNINGS: usize = 8;
@@ -5693,6 +5922,51 @@ pub fn describe_placement(board: &Board, placement: &Placement) -> PlacementDesc
     if omitted > 0 {
         functional_warnings.push(format!(
             "{omitted} more support part(s) are also farther from the pad they serve than their role allows; fix the ones above first"
+        ));
+    }
+
+    // Copies of one circuit read as copies only when laid out alike. Compared
+    // by structure, not by name; the first copy is the reference. The advice
+    // carries the coordinates that would make a part match, so the agent can
+    // pin them in its placement sidecar.
+    let mut mismatched = mismatched_repeats(board, placement);
+    mismatched.sort_by(|a, b| b.mm.total_cmp(&a.mm));
+    let omitted_copies = mismatched.len().saturating_sub(MAX_REPEAT_WARNINGS);
+    mismatched.truncate(MAX_REPEAT_WARNINGS);
+    for m in mismatched {
+        functional_warnings.push(format!(
+            "{} is laid out differently from {} in the identical circuit round {}: {:.1} mm{} from where {} puts it relative to {}; place it at ({:.1}, {:.1}) mm",
+            m.refdes,
+            m.reference_refdes,
+            m.reference_anchor,
+            m.mm,
+            if m.rotation_differs { " and turned differently" } else { "" },
+            m.reference_refdes,
+            m.anchor,
+            m.suggested.0,
+            m.suggested.1
+        ));
+        recommended_actions.push(PlacementRecommendation {
+            action: "match_repeated_circuit".into(),
+            refdes: m.refdes.clone(),
+            relative_to: Some(m.anchor.clone()),
+            suggested_x_mm: Some(m.suggested.0),
+            suggested_y_mm: Some(m.suggested.1),
+            suggested_rotation_deg: Some(match m.suggested_rotation {
+                Rotation::Zero => 0,
+                Rotation::Ninety => 90,
+                Rotation::OneEighty => 180,
+                Rotation::TwoSeventy => 270,
+            }),
+            rationale: format!(
+                "pin {} at the same offset from {} as {} is from {}",
+                m.refdes, m.anchor, m.reference_refdes, m.reference_anchor
+            ),
+        });
+    }
+    if omitted_copies > 0 {
+        functional_warnings.push(format!(
+            "{omitted_copies} more part(s) of repeated circuits are also laid out differently from the first copy"
         ));
     }
 
@@ -9630,6 +9904,399 @@ board "features_only" {
             target.pin_name,
             still.as_ref().map(|f| f.mm),
             still.as_ref().map(|f| f.limit_mm)
+        );
+    }
+
+    /// Two copies of one circuit and one that only looks similar: a connector,
+    /// a series resistor and a filter capacitor to ground, twice, and a third
+    /// whose resistor and capacitor are wired the other way round.
+    fn repeated_circuits_board() -> Board {
+        board_from_source(
+            r#"board "rep" { layers 2
+                power "GND" 0v
+                component JA: connector "jst_ph_2pin"
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component JB: connector "jst_ph_2pin"
+                component RB: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                component JC: connector "jst_ph_2pin"
+                component RC: resistor "r_generic_0603" value "1k"
+                component CC: capacitor "c_generic_0603" value "10nF"
+                net "SIG_A" { JA.p1 RA.p1 }
+                net "MID_A" { RA.p2 CA.p1 }
+                net "SIG_B" { JB.p1 RB.p1 }
+                net "MID_B" { RB.p2 CB.p1 }
+                net "SIG_C" { JC.p1 CC.p1 }
+                net "MID_C" { CC.p2 RC.p1 }
+                net "GND" { CA.p2 CB.p2 RC.p2 JA.p2 JB.p2 JC.p2 }
+            }"#,
+            "rep.synth",
+        )
+    }
+
+    #[test]
+    fn nine_equal_parts_are_paired_by_least_total_cost_not_in_source_order() {
+        // Counterparts are listed in reverse: the cheapest pairing is the
+        // reversal, and source order is the most expensive one.
+        let n = 9;
+        let cost =
+            |i: usize, j: usize| f64::from(u32::try_from(i.abs_diff(n - 1 - j)).expect("small"));
+        let pairing = closest_pairing(n, cost);
+        assert_eq!(pairing, (0..n).rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_hungarian_pairing_matches_an_exhaustive_search_on_small_matrices() {
+        // A fixed pseudo-random matrix per size; the exhaustive search is the
+        // same function below its size limit.
+        let mut seed = 12_345_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            f64::from(u32::try_from((seed >> 33) % 1000).expect("below 1000")) / 10.0
+        };
+        for n in 2..=7 {
+            let matrix: Vec<Vec<f64>> = (0..n).map(|_| (0..n).map(|_| next()).collect()).collect();
+            let cost = |i: usize, j: usize| matrix[i][j];
+            let total = |p: &[usize]| {
+                p.iter()
+                    .enumerate()
+                    .map(|(i, &j)| matrix[i][j])
+                    .sum::<f64>()
+            };
+            let best = closest_pairing(n, cost);
+            let hungarian = hungarian_pairing(n, &cost);
+            assert!(
+                (total(&best) - total(&hungarian)).abs() < 1e-9,
+                "n = {n}: exhaustive {} against Hungarian {}",
+                total(&best),
+                total(&hungarian)
+            );
+        }
+    }
+
+    #[test]
+    fn identical_circuits_are_found_by_structure_and_a_lookalike_is_not_grouped() {
+        let board = repeated_circuits_board();
+        let groups = repeats::find_repeated_circuits(&board);
+        assert_eq!(groups.len(), 1, "one group of copies");
+        let names: Vec<std::collections::BTreeSet<String>> = groups[0]
+            .iter()
+            .map(|island| {
+                island
+                    .parts
+                    .iter()
+                    .map(|(id, _)| board.component(*id).expect("part").refdes.clone())
+                    .collect()
+            })
+            .collect();
+        let set = |a: &str, b: &str| -> std::collections::BTreeSet<String> {
+            [a, b].iter().map(|s| (*s).to_string()).collect()
+        };
+        // The connectors are the boundary, not part of a copy.
+        assert!(names.contains(&set("RA", "CA")), "{names:?}");
+        assert!(names.contains(&set("RB", "CB")), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("RC")), "{names:?}");
+    }
+
+    #[test]
+    fn copies_laid_out_alike_are_not_reported_and_a_moved_part_is_with_its_coordinates() {
+        let board = repeated_circuits_board();
+        let mut placement = place(&board).expect("place");
+        for (refdes, x, y) in [
+            ("JA", 10.0, 10.0),
+            ("RA", 16.0, 10.0),
+            ("CA", 16.0, 16.0),
+            ("JB", 10.0, 40.0),
+            ("RB", 16.0, 40.0),
+            ("CB", 16.0, 46.0),
+        ] {
+            move_part(&mut placement, &board, refdes, x, y);
+        }
+        // Turn every part of the second copy as its counterpart in the first, so
+        // the copies are compared on position, not on how the placer happened to
+        // turn each part.
+        for (copy, first) in [("JB", "JA"), ("RB", "RA"), ("CB", "CA")] {
+            let rotation = placement
+                .component_by_refdes(&board, first)
+                .expect(first)
+                .rotation;
+            for p in &mut placement.components {
+                if board.component(p.id).is_some_and(|c| c.refdes == copy) {
+                    p.rotation = rotation;
+                }
+            }
+        }
+        assert!(
+            mismatched_repeats(&board, &placement).is_empty(),
+            "alike copies must not be reported"
+        );
+
+        // Move one part of the second copy 6 mm.
+        move_part(&mut placement, &board, "CB", 16.0, 52.0);
+        let off = mismatched_repeats(&board, &placement);
+        let rb = off.iter().find(|m| m.refdes == "CB").expect("CB reported");
+        assert_eq!(rb.reference_refdes, "CA");
+        assert!((rb.mm - 6.0).abs() < 0.2, "{}", rb.mm);
+        assert!((rb.suggested.0 - 16.0).abs() < 0.2 && (rb.suggested.1 - 46.0).abs() < 0.2);
+
+        let desc = describe_placement(&board, &placement);
+        assert!(desc
+            .functional_warnings
+            .iter()
+            .any(|w| w.starts_with("CB is laid out differently from CA")));
+        assert!(desc.visual_review.recommended_actions.iter().any(|a| {
+            a.action == "match_repeated_circuit"
+                && a.refdes == "CB"
+                && a.suggested_x_mm.is_some_and(|x| (x - 16.0).abs() < 0.2)
+        }));
+    }
+
+    /// Lay `parts` out at their coordinates, every part turned the same way.
+    fn lay_out(board: &Board, parts: &[(&str, f64, f64)]) -> Placement {
+        let mut placement = place(board).expect("place");
+        for (refdes, x, y) in parts {
+            move_part(&mut placement, board, refdes, *x, *y);
+        }
+        for p in &mut placement.components {
+            p.rotation = Rotation::Zero;
+        }
+        placement
+    }
+
+    #[test]
+    fn equal_parts_on_different_hub_pins_are_still_compared() {
+        // Each copy holds two identical resistors that join one capacitor and
+        // leave by different pins of the MCU, so structure alone cannot tell
+        // them apart within a copy.
+        let board = board_from_source(
+            r#"board "twins" { layers 2
+                power "GND" 0v
+                component U1: mcu "rp2350"
+                component R1A: resistor "r_generic_0603" value "1k"
+                component R2A: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component R1B: resistor "r_generic_0603" value "1k"
+                component R2B: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                net "G0" { U1.gp0 R1A.p1 }
+                net "G1" { U1.gp1 R2A.p1 }
+                net "MID_A" { R1A.p2 R2A.p2 CA.p1 }
+                net "G2" { U1.gp2 R1B.p1 }
+                net "G3" { U1.gp3 R2B.p1 }
+                net "MID_B" { R1B.p2 R2B.p2 CB.p1 }
+                net "GND" { CA.p2 CB.p2 }
+            }"#,
+            "twins.synth",
+        );
+        let mut parts = vec![
+            ("U1", 60.0, 30.0),
+            ("R1A", 10.0, 10.0),
+            ("R2A", 10.0, 14.0),
+            ("CA", 16.0, 12.0),
+            ("R1B", 10.0, 40.0),
+            ("R2B", 10.0, 44.0),
+            ("CB", 16.0, 42.0),
+        ];
+        assert!(
+            mismatched_repeats(&board, &lay_out(&board, &parts)).is_empty(),
+            "alike copies must not be reported"
+        );
+        // Move one of the twins in the second copy 6 mm.
+        parts[5] = ("R2B", 10.0, 50.0);
+        let off = mismatched_repeats(&board, &lay_out(&board, &parts));
+        let moved = off
+            .iter()
+            .find(|m| m.refdes == "R2B")
+            .expect("R2B reported");
+        assert_eq!(moved.reference_refdes, "R2A");
+        assert!((moved.mm - 6.0).abs() < 0.2, "{}", moved.mm);
+        assert!(
+            (moved.suggested.1 - 44.0).abs() < 0.2,
+            "{:?}",
+            moved.suggested
+        );
+        assert_eq!(off.len(), 1, "{off:?}");
+    }
+
+    #[test]
+    fn a_displaced_part_of_a_valve_driver_is_reported_with_a_coordinate() {
+        // The shape of the irrigation controller's valve drivers: a connector,
+        // a MOSFET, a gate resistor to the MCU, a pull-down and a flyback
+        // diode, twice.
+        let valve = |n: &str, gpio: &str| {
+            format!(
+                r#"component J{n}: connector "jst_xh_2pin"
+                component Q{n}: transistor "p_mosfet_si2301"
+                component RG{n}: resistor "r_generic_0603" value "100"
+                component RP{n}: resistor "r_generic_0603" value "100k"
+                component D{n}: diode "d_schottky"
+                net "V12_{n}" {{ J{n}.p1 D{n}.cathode }}
+                net "SW_{n}" {{ J{n}.p2 Q{n}.d D{n}.anode }}
+                net "DRV_{n}" {{ U1.{gpio} RG{n}.p1 }}
+                net "GATE_{n}" {{ RG{n}.p2 Q{n}.g RP{n}.p1 }}
+                net "GND" {{ Q{n}.s RP{n}.p2 }}"#
+            )
+        };
+        let source = format!(
+            r#"board "valves" {{ layers 2
+                power "GND" 0v
+                component U1: mcu "rp2350"
+                {}
+                {}
+            }}"#,
+            valve("1", "gp0"),
+            valve("2", "gp1")
+        );
+        let board = board_from_source(&source, "valves.synth");
+        let mut parts = vec![
+            ("U1", 80.0, 30.0),
+            ("J1", 10.0, 5.0),
+            ("Q1", 10.0, 12.0),
+            ("RG1", 16.0, 12.0),
+            ("RP1", 16.0, 16.0),
+            ("D1", 4.0, 12.0),
+            ("J2", 30.0, 5.0),
+            ("Q2", 30.0, 12.0),
+            ("RG2", 36.0, 12.0),
+            ("RP2", 36.0, 16.0),
+            ("D2", 24.0, 12.0),
+        ];
+        assert!(mismatched_repeats(&board, &lay_out(&board, &parts)).is_empty());
+        parts[10] = ("D2", 24.0, 22.0);
+        let off = mismatched_repeats(&board, &lay_out(&board, &parts));
+        let d = off.iter().find(|m| m.refdes == "D2").expect("D2 reported");
+        assert_eq!(d.reference_refdes, "D1");
+        assert!((d.suggested.0 - 24.0).abs() < 0.2 && (d.suggested.1 - 12.0).abs() < 0.2);
+        // Turned the way D1 is, so the advice carries a usable rotation too.
+        let first = lay_out(&board, &parts)
+            .component_by_refdes(&board, "D1")
+            .expect("D1")
+            .rotation;
+        assert_eq!(d.suggested_rotation, first);
+    }
+
+    #[test]
+    fn two_circuits_on_two_pins_of_one_small_connector_are_two_copies() {
+        // A two-pin connector joins nothing: each pin carries its own circuit.
+        let board = board_from_source(
+            r#"board "two_pins" { layers 2
+                power "GND" 0v
+                component J1: connector "jst_ph_2pin"
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component RB: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                net "SA" { J1.p1 RA.p1 }
+                net "MA" { RA.p2 CA.p1 }
+                net "SB" { J1.p2 RB.p1 }
+                net "MB" { RB.p2 CB.p1 }
+                net "GND" { CA.p2 CB.p2 }
+            }"#,
+            "two_pins.synth",
+        );
+        let groups = repeats::find_repeated_circuits(&board);
+        assert_eq!(groups.len(), 1, "one group of two copies: {groups:?}");
+        assert_eq!(groups[0].len(), 2);
+        assert!(
+            groups[0].iter().all(|island| island.parts.len() == 2),
+            "each copy is a resistor and a capacitor, not the connector or the other copy"
+        );
+    }
+
+    #[test]
+    fn supply_nets_are_recognised_by_the_project_not_by_a_fixed_list_of_names() {
+        // Two copies of a resistor and capacitor whose rail is called `+3V3`
+        // and whose other rail is a declared ground: neither name is in a
+        // fixed list, and neither may join the two copies into one island.
+        let board = board_from_source(
+            r#"board "aliases" { layers 2
+                power "+3V3" 3.3v
+                power "GND" 0v
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component RB: resistor "r_generic_0603" value "1k"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                net "+3V3" { RA.p1 RB.p1 }
+                net "MA" { RA.p2 CA.p1 }
+                net "MB" { RB.p2 CB.p1 }
+                net "GND" { CA.p2 CB.p2 }
+            }"#,
+            "aliases.synth",
+        );
+        let groups = repeats::find_repeated_circuits(&board);
+        assert_eq!(groups.len(), 1, "the copies are found: {groups:?}");
+        assert!(groups[0].iter().all(|island| island.parts.len() == 2));
+    }
+
+    #[test]
+    fn same_shaped_circuits_on_different_kinds_of_pin_are_not_copies() {
+        // The same resistor and capacitor, once on a GPIO and once on the
+        // reset pin of the MCU: one circuit drives a line, the other holds the
+        // chip in reset, and a placement review must not compare them.
+        let board = board_from_source(
+            r#"board "roles" { layers 2
+                power "GND" 0v
+                component U1: mcu "rp2350"
+                component RA: resistor "r_generic_0603" value "10k"
+                component CA: capacitor "c_generic_0603" value "100nF"
+                component RB: resistor "r_generic_0603" value "10k"
+                component CB: capacitor "c_generic_0603" value "100nF"
+                net "GPIO_A" { U1.gp0 RA.p1 }
+                net "MA" { RA.p2 CA.p1 }
+                net "RESET_B" { U1.run RB.p1 }
+                net "MB" { RB.p2 CB.p1 }
+                net "GND" { CA.p2 CB.p2 }
+            }"#,
+            "roles.synth",
+        );
+        assert!(
+            repeats::find_repeated_circuits(&board).is_empty(),
+            "a GPIO circuit and a reset circuit are not copies"
+        );
+    }
+
+    #[test]
+    fn copies_that_anchor_on_different_parts_are_not_compared() {
+        // Two copies of one resistor-and-capacitor circuit. The first declares
+        // its resistor first, the second its capacitor first, so each copy's
+        // anchor (the lowest-numbered of equals) is a different part.
+        let board = board_from_source(
+            r#"board "anchors" { layers 2
+                power "GND" 0v
+                component RA: resistor "r_generic_0603" value "1k"
+                component CA: capacitor "c_generic_0603" value "10nF"
+                component CB: capacitor "c_generic_0603" value "10nF"
+                component RB: resistor "r_generic_0603" value "1k"
+                net "SIG_A" { RA.p1 CA.p1 }
+                net "SIG_B" { RB.p1 CB.p1 }
+                net "GND" { RA.p2 CA.p2 RB.p2 CB.p2 }
+            }"#,
+            "anchors.synth",
+        );
+        let mut placement = place(&board).expect("place");
+        for (refdes, x, y) in [
+            ("RA", 10.0, 10.0),
+            ("CA", 14.0, 10.0),
+            ("RB", 10.0, 30.0),
+            ("CB", 14.0, 30.0),
+        ] {
+            move_part(&mut placement, &board, refdes, x, y);
+        }
+        for p in &mut placement.components {
+            p.rotation = Rotation::Zero;
+        }
+        assert!(
+            repeats::find_repeated_circuits(&board)
+                .iter()
+                .any(|g| g.len() == 2),
+            "the two circuits are copies"
+        );
+        assert!(
+            mismatched_repeats(&board, &placement).is_empty(),
+            "offsets from different anchors say nothing about the layout"
         );
     }
 
