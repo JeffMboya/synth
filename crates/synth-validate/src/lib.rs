@@ -4701,6 +4701,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one literal board, spelled out field by field
     fn decoupling_test_board(cap_value: Option<&str>) -> Board {
         use synth_diagnostics::Span;
         use synth_ir::{Net, NetEndpoint, NetId};
