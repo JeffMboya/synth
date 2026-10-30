@@ -444,8 +444,8 @@ dx = 0.0
 dy = 0.0
 
 [components.R_B1]
-x = 42.3
-y = 5.0
+x = 42.30
+y = 4.50
 rotation = 0
 source = "agent"
 priority = "hard"
@@ -678,9 +678,9 @@ dx = 0.0
 dy = 0.0
 
 [components.C_IN1]
-x = 27.54
-y = 13.19
-rotation = 0
+x = 26.50
+y = 13.60
+rotation = 180
 source = "agent"
 priority = "hard"
 dx = 0.0
@@ -948,7 +948,7 @@ dx = 0.0
 dy = 0.0
 
 [components.C_BULK]
-x = 39.5
+x = 38.25
 y = 8.5
 rotation = 0
 source = "agent"
@@ -1002,8 +1002,8 @@ dx = 0.0
 dy = 0.0
 
 [components.C_IN2]
-x = 36.5
-y = 12.5
+x = 30.60
+y = 13.60
 rotation = 0
 source = "agent"
 priority = "hard"
