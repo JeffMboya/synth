@@ -8,6 +8,13 @@ set -e; . ~/env.sh
 exp=$1; name=$2; out=$3; src=$4
 rm -rf "$out"; mkdir -p "$out/gerbers"
 pcb="$exp/$name.kicad_pcb"
+# MASK_EXPANSION=<mm> builds the Gerbers from a scratch copy whose pad-to-mask clearance is that value
+# (the exported board is left as it is); unset, the exported 0 mm (opening equal to the pad) is used.
+if [ -n "$MASK_EXPANSION" ]; then
+  scratch=$(mktemp -d); cp "$pcb" "$scratch/$name.kicad_pcb"
+  sed -i "s/(pad_to_mask_clearance [0-9.]*)/(pad_to_mask_clearance $MASK_EXPANSION)/" "$scratch/$name.kicad_pcb"
+  pcb="$scratch/$name.kicad_pcb"
+fi
 kicad-cli pcb export gerbers --layers F.Cu,B.Cu,F.Paste,B.Paste,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts --subtract-soldermask --check-zones -o "$out/gerbers/" "$pcb" >/dev/null
 kicad-cli pcb export drill --format excellon --drill-origin absolute --excellon-units mm --generate-map --map-format pdf -o "$out/gerbers/" "$pcb" >/dev/null
 python3 - "$out/gerbers" "$out/${name}_gerbers.zip" <<'PYZ'
