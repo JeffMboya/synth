@@ -44,7 +44,7 @@ board "i2c_sensor_node" {
 
   // ---- A1: JST 5 V input and its protection chain --------------------------
   group "5V INPUT: FUSE THEN DIODE" color "#c2410c" {
-    component J1: connector "jst_xh_2pin" value "JST S2B-XH-A-1"
+    component J1: connector "jst_xh_2pin" value "JST S2B-XH-A-1" { placement_hint { edge: left priority: hard } }
     component F1: fuse      "polyfuse" value "0.5A hold" { placement_hint { near: "J1" priority: soft } }
     component D1: diode     "d_schottky" value "1N5819" { placement_hint { near: "F1" priority: soft } }
     component D4: diode     "ptvs6v0s1ur" value "PTVS6V0S1UR" { placement_hint { near: "D1" priority: soft } }
@@ -57,7 +57,7 @@ board "i2c_sensor_node" {
 
   // ---- A2: USB-C power and its protection ----------------------------------
   group "USB-C" color "#7c3aed" {
-    component J2: connector "usb_c_receptacle" value "TYPE-C-31-M-12"
+    component J2: connector "usb_c_receptacle" value "TYPE-C-31-M-12" { placement_hint { edge: left priority: hard } }
     component R1: resistor  "r_generic_0603" value "5.1k" { placement_hint { near: "J2" priority: soft } }
     component R2: resistor  "r_generic_0603" value "5.1k" { placement_hint { near: "J2" priority: soft } }
     component F2: fuse      "polyfuse" value "0.5A hold" { placement_hint { near: "J2" priority: soft } }
@@ -153,7 +153,7 @@ board "i2c_sensor_node" {
 
   // ---- F: UART break-out ----------------------------------------------------
   group "UART BREAKOUT" color "#9333ea" {
-    component J3: connector "jst_ph_4pin" value "JST S4B-PH-K-S"
+    component J3: connector "jst_ph_4pin" value "JST S4B-PH-K-S" { placement_hint { edge: right priority: hard } }
     component R11: resistor "r_generic_0603" value "330" { placement_hint { near: "J3" priority: soft } }
     component R12: resistor "r_generic_0603" value "1k" { placement_hint { near: "J3" priority: soft } }
     component D7: diode "prtr5v0u2x" value "PRTR5V0U2X" { placement_hint { near: "J3" priority: soft } }
@@ -165,7 +165,7 @@ board "i2c_sensor_node" {
 
   // ---- G: GPIO header and 3V3_REF output ------------------------------------
   group "GPIO HEADER" color "#a16207" {
-    component J5: connector "header_1x12" value "GPIO"
+    component J5: connector "header_1x12" value "GPIO" { placement_hint { edge: right priority: hard } }
     component R15: resistor "r_generic_0603" value "330" { placement_hint { near: "J5" priority: soft } }
     component R16: resistor "r_generic_0603" value "330" { placement_hint { near: "J5" priority: soft } }
     component R17: resistor "r_generic_0603" value "330" { placement_hint { near: "J5" priority: soft } }
@@ -197,10 +197,10 @@ board "i2c_sensor_node" {
     component TP7: testpoint "testpoint_pad_1_5" value "UART_RX" { placement_hint { near: "J3" priority: soft } }
     component TP8: testpoint "testpoint_pad_1_5" value "VIN_FUSED" { placement_hint { near: "F1" priority: soft } }
     component TP9: testpoint "testpoint_pad_1_5" value "GND" { placement_hint { near: "J3" priority: soft } }
-    component H1: mounting_hole "mounting_hole_m2_5"
-    component H2: mounting_hole "mounting_hole_m2_5"
-    component H3: mounting_hole "mounting_hole_m2_5"
-    component H4: mounting_hole "mounting_hole_m2_5"
+    component H1: mounting_hole "mounting_hole_m2_5" { placement_hint { region: top_left priority: hard } }
+    component H2: mounting_hole "mounting_hole_m2_5" { placement_hint { region: top_right priority: hard } }
+    component H3: mounting_hole "mounting_hole_m2_5" { placement_hint { region: bottom_left priority: hard } }
+    component H4: mounting_hole "mounting_hole_m2_5" { placement_hint { region: bottom_right priority: hard } }
     notes "" {
       "TP1 +5V_PROT, TP2 +3V3, TP3/TP9 GND, TP4 I2C_SDA, TP5 I2C_SCL, TP6 UART_TX, TP7 UART_RX, TP8 VIN_5V_FUSED."
       "H1-H4: M2.5 non-plated mounting holes at the corners."
