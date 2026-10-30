@@ -14,8 +14,8 @@ identical, and a fabrication package is generated from it. Since SammyOina's rev
 of 2026-10-29 13:51: the input TVS sits ahead of the series MOSFET with the supply
 range stated as 13.0 V at most; the green LEDs are a part that lights from 3.3 V;
 silkscreen is 0.18 mm wide, cut back 0.25 mm from vias and pads, with the test-point rings dropped; vias are 0.6 mm over a
-0.2 mm drill (a 0.20 mm ring); the schematic is one A0 sheet. JLCPCB's PCB DFM ran on this
-package (2026-10-30 08:48): 0 Danger items and 13 kinds of warning (below); the SMT DFM and quote have not been run. Not
+0.2 mm drill (a 0.20 mm ring); the schematic is one A0 sheet. JLCPCB's PCB DFM ran on the
+previous package (2026-10-30 08:48): 0 Danger items; this package has not been run (below). Not
 fixed: five decouplers are still 4.8 to 8.4 mm from their pins (see "Open items").
 Nothing here was built or tested on hardware.
 
@@ -38,7 +38,7 @@ logged under [`agent-run/`](agent-run/).
 | 9. Edits by the orchestrator | see below | final source and sidecar |
 | 10. Final blockers | An agent from [`final-blockers/prompt.md`](agent-run/final-blockers/prompt.md) moved `D_TVS` ahead of `Q1` and rewrote the notes at 13.0 V; stopped when a stray quote in a note broke the source's syntax | source edit kept, quote repaired (below) |
 | 11. Searches | [`final-blockers/tools/`](agent-run/final-blockers/tools/): decoupler placement on a x1.4 layout, then `R_NRST`, `C_NRST` and `SW_RESET` spots and pairs, a release search | none reached a released board with the decouplers at their pins (see "Open items") |
-| 12. Silkscreen and vias | Synth commits `8052ca52`, `a38802ad` (silkscreen widened and cut back), `2ef37388` (0.2 mm drill, Synth PR #388), then on `SYN-case1-binary` the 0.25 mm clearance with 0.18 mm strokes and `7972c911` (test-point rings dropped) | in the exports below |
+| 12. Silkscreen and vias | Synth commits `8052ca52`, `a38802ad` (silkscreen widened and cut back), `2ef37388` (0.2 mm drill, Synth PR #388), then on `SYN-case1-binary` the 0.25 mm clearance with 0.18 mm strokes and `7972c911` (test-point rings dropped) and `be19e90a` (pin-1 triangles dropped too) | in the exports below |
 
 ### Edits applied by the orchestrator
 
@@ -53,6 +53,7 @@ membership only.
 - LEDs: `D_PWR` and `D_N2` changed from `led_green_0603` to the registry part `ltst_c190kgkt` (same footprint and pins), by `sed`; the old part is a NationStar NCD0603G1 with a forward voltage of 2.6 to 3.6 V, which cannot light from 3.3 V through 680 ohm.
 - Netclasses: `via_diameter 0.6mm via_drill 0.2mm` added to `PWR12` and `PWR33`, and a `Default` class with the same.
 - Sidecar: only `D_TVS` moved, from (27.5, 7.0) to (14.5, 7.5) (the agent, to sit at the input).
+- Sidecar: `C_U4` moved from (55.0, 44.5) to (51.62, 41.78) and the test points `TP_SWDIO` from (71.5, 26.5) to (70.34, 26.81) and `TP_SWCLK` from (71.5, 31.5) to (70.3, 31.5), each found by a release search ([`tht_search.py`](agent-run/tools/tht_search.py) for the test points, which keeps a position only when the export still releases) to clear a JLCPCB finding.
 
 The `.synth` source and the placement sidecar beside this file are the result.
 The board needs Synth built from pull request #370 and the ones it stacks on
@@ -62,28 +63,28 @@ and `l_1210_10uh`, which are not in the registry on `main`. `smaj13a_tvs` and
 neither has a reviewer recorded yet.
 
 The server was KiCad 10.0.7 on a 16-vCPU machine, Synth built from
-branch `SYN-case1-binary` (stacked on `SYN-silk-clear-of-vias`) at commit 7972c911. `allow_incomplete` was never set, in any run log or
+branch `SYN-case1-binary` (stacked on `SYN-silk-clear-of-vias`) at commit be19e90a. `allow_incomplete` was never set, in any run log or
 script.
 
 ## What was measured
 
 All figures come from the files of the first of the three exports below
-(KiCad 10.0.7, 16-vCPU server, Synth commit 7972c911).
+(KiCad 10.0.7, 16-vCPU server, Synth commit be19e90a).
 
 | | |
 |---|---|
 | Board | 75.1 x 65.4 mm, 4,912 mm2, two layers, 126 components (106 excluding holes and test points), 45 nets |
-| Routing | state `routed`, 45 of 45 nets connected, 579 segments, 163 vias in the file, all 0.6 mm over a 0.2 mm drill (ring 0.20 mm); the project's `min_through_hole_diameter` is 0.2 and `min_via_diameter` 0.46 |
-| KiCad DRC, 10.0.7, `--refill-zones --severity-all`, with the KiCad footprint library table | 0 errors, 0 unconnected, 128 warnings: 122 `lib_footprint_mismatch` and 6 `silk_overlap` (below) |
+| Routing | state `routed`, 45 of 45 nets connected, 595 segments, 169 vias in the file, all 0.6 mm over a 0.2 mm drill (ring 0.20 mm); the project's `min_through_hole_diameter` is 0.2 and `min_via_diameter` 0.46 |
+| KiCad DRC, 10.0.7, `--refill-zones --severity-all`, with the KiCad footprint library table | 0 errors, 0 unconnected, 129 warnings: 121 `lib_footprint_mismatch` and 8 `silk_overlap` (below) |
 | Router and release gate | `release_ready` true, no blocking reason, no via in a pad, no unresolved return via |
 | Trace width, as routed | `VIN_FUSED`, `VALVE1_SW`, `VALVE2_SW` 0.8 mm; `+12V_VALVE` 0.4 to 0.8 mm; `+3V3` 0.2 to 0.4 mm |
-| Silkscreen | all 327 lines and 229 label texts at 0.18 mm; 0 lines touch a via; 301 outline lines cut back 0.25 mm from vias and pads; 16 test-point rings dropped; 29 labels moved and 12 hidden |
+| Silkscreen | all 327 lines and 229 label texts at 0.18 mm; 0 lines touch a via; 302 outline lines cut back 0.25 mm from vias and pads; 25 silkscreen circles and polygons dropped (16 test-point rings, 9 pin-1 triangles); 28 labels moved and 15 hidden |
 | BOM | 126 rows, every one with a manufacturer, MPN, distributor, order number and page (below) |
 | Schematic | one A0 sheet, 13 named groups, no `OTHER` region; rendered from this export with `kicad-cli` |
 
-The 122 `lib_footprint_mismatch` warnings are footprints whose silkscreen the
+The 121 `lib_footprint_mismatch` warnings are footprints whose silkscreen the
 exporter cut back from a via or a pad (0.25 mm clearance, above JLCPCB's 0.15 mm
-minimum), so they no longer equal the library copy. The 6 `silk_overlap`
+minimum), so they no longer equal the library copy. The 8 `silk_overlap`
 warnings are reference text that grazes a neighbour or an outline: `C_BULK`
 against `C_B1`, `TP_V1` against `C_SN1`, `R_COMP` against `R_EN`, `D_FLY1` against
 the outline of `J_VALVE2`, `R_D1` against the outline of `J_FLOW`, and `TP_SOIL1`
@@ -103,7 +104,7 @@ Measured on the exported file:
 | Regulator | `C_OUT2` 11.6 mm and `C_OUT1` 8.8 mm from `U1`, origin to origin |
 | Crystal, reset button | 9.0 mm and 11.6 mm from the MCU (the reset button was 16.7 mm) |
 | SWD header | 43.8 mm from the MCU, at the right edge |
-| Through-hole to SMD pad | the nearest pairs: `J_SWD` to `TP_SWDIO` and `TP_SWCLK` 2.05 mm, `C_BULK` to `C_IN2` is no longer a close pair (it was 1.9 mm) |
+| Through-hole to SMD pad | the nearest pairs: the nearest pair is `C_BULK` to `C_IN2` at 2.4 mm (it was 1.9 mm); `TP_SWDIO` and `TP_SWCLK` were moved (below) from 2.05 mm to at least 2.9 mm of `J_SWD` |
 | Test points | 2.1 to 7.1 mm from the nearest part on their net, except `TP_SCL` 12.1 and `TP_3V3` 16.0 mm |
 | Rail capacitors | the capacitors that sit far from an IC (mean 12.4 mm over 37) are rail bulk and filter parts, not per-pin decoupling |
 | Isolated parts | `F1`, `J1` and `R_N6`, 4.1 to 4.8 mm from their neighbours |
@@ -120,7 +121,7 @@ SammyOina's review of 2026-10-29 (13:51), then the earlier ones, point by point:
 
 | Review point | State |
 |---|---|
-| DFM findings fixed, package regenerated and re-run | The PCB DFM of 2026-10-30 07:21 (previous package) found 32 silkscreen-to-pad and 3 silkscreen-to-hole Danger items; the cause was the ring every test-point footprint draws 0.11 mm off its own pad, which the outline cut-back did not touch. Fixed in the file: those 16 circles are dropped, silkscreen is 0.18 mm wide and 0.25 mm from pads and vias, 0 lines touch a via, 301 outline lines are cut back. JLCPCB's PCB DFM of this package (2026-10-30 08:48) reports 0 Danger items, silkscreen to pad 0.21 mm and line width 0.18 mm both good; warnings remain for silkscreen to hole (2), through-hole to SMD (5), pad spacing (2) and the solder-mask checks (107), listed below. The reports are summarised below and not committed (3.5 MB). |
+| DFM findings fixed, package regenerated and re-run | The PCB DFM of 2026-10-30 07:21 (previous package) found 32 silkscreen-to-pad and 3 silkscreen-to-hole Danger items; the cause was the ring every test-point footprint draws 0.11 mm off its own pad, which the outline cut-back did not touch. Fixed in the file: those 16 circles are dropped, silkscreen is 0.18 mm wide and 0.25 mm from pads and vias, 0 lines touch a via, 301 outline lines are cut back. JLCPCB's PCB DFM of the previous package (2026-10-30 08:48) reports 0 Danger items, silkscreen to pad 0.21 mm and line width 0.18 mm both good; warnings remain for silkscreen to hole (2), through-hole to SMD (5), pad spacing (2) and the solder-mask checks (107), listed below. The reports are summarised below and not committed (3.5 MB). |
 | Stale schematic evidence | The schematic is one A0 sheet with 13 named groups and no `OTHER` region, rendered from the final export; renders, hashes, numbers and the fab package all come from the same export (below). The renders are not attached here. |
 | Input protection rating | The supply range is 10.8 to 13.0 V. `D_TVS` is an SMAJ13A (Littelfuse SMAJ series datasheet: standoff 13.0 V; breakdown 14.40 to 15.90 V at 1 mA; 1 uA maximum leakage at the standoff; 21.5 V clamp at 18.6 A) on `VIN_FUSED`, ahead of `Q1`, so a transient is clamped before it reaches the MOSFET. Standoff equals the maximum input; the clamp is below the MP2307's 23 V recommended input and its 26 V absolute maximum (MPS datasheet) and below `Q1`'s 30 V drain-source rating. A reversed supply forward-biases `D_TVS` and `F1` opens. The 5.1 V gate-source zener `D_QG` is inside the 12 V gate rating. |
 | `C_VDD2` at 11 mm | Not fixed: `C_VDD2` is 7.8 mm from its pin (pad to pin), `C_U4` 2.8 (moved in from 4.8), `C_U5` 6.3, `C_IN1` 5.5 and `C_IN2` 8.4. Every layout that brought them closer failed the release gate; see "Open items". |
@@ -129,7 +130,7 @@ SammyOina's review of 2026-10-29 (13:51), then the earlier ones, point by point:
 | 5 V clamps on 3.3 V signals | `D_N3` and `D_N4` are removed. `FLOW_PULSE` is clamped by `D_FZ`, a 3.3 V zener, behind `R_FS` 2.2 k: (13.0 V - 3.3 V) / 2.2 k = 4.4 mA, 14 mW in a 500 mW part. |
 | SHT30 footprint and escape | The SHT30 and its capacitor are removed; a breakout attaches to `J_I2C` at 0x44. No fine-pitch part is left on the board. |
 | BOM and fabrication output | 126 of 126 lines sourced; Gerbers, drill and pick-and-place generated and hashed (below). |
-| DRC with the library table | 0 errors, 0 unconnected, 11 `lib_footprint_mismatch` and 5 `silk_overlap` warnings, above. |
+| DRC with the library table | 0 errors, 0 unconnected, 121 `lib_footprint_mismatch` and 8 `silk_overlap` warnings, above. |
 | Return-path advisories | none unresolved: Synth's release gate refuses a board with a signal via that has no ground return, and this board passes. |
 | SWD and reset distance | see the layout table: the SWD header is justified above; the reset button is 11.6 mm from the MCU (it was 16.7 mm). |
 | Crystal load | the NDK NX3225GD-8MHZ-STD-CRA-3 has an 8 pF load. With 5 pF assumed for stray capacitance, CL = C1 x C2 / (C1 + C2) + 5 pF; C1 = C2 = 2 x (8 - 5) = 6 pF; the nearest E24 value 6.2 pF gives 8.1 pF. `C_X1` and `C_X2` are 6.2 pF. |
@@ -144,7 +145,7 @@ SammyOina's review of 2026-10-29 (13:51), then the earlier ones, point by point:
 - `irrigation_controller_gerbers.zip`: the nine Gerber layers, the Excellon drill file, a drill map and the job file, from KiCad 10.0.7;
 - `irrigation_controller_cpl.csv`: 106 placements in JLCPCB's column order;
 - `irrigation_controller_bom_orderable.csv`: the exported BOM joined with [`agent-run/tools/sourcing.csv`](agent-run/tools/sourcing.csv). Each of the 106 fitted lines carries refdes, value, KiCad footprint, package, manufacturer, manufacturer part number, rating, datasheet, distributor, order number and the product page; the other 20 lines are mounting holes and test points, which are board features with no part;
-- `SHA256SUMS` and `GERBER_CONTENT_SHA256`: the Gerber headers carry the creation time, so the content is hashed with those lines masked; the three exports give the same hash, `abe1fdf665`.
+- `SHA256SUMS` and `GERBER_CONTENT_SHA256`: the Gerber headers carry the creation time, so the content is hashed with those lines masked; the three exports give the same hash, `3fccbb18d3`.
 
 Regenerate them with [`fab_package.sh`](agent-run/tools/fab_package.sh). Every part
 identity was looked up by manufacturer part number and the page is in the table.
@@ -179,16 +180,16 @@ is the first ten characters of a SHA-256. All three exports are `routed`,
 | `irrigation_controller.kicad_pro` | ee7cbc7b7c | ee7cbc7b7c | ee7cbc7b7c | identical |
 | `irrigation_controller.kicad_sym` | 8104da92fc | 8104da92fc | 8104da92fc | identical |
 | `bom.csv` | a649ff4b38 | a649ff4b38 | a649ff4b38 | identical |
-| `pnp.csv` | e6435a2839 | e6435a2839 | e6435a2839 | identical |
-| `irrigation_controller.synth.kicad_pcb` (un-routed) | 2bed8110f9 | 2bed8110f9 | 2bed8110f9 | identical |
-| `irrigation_controller.kicad_pcb` | 6625e01389 | c00ad8a4e1 | 6a9f5c5a04 | identical after the router's and KiCad's random ids |
-| Gerber and drill content | abe1fdf665 | abe1fdf665 | abe1fdf665 | identical |
+| `pnp.csv` | 843d0e3a04 | 843d0e3a04 | 843d0e3a04 | identical |
+| `irrigation_controller.synth.kicad_pcb` (un-routed) | 50d0578a7a | 50d0578a7a | 50d0578a7a | identical |
+| `irrigation_controller.kicad_pcb` | 7a58bf7736 | a59ca5879e | d88a81e8c7 | identical after the router's and KiCad's random ids |
+| Gerber and drill content | 3fccbb18d3 | 3fccbb18d3 | 3fccbb18d3 | identical |
 
 The routed PCB differs between runs only in the random ids the router gives its
 tracks and vias and KiCad gives its zone fills. With those masked, all three are
-`4f0d112035`. The Gerber hash masks the creation time KiCad writes into every
+`43a53ecdb1`. The Gerber hash masks the creation time KiCad writes into every
 Gerber, the drill file and the job file, and leaves out the drill-map PDF. The
-exports ran on the droplet with Synth commit 7972c911 and the registry checkout
+exports ran on the droplet with Synth commit be19e90a and the registry checkout
 of that commit, which includes `ltst_c190kgkt`.
 
 The command-line export ran with the corrected registry parts of #326 and the two
@@ -197,12 +198,12 @@ uses the registry checkout. Positions and routing are the same.
 
 ## JLCPCB DFM results
 
-Three PCB DFM reports (PDF, 3.5 MB each, not committed). The third ran on this package
-(Gerber content hash `abe1fdf665`, JLCDFM report of 2026-10-30 08:48, 2 layers, 75.1 x 65.4 mm, PCB DFM only; the SMT DFM
-was not run). In all three, clear: sharp corners, BGA, via in pad, trace to edge, trace spacing, unconnected
+Three PCB DFM reports (PDF, 3.5 MB each, not committed). The third ran on the previous
+package (Gerber content hash `abe1fdf665`, JLCDFM report of 2026-10-30 08:48, 2 layers, 75.1 x 65.4 mm, PCB DFM only; the SMT DFM
+was not run). This package (`3fccbb18d3`) has not been run: it moves two test points and drops the pin-1 triangles to clear that report's through-hole and silkscreen-to-hole warnings. In all three, clear: sharp corners, BGA, via in pad, trace to edge, trace spacing, unconnected
 ends, trace width (0.2 mm, 85 good), plated-hole to trace, fiducial, pad to board edge, drill checks and slots.
 
-| Item (worst value) | 2026-10-29 16:13 (Danger / Warning) | 2026-10-30 07:21 (Danger / Warning) | 2026-10-30 08:48, this package (Danger / Warning / Good) |
+| Item (worst value) | 2026-10-29 16:13 (Danger / Warning) | 2026-10-30 07:21 (Danger / Warning) | 2026-10-30 08:48, previous package (Danger / Warning / Good) |
 |---|---|---|---|
 | Silkscreen to pad | 0.14 mm: 0 / 32 | 0.12 mm: 32 / 17 | 0.21 mm: 0 / 0 / 45 |
 | Silkscreen to hole | 0 mm: 18 / 7 | 0.08 mm: 3 / 3 | 0.14 mm: 0 / 2 / 3 |
@@ -213,7 +214,7 @@ ends, trace width (0.2 mm, 85 good), plated-hole to trace, fiducial, pad to boar
 | Solder mask opening near a trace | 0.15 mm: 0 / 57 | 0.13 mm: 0 / 57 | 0.13 mm: 0 / 57 / 1 |
 | Negative mask expansion | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 / 0 |
 
-This package has no Danger item. The 32 silkscreen-to-pad Danger items of the second
+The previous package has no Danger item. The 32 silkscreen-to-pad Danger items of the second
 report were the ring that every test-point footprint draws round its own pad (the ring
 edge sits 0.11 mm from the pad copper); the outline cut-back only handled straight
 lines. Those 16 rings are dropped, silkscreen is kept 0.25 mm from pads and vias and
@@ -222,8 +223,8 @@ at 0.18 mm, both good. Remaining:
 
 | Finding | State |
 |---|---|
-| Silkscreen to hole, 2 warning (0.14 mm) | A pin-1 triangle (a silkscreen polygon) near a via; the cut-back handles lines and circles, not polygons. |
-| Through-hole to SMD, 5 warning (2.06 mm) | `J_SWD` to `TP_SWDIO` and `TP_SWCLK`, 2.05 mm on this export; #380. |
+| Silkscreen to hole, 2 warning (0.14 mm) | A pin-1 triangle (a silkscreen polygon) near a via. Fixed in this package: polygons on a pad or via are dropped (9 on this export); not yet run through JLCPCB. |
+| Through-hole to SMD, 5 warning (2.06 mm) | `J_SWD` to `TP_SWDIO` and `TP_SWCLK`, 2.05 mm. Fixed in this package: a release search moved `TP_SWDIO` from (71.5, 26.5) to (70.34, 26.81) and `TP_SWCLK` from (71.5, 31.5) to (70.3, 31.5); the nearest pair is now `C_BULK` to `C_IN2` at 2.4 mm. Not yet run through JLCPCB; #380. |
 | Pad spacing, 2 warning (0.15 mm) | Equal to the page's 0.15 mm SMD pad clearance. |
 | Mask opening near a trace, 57 warning; negative mask expansion, 50 warning | The export writes a solder-mask expansion of 0 and a minimum mask width of 0. JLCPCB's capabilities page lists 0.05 mm of growth around a pad for misregistration. A variant package with expansion 0.05 mm and minimum width 0.1 mm was built for an upload; no result yet. #378. |
 
@@ -234,16 +235,16 @@ placement finding. Limits are from JLCPCB's [capabilities page](https://jlcpcb.c
 
 | Finding | What it is | Why it stays, or what tracks it |
 |---|---|---|
-| SMT DFM and quote not run on this package | The PCB DFM ran (above); the SMT DFM and a quote have not. | Needs the BOM and placement files uploaded (Jeff); no order is placed. |
+| PCB DFM re-run and SMT DFM and quote not run on this package | The PCB DFM ran on the previous package (above); this one moves two test points and drops the pin-1 triangles. | Needs the package uploaded (Jeff); no order is placed. |
 | Decouplers 5.5 to 8.4 mm from their pins | Pad to pin: `C_IN1` 5.5, `C_U5` 6.3, `C_VDD2` 7.8, `C_IN2` 8.4 mm; `C_VDD1` is at 3.6 mm and `C_U4` at 2.8 mm (a release search moved it from 4.8; sidecar (55.0, 44.5) to (51.62, 41.78)). | Not fixed. On this layout the area round each pin is full: a release search (4 rounds of 42 trials) and a swap search never reached a released board with them closer. On a x1.4 layout a search put four of them within 3 mm of their pins and cleared every blocker but one: the `NRST` net at `U2.6`, which the moved decouplers sat in front of; 21 `R_NRST` spots, 21 `C_NRST` spots, `SW_RESET`, and six pairs of the two small reset parts could not clear it. Tracked in #377. |
-| Through-hole to SMD, 4 warning | `J_SWD` to `TP_SWDIO` and `TP_SWCLK`, 2.05 mm. | The capabilities page has no through-hole-to-SMD row, so the threshold is not sourced. #380. |
+| Through-hole to SMD, warnings on the previous package | `J_SWD` to `TP_SWDIO` and `TP_SWCLK` were 2.05 mm; both test points were moved, the nearest pair is now `C_BULK` to `C_IN2` at 2.4 mm. | The capabilities page has no through-hole-to-SMD row, so the threshold is not sourced; the effect of the move needs a JLCPCB re-run. #380. |
 | Pad spacing, 2 warning | 0.15 mm between pads. | Equal to the page's 0.15 mm SMD pad clearance. |
 | Mask opening near a trace, 57 warning; negative mask expansion, 50 warning | Mask openings 0.15 mm from a trace; openings 0.04 mm smaller than their pads. | Not traced to pads. #378. |
-| Library mismatch, 122 warning | Footprints whose silkscreen was cut back. | Intentional: the cut-back is what clears the silkscreen findings. |
+| Library mismatch, 121 warning | Footprints whose silkscreen was cut back. | Intentional: the cut-back is what clears the silkscreen findings. |
 
 ## Not done
 
-- JLCPCB SMT DFM and quote on this package (the PCB DFM ran: 0 Danger).
+- JLCPCB PCB DFM re-run, SMT DFM and quote on this package (the PCB DFM of the previous package ran: 0 Danger).
 - Decouplers within 4 mm of their pins (#377).
 - Values not checked against datasheets: the Lite-On LED datasheet (its server fails certificate verification here), the NDK crystal datasheet, and the 5 pF stray capacitance of the crystal.
 - Nothing was built or run on hardware.

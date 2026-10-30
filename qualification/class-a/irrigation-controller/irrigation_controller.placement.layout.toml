@@ -309,8 +309,8 @@ dx = 0.0
 dy = 0.0
 
 [components.TP_SWCLK]
-x = 71.5
-y = 31.5
+x = 70.30
+y = 31.50
 rotation = 0
 source = "agent"
 priority = "hard"
@@ -831,8 +831,8 @@ dx = 0.0
 dy = 0.0
 
 [components.TP_SWDIO]
-x = 71.5
-y = 26.5
+x = 70.34
+y = 26.81
 rotation = 0
 source = "agent"
 priority = "hard"
