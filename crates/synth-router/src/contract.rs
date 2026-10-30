@@ -427,6 +427,11 @@ pub struct RouteRequest {
     /// rule, to find the ground pour and the signal vias that need a return.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ground_nets: Vec<String>,
+    /// The nets whose layer changes must keep a ground return via: differential,
+    /// clock, RF, analog and switching nets. `None` holds every signal net to
+    /// it; `Some` lists any other net's missing return via as an advisory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_via_critical_nets: Option<Vec<String>>,
 }
 
 impl RouteRequest {
@@ -610,6 +615,7 @@ impl RouteRequest {
             source_revision: None,
             routing_order: Vec::new(),
             ground_nets: Vec::new(),
+            return_via_critical_nets: None,
         }
     }
 }

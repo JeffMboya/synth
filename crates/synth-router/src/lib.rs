@@ -335,8 +335,16 @@ fn finalize(
         Ok(moved) => eprintln!("note: moved {moved} via(s) off the pads they sat in"),
         Err(detail) => eprintln!("warning: vias in pads were not repaired: {detail}"),
     }
-    match island_vias::tie_islands(&candidate.candidate_path, &request.ground_nets) {
-        Ok(outcome) => repair_blocking = outcome.unresolved,
+    let mut repair_advisory: Vec<String> = Vec::new();
+    let mut ground = island_vias::Ground::new(&request.ground_nets);
+    if let Some(critical) = &request.return_via_critical_nets {
+        ground = ground.with_critical(critical);
+    }
+    match island_vias::tie_islands_for(&candidate.candidate_path, &ground) {
+        Ok(outcome) => {
+            repair_blocking = outcome.unresolved;
+            repair_advisory = outcome.advisory;
+        }
         Err(detail) => {
             eprintln!(
                 "warning: pour islands were not checked in {}: {detail}",
@@ -345,11 +353,12 @@ fn finalize(
             repair_unavailable.push(format!("pour island repair did not run: {detail}"));
         }
     }
-    let verdict = with_repair_findings(
+    let mut verdict = with_repair_findings(
         validate_candidate(request, &candidate),
         repair_blocking,
         repair_unavailable,
     );
+    verdict.advisories.extend(repair_advisory);
 
     let state = RouteReport::state_for_verdict(&verdict);
 
