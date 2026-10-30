@@ -14,9 +14,8 @@ identical, and a fabrication package is generated from it. Since SammyOina's rev
 of 2026-10-29 13:51: the input TVS sits ahead of the series MOSFET with the supply
 range stated as 13.0 V at most; the green LEDs are a part that lights from 3.3 V;
 silkscreen is 0.18 mm wide, cut back 0.25 mm from vias and pads, with the test-point rings dropped; vias are 0.6 mm over a
-0.2 mm drill (a 0.20 mm ring); the schematic is one A0 sheet. JLCPCB's PCB DFM ran on the
-previous package (2026-10-30 10:41, Gerber hash `3fccbb18d3`): 0 Danger items; silkscreen to hole and to pad are clear. This
-package moves `C_U5` and `C_IN1` and has not been run through JLCPCB. Not fixed: `C_IN1` (5.3 mm) and `C_IN2` (8.4 mm)
+0.2 mm drill (a 0.20 mm ring); the schematic is one A0 sheet. JLCPCB's PCB DFM ran on this
+package (2026-10-30 13:38, Gerber hash `1dbe5f798b`): 0 Danger items; silkscreen to hole and to pad are clear. Not fixed: `C_IN1` (5.3 mm) and `C_IN2` (8.4 mm)
 are still beyond the 4 mm the placement review allows for the regulator's input pin (see "Open items").
 Nothing here was built or tested on hardware.
 
@@ -122,7 +121,7 @@ SammyOina's review of 2026-10-29 (13:51), then the earlier ones, point by point:
 
 | Review point | State |
 |---|---|
-| DFM findings fixed, package regenerated and re-run | The PCB DFM of 2026-10-30 07:21 (previous package) found 32 silkscreen-to-pad and 3 silkscreen-to-hole Danger items; the cause was the ring every test-point footprint draws 0.11 mm off its own pad, which the outline cut-back did not touch. Fixed in the file: those 16 circles are dropped, silkscreen is 0.18 mm wide and 0.25 mm from pads and vias, 0 lines touch a via, 301 outline lines are cut back. JLCPCB's PCB DFM of the previous package (2026-10-30 10:41) reports 0 Danger items, silkscreen to pad 0.25 mm and line width 0.18 mm both good, no silkscreen to hole finding; warnings remain for through-hole to SMD (1), pad spacing (2) and the solder-mask checks (107), listed below. The reports are summarised below and not committed (3.5 MB). |
+| DFM findings fixed, package regenerated and re-run | The PCB DFM of 2026-10-30 07:21 (previous package) found 32 silkscreen-to-pad and 3 silkscreen-to-hole Danger items; the cause was the ring every test-point footprint draws 0.11 mm off its own pad, which the outline cut-back did not touch. Fixed in the file: those 16 circles are dropped, silkscreen is 0.18 mm wide and 0.25 mm from pads and vias, 0 lines touch a via, 301 outline lines are cut back. JLCPCB's PCB DFM of this package (2026-10-30 13:38) reports 0 Danger items, silkscreen to pad 0.25 mm and line width 0.18 mm both good, no silkscreen to hole finding; warnings remain for through-hole to SMD (1), pad spacing (2) and the solder-mask checks (107), listed below. The reports are summarised below and not committed (3.5 MB). |
 | Stale schematic evidence | The schematic is one A0 sheet with 13 named groups and no `OTHER` region, rendered from the final export; renders, hashes, numbers and the fab package all come from the same export (below). The renders are not attached here. |
 | Input protection rating | The supply range is 10.8 to 13.0 V. `D_TVS` is an SMAJ13A (Littelfuse SMAJ series datasheet: standoff 13.0 V; breakdown 14.40 to 15.90 V at 1 mA; 1 uA maximum leakage at the standoff; 21.5 V clamp at 18.6 A) on `VIN_FUSED`, ahead of `Q1`, so a transient is clamped before it reaches the MOSFET. Standoff equals the maximum input; the clamp is below the MP2307's 23 V recommended input and its 26 V absolute maximum (MPS datasheet) and below `Q1`'s 30 V drain-source rating. A reversed supply forward-biases `D_TVS` and `F1` opens. The 5.1 V gate-source zener `D_QG` is inside the 12 V gate rating. |
 | Decouplers at their pins | Fixed for `C_U5` (3.2 mm from `U5.8`, was 6.3) and `C_U4` (2.8 mm, was 4.8); `C_VDD1` is 3.6 mm. Not fixed: `C_IN1` 5.3 mm and `C_IN2` 8.4 mm from the regulator's input pin `U1.2`, and `C_VDD2` 7.8 mm (the 4.7 uF bulk capacitor on `U2.4`, which Synth's placement review does not flag). The placement review flags `C_IN1` (5 mm) and `C_IN2` (9 mm) against its 4 mm limit and no other decoupling capacitor; see "Open items". |
@@ -199,29 +198,28 @@ uses the registry checkout. Positions and routing are the same.
 
 ## JLCPCB DFM results
 
-Four PCB DFM reports (PDF, 3.5 MB each, not committed). The fourth ran on the previous package (Gerber
-content hash `3fccbb18d3`, JLCDFM report of 2026-10-30 10:41, 2 layers, 75.1 x 65.4 mm, PCB DFM only; the SMT DFM was
-not run). This package (`1dbe5f798b`) moves `C_U5`, `C_IN1`, `C_BS` and two fill capacitors; the nearest through-hole to SMD gap is the same 2.4 mm and the
-silkscreen counts are the same or lower, but it has not been run. In all four, clear: sharp corners, BGA, via in pad, trace to edge, trace spacing, unconnected ends,
-trace width (0.2 mm), plated-hole to trace, fiducial, pad to board edge, drill checks and slots.
+Five PCB DFM reports (PDF, 3.5 MB each, not committed). The fifth ran on this package (Gerber content
+hash `1dbe5f798b`, JLCDFM report of 2026-10-30 13:38, 2 layers, 75.1 x 65.4 mm, PCB DFM only; the SMT DFM was
+not run). In all five, clear: sharp corners, BGA, via in pad, trace to edge, trace spacing, unconnected ends,
+plated-hole to trace, fiducial, pad to board edge, drill checks and slots; trace width is 0.2 mm, good (90 on this package).
 
-| Item (worst value) | 10-29 16:13 | 10-30 07:21 | 10-30 08:48 | 10-30 10:41, previous package |
-|---|---|---|---|---|
-| Silkscreen to pad | 0.14 mm: 0 D / 32 W | 0.12 mm: 32 D / 17 W | 0.21 mm: 0 / 0 (45 good) | 0.25 mm: 0 / 0 (26 good) |
-| Silkscreen to hole | 0 mm: 18 D / 7 W | 0.08 mm: 3 D / 3 W | 0.14 mm: 0 / 2 | none found |
-| Silkscreen line width | 0.12 mm: 0 / 50 | 0.15 mm: 0 / 50 | 0.18 mm: 0 / 0 (50 good) | 0.18 mm: 0 / 0 (50 good) |
-| Annular ring | 0.15 mm: 0 / 100 | 0.2 mm: 0 / 0 | 0.2 mm: 0 / 0 (100 good) | 0.2 mm: 0 / 0 (100 good) |
-| Through-hole to SMD | 1.9 mm: 1 D / 4 W | 2.06 mm: 0 / 5 | 2.06 mm: 0 / 5 | 2.4 mm: 0 / 1 (14 good) |
-| Pad spacing | 0.15 mm: 0 / 2 | 0.15 mm: 0 / 2 | 0.15 mm: 0 / 2 | 0.15 mm: 0 / 2 (48 good) |
-| Solder mask opening near a trace | 0.15 mm: 0 / 57 | 0.13 mm: 0 / 57 | 0.13 mm: 0 / 57 | 0.13 mm: 0 / 57 (1 good) |
-| Negative mask expansion | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 |
+| Item (worst value) | 10-29 16:13 | 10-30 07:21 | 10-30 08:48 | 10-30 10:41 (`3fccbb18d3`) | 10-30 13:38, this package |
+|---|---|---|---|---|---|
+| Silkscreen to pad | 0.14 mm: 0 D / 32 W | 0.12 mm: 32 D / 17 W | 0.21 mm: 0 / 0 (45 good) | 0.25 mm: 0 / 0 (26 good) | 0.25 mm: 0 / 0 (26 good) |
+| Silkscreen to hole | 0 mm: 18 D / 7 W | 0.08 mm: 3 D / 3 W | 0.14 mm: 0 / 2 | none found | none found |
+| Silkscreen line width | 0.12 mm: 0 / 50 | 0.15 mm: 0 / 50 | 0.18 mm: 0 / 0 (50 good) | 0.18 mm: 0 / 0 (50 good) | 0.18 mm: 0 / 0 (50 good) |
+| Annular ring | 0.15 mm: 0 / 100 | 0.2 mm: 0 / 0 | 0.2 mm: 0 / 0 (100 good) | 0.2 mm: 0 / 0 (100 good) | 0.2 mm: 0 / 0 (100 good) |
+| Through-hole to SMD | 1.9 mm: 1 D / 4 W | 2.06 mm: 0 / 5 | 2.06 mm: 0 / 5 | 2.4 mm: 0 / 1 (14 good) | 2.4 mm: 0 / 1 (13 good) |
+| Pad spacing | 0.15 mm: 0 / 2 | 0.15 mm: 0 / 2 | 0.15 mm: 0 / 2 | 0.15 mm: 0 / 2 (48 good) | 0.15 mm: 0 / 2 (48 good) |
+| Solder mask opening near a trace | 0.15 mm: 0 / 57 | 0.13 mm: 0 / 57 | 0.13 mm: 0 / 57 | 0.13 mm: 0 / 57 (1 good) | 0.15 mm: 0 / 57 (1 good) |
+| Negative mask expansion | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 | 0.04 mm: 0 / 50 |
 
-(D = Danger, W = Warning.) The previous package has no Danger item. What cleared, and why:
+(D = Danger, W = Warning.) This package has no Danger item. What cleared, and why:
 
 - Silkscreen to pad Danger (07:21 report): the ring every test-point footprint draws 0.11 mm
   off its own pad. Those circles are dropped, and silkscreen is kept 0.25 mm from pads and vias.
 - Silkscreen to hole (08:48 report, 2 warnings): a pin-1 triangle (a silkscreen polygon) over a via
-  pad. Polygons on a pad or via are dropped now; the 10:41 report finds none.
+  pad. Polygons on a pad or via are dropped now; the 10:41 and 13:38 reports find none.
 - Through-hole to SMD (5 warnings, 2.06 mm): `J_SWD` to `TP_SWDIO` and `TP_SWCLK`. A release search
   moved `TP_SWDIO` from (71.5, 26.5) to (70.34, 26.81) and `TP_SWCLK` from (71.5, 31.5) to
   (70.3, 31.5); one pair remains, `C_BULK` to `C_IN2` at 2.4 mm.
@@ -241,7 +239,7 @@ placement finding. Limits are from JLCPCB's [capabilities page](https://jlcpcb.c
 
 | Finding | What it is | Why it stays, or what tracks it |
 |---|---|---|
-| PCB DFM re-run, SMT DFM and quote not run on this package | The PCB DFM ran on the previous package (above). | Needs the package uploaded (Jeff); no order is placed. |
+| SMT DFM and quote not run on this package | The PCB DFM ran on this package (above). | Needs the BOM and placement files uploaded (Jeff); no order is placed. |
 | `C_IN1` 5.3 mm and `C_IN2` 8.4 mm from the regulator input `U1.2` | Pad to pin. Synth's placement review limit is 4 mm; it flags these two (5 and 9 mm) and nothing else. `C_VDD2` (4.7 uF bulk on `U2.4`, 7.8 mm) is not flagged. | Not fixed. The pin sits on the IC's left edge between `L1`, the bootstrap capacitor `C_BS` and the test point `TP_12V`; every spot within 4 mm is the IC itself or one of those support parts. A make-room search (`agent-run/tools/make_room_search.py`) moved the fill capacitors `C_N13`, `C_N9` and the bootstrap capacitor `C_BS`, put `C_U5` at its pin and `C_IN1` 0.2 mm closer, and found no released layout for `C_IN2` (moving `C_BS` leaves return-via blockers). Closing the rest needs a smaller input capacitor (an 0805 10 uF 25 V instead of the 1206, a derating decision for a reviewer) or a different regulator orientation. Tracked in #377. |
 | Through-hole to SMD, 1 warning | `C_BULK` to `C_IN2`, 2.4 mm (the `J_SWD` pairs were moved clear). | The capabilities page has no through-hole-to-SMD row, so the threshold is not sourced. #380. |
 | Pad spacing, 2 warning | 0.15 mm between pads. | Equal to the page's 0.15 mm SMD pad clearance. |
@@ -250,7 +248,7 @@ placement finding. Limits are from JLCPCB's [capabilities page](https://jlcpcb.c
 
 ## Not done
 
-- JLCPCB PCB DFM re-run, SMT DFM and quote on this package (the PCB DFM of the previous package ran: 0 Danger).
+- JLCPCB SMT DFM and quote on this package (the PCB DFM ran: 0 Danger).
 - Decouplers within 4 mm of their pins (#377).
 - Values not checked against datasheets: the crystal's shunt capacitance (not in the NDK spec), ST's AN2867 (the download is refused), the KENTO KT-0603Y LED datasheet, and the power ratings of the resistors.
 - Nothing was built or run on hardware.
