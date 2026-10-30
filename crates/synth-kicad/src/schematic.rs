@@ -842,20 +842,22 @@ fn build_power_flag_driver(
 ) -> Option<Sexp> {
     let component = board.component(driver.anchor_component)?;
     let part = component.part.as_ref()?;
-    let lib_id = part.kicad_symbol.as_deref()?;
-
-    let natural_offset = natural_rotation_offset(part);
-    // The anchor pin for an undriven power net is a declared power-input
-    // pin; those are placed un-rotated in the layout's canonical
-    // orientation, so logical rotation is zero.
-    let total_deg = natural_offset.rem_euclid(360.0);
-
-    let (x, y, dx, dy) = crate::pin_reconcile::physical_terminal(
-        lib_id,
-        &driver.anchor_pin_number,
-        driver.anchor_center,
-        total_deg,
-    )?;
+    let (x, y, dx, dy) = if let Some(terminal) = driver.anchor_terminal {
+        terminal
+    } else {
+        let lib_id = part.kicad_symbol.as_deref()?;
+        let natural_offset = natural_rotation_offset(part);
+        // The anchor pin for an undriven power net is a declared power-input
+        // pin; those are placed un-rotated in the layout's canonical
+        // orientation, so logical rotation is zero.
+        let total_deg = natural_offset.rem_euclid(360.0);
+        crate::pin_reconcile::physical_terminal(
+            lib_id,
+            &driver.anchor_pin_number,
+            driver.anchor_center,
+            total_deg,
+        )?
+    };
 
     let stub_len = POWER_FLAG_STUB_LEN;
     let flag_x = x + dx * stub_len;
