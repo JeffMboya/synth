@@ -14,7 +14,7 @@ identical, and the exported KiCad files, the DRC and ERC reports, a fabrication 
 reproduction script are committed ([`export/`](export/), [`reports/`](reports/), [`fab/`](fab/),
 [`reproduce/`](reproduce/)). Since SammyOina's review of 2026-10-30 10:57: `C_IN1` and `C_IN2` sit
 3.3 and 3.5 mm from the regulator's input pin `U1.2`, inside the placement review's 4 mm, and the
-review flags no decoupling capacitor; the five `silk_overlap` warnings are gone; the numbers, hashes, renders and
+review flags no decoupling capacitor; the five `silk_overlap` warnings and the one ERC error (`power_pin_not_driven` on `+12V_VALVE`) are gone; the numbers, hashes, renders and
 files below all come from one export. Not done: JLCPCB's PCB DFM of this exact package and the SMT DFM and
 quote, which need an upload (see "JLCPCB DFM results"), and an independent review of two registry parts. Nothing
 here was built or tested on hardware.
@@ -39,7 +39,7 @@ logged under [`agent-run/`](agent-run/).
 | 10. Final blockers | An agent from [`final-blockers/prompt.md`](agent-run/final-blockers/prompt.md) moved `D_TVS` ahead of `Q1` and rewrote the notes at 13.0 V; stopped when a stray quote in a note broke the source's syntax | source edit kept, quote repaired (below) |
 | 11. Searches | [`final-blockers/tools/`](agent-run/final-blockers/tools/): decoupler placement on a x1.4 layout, then `R_NRST`, `C_NRST` and `SW_RESET` spots and pairs, a release search | none reached a released board with the decouplers at their pins (see "Open items") |
 | 12. Silkscreen and vias | Synth commits `8052ca52`, `a38802ad` (silkscreen widened and cut back), `2ef37388` (0.2 mm drill, Synth PR #388), then on `SYN-case1-binary` the 0.25 mm clearance with 0.18 mm strokes and `7972c911` (test-point rings dropped) and `be19e90a` (pin-1 triangles dropped too) | in the exports below |
-| 13. Input capacitors at the regulator pin | `C_IN1` and `C_IN2` change from a 1206 to an 0805 part (same 10 uF 25 V); [`make_room_search.py`](agent-run/tools/make_room_search.py) and [`tht_chain.py`](agent-run/tools/tht_chain.py) place them; Synth commits `ffa0c7ba` and `efb2f8be` on `SYN-case1-binary` clear the last silkscreen overlaps | both inside 4 mm of `U1.2`; 0 `silk_overlap`; released |
+| 13. Input capacitors at the regulator pin | `C_IN1` and `C_IN2` change from a 1206 to an 0805 part (same 10 uF 25 V); [`make_room_search.py`](agent-run/tools/make_room_search.py) and [`tht_chain.py`](agent-run/tools/tht_chain.py) place them; Synth commits `ffa0c7ba` and `efb2f8be` on `SYN-case1-binary` clear the last silkscreen overlaps and `f7b110db` adds the missing power flag | both inside 4 mm of `U1.2`; 0 `silk_overlap`; 0 ERC errors; released |
 
 ### Edits applied by the orchestrator
 
@@ -70,13 +70,13 @@ and `l_1210_10uh`, which are not in the registry on `main`. `smaj13a_tvs` and
 neither has a reviewer recorded yet.
 
 The server was KiCad 10.0.7 on a 16-vCPU machine, Synth built from
-branch `SYN-case1-binary` (stacked on `SYN-silk-clear-of-vias`) at commit efb2f8be1d42. `allow_incomplete` was never set, in any run log or
+branch `SYN-case1-binary` (stacked on `SYN-silk-clear-of-vias`) at commit f7b110dbe0d4. `allow_incomplete` was never set, in any run log or
 script.
 
 ## What was measured
 
 All figures come from the files of the first of the three exports below
-(KiCad 10.0.7, 16-vCPU server, Synth commit efb2f8be1d42).
+(KiCad 10.0.7, 16-vCPU server, Synth commit f7b110dbe0d4).
 
 | | |
 |---|---|
@@ -87,7 +87,7 @@ All figures come from the files of the first of the three exports below
 | Trace width, as routed | `VIN_FUSED`, `VALVE1_SW`, `VALVE2_SW` 0.8 mm; `+12V_VALVE` 0.4 to 0.8 mm; `+3V3` 0.2 to 0.4 mm |
 | Silkscreen | the export's own summary: 751 strokes widened to 0.18 mm; 300 outline lines cut back 0.25 mm from vias and pads; 25 silkscreen circles and polygons dropped (16 test-point rings, 9 pin-1 triangles); 37 labels moved and 13 hidden because no spot clear of copper and of other silkscreen was within reach |
 | BOM | 126 rows, every one with a manufacturer, MPN, distributor, order number and page (below) |
-| Schematic | one A0 sheet, 13 named groups, no `OTHER` region; rendered from this export with `kicad-cli`. KiCad's ERC ([`reports/kicad_erc.json`](reports/kicad_erc.json)): 1 error (`power_pin_not_driven` on a `+12V_VALVE` power symbol, `#PWR1248`; the earlier layout has the same one) and 252 `lib_symbol_issues` warnings (the exporter's embedded symbols against the library) |
+| Schematic | one A0 sheet, 13 named groups, no `OTHER` region; rendered from this export with `kicad-cli`. KiCad's ERC ([`reports/kicad_erc.json`](reports/kicad_erc.json)): 0 errors and 253 `lib_symbol_issues` warnings (the exporter's embedded symbols against the library). The `+12V_VALVE` rail now carries a `PWR_FLAG` (Synth commit `f7b110db`: the exporter skipped a rail whose only power pin sits on a generated symbol; the earlier exports had one `power_pin_not_driven` error) |
 
 The 120 `lib_footprint_mismatch` warnings are footprints whose silkscreen the
 exporter cut back from a via or a pad (0.25 mm clearance, above JLCPCB's 0.15 mm
@@ -141,7 +141,7 @@ SammyOina's review of 2026-10-29 (13:51), then the earlier ones, point by point:
 | Crystal load | the NDK NX3225GD-8MHZ-STD-CRA-3 has an 8 pF load. With 5 pF assumed for stray capacitance, CL = C1 x C2 / (C1 + C2) + 5 pF; C1 = C2 = 2 x (8 - 5) = 6 pF; the nearest E24 value 6.2 pF gives 8.1 pF. `C_X1` and `C_X2` are 6.2 pF. The 8 pF is from NDK's spec (EXS10B-26983); the 5 pF is the series-formula equivalent of the 10 pF per pin ST's STM32G030 datasheet gives as a rough estimate, not confirmed (see "LED, bleeder and crystal values" above). |
 | Valve current | stated in the source as a 12 V solenoid at most 0.5 A: the `PWR12` class is 0.8 mm; the AO3400A (5.7 A on its listing) and the 1N5819HW flyback diode (1 A) are above it. Calculated from listing figures, not measured. |
 | Schematic references and groups | every part is in a named group; the `OTHER` region is gone. |
-| Open | the independent review of `smaj13a_tvs` and `p_mosfet_ao3401a` (no reviewer is recorded; a human has to give one); the ERC error above; the MP2307 divider (VFB 0.925 V, 0.900 to 0.950 V, MPS datasheet) and compensation are calculated, not simulated; none of this was tested on hardware. |
+| Open | the independent review of `smaj13a_tvs` and `p_mosfet_ao3401a` (no reviewer is recorded; a human has to give one); the MP2307 divider (VFB 0.925 V, 0.900 to 0.950 V, MPS datasheet) and compensation are calculated, not simulated; none of this was tested on hardware. |
 
 ## Bill of materials and fabrication package
 
@@ -181,13 +181,13 @@ is the first ten characters of a SHA-256. All three exports are `routed`,
 
 | file | export 1 | export 2 | export 3 | |
 |---|---|---|---|---|
-| `irrigation_controller.kicad_sch` (one sheet) | 6f9e183328 | 6f9e183328 | 6f9e183328 | identical |
+| `irrigation_controller.kicad_sch` (one sheet) | 29f8e2cb1f | 29f8e2cb1f | 29f8e2cb1f | identical |
 | `irrigation_controller.kicad_pro` | ee7cbc7b7c | ee7cbc7b7c | ee7cbc7b7c | identical |
 | `irrigation_controller.kicad_sym` | 8104da92fc | 8104da92fc | 8104da92fc | identical |
 | `bom.csv` | 81e5fddb6b | 81e5fddb6b | 81e5fddb6b | identical |
 | `pnp.csv` | 49988dec1a | 49988dec1a | 49988dec1a | identical |
 | `irrigation_controller.synth.kicad_pcb` (un-routed) | a69d4b99fb | a69d4b99fb | a69d4b99fb | identical |
-| `irrigation_controller.kicad_pcb` | 0b6f8e278b | 424e1c5608 | 13ad8d9e39 | identical after the router's and KiCad's random ids |
+| `irrigation_controller.kicad_pcb` | 5950bd76d1 | db80f2aba1 | 6c9642e896 | identical after the router's and KiCad's random ids |
 | Gerber and drill content | 125847925c | 125847925c | 125847925c | identical |
 
 The routed PCB differs between runs only in the random ids the router gives its
@@ -203,7 +203,7 @@ packages ([`pins.env`](reproduce/pins.env)), exports the source three times, com
 package. The parts the design takes from outside the Synth checkout's registry are in
 [`reproduce/user-registry/`](reproduce/user-registry/) (17 files); the exports ran from the registry embedded in the binary, so the
 pull requests listed above are not needed to reproduce them, only the pinned Synth commit.
-The Synth commit is `efb2f8be1d42` on `SYN-case1-binary` of `JeffMboya/synth`, stacked on `SYN-silk-clear-of-vias`
+The Synth commit is `f7b110dbe0d4` on `SYN-case1-binary` of `JeffMboya/synth`, stacked on `SYN-silk-clear-of-vias`
 and the layout pull requests; it is not in `absmach/synth`'s `main`. The kit has not been run from a clean machine; the three
 exports above were made with the same commit and inputs on the droplet.
 
@@ -253,7 +253,6 @@ placement finding, or a review that needs a person. Limits are from JLCPCB's [ca
 |---|---|---|
 | PCB DFM and SMT DFM and quote on this package | Not run: the reports of earlier packages are summarised above. | Needs the Gerbers, BOM and CPL uploaded from a JLCPCB account; no order is placed. |
 | Independent review of `smaj13a_tvs` and `p_mosfet_ao3401a` | The two registry parts authored for this board have no reviewer recorded. | A person other than the author has to review them; nobody is recorded, and none is invented here. |
-| ERC: 1 error, `power_pin_not_driven` | A `+12V_VALVE` power symbol (`#PWR1248`) KiCad reads as undriven, in this layout and the earlier one. | A schematic-export finding in Synth (the exporter places power flags per rail); not yet traced. |
 | `C_VDD2` 7.8 mm from `U2.4` | The 4.7 uF bulk capacitor on the MCU's supply pin. | Synth's placement review does not flag it; every closer layout tried failed the router's return-via gate (#377). |
 | Input capacitor derating | `C_IN1` and `C_IN2` are 0805 X5R parts with no published DC-bias curve. | The rail also has a 100 uF electrolytic and two fill capacitors; a reviewer should decide whether more capacitance is wanted. |
 | Through-hole to SMD, 1 warning in the last report | `C_BULK` to a neighbour, 2.28 mm now. | The capabilities page has no through-hole-to-SMD row, so the threshold is not sourced. #380. |
