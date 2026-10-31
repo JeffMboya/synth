@@ -105,3 +105,84 @@ fn usb_uart_vio_rail_gets_a_power_flag() {
         anchor.refdes
     );
 }
+
+#[test]
+fn a_rail_whose_only_power_pin_has_no_stock_symbol_still_gets_a_power_flag() {
+    // The MP2307's `in` is the rail's only power input and the part has no stock
+    // symbol, so it cannot anchor the flag; the capacitor on the rail is passive
+    // and has a stock symbol, and anchors it instead of the rail going unflagged.
+    let registry = synth_registry::load_dir(&workspace_root().join("registry").join("parts"))
+        .expect("registry");
+    let filename = "buck_rail.synth";
+    let src = r#"board "buck_rail" {
+  layers 2
+  power "VIN_RAIL" 12v
+  component U1: regulator "mp2307_buck"
+  component C1: capacitor "c_generic_0603" value "10uF"
+  net "VIN_RAIL" { U1.in C1.p1 }
+}
+"#;
+    let ast = synth_parser::parse(src, filename.to_string())
+        .ast
+        .expect("ast");
+    let board = synth_ir::lower(&ast, &registry, filename)
+        .board
+        .expect("board");
+    let layout = synth_layout::layout(&board);
+    let placements: std::collections::HashMap<_, _> =
+        layout.components.iter().map(|p| (p.id, p)).collect();
+    let drivers = synth_kicad::pin_reconcile::undriven_power_nets(&board, &placements);
+    let rail = drivers
+        .iter()
+        .find(|d| board.net(d.net).unwrap().name == "VIN_RAIL")
+        .expect("VIN_RAIL is flagged though U1 cannot anchor it");
+    assert_eq!(board.component(rail.anchor_component).unwrap().refdes, "C1");
+}
+
+#[test]
+fn the_power_flag_of_a_rail_sits_on_the_end_of_a_wire() {
+    // The flag joins the rail only where a wire ends on its pin; a flag anchored
+    // on a turned part must be drawn at that part's turned pin, not its upright one.
+    if synth_layout::kicad_lib_loader::physical_pins("Device:C").is_none() {
+        eprintln!("KiCad symbol library not installed locally; skipping the flag position test");
+        return;
+    }
+    let registry = synth_registry::load_dir(&workspace_root().join("registry").join("parts"))
+        .expect("registry");
+    let filename = "buck_rail.synth";
+    let src = r#"board "buck_rail" {
+  layers 2
+  power "VIN_RAIL" 12v
+  component U1: regulator "mp2307_buck"
+  component C1: capacitor "c_generic_0603" value "10uF"
+  component C2: capacitor "c_generic_0603" value "10uF"
+  net "VIN_RAIL" { U1.in C1.p1 C2.p1 }
+}
+"#;
+    let ast = synth_parser::parse(src, filename.to_string())
+        .ast
+        .expect("ast");
+    let board = synth_ir::lower(&ast, &registry, filename)
+        .board
+        .expect("board");
+    let dir = std::env::temp_dir().join(format!("synth-flag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = synth_kicad::export(&board, &dir).expect("export");
+    let sch = std::fs::read_to_string(out.pcb_path.with_extension("kicad_sch"))
+        .expect(".kicad_sch written");
+    let flag = sch
+        .split("(lib_id \"power:PWR_FLAG\")")
+        .nth(1)
+        .and_then(|rest| rest.split("(at ").nth(1))
+        .map(|rest| {
+            rest.split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .expect("the rail has a PWR_FLAG");
+    assert!(
+        sch.contains(&format!("(xy {flag})")),
+        "no wire ends at the flag's pin ({flag})"
+    );
+}

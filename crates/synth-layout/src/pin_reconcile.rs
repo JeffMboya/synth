@@ -124,6 +124,9 @@ pub struct PowerDriver {
     pub anchor_pin_name: String,
     /// Center (mm) of the anchor component's placement.
     pub anchor_center: (f64, f64),
+    /// Total rotation (degrees) of the anchor component: its placement
+    /// turn plus its symbol's own.
+    pub anchor_total_deg: f64,
 }
 
 /// Result of reconciling one component's symbol pin set against the
@@ -278,9 +281,27 @@ pub fn undriven_power_nets<S: ::std::hash::BuildHasher>(
         }
         if has_power_input && !has_registry_power_output && !has_symbol_power_output {
             // Pick the first power-input endpoint with a placement as
-            // the anchor for the flag's stub.
+            // the anchor for the flag's stub; when none of them can anchor
+            // (a generated symbol has no terminal to read), any other pin on
+            // the net that can will do, since the flag only has to join it.
+            let is_power_pin = |endpoint: &synth_ir::NetEndpoint| {
+                board
+                    .component(endpoint.component)
+                    .and_then(|c| c.part.as_ref())
+                    .and_then(|part| part.pins.get(endpoint.pin.0 as usize))
+                    .is_some_and(|pin| {
+                        pin.electrical_type == synth_registry::ElectricalType::PowerInput
+                            || pin.electrical_type
+                                == synth_registry::ElectricalType::GroundReference
+                    })
+            };
             let mut anchor = None;
-            for endpoint in &net.endpoints {
+            for endpoint in net
+                .endpoints
+                .iter()
+                .filter(|e| is_power_pin(e))
+                .chain(net.endpoints.iter().filter(|e| !is_power_pin(e)))
+            {
                 let Some(component) = board.component(endpoint.component) else {
                     continue;
                 };
@@ -290,26 +311,29 @@ pub fn undriven_power_nets<S: ::std::hash::BuildHasher>(
                 let Some(pin) = part.pins.get(endpoint.pin.0 as usize) else {
                     continue;
                 };
-                if pin.electrical_type != synth_registry::ElectricalType::PowerInput
-                    && pin.electrical_type != synth_registry::ElectricalType::GroundReference
-                {
-                    continue;
-                }
                 // The flag's stub starts at the pin's terminal, which is
                 // read from the stock KiCad symbol. A part drawn from a
                 // generated symbol has none to read, so it cannot anchor.
-                if part.kicad_symbol.is_none() {
+                let Some(lib_id) = part.kicad_symbol.as_deref() else {
                     continue;
-                }
+                };
                 let Some(placement) = placements.get(&endpoint.component) else {
                     continue;
                 };
+                // Nor can a pin the stock symbol does not list under this number.
+                let (_, total_deg) = symbol_pose(part, placement);
+                if physical_terminal(lib_id, &pin.number.0, placement.center_mm, total_deg)
+                    .is_none()
+                {
+                    continue;
+                }
                 anchor = Some(PowerDriver {
                     net: net.id,
                     anchor_component: endpoint.component,
                     anchor_pin_number: pin.number.0.clone(),
                     anchor_pin_name: pin.name.clone(),
                     anchor_center: placement.center_mm,
+                    anchor_total_deg: total_deg,
                 });
                 break;
             }
