@@ -17,15 +17,15 @@
     "profile": "jlcpcb",
     "command": [
       "/home/synth/krtvenv/bin/python",
-      "/home/synth/pt/pc1i/tools/kicad_routing_tools_route.py",
-      "/home/synth/runs/fin4-repro/out1/irrigation_controller.synth.kicad_pcb",
-      "/home/synth/runs/fin4-repro/out1/irrigation_controller.kicadroutingtools.kicad_pcb",
+      "/home/synth/pt/pc1p/tools/kicad_routing_tools_route.py",
+      "/home/synth/runs/fin7-repro/out1/irrigation_controller.synth.kicad_pcb",
+      "/home/synth/runs/fin7-repro/out1/irrigation_controller.kicadroutingtools.kicad_pcb",
       "--repo",
       "/home/synth/krt",
       "--python",
       "/home/synth/krtvenv/bin/python",
       "--stats",
-      "/home/synth/runs/fin4-repro/out1/irrigation_controller.krt-stats.json",
+      "/home/synth/runs/fin7-repro/out1/irrigation_controller.krt-stats.json",
       "--escalation",
       "board",
       "--fab-tier",
@@ -46,7 +46,7 @@
     "input_hash": "a69d4b99fbf43ac4b087a13d899aa4a9feca99d3e7a2595f36d95ba8cbc79080",
     "output_hash": "",
     "source_revision": null,
-    "duration_ms": 39056
+    "duration_ms": 40077
   },
   "statistics": {
     "connected_nets": 45,
@@ -65,12 +65,12 @@
     }
   },
   "artifacts": {
-    "baseline": "/home/synth/runs/fin4-repro/out1/irrigation_controller.synth.kicad_pcb",
-    "candidate": "/home/synth/runs/fin4-repro/out1/irrigation_controller.kicadroutingtools.kicad_pcb",
-    "delivered": "/home/synth/runs/fin4-repro/out1/irrigation_controller.kicad_pcb",
-    "session_log": "/home/synth/runs/fin4-repro/out1/irrigation_controller.kicadroutingtools.log",
+    "baseline": "/home/synth/runs/fin7-repro/out1/irrigation_controller.synth.kicad_pcb",
+    "candidate": "/home/synth/runs/fin7-repro/out1/irrigation_controller.kicadroutingtools.kicad_pcb",
+    "delivered": "/home/synth/runs/fin7-repro/out1/irrigation_controller.kicad_pcb",
+    "session_log": "/home/synth/runs/fin7-repro/out1/irrigation_controller.kicadroutingtools.log",
     "ses": null,
-    "router_report": "/home/synth/runs/fin4-repro/out1/irrigation_controller.krt-stats.json",
+    "router_report": "/home/synth/runs/fin7-repro/out1/irrigation_controller.krt-stats.json",
     "connectivity_report": null,
     "drc_report": null
   },
