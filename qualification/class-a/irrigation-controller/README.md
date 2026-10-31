@@ -260,6 +260,16 @@ placement finding, or a review that needs a person. Limits are from JLCPCB's [ca
 | Mask opening near a trace, 57 warning; negative mask expansion, 50 warning | Mask openings 0.15 mm from a trace; openings 0.04 mm smaller than their pads in the earlier package. | A 0.05 mm expansion variant is built; its DFM result is not in. #378. |
 | Library mismatch, 120 warning | Footprints whose silkscreen was cut back. | Intentional: the cut-back is what clears the silkscreen findings. |
 
+### Dispositions for the two electrical open items
+
+These are estimates and datasheet arithmetic for a reviewer to accept or reject; nothing here was simulated or measured.
+
+**`C_VDD2` at 7.8 mm from `U2.4`.** `C_VDD2` is the 4.7 uF bulk capacitor on the MCU's supply pin; the 100 nF high-frequency capacitor on the same pin, `C_VDD1`, is 3.6 mm from it, and Synth's placement review flags neither. The board has two layers and no ground plane, so there is no plane capacitance to lean on and the return path is the routed ground. A rule of thumb of about 1 nH per millimetre of track puts 7.8 mm at about 8 nH; with a 4.7 uF part that gives a self-resonance near 0.8 MHz, and `C_VDD1`'s 3.6 mm (about 5 nH with the part's own inductance) near 7 MHz. So the pin's fast transients are met by `C_VDD1` and `C_VDD2` serves the slower part of the demand. Not stated: the MCU's worst-case current step, so no droop figure is given. Closing it needs a released layout with `C_VDD2` nearer, which the router's return-via gate has refused (#377).
+
+**Input capacitors, 0805 X5R at 13 V.** The part is the Samsung CL21A106KAYNNNE, 10 uF, 25 V, X5R (LCSC C15850): 13 V is 52 % of its rating. Samsung's public datasheet gives only the temperature limit (+/-15 % from -55 to 85 C) and no capacitance-against-DC-voltage curve, and a search found none, so the capacitance left at 13 V is not known for this part; a figure of 50 to 70 % retained at about half the rated voltage is a general one for X5R and was not checked against Samsung data. The MP2307 datasheet (Rev 1.9, "Input Capacitor") gives the input ripple as dV = (I_LOAD / (C1 x fs)) x (VOUT / VIN) x (1 - VOUT / VIN), with fs 340 kHz typical. For VOUT 3.3 V and the lowest input of 10.8 V that is 31 mV per ampere of load for two full 10 uF parts (20 uF), 62 mV per ampere at 50 % (10 uF) and 104 mV per ampere at 30 % (6 uF): at the converter's 3 A limit, 94, 187 and 312 mV. The board's own 3.3 V load is far below 3 A, and the rail also has the 100 uF electrolytic `C_BULK`. The datasheet asks for an input capacitor with an RMS current rating above half the load current; the 0805 part's rating was not looked up. A 1206 or an X7R part would derate less, but a 1206 does not fit inside 4 mm of `U1.2` (the reason for the 0805), and no X7R 0805 has been sourced here.
+
+**Lifecycle (unconfirmed).** A web-search summary says Monolithic Power Systems lists the MP2307 as not recommended for new designs and suggests the MP2393GTL-Z; the MPS product page could not be read (it returns a browser challenge), so this is not confirmed. The MP2307 is used here as in the registry and in the review of this board.
+
 ## Not done
 
 - JLCPCB PCB DFM, SMT DFM and quote on this package (earlier packages: 0 Danger).
