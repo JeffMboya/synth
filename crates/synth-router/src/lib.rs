@@ -368,6 +368,13 @@ fn finalize(
         Ok(moved) => eprintln!("note: moved {moved} via(s) off the pads they sat in"),
         Err(detail) => eprintln!("warning: vias in pads were not repaired: {detail}"),
     }
+    // A sliver of track that ends in nothing carries nothing and only trips KiCad's
+    // unconnected-end check; it goes before the candidate is judged.
+    match island_vias::drop_dangling_stubs(&candidate.candidate_path) {
+        Ok(0) => {}
+        Ok(dropped) => eprintln!("note: dropped {dropped} track stub(s) that ended in nothing"),
+        Err(detail) => eprintln!("warning: track stubs were not checked: {detail}"),
+    }
     match island_vias::tie_islands(&candidate.candidate_path, &request.ground_nets) {
         Ok(outcome) => repair_blocking = outcome.unresolved,
         Err(detail) => {
