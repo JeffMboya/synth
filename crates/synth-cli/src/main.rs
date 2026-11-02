@@ -5926,7 +5926,10 @@ mod tests {
         assert_eq!(filled["offers"], serde_json::json!(["via_in_pad"]));
         assert!(profiles
             .iter()
-            .filter(|p| p["name"] != "jlc-filled-via")
+            .filter(|p| {
+                !synth_drc::ManufacturerProfile::OFFERING_VIA_IN_PAD
+                    .contains(&p["name"].as_str().unwrap_or_default())
+            })
             .all(|p| p.get("offers").is_none()));
     }
     use super::*;
