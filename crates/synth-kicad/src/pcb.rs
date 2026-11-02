@@ -392,9 +392,6 @@ pub fn build_pcb(
         .required_processes
         .contains(&synth_ir::ProcessRequirement::ViaInPad)
         && process.via_in_pad;
-    // The via is the process's own: its drill at least the minimum and its pad
-    // the drill plus two minimum annular rings.
-    let plane_via = PlaneVia::for_process(&process);
     // One rail per layer. Pouring every plane net on every power layer puts
     // two rails at the same priority on the same copper, which is the
     // starvation described above with ground swapped out for a second rail:
