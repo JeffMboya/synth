@@ -650,9 +650,11 @@ fn plane_pad_targets(board: &Board, placement: &Placement, net: &synth_ir::Net) 
 /// Stitching-via pad radius in nanometres (a 0.6 mm via): the least the
 /// exporter uses, raised by [`PlaneVia::for_process`] when a process needs a
 /// wider ring.
+#[cfg(test)]
 const PLANE_VIA_RADIUS_NM: i64 = 300_000;
 
 /// Drill of a stitching via in nanometres, at least the process's floor.
+#[cfg(test)]
 const PLANE_VIA_DRILL_NM: i64 = 300_000;
 
 /// The via a plane stitching uses, from the manufacturer's own limits: the
@@ -665,6 +667,7 @@ struct PlaneVia {
 }
 
 impl PlaneVia {
+    #[cfg(test)]
     fn for_process(profile: &synth_drc::ManufacturerProfile) -> Self {
         let drill_nm = PLANE_VIA_DRILL_NM.max(profile.min_drill_diameter_nm);
         let ring_pad_nm = drill_nm + 2 * profile.min_annular_ring_nm;
