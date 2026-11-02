@@ -341,6 +341,14 @@ fn report_silkscreen_pass(result: Result<label_vias::LabelMoves, String>) {
     }
 }
 
+/// A sliver of track that ends in nothing carries nothing and only trips KiCad's
+/// unconnected-end check; it goes before the candidate is judged.
+fn report_dropped_stubs(candidate_path: &std::path::Path) {
+    if let Ok(dropped @ 1..) = island_vias::drop_dangling_stubs(candidate_path) {
+        eprintln!("note: dropped {dropped} track stub(s) that ended in nothing");
+    }
+}
+
 /// Promote a router-produced candidate into a report, installing it only if
 /// it survives independent validation.
 ///
@@ -349,6 +357,7 @@ fn report_silkscreen_pass(result: Result<label_vias::LabelMoves, String>) {
 /// over-reports its own success cannot promote itself. A candidate that
 /// fails validation is still retained on disk as review material — it is
 /// just never installed over the baseline.
+#[allow(clippy::too_many_lines)]
 fn finalize(
     request: &RouteRequest,
     capability: Option<&RouterCapability>,
@@ -368,6 +377,7 @@ fn finalize(
         Ok(moved) => eprintln!("note: moved {moved} via(s) off the pads they sat in"),
         Err(detail) => eprintln!("warning: vias in pads were not repaired: {detail}"),
     }
+    report_dropped_stubs(&candidate.candidate_path);
     match island_vias::tie_islands(&candidate.candidate_path, &request.ground_nets) {
         Ok(outcome) => repair_blocking = outcome.unresolved,
         Err(detail) => {
