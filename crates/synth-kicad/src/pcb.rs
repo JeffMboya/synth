@@ -408,7 +408,7 @@ pub fn build_pcb(
     // With a stride they take In1/In4, In2 and In3. Only when the rails
     // outnumber the layers does a layer carry two, and then each rail still
     // gets exactly one.
-    let rails: Vec<(u32, &synth_ir::Net)> = board
+    let rails: Vec<(u32, &synth_ir::Net, &synth_ir::NetClass)> = board
         .netclasses
         .iter()
         .filter(|class| class.plane)
@@ -417,14 +417,23 @@ pub fn build_pcb(
                 .nets
                 .iter()
                 .filter(move |net| net.netclass.as_deref() == Some(class.name.as_str()))
+                .map(move |net| (net, class))
         })
-        .filter_map(|net| net_id_lookup.get(&net.id).copied().map(|id| (id, net)))
+        .filter_map(|(net, class)| {
+            net_id_lookup
+                .get(&net.id)
+                .copied()
+                .map(|id| (id, net, class))
+        })
         .collect();
 
     let mut plane_via_index = 0usize;
     let mut plane_stub_index = 0usize;
     if !power_layers.is_empty() {
-        for (rail_index, (pcb_net, net)) in rails.iter().copied().enumerate() {
+        for (rail_index, (pcb_net, net, class)) in rails.iter().copied().enumerate() {
+            // The rail's own class sets its fanout vias, so a class that asks
+            // for a 0.2 mm drill gets it where the pads drop to the plane.
+            let plane_via = PlaneVia::for_rail(&process, class);
             let layers: Vec<&'static str> = if rails.len() >= power_layers.len() {
                 vec![power_layers[rail_index % power_layers.len()]]
             } else {
@@ -664,6 +673,22 @@ impl PlaneVia {
         let ring_pad_nm = drill_nm + 2 * profile.min_annular_ring_nm;
         Self {
             pad_radius_nm: PLANE_VIA_RADIUS_NM.max((ring_pad_nm + 1) / 2),
+            drill_nm,
+        }
+    }
+}
+
+impl PlaneVia {
+    /// The via a rail's fanout uses: the class's declared via, raised to the
+    /// process's own floor so it stays fabricable.
+    fn for_rail(profile: &synth_drc::ManufacturerProfile, class: &synth_ir::NetClass) -> Self {
+        let drill_nm = class
+            .effective_via_drill()
+            .0
+            .max(profile.min_drill_diameter_nm);
+        let ring_pad_nm = drill_nm + 2 * profile.min_annular_ring_nm;
+        Self {
+            pad_radius_nm: (class.effective_via_diameter().0 / 2).max((ring_pad_nm + 1) / 2),
             drill_nm,
         }
     }
