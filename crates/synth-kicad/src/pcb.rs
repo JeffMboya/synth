@@ -206,6 +206,7 @@ pub fn build_pcb(
             project,
             // Past every stitch via the exporter itself places, so the uuids stay distinct.
             FIXED_VIA_UUID_BASE + idx,
+            stitch_via_size(board),
         ));
     }
 
@@ -320,6 +321,7 @@ pub fn build_pcb(
                     *pcb_net,
                     project,
                     plane_index * 4 + stitch_index,
+                    stitch_via_size(board),
                 ));
             }
         }
@@ -391,9 +393,6 @@ pub fn build_pcb(
         .required_processes
         .contains(&synth_ir::ProcessRequirement::ViaInPad)
         && process.via_in_pad;
-    // The via is the process's own: its drill at least the minimum and its pad
-    // the drill plus two minimum annular rings.
-    let plane_via = PlaneVia::for_process(&process);
     // One rail per layer. Pouring every plane net on every power layer puts
     // two rails at the same priority on the same copper, which is the
     // starvation described above with ground swapped out for a second rail:
@@ -407,7 +406,7 @@ pub fn build_pcb(
     // With a stride they take In1/In4, In2 and In3. Only when the rails
     // outnumber the layers does a layer carry two, and then each rail still
     // gets exactly one.
-    let rails: Vec<(u32, &synth_ir::Net)> = board
+    let rails: Vec<(u32, &synth_ir::Net, &synth_ir::NetClass)> = board
         .netclasses
         .iter()
         .filter(|class| class.plane)
@@ -416,14 +415,23 @@ pub fn build_pcb(
                 .nets
                 .iter()
                 .filter(move |net| net.netclass.as_deref() == Some(class.name.as_str()))
+                .map(move |net| (net, class))
         })
-        .filter_map(|net| net_id_lookup.get(&net.id).copied().map(|id| (id, net)))
+        .filter_map(|(net, class)| {
+            net_id_lookup
+                .get(&net.id)
+                .copied()
+                .map(|id| (id, net, class))
+        })
         .collect();
 
     let mut plane_via_index = 0usize;
     let mut plane_stub_index = 0usize;
     if !power_layers.is_empty() {
-        for (rail_index, (pcb_net, net)) in rails.iter().copied().enumerate() {
+        for (rail_index, (pcb_net, net, class)) in rails.iter().copied().enumerate() {
+            // The rail's own class sets its fanout vias, so a class that asks
+            // for a 0.2 mm drill gets it where the pads drop to the plane.
+            let plane_via = PlaneVia::for_rail(&process, class);
             let layers: Vec<&'static str> = if rails.len() >= power_layers.len() {
                 vec![power_layers[rail_index % power_layers.len()]]
             } else {
@@ -658,9 +666,11 @@ fn plane_pad_targets(board: &Board, placement: &Placement, net: &synth_ir::Net) 
 /// Stitching-via pad radius in nanometres (a 0.6 mm via): the least the
 /// exporter uses, raised by [`PlaneVia::for_process`] when a process needs a
 /// wider ring.
+#[cfg(test)]
 const PLANE_VIA_RADIUS_NM: i64 = 300_000;
 
 /// Drill of a stitching via in nanometres, at least the process's floor.
+#[cfg(test)]
 const PLANE_VIA_DRILL_NM: i64 = 300_000;
 
 /// The via a plane stitching uses, from the manufacturer's own limits: the
@@ -673,6 +683,21 @@ struct PlaneVia {
 }
 
 impl PlaneVia {
+    /// The via a rail's fanout uses: the class's declared via, raised to the
+    /// process's own floor so it stays fabricable.
+    fn for_rail(profile: &synth_drc::ManufacturerProfile, class: &synth_ir::NetClass) -> Self {
+        let drill_nm = class
+            .effective_via_drill()
+            .0
+            .max(profile.min_drill_diameter_nm);
+        let ring_pad_nm = drill_nm + 2 * profile.min_annular_ring_nm;
+        Self {
+            pad_radius_nm: (class.effective_via_diameter().0 / 2).max((ring_pad_nm + 1) / 2),
+            drill_nm,
+        }
+    }
+
+    #[cfg(test)]
     fn for_process(profile: &synth_drc::ManufacturerProfile) -> Self {
         let drill_nm = PLANE_VIA_DRILL_NM.max(profile.min_drill_diameter_nm);
         let ring_pad_nm = drill_nm + 2 * profile.min_annular_ring_nm;
@@ -1114,14 +1139,43 @@ fn clear_of_mounting_holes(via: Point, inward: i64, holes: &[(Point, i64)]) -> P
 /// Uuid index of the first sidecar-fixed via, clear of the stitch vias the exporter derives.
 const FIXED_VIA_UUID_BASE: usize = 1_000_000;
 
-fn build_ground_stitch_via(x_nm: i64, y_nm: i64, pcb_net: u32, project: &Uuid, idx: usize) -> Sexp {
+/// The via a generated ground stitch uses: the board's `Default` net class when
+/// it declares one, otherwise the 0.6 / 0.3 mm every class falls back to, so a
+/// board that asks for a 0.2 mm drill gets it on the stitching vias too.
+fn stitch_via_size(board: &Board) -> (f64, f64) {
+    board
+        .netclasses
+        .iter()
+        .find(|class| class.name == "Default")
+        .map_or(
+            (
+                synth_ir::NetClass::DEFAULT_VIA_DIAMETER.to_mm(),
+                synth_ir::NetClass::DEFAULT_VIA_DRILL.to_mm(),
+            ),
+            |class| {
+                (
+                    class.effective_via_diameter().to_mm(),
+                    class.effective_via_drill().to_mm(),
+                )
+            },
+        )
+}
+
+fn build_ground_stitch_via(
+    x_nm: i64,
+    y_nm: i64,
+    pcb_net: u32,
+    project: &Uuid,
+    idx: usize,
+    (via_size_mm, via_drill_mm): (f64, f64),
+) -> Sexp {
     let via_uuid = derive_entity_uuid(project, "ground-stitch-via", &idx.to_string());
     Sexp::list(
         "via",
         vec![
             Sexp::list("at", vec![num(nm_to_mm(x_nm)), num(nm_to_mm(y_nm))]),
-            Sexp::list("size", vec![num(0.6)]),
-            Sexp::list("drill", vec![num(0.3)]),
+            Sexp::list("size", vec![num(via_size_mm)]),
+            Sexp::list("drill", vec![num(via_drill_mm)]),
             Sexp::list("layers", vec![Sexp::str("F.Cu"), Sexp::str("B.Cu")]),
             Sexp::list("net", vec![Sexp::atom(pcb_net.to_string())]),
             str_pair("uuid", via_uuid.to_string()),
@@ -3587,8 +3641,8 @@ mod tests {
     #[test]
     fn the_via_minimum_is_the_profiles_not_a_fixed_figure() {
         let jlc = build_setup(&synth_drc::ManufacturerProfile::jlc_standard()).to_string_pretty();
-        assert!(jlc.contains("(via_min_size 0.56)"), "{jlc}");
-        assert!(jlc.contains("(via_min_drill 0.3)"), "{jlc}");
+        assert!(jlc.contains("(via_min_size 0.46)"), "{jlc}");
+        assert!(jlc.contains("(via_min_drill 0.2)"), "{jlc}");
         let pcbway =
             build_setup(&synth_drc::ManufacturerProfile::pcbway_standard()).to_string_pretty();
         assert!(pcbway.contains("(via_min_size 0.6)"), "{pcbway}");
