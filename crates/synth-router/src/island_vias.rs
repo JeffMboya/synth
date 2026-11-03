@@ -426,7 +426,11 @@ pub fn plan_ties(board: &PcbBoard) -> TiePlan {
             .filter(|&i| groups.find(i) == main)
             .collect();
 
-        let (size_nm, drill_nm) = usual_via(&via_sizes);
+        let (size_nm, drill_nm) = if via_sizes.is_empty() {
+            board_via(board)
+        } else {
+            usual_via(&via_sizes)
+        };
         let need = nm_to_mm(size_nm) / 2.0 + EDGE_SLACK_MM;
         let keepout = Keepout::from_board(board, net);
 
@@ -1022,6 +1026,17 @@ fn usual_via(sizes: &[(i64, i64)]) -> (i64, i64) {
         })
 }
 
+/// The via a net with none of its own takes: the one the board uses most, so a
+/// tie follows the board's declared via rather than a fixed 0.6 / 0.3 mm.
+fn board_via(board: &PcbBoard) -> (i64, i64) {
+    let sizes: Vec<(i64, i64)> = board
+        .vias
+        .iter()
+        .map(|via| (via.size_nm, via.drill_nm))
+        .collect();
+    usual_via(&sizes)
+}
+
 fn join(groups: &mut Groups, attached: &mut [bool], hit: &[usize]) {
     for &i in hit {
         attached[i] = true;
@@ -1292,7 +1307,11 @@ fn stitch(board: &PcbBoard, reach_mm: f64, planned: &[TieVia], ground_nets: &Gro
         .filter(|via| is_ground(via))
         .map(|via| (via.size_nm, via.drill_nm))
         .collect();
-    let (size_nm, drill_nm) = usual_via(&sizes);
+    let (size_nm, drill_nm) = if sizes.is_empty() {
+        board_via(board)
+    } else {
+        usual_via(&sizes)
+    };
     let need = nm_to_mm(size_nm) / 2.0 + EDGE_SLACK_MM;
     let radius = nm_to_mm(size_nm) / 2.0;
     let window = (reach_mm - REACH_MARGIN_MM).max(0.0);
@@ -1586,6 +1605,24 @@ mod tests {
         let sizes = [(560_000, 300_000), (600_000, 300_000), (600_000, 300_000)];
         assert_eq!(usual_via(&sizes), (600_000, 300_000));
         assert_eq!(usual_via(&[]), (DEFAULT_VIA_SIZE_NM, DEFAULT_VIA_DRILL_NM));
+    }
+
+    #[test]
+    fn a_net_with_no_via_of_its_own_takes_the_via_the_board_uses() {
+        // The ground net has no via, so its ties copy the one other net's via the board uses.
+        let text =
+            board_text(r#"(via (at 3 3) (size 0.6) (drill 0.2) (layers "F.Cu" "B.Cu") (net 2))"#)
+                .replace(
+                    r#"(via (at 5 5) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1))"#,
+                    "",
+                );
+        let vias = islands_to_tie(&PcbBoard::parse(&text).expect("board must parse"));
+        assert!(!vias.is_empty(), "{vias:?}");
+        assert!(
+            vias.iter()
+                .all(|via| (via.size_nm, via.drill_nm) == (600_000, 200_000)),
+            "{vias:?}"
+        );
     }
 
     #[test]
