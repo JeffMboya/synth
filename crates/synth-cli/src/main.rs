@@ -5899,7 +5899,7 @@ mod tests {
         let profiles = descriptor["manufacturer_profiles"]
             .as_array()
             .expect("a profile list");
-        assert_eq!(profiles.len(), 4);
+        assert_eq!(profiles.len(), 5);
         for entry in profiles {
             let name = entry["name"].as_str().expect("a name");
             let profile = synth_drc::ManufacturerProfile::from_name(name);
@@ -5926,7 +5926,10 @@ mod tests {
         assert_eq!(filled["offers"], serde_json::json!(["via_in_pad"]));
         assert!(profiles
             .iter()
-            .filter(|p| p["name"] != "jlc-filled-via")
+            .filter(|p| {
+                !synth_drc::ManufacturerProfile::OFFERING_VIA_IN_PAD
+                    .contains(&p["name"].as_str().unwrap_or_default())
+            })
             .all(|p| p.get("offers").is_none()));
     }
     use super::*;
