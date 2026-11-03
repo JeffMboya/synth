@@ -69,7 +69,8 @@ mod signal_integrity;
 /// The IPC-2221 width a `current` needs. Re-exported so the exporter can size
 /// a high-current net's trace for the router.
 pub use signal_integrity::required_width_nm;
-pub use signal_integrity::{ground_net_names, is_ground_name};
+pub use signal_integrity::{ground_net_names, is_ground_name, return_path_critical_net_names};
+pub use signal_integrity::{return_via_window_nm, RETURN_VIA_CLEARANCE_NM};
 
 use serde::{Deserialize, Serialize};
 use synth_geometry::Point;
@@ -366,6 +367,50 @@ mod tests {
         let ground = ground_net_names(&board);
         assert!(ground.iter().any(|n| n == "POWER_RETURN"), "{ground:?}");
         assert!(!ground.iter().any(|n| n == "SIGNAL"), "{ground:?}");
+    }
+
+    /// A layer change only costs a fast edge a loop, so the nets a missing return
+    /// via must hold a board back for are the ones that carry one: a clock, a
+    /// differential pin, a switching node. A plain GPIO line is not one.
+    #[test]
+    fn only_fast_nets_are_critical_for_a_return_via() {
+        let board = board_from_source(
+            r#"board "returns" { layers 2
+                component U1: mcu "rp2350"
+                component X1: crystal "osc_smd_25mhz"
+                component L1: inductor "l_generic_1210" value "10uH"
+                component C1: capacitor "c_generic_0603" value "100nF"
+                component R1: resistor "r_generic_0603" value "10k"
+                net "CLK_OUT" { X1.out R1.p1 }
+                net "SW_NODE" { L1.p1 C1.p1 }
+                net "SLOW_GPIO" { U1.gp0 R1.p2 }
+            }"#,
+        );
+        let critical = return_path_critical_net_names(&board);
+        assert!(critical.iter().any(|n| n == "CLK_OUT"), "{critical:?}");
+        assert!(critical.iter().any(|n| n == "SW_NODE"), "{critical:?}");
+        assert!(!critical.iter().any(|n| n == "SLOW_GPIO"), "{critical:?}");
+    }
+
+    /// A bare crystal's terminals are passive and the RP2350's `xin` and `xout`
+    /// are typed input and output, so no pin type marks the oscillator loop; the
+    /// crystal on the net does.
+    #[test]
+    fn a_net_on_a_bare_crystals_terminal_is_critical_for_a_return_via() {
+        let board = board_from_source(
+            r#"board "xtal" { layers 2
+                component U1: mcu "rp2350"
+                component Y1: crystal "xtal_generic"
+                component R1: resistor "r_generic_0603" value "10k"
+                net "XIN" { U1.xin Y1.p1 }
+                net "XOUT" { U1.xout Y1.p2 }
+                net "SLOW_GPIO" { U1.gp0 R1.p1 }
+            }"#,
+        );
+        let critical = return_path_critical_net_names(&board);
+        assert!(critical.iter().any(|n| n == "XIN"), "{critical:?}");
+        assert!(critical.iter().any(|n| n == "XOUT"), "{critical:?}");
+        assert!(!critical.iter().any(|n| n == "SLOW_GPIO"), "{critical:?}");
     }
 
     fn load_board(path: &str) -> Board {
@@ -891,6 +936,56 @@ mod tests {
         };
         assert!(
             super::signal_integrity::check_return_path_vias(&board, &returned, &stackup).is_empty()
+        );
+    }
+
+    #[test]
+    fn the_return_via_window_is_never_narrower_than_a_via_beside_a_via() {
+        let mut board = load_board("../../examples/env_logger/env_logger.synth");
+        board.stackup = Some(four_layer_stackup());
+        let stackup = StackupProfile::for_board(&board);
+        let ground = board
+            .nets
+            .iter()
+            .find(|net| super::signal_integrity::net_name_or_pin_is_ground(&board, net))
+            .expect("env_logger must have a ground net")
+            .id;
+        let signal = board
+            .nets
+            .iter()
+            .find(|net| !super::signal_integrity::net_name_or_pin_is_ground(&board, net))
+            .expect("env_logger must have a signal net")
+            .id;
+        let via = |net: NetId, x: i64| synth_pcb::Via {
+            net,
+            at: synth_geometry::Point::new(x, 0),
+            drill_nm: 200_000,
+            pad_diameter_nm: 600_000,
+        };
+        // The stackup's thickest dielectric is 0.64 mm, and a 0.6 mm via with
+        // 0.2 mm of clearance cannot sit nearer than 0.8 mm to another: a
+        // ground via at 0.75 mm is as close as the process allows only if the
+        // window reaches it, and 0.9 mm is outside.
+        assert_eq!(
+            super::signal_integrity::return_via_window_nm(640_000, 600_000),
+            800_000
+        );
+        let at = |x: i64| Routing {
+            vias: vec![via(signal, 0), via(ground, x)],
+            ..Routing::default()
+        };
+        assert!(
+            super::signal_integrity::check_return_path_vias(&board, &at(790_000), &stackup)
+                .is_empty()
+        );
+        assert_eq!(
+            super::signal_integrity::check_return_path_vias(&board, &at(900_000), &stackup).len(),
+            1
+        );
+        // A thick dielectric keeps its own, larger window.
+        assert_eq!(
+            super::signal_integrity::return_via_window_nm(1_530_000, 600_000),
+            1_530_000
         );
     }
 

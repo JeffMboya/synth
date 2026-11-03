@@ -446,6 +446,21 @@ pub fn check_edge_coupling(
         .collect()
 }
 
+/// Copper clearance assumed between a signal via and the ground via beside it,
+/// for the least distance at which the two can sit.
+pub const RETURN_VIA_CLEARANCE_NM: i64 = 200_000;
+
+/// The window around a signal via in which W-SYNTH-DRC-016 looks for a ground
+/// return via, along either axis: the stackup's thickest dielectric, never
+/// smaller than the least distance at which a ground via can sit beside the
+/// signal via, its pad width plus the copper clearance. A stackup with a thin
+/// prepreg would otherwise leave a window that holds a ground via only in a
+/// corner, however much room the board has.
+#[must_use]
+pub fn return_via_window_nm(stackup_reach_nm: i64, via_pad_nm: i64) -> i64 {
+    stackup_reach_nm.max(via_pad_nm + RETURN_VIA_CLEARANCE_NM)
+}
+
 /// Return-path via check. Code: `W-SYNTH-DRC-016` — a **warning**.
 ///
 /// A via that takes a signal to another layer needs a ground return via close
@@ -483,6 +498,13 @@ pub fn check_return_path_vias(
         .map(|layer| layer.dielectric_height.0)
         .max()
         .unwrap_or_else(|| mm_to_nm(1.6));
+    let via_pad_nm = routing
+        .vias
+        .iter()
+        .map(|via| via.pad_diameter_nm)
+        .max()
+        .unwrap_or_else(|| mm_to_nm(0.6));
+    let radius_nm = return_via_window_nm(radius_nm, via_pad_nm);
     let mut out = Vec::new();
     for via in &routing.vias {
         if is_ground(via.net) {
@@ -559,6 +581,61 @@ pub(crate) fn net_name_or_pin_is_ground(board: &Board, net: &Net) -> bool {
                 .and_then(|part| part.pins.get(endpoint.pin.0 as usize))
                 .is_some_and(|pin| is_ground_name(&pin.name))
         })
+}
+
+/// Names of the nets whose layer changes the return-path repair must not leave
+/// without a ground via: the nets a fast edge or a sensitive signal rides on.
+///
+/// A net is one when a pin on it is differential, a clock, RF or analog; when it
+/// joins a bare crystal's terminal; when it is half of a declared `diff_pair`;
+/// or when it joins an inductor, which makes it a switching node. Any other signal changes layers with a slow edge, where
+/// the loop a missing return via leaves costs little, so a layer change there is
+/// an advisory and not a reason to hold the board back.
+#[must_use]
+pub fn return_path_critical_net_names(board: &Board) -> Vec<String> {
+    use synth_registry::ElectricalType;
+    let mut critical: std::collections::BTreeSet<NetId> = std::collections::BTreeSet::new();
+    for net in &board.nets {
+        let rides_fast = net.endpoints.iter().any(|endpoint| {
+            let Some(component) = board.component(endpoint.component) else {
+                return false;
+            };
+            let crystal = component.kind == "crystal";
+            component.kind == "inductor"
+                || component
+                    .part
+                    .as_ref()
+                    .and_then(|part| part.pins.get(endpoint.pin.0 as usize))
+                    .is_some_and(|pin| match pin.electrical_type {
+                        ElectricalType::DifferentialPositive
+                        | ElectricalType::DifferentialNegative
+                        | ElectricalType::Clock
+                        | ElectricalType::Rf
+                        | ElectricalType::Analog => true,
+                        // A bare crystal's terminals are passive, and the
+                        // oscillator pins they meet are often typed plain input
+                        // and output, so the crystal itself marks the net.
+                        ElectricalType::Passive => crystal,
+                        _ => false,
+                    })
+        });
+        if rides_fast {
+            critical.insert(net.id);
+        }
+    }
+    for pair in &board.diff_pairs {
+        for (_, leg) in board.diff_pair_legs(pair) {
+            if let Some(net) = leg {
+                critical.insert(net.id);
+            }
+        }
+    }
+    board
+        .nets
+        .iter()
+        .filter(|net| critical.contains(&net.id))
+        .map(|net| net.name.clone())
+        .collect()
 }
 
 /// Whether a net or pin name is a ground: it contains `gnd` or `vss`, or is

@@ -4911,6 +4911,7 @@ fn build_route_request(
     }
     request.routing_order = routing_order.to_vec();
     request.ground_nets = synth_drc::ground_net_names(board);
+    request.return_via_critical_nets = Some(synth_drc::return_path_critical_net_names(board));
     request.preserve_baseline()?;
     Ok(request)
 }
@@ -5363,6 +5364,14 @@ fn print_route_report(report: &synth_router::RouteReport) {
         .unwrap_or_default()
     {
         eprintln!("  not checked: {check}");
+    }
+    for advisory in report
+        .validation
+        .as_ref()
+        .map(|v| v.advisories.clone())
+        .unwrap_or_default()
+    {
+        eprintln!("  advisory: {advisory}");
     }
     if let Some(counts) = report.validation.as_ref().and_then(|v| v.kicad_drc) {
         eprintln!(
@@ -5992,6 +6001,10 @@ mod tests {
         .expect("request");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(request.ground_nets, vec!["POWER_RETURN".to_string()]);
+        // A GPIO into a capacitor carries no fast edge, so the request names the
+        // fast nets (here none) and the router lists SIGNAL's layer change as an
+        // advisory instead of falling back to holding every net to a return via.
+        assert_eq!(request.return_via_critical_nets, Some(Vec::new()));
     }
 
     /// A stage that writes more than a pipe holds must still be read.
