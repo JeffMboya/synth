@@ -300,9 +300,10 @@ fn write_report(report: &RouteReport, request: &RouteRequest) {
     }
 }
 
-/// The verdict with the findings of the mandatory island repair added. A
-/// repair that did not run is a required check that could not be performed,
-/// which is review-required; an island it left untied is a blocking finding.
+/// The verdict with the findings of the mandatory post-route repairs added.
+/// A repair that did not run is a required check that could not be performed,
+/// which is review-required; something a repair ran and could not fix — an
+/// island tied to nothing, a hidden reference label — is a blocking finding.
 /// Either way the candidate is not fabrication-ready, whatever the other checks
 /// said.
 fn with_repair_findings(
@@ -318,8 +319,17 @@ fn with_repair_findings(
     verdict
 }
 
-/// Say what the post-routing silkscreen pass did, when it did anything.
-fn report_silkscreen_pass(result: Result<label_vias::LabelMoves, String>) {
+/// Say what the post-routing silkscreen pass did, and turn anything that must
+/// not reach a `routed` verdict into a repair finding.
+///
+/// A hidden reference label leaves the assembly drawing without a designator
+/// on the board, and a pass that did not run leaves every label unchecked.
+/// Neither may be reported as fabrication-ready, so both come back as
+/// findings for [`with_repair_findings`] rather than only a log line. Trimming
+/// outline lines, widening strokes and dropping decorative circles are
+/// cosmetic and stay notes: they change nothing about the copper or the
+/// designators.
+fn report_silkscreen_pass(result: Result<label_vias::LabelMoves, String>) -> RepairFindings {
     match result {
         Ok(label_vias::LabelMoves {
             moved: 0,
@@ -327,17 +337,62 @@ fn report_silkscreen_pass(result: Result<label_vias::LabelMoves, String>) {
             trimmed: 0,
             widened: 0,
             dropped: 0,
-        }) => {}
+        }) => RepairFindings::default(),
         Ok(label_vias::LabelMoves {
             moved,
             hidden,
             trimmed,
             widened,
             dropped,
-        }) => eprintln!(
-            "note: moved {moved} reference label(s) off vias and pads; {hidden} hidden because no clear spot was within reach; {trimmed} outline line(s) cut back from vias and pads; {dropped} silkscreen circle(s) and polygon(s) dropped; {widened} silkscreen stroke(s) widened to 0.18 mm"
-        ),
-        Err(detail) => eprintln!("warning: reference labels were not checked: {detail}"),
+        }) => {
+            eprintln!(
+                "note: moved {moved} reference label(s) off vias and pads; {hidden} hidden because no clear spot was within reach; {trimmed} outline line(s) cut back from vias and pads; {dropped} silkscreen circle(s) and polygon(s) dropped; {widened} silkscreen stroke(s) widened to 0.18 mm"
+            );
+            let mut findings = RepairFindings::default();
+            if hidden > 0 {
+                findings.blocking.push(format!(
+                    "{hidden} reference label(s) could not be moved clear of copper and were hidden, so the silkscreen carries no designator for them"
+                ));
+            }
+            findings
+        }
+        Err(detail) => {
+            eprintln!("warning: reference labels were not checked: {detail}");
+            RepairFindings {
+                blocking: Vec::new(),
+                unavailable: vec![format!("silkscreen repair did not run: {detail}")],
+            }
+        }
+    }
+}
+
+/// Findings a repair pass contributes to the verdict.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct RepairFindings {
+    /// The pass ran and found something that must hold the board back.
+    blocking: Vec<String>,
+    /// The pass did not run, so a required check is unknown.
+    unavailable: Vec<String>,
+}
+
+/// Move vias the engine left inside pads of their own net, with the tracks
+/// that meet them, before the candidate is judged.
+///
+/// The repair is mandatory: a board that could not be read, parsed or written
+/// here was not repaired, and a via in a pad is a fabrication defect rather
+/// than a cosmetic one. The error is therefore an unavailable check, not a
+/// warning on its way to a `routed` verdict.
+fn repair_vias_in_pads(candidate: &Path) -> Vec<String> {
+    match island_vias::move_vias_off_pads(candidate) {
+        Ok(0) => Vec::new(),
+        Ok(moved) => {
+            eprintln!("note: moved {moved} via(s) off the pads they sat in");
+            Vec::new()
+        }
+        Err(detail) => {
+            eprintln!("warning: vias in pads were not repaired: {detail}");
+            vec![format!("via-in-pad repair did not run: {detail}")]
+        }
     }
 }
 
@@ -363,11 +418,7 @@ fn finalize(
     let mut repair_unavailable: Vec<String> = Vec::new();
     // A via the engine left in a pad of its own net is moved off it, with the tracks
     // that meet it, before the candidate is judged; the judging is unchanged.
-    match island_vias::move_vias_off_pads(&candidate.candidate_path) {
-        Ok(0) => {}
-        Ok(moved) => eprintln!("note: moved {moved} via(s) off the pads they sat in"),
-        Err(detail) => eprintln!("warning: vias in pads were not repaired: {detail}"),
-    }
+    repair_unavailable.extend(repair_vias_in_pads(&candidate.candidate_path));
     match island_vias::tie_islands(&candidate.candidate_path, &request.ground_nets) {
         Ok(outcome) => repair_blocking = outcome.unresolved,
         Err(detail) => {
@@ -380,10 +431,14 @@ fn finalize(
     }
     // The labels were placed before the router put its vias down; move any that
     // now sit on a via or a pad. Silkscreen only, and before the candidate is
-    // judged, so the board that is delivered is the one that was validated.
-    report_silkscreen_pass(label_vias::keep_labels_off_copper(
+    // judged, so the board that is delivered is the one that was validated. A
+    // hidden label or a pass that did not run is a finding, because a board
+    // without readable designators is not one this pipeline calls routed.
+    let silkscreen = report_silkscreen_pass(label_vias::keep_labels_off_copper(
         &candidate.candidate_path,
     ));
+    repair_blocking.extend(silkscreen.blocking);
+    repair_unavailable.extend(silkscreen.unavailable);
     let verdict = with_repair_findings(
         validate_candidate(request, &candidate),
         repair_blocking,
@@ -616,6 +671,90 @@ mod repair_tests {
         assert_eq!(
             RouteReport::state_for_verdict(&verdict),
             RouteState::ValidationFailed
+        );
+    }
+
+    /// A reference label hidden because no clear spot was within reach leaves
+    /// the silkscreen without that designator. The pass reports it, and the
+    /// verdict must stop calling the board routed.
+    #[test]
+    fn a_hidden_reference_label_holds_the_board_back() {
+        let findings = report_silkscreen_pass(Ok(label_vias::LabelMoves {
+            hidden: 2,
+            ..label_vias::LabelMoves::default()
+        }));
+        assert!(findings.unavailable.is_empty(), "{findings:?}");
+        assert_eq!(findings.blocking.len(), 1, "{findings:?}");
+        assert!(findings.blocking[0].contains('2'), "{findings:?}");
+
+        let verdict = with_repair_findings(
+            FabricationVerdict::ready(),
+            findings.blocking,
+            findings.unavailable,
+        );
+        assert!(!verdict.fabrication_ready);
+        assert_eq!(
+            RouteReport::state_for_verdict(&verdict),
+            RouteState::ValidationFailed,
+            "a hidden designator is a finding, not a clean run"
+        );
+    }
+
+    /// A silkscreen pass that could not read or write the board leaves every
+    /// label unchecked. That is an unknown, so the candidate is review-only.
+    #[test]
+    fn a_silkscreen_pass_that_did_not_run_is_review_required() {
+        let findings =
+            report_silkscreen_pass(Err("could not read board.kicad_pcb: denied".to_string()));
+        assert!(findings.blocking.is_empty(), "{findings:?}");
+        assert_eq!(findings.unavailable.len(), 1, "{findings:?}");
+        assert!(
+            findings.unavailable[0].contains("silkscreen repair did not run"),
+            "{findings:?}"
+        );
+
+        let verdict = with_repair_findings(
+            FabricationVerdict::ready(),
+            findings.blocking,
+            findings.unavailable,
+        );
+        assert!(!verdict.fabrication_ready);
+        assert_eq!(
+            RouteReport::state_for_verdict(&verdict),
+            RouteState::ReviewRequired
+        );
+    }
+
+    /// A board the via-in-pad repair cannot parse is not repaired. The error
+    /// must become an unavailable check, not a warning that leaves the board
+    /// on a path to `routed`.
+    #[test]
+    fn a_via_in_pad_repair_that_did_not_run_is_review_required() {
+        let dir = std::env::temp_dir().join(format!(
+            "synth_router_via_repair_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let board = dir.join("broken.kicad_pcb");
+        std::fs::write(&board, b"this is not a board").expect("write");
+
+        let unavailable = repair_vias_in_pads(&board);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(unavailable.len(), 1, "{unavailable:?}");
+        assert!(
+            unavailable[0].contains("via-in-pad repair did not run"),
+            "{unavailable:?}"
+        );
+
+        let verdict = with_repair_findings(FabricationVerdict::ready(), Vec::new(), unavailable);
+        assert!(!verdict.fabrication_ready);
+        assert_eq!(
+            RouteReport::state_for_verdict(&verdict),
+            RouteState::ReviewRequired
         );
     }
 

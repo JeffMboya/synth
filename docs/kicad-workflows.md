@@ -593,6 +593,13 @@ priority = "hard" # hard: use it as given, kept on the board; soft (default): tr
 hide = true       # hide it; `hide = false` shows a part file's hidden label
 ```
 
+After routing, the router moves any reference label that a via or pad now
+covers. A label with no clear spot within reach is hidden, and that keeps the
+candidate out of `routed`: a hidden designator is a blocking finding, and a
+pass that could not read or write the board is an unavailable check. The
+silkscreen is part of the board an assembler reads, so neither is reported as a
+clean route.
+
 A hidden label takes no room. A sidecar entry beats the part file, and a hard
 offset is not checked for collisions but is pulled back inside the board edge.
 `angle` and `priority` apply to an offset: without `dx` or `dy` they do

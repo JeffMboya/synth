@@ -61,6 +61,16 @@ fn design(dir: &Path, part_id: &str) -> PathBuf {
         ),
     )
     .expect("write design");
+    // These boards are auto-sized around two 0603s, which leaves no room for
+    // a 1.4 mm reference label clear of the pads and the board edge. The
+    // router now treats a label its repair had to hide as a blocking finding,
+    // so hide the labels by design here: these tests are about the override
+    // and release manifest, not about silkscreen placement.
+    std::fs::write(
+        dir.join("board.placement.layout.toml"),
+        "[labels.R1]\nhide = true\n\n[labels.R2]\nhide = true\n",
+    )
+    .expect("write label sidecar");
     path
 }
 
