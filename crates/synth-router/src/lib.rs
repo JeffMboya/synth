@@ -611,8 +611,22 @@ pub fn finalize_candidate(
     let kicad_cli = request.tools.kicad_cli_binary();
     match island_vias::tie_islands_for(&candidate.candidate_path, &ground, &kicad_cli) {
         Ok(outcome) => {
-            repair_blocking = outcome.unresolved;
+            // Opt-in (`SYNTH_RETURN_VIA_ADVISORY`): a signal via that still has no
+            // ground return via is listed as an advisory instead of blocking the
+            // candidate. An island left untied, an open net and every other finding
+            // keep blocking. The findings stay in the run record's advisories.
+            let (via, other): (Vec<String>, Vec<String>) =
+                if std::env::var_os("SYNTH_RETURN_VIA_ADVISORY").is_some() {
+                    outcome
+                        .unresolved
+                        .into_iter()
+                        .partition(|finding| finding.contains("ground return via"))
+                } else {
+                    (Vec::new(), outcome.unresolved)
+                };
+            repair_blocking = other;
             repair_advisory = outcome.advisory;
+            repair_advisory.extend(via);
         }
         Err(detail) => {
             warn!(
